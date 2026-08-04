@@ -121,15 +121,18 @@ DISCORD_USERS_ME = "https://discord.com/api/users/@me"
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 DISCORD_SERVER_ID = os.getenv("DISCORD_SERVER_ID")
 
-# TEMPORARY dev bypass: skips the whole Discord OAuth round-trip (no
-# client id/secret/bot token needed) and every membership/permission gate
-# that depends on it, logging in as a fixed fake Discord identity instead.
-# Hard-fails if ever left on in production - this must never reach a real
-# deploy. Flip DISABLE_DISCORD_AUTH back to unset/"0" to restore normal
-# Discord login.
+# TEMPORARY: skips the whole Discord OAuth round-trip (no client
+# id/secret/bot token needed) and every membership/permission gate that
+# depends on it, logging in as a fixed fake identity instead. Deliberately
+# allowed in production - flip DISABLE_DISCORD_AUTH back to unset/"0" to
+# restore normal Discord login once this is no longer needed.
 DISABLE_DISCORD_AUTH = os.getenv("DISABLE_DISCORD_AUTH", "0") == "1"
-if DISABLE_DISCORD_AUTH and IS_PROD:
-    raise ValueError("DISABLE_DISCORD_AUTH must not be set in production")
+if DISABLE_DISCORD_AUTH:
+    logging.warning(
+        "DISABLE_DISCORD_AUTH is set - Discord login and all membership/"
+        "permission gates are bypassed. Every visitor logs in as the same "
+        "fixed identity. Unset this once it's no longer needed."
+    )
 DEV_DISCORD_ID = int(os.getenv("DEV_DISCORD_ID", "1000000000000000001"))
 DEV_USERNAME = os.getenv("DEV_USERNAME", "Dev User")
 
