@@ -1,28 +1,40 @@
-
+# RAILWAY-ONLY, LEGACY. Coolify is the primary deployment path now - see
+# auto_sync/COOLIFY.md for PlayerSync/PriceSync/SBCSync's actual
+# Dockerfile-based setup (dedicated Dockerfile.player/Dockerfile.price/
+# Dockerfile.sbc, Scheduled Task vs continuous service, required env
+# vars). This file only matters if a Railway (Nixpacks) service in this
+# repo is still live; it is not read by the Coolify deployment.
+#
 # FUT.GG replacement pipeline.
 #
 # futgg_player_worker: one-shot. Run daily as a Cron Job to discover and
 # refresh card metadata.
 #
-# futgg_price_worker: a CONTINUOUS worker - deploy as a normal Railway
-# service, NOT a Cron Job. It holds a Postgres advisory lock, keeps its
-# browser alive between batches, and picks due cards on its own schedule
-# (next_price_due_at, keyed off rating). On a cron it would fight that
-# lock and pay the browser cold-start cost every invocation - a cold
-# context previously failed an entire startup batch on its own.
+# futgg_price_worker: OBSOLETE - futgg_price_sync.py was the old
+# per-card Playwright price scraper. futgg_bulk_price_sync.py's bulk feed
+# (~27k cards from one page load vs. ~2s/card with ~26% failing - see
+# that script's own docstring) replaced it; this line is commented out
+# rather than removed so the "what used to run here and why it stopped"
+# history stays visible. Do not re-enable on Railway without first
+# checking futgg_bulk_price_sync.py is actually deployed there too.
+# futgg_price_worker: python futgg_price_sync.py
 #
 # DATABASE_URL is the only variable it requires. Every other setting has a
 # production-tuned default; override only with a measured reason.
 futgg_player_worker: python futgg_player_sync.py
-futgg_price_worker: python futgg_price_sync.py
 
 # Bulk price ingest: one page load harvests the whole ~27k-card price
 # feed, bypassing the per-card signing endpoint that rate-limits the
-# scraper. Continuous service. Dry run until FUTGG_BULK_APPLY=true.
+# scraper. Continuous service. Dry run until FUTGG_BULK_APPLY=true
+# (defaults to true in the script itself - see futgg_bulk_price_sync.py).
 futgg_bulk_price_worker: python futgg_bulk_price_sync.py
 
 # Sales history via the signed JSON endpoint. One page load for the whole
 # process lifetime; every card after that is a fetch() from inside it.
-# Replaces the per-card page scraping in futgg_price_sync.
 futgg_sales_worker: python futgg_sales_sync.py
 
+# SBC collector: easysbc_sbc_sync.py, not futbin_sbc_sync.py (FUTBIN's
+# Cloudflare hard-blocks every network origin tested, including Railway -
+# see easysbc_sbc_sync.py's own docstring and README.md). One-shot -
+# schedule as a Railway Cron Job, not a permanent worker.
+futgg_sbc_worker: python easysbc_sbc_sync.py

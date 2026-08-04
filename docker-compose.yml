@@ -1,46 +1,46 @@
-# Coolify deploys this as one project: one Postgres, one backend API, one
-# frontend, and the auto_sync image running four times with different
-# commands (Coolify supports per-service command overrides on a shared
-# build - you don't need four separate Dockerfiles for this).
+# Local/dev "docker compose up" convenience only. The actual Coolify
+# production deployment does NOT use this file to orchestrate auto_sync's
+# workers - PlayerSync, PriceSync and SBCSync are each their own
+# Dockerfile-based Coolify resource (base directory /auto_sync, a
+# dedicated Dockerfile.player / Dockerfile.price / Dockerfile.sbc, no
+# domain, no port), with PlayerSync and SBCSync run as Coolify Scheduled
+# Tasks rather than always-on services - see auto_sync/COOLIFY.md for the
+# exact setup of each. This file mirrors that split (same three dedicated
+# Dockerfiles, same "no ports" rule) so `docker compose up` still gives a
+# working local stack, but Coolify's own resource config is the source of
+# truth for how each worker actually runs in production.
 #
-# Every service reads DATABASE_URL. backend/main.py already treats
-# PLAYER_DATABASE_URL / WATCHLIST_DATABASE_URL as optional overrides that
-# default to DATABASE_URL when unset (see main.py:95-97) - so simply not
-# setting those two env vars is what makes this "one database" rather
-# than the three-pool split the Railway deployment used. Nothing in the
-# code had to change for that; it was already the supported path.
+# DATABASE_URL is external, not something this file provisions. There is
+# deliberately no `postgres:` service here - the real deployment points
+# every service at one already-existing, already-restored Postgres
+# instance via the DATABASE_URL env var Coolify injects; this compose
+# file does the same (reads DATABASE_URL from the environment/.env
+# instead of constructing a connection string to a local container).
+# `docker compose up` therefore expects DATABASE_URL to already be set to
+# a reachable Postgres (e.g. a local `docker run postgres:16 ...` per
+# auto_sync/README.md, or the same instance Coolify uses) - it will not
+# spin up a second, separate database for you.
+#
+# Every service reads the same DATABASE_URL. backend/main.py already
+# treats PLAYER_DATABASE_URL / WATCHLIST_DATABASE_URL as optional
+# overrides that default to DATABASE_URL when unset (see main.py:95-97) -
+# so simply not setting those two env vars is what makes this "one
+# database" rather than the three-pool split the Railway deployment used.
+# Nothing in the code had to change for that; it was already the
+# supported path.
 #
 # Table-name overlap between backend's migrations and auto_sync's own
 # schema (scrape_queue, crawler_*, market_events, pipeline_heartbeats,
 # sbc_*) is not a collision - backend's migration comments say these are
-# "for auto_sync" and both sides use CREATE TABLE IF NOT EXISTS. Confirmed
-# by inspection before writing this file; see REVIEW.md.
+# "for auto_sync" and both sides use CREATE TABLE IF NOT EXISTS.
 
 services:
-  postgres:
-    image: postgres:16
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: futhub
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: futhub
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U futhub"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
   backend:
     build:
       context: ./backend
     restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
     environment:
-      DATABASE_URL: postgresql://futhub:${POSTGRES_PASSWORD}@postgres:5432/futhub
+      DATABASE_URL: ${DATABASE_URL}
       SECRET_KEY: ${SECRET_KEY}
       JWT_PRIVATE_KEY: ${JWT_PRIVATE_KEY}
       ENV: production
@@ -70,60 +70,61 @@ services:
     ports:
       - "8080:8080"
 
-  # --- auto_sync: one image, four commands -------------------------------
-  # Same rules as the Railway Procfile this replaces (see auto_sync/README
-  # for the full reasoning): futgg_player_worker is a one-shot, safe to
-  # run as a Coolify Cron Job instead of `restart: unless-stopped`, if
-  # Coolify's scheduler is preferred over a sleep loop. futgg_price_worker
-  # MUST stay a long-running single instance - it holds a Postgres
-  # advisory lock and keeps its browser warm between batches; running it
-  # as a cron job makes it fight the lock and re-pay browser cold start
-  # every invocation.
+  # --- auto_sync workers --------------------------------------------------
+  # Three dedicated Dockerfiles, not one shared image with overridden
+  # commands - see each Dockerfile's own header comment for why each
+  # worker needs its own base image/behaviour. No worker exposes a port
+  # or has a domain; all three only ever talk outbound (to fut.gg /
+  # api-fc26.easysbc.io) and to DATABASE_URL.
+  #
+  # futgg_price_sync.py (the old per-card Playwright price scraper) is
+  # obsolete now that futgg_bulk_price_sync.py's bulk feed replaces it
+  # (~27k cards from one page load vs. ~2s/card with ~26% failing - see
+  # that script's own docstring) and is intentionally NOT a service here.
+  # The script itself is left in the repo (not deleted), just undeployed.
 
   futgg_player_worker:
     build:
       context: ./auto_sync
-    restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
+      dockerfile: Dockerfile.player
+    # One-shot (crawl_once(), exits on completion) - `restart: "no"` here
+    # so a local `docker compose up` behaves the same way the Coolify
+    # Scheduled Task does (run once, stay stopped) instead of Compose's
+    # default restart policy turning a clean exit into a restart loop -
+    # exactly the bug this whole change fixes. Use
+    # `docker compose run --rm futgg_player_worker` to trigger a run
+    # on demand locally.
+    restart: "no"
     environment:
-      DATABASE_URL: postgresql://futhub:${POSTGRES_PASSWORD}@postgres:5432/futhub
-    command: ["python", "futgg_player_sync.py"]
-
-  futgg_price_worker:
-    build:
-      context: ./auto_sync
-    restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-    environment:
-      DATABASE_URL: postgresql://futhub:${POSTGRES_PASSWORD}@postgres:5432/futhub
-    command: ["python", "futgg_price_sync.py"]
+      DATABASE_URL: ${DATABASE_URL}
 
   futgg_bulk_price_worker:
     build:
       context: ./auto_sync
+      dockerfile: Dockerfile.price
+    # Long-running (run_forever(): internal ingest -> sleep -> repeat
+    # loop, holds a warm Playwright page between cycles) - stays
+    # `unless-stopped`, must run as exactly one continuous instance.
     restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
     environment:
-      DATABASE_URL: postgresql://futhub:${POSTGRES_PASSWORD}@postgres:5432/futhub
+      DATABASE_URL: ${DATABASE_URL}
       FUTGG_BULK_APPLY: "true"
-    command: ["python", "futgg_bulk_price_sync.py"]
+
+  futgg_sbc_worker:
+    build:
+      context: ./auto_sync
+      dockerfile: Dockerfile.sbc
+    # One-shot (crawl_once(), exits on completion), same reasoning as
+    # futgg_player_worker above - Coolify Scheduled Task in production,
+    # `restart: "no"` + `docker compose run --rm futgg_sbc_worker` here.
+    restart: "no"
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
 
   futgg_sales_worker:
     build:
       context: ./auto_sync
     restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
     environment:
-      DATABASE_URL: postgresql://futhub:${POSTGRES_PASSWORD}@postgres:5432/futhub
+      DATABASE_URL: ${DATABASE_URL}
     command: ["python", "futgg_sales_sync.py"]
-
-volumes:
-  postgres_data:

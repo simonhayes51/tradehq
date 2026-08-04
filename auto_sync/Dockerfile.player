@@ -1,0 +1,32 @@
+# PlayerSync - FUT.GG player-catalogue metadata sync.
+#
+# futgg_player_sync.py is genuinely one-shot: it does one crawl_once()
+# pass (discover new listing pages, upsert futgg_players rows) and exits -
+# see its own module docstring ("Recommended Railway Cron: once daily").
+# It needs a real Chromium (Playwright) to render fut.gg's listing pages,
+# so this stays on the Playwright base image; nothing lighter works here.
+#
+# This is the fix for the reported bug: deploying this with Coolify's
+# default "restart on exit" behaviour turns a clean one-shot exit into a
+# restart-loop that re-scrapes the first FUTGG_LISTING_MAX_PAGES listing
+# pages every few seconds. There is deliberately no sleep/while-loop
+# wrapper in this image - the correct fix is deploying it as a Coolify
+# Scheduled Task (cron-driven, one container run per trigger, no restart
+# policy fighting a clean exit), documented in auto_sync/COOLIFY.md.
+#
+# No port: this worker only talks to fut.gg and DATABASE_URL, never
+# serves HTTP.
+
+FROM mcr.microsoft.com/playwright/python:v1.61.0-noble
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+ENV PYTHONUNBUFFERED=1
+ENV PLAYWRIGHT_HEADLESS=true
+
+CMD ["python", "futgg_player_sync.py"]

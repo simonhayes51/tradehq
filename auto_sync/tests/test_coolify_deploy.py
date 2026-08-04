@@ -1,0 +1,214 @@
+"""
+Regression tests for the Coolify Dockerfile-based deploy split
+(Dockerfile.player / Dockerfile.price / Dockerfile.sbc + docker-compose.yml
++ COOLIFY.md). No Docker/Compose binary involved - pure text/YAML checks
+against files in this repo, so they run anywhere with no network or DB.
+
+What these guard against, concretely:
+  - The reported bug: a one-shot script (futgg_player_sync.py /
+    easysbc_sbc_sync.py) getting deployed as a normal restart-looping
+    service instead of a Coolify Scheduled Task.
+  - Silently picking the wrong script (the obsolete per-card
+    futgg_price_sync.py instead of futgg_bulk_price_sync.py; the
+    Cloudflare-blocked futbin_sbc_sync.py instead of easysbc_sbc_sync.py).
+  - A worker Dockerfile/compose service growing a port/EXPOSE it doesn't
+    need, or docker-compose.yml growing a second Postgres service.
+"""
+from __future__ import annotations
+
+import re
+import sys
+from pathlib import Path
+
+import yaml
+
+AUTO_SYNC_DIR = Path(__file__).resolve().parent.parent
+REPO_ROOT = AUTO_SYNC_DIR.parent
+
+
+def _read(path: Path) -> str:
+    return path.read_text()
+
+
+# ---------------------------------------------------------------------
+# Dockerfile.player
+# ---------------------------------------------------------------------
+
+
+def test_dockerfile_player_runs_the_one_shot_player_sync():
+    text = _read(AUTO_SYNC_DIR / "Dockerfile.player")
+    assert re.search(r'CMD\s*\[\s*"python"\s*,\s*"futgg_player_sync\.py"\s*\]', text)
+
+
+def test_dockerfile_player_uses_playwright_base():
+    text = _read(AUTO_SYNC_DIR / "Dockerfile.player")
+    assert "playwright/python" in text
+
+
+def test_dockerfile_player_exposes_no_port():
+    text = _read(AUTO_SYNC_DIR / "Dockerfile.player")
+    assert "EXPOSE" not in text
+
+
+def test_futgg_player_sync_is_actually_one_shot():
+    """Guards the Scheduled Task deployment choice: if this script's
+    __main__ block ever stops being a single crawl_once() call (e.g. grows
+    an outer sleep/repeat loop around it), Dockerfile.player/COOLIFY.md's
+    "one-shot, deploy as a Scheduled Task" guidance silently goes stale.
+    (crawl_once() itself legitimately contains "while True" internally,
+    for retrying a single listing page's pagination - that's not a
+    process-level loop, so this only inspects the __main__ block.)"""
+    text = _read(AUTO_SYNC_DIR / "futgg_player_sync.py")
+    main_block = text.rsplit('if __name__ == "__main__":', 1)[-1]
+    assert "asyncio.run(crawl_once())" in main_block
+    assert "while True" not in main_block
+    assert "asyncio.sleep" not in main_block
+
+
+# ---------------------------------------------------------------------
+# Dockerfile.price
+# ---------------------------------------------------------------------
+
+
+def test_dockerfile_price_runs_bulk_price_sync_not_the_obsolete_per_card_scraper():
+    text = _read(AUTO_SYNC_DIR / "Dockerfile.price")
+    assert re.search(r'CMD\s*\[\s*"python"\s*,\s*"futgg_bulk_price_sync\.py"\s*\]', text)
+    assert "futgg_price_sync.py" not in text
+
+
+def test_dockerfile_price_sets_futgg_bulk_apply():
+    text = _read(AUTO_SYNC_DIR / "Dockerfile.price")
+    assert "FUTGG_BULK_APPLY=true" in text
+
+
+def test_dockerfile_price_uses_playwright_base():
+    # futgg_bulk_price_sync.py loads a real fut.gg page to listen for the
+    # bulk feed requests (r2.fut.gg 403s direct/CORS requests) - needs a
+    # real browser, unlike SBCSync.
+    text = _read(AUTO_SYNC_DIR / "Dockerfile.price")
+    assert "playwright/python" in text
+
+
+def test_dockerfile_price_exposes_no_port():
+    text = _read(AUTO_SYNC_DIR / "Dockerfile.price")
+    assert "EXPOSE" not in text
+
+
+def test_futgg_bulk_price_sync_is_actually_long_running():
+    """Guards the "use it directly, no loop wrapper" deployment choice: if
+    this script ever loses its internal loop, Dockerfile.price/COOLIFY.md's
+    "continuous service" guidance silently goes stale and it needs a
+    wrapper + Scheduled Task instead."""
+    text = _read(AUTO_SYNC_DIR / "futgg_bulk_price_sync.py")
+    assert "asyncio.run(run_forever())" in text
+    assert re.search(r"while True:", text)
+    assert re.search(r"await asyncio\.sleep\(INTERVAL_SECONDS\)", text)
+
+
+# ---------------------------------------------------------------------
+# Dockerfile.sbc
+# ---------------------------------------------------------------------
+
+
+def test_dockerfile_sbc_runs_easysbc_not_the_cloudflare_blocked_futbin_scraper():
+    text = _read(AUTO_SYNC_DIR / "Dockerfile.sbc")
+    assert re.search(r'CMD\s*\[\s*"python"\s*,\s*"easysbc_sbc_sync\.py"\s*\]', text)
+    # futbin_sbc_sync.py may legitimately be mentioned in comments
+    # explaining why it was replaced - it must not appear in a CMD/RUN
+    # instruction actually invoking it.
+    cmd_lines = [line for line in text.splitlines() if line.strip().upper().startswith(("CMD", "RUN"))]
+    assert not any("futbin_sbc_sync.py" in line for line in cmd_lines)
+
+
+def test_dockerfile_sbc_does_not_need_playwright():
+    text = _read(AUTO_SYNC_DIR / "Dockerfile.sbc")
+    assert "FROM python:3.11-slim" in text
+    assert "playwright/python" not in text
+    # Must not invoke the old Xvfb + headed-Chromium entrypoint.
+    assert 'CMD ["/app/docker-entrypoint-sbc.sh"]' not in text
+
+
+def test_dockerfile_sbc_exposes_no_port():
+    text = _read(AUTO_SYNC_DIR / "Dockerfile.sbc")
+    assert "EXPOSE" not in text
+
+
+def test_easysbc_sbc_sync_is_actually_one_shot():
+    """Guards the Scheduled Task deployment choice for SBCSync, same
+    reasoning as the PlayerSync check above."""
+    text = _read(AUTO_SYNC_DIR / "easysbc_sbc_sync.py")
+    assert "asyncio.run(crawl_once())" in text
+    body = text.split('if __name__ == "__main__":')[0]
+    assert "while True" not in body
+
+
+# ---------------------------------------------------------------------
+# docker-compose.yml
+# ---------------------------------------------------------------------
+
+
+def _compose() -> dict:
+    return yaml.safe_load(_read(REPO_ROOT / "docker-compose.yml"))
+
+
+def test_compose_has_no_second_postgres_service():
+    services = _compose()["services"]
+    assert "postgres" not in services
+
+
+def test_compose_drops_the_obsolete_per_card_price_worker():
+    services = _compose()["services"]
+    assert "futgg_price_worker" not in services
+
+
+def test_compose_workers_use_the_dedicated_dockerfiles():
+    services = _compose()["services"]
+    assert services["futgg_player_worker"]["build"]["dockerfile"] == "Dockerfile.player"
+    assert services["futgg_bulk_price_worker"]["build"]["dockerfile"] == "Dockerfile.price"
+    assert services["futgg_sbc_worker"]["build"]["dockerfile"] == "Dockerfile.sbc"
+
+
+def test_compose_workers_expose_no_ports():
+    services = _compose()["services"]
+    for name in (
+        "futgg_player_worker",
+        "futgg_bulk_price_worker",
+        "futgg_sbc_worker",
+        "futgg_sales_worker",
+    ):
+        assert "ports" not in services[name], f"{name} must not expose a port"
+
+
+def test_compose_one_shot_workers_do_not_auto_restart():
+    """restart: "no" for the one-shot workers in local-compose mode -
+    letting Compose's default restart policy apply here would reproduce
+    the exact restart-loop bug this whole change fixes."""
+    services = _compose()["services"]
+    assert services["futgg_player_worker"]["restart"] == "no"
+    assert services["futgg_sbc_worker"]["restart"] == "no"
+
+
+def test_compose_continuous_workers_do_restart():
+    services = _compose()["services"]
+    assert services["futgg_bulk_price_worker"]["restart"] == "unless-stopped"
+    assert services["futgg_sales_worker"]["restart"] == "unless-stopped"
+
+
+def test_compose_workers_use_external_database_url():
+    services = _compose()["services"]
+    for name in ("futgg_player_worker", "futgg_bulk_price_worker", "futgg_sbc_worker"):
+        db_url = services[name]["environment"]["DATABASE_URL"]
+        assert db_url == "${DATABASE_URL}"
+
+
+# ---------------------------------------------------------------------
+# COOLIFY.md exists and names all three resources
+# ---------------------------------------------------------------------
+
+
+def test_coolify_doc_covers_all_three_resources():
+    text = _read(AUTO_SYNC_DIR / "COOLIFY.md")
+    for name in ("PlayerSync", "PriceSync", "SBCSync"):
+        assert name in text
+    for dockerfile in ("Dockerfile.player", "Dockerfile.price", "Dockerfile.sbc"):
+        assert dockerfile in text

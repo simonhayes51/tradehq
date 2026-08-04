@@ -1,53 +1,49 @@
-# Dedicated image for ONLY the SBC worker (futbin_sbc_sync.py). Other
-# Railway services in this repo keep using Nixpacks/Procfile - this file is
-# not the repo-root Dockerfile and must not be picked up by them; the SBC
-# Railway service selects it explicitly via RAILWAY_DOCKERFILE_PATH (see
-# README's "Railway SBC Worker" section).
+# SBCSync - SBC set/challenge collector.
 #
-# FUTBIN's Cloudflare returned HTTP 403 for headless Playwright Chromium but
-# HTTP 200 for the same request under headed Chrome in local testing, so this
-# worker must run headed, which needs a real X display - hence Xvfb.
-FROM mcr.microsoft.com/playwright/python:v1.61.0-noble
+# CANONICAL SCRIPT: easysbc_sbc_sync.py, not futbin_sbc_sync.py.
+#
+# futbin_sbc_sync.py (Playwright + Xvfb, headed Chromium) is confirmed
+# NOT reliably usable: FUTBIN's Cloudflare hard-blocks it from every
+# network origin tested, including a real Railway deployment with Xvfb
+# working correctly right up to the actual page request (immediate HTTP
+# 403 "Just a moment...", a WAF block on IP/network origin - not a
+# solvable JS challenge). See futbin_sbc_sync.py's and easysbc_sbc_sync.
+# py's own module docstrings, and README.md's "SBC collector" sections,
+# for the full history.
+#
+# easysbc_sbc_sync.py replaces it: EasySBC.io's frontend is backed by a
+# plain, unauthenticated JSON API, so this is aiohttp-only - no browser,
+# no Xvfb, no Cloudflare challenge to fight. Its own docstring states the
+# design explicitly: "Same one-shot-per-invocation Cron Job design ... not
+# a permanent worker, no Procfile entry."
+#
+# ONE-SHOT: crawl_once() runs once and exits (same shape as
+# futgg_player_sync.py's crawl_once()). No loop wrapper here, matching
+# the script's own documented Cron Job design and avoiding the exact
+# restart-loop failure mode this repo's PlayerSync worker hit - deploy
+# this as a Coolify Scheduled Task, not a continuous service. See
+# auto_sync/COOLIFY.md.
+#
+# No Playwright needed for this script, so this uses the plain slim
+# Python base (matching backend/Dockerfile's own python:3.11-slim
+# convention) rather than the ~1.5GB Playwright browser image the other
+# two workers require - smaller image, faster Scheduled Task cold start.
+# docker-entrypoint-sbc.sh (Xvfb bootstrap for the old futbin_sbc_sync.py
+# path) is left in the repo, unused by this Dockerfile, in case FUTBIN's
+# block ever lifts and that path needs revisiting - see README.md.
+#
+# No port: this worker only talks to api-fc26.easysbc.io and
+# DATABASE_URL, never serves HTTP.
 
-ENV PYTHONUNBUFFERED=1
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PIP_NO_CACHE_DIR=1
-ENV DISPLAY=:99
+FROM python:3.11-slim
 
 WORKDIR /app
 
-COPY requirements.txt /app/requirements.txt
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-RUN python -m pip install \
-    --no-cache-dir \
-    --upgrade pip \
-    && python -m pip install \
-    --no-cache-dir \
-    -r /app/requirements.txt
+COPY . .
 
-# Belt-and-suspenders: the official Playwright Python image already ships
-# Chromium plus its Linux system deps (including, in every version checked
-# at the time this was written, Xvfb) - not reinstalled here per the
-# instruction not to duplicate what the base image already provides.
-# These are intentionally NOT hard build failures if either binary is ever
-# missing, so a base-image change surfaces as a clear runtime log line
-# instead of a silent, confusing worker crash.
-RUN command -v Xvfb > /dev/null 2>&1 \
-    && echo "Xvfb present in base image" \
-    || echo "WARNING: Xvfb not found in base image - worker will fail at runtime"
+ENV PYTHONUNBUFFERED=1
 
-COPY . /app
-
-# chmod runs AFTER the full COPY, not before - relying on git to preserve
-# the executable bit through clone/checkout is fragile; this guarantees it
-# regardless.
-RUN chmod +x /app/docker-entrypoint-sbc.sh
-
-# A first real deploy hung indefinitely at container start with `xvfb-run
-# -a ...` as the CMD - not even this worker's own first log line ever
-# appeared, meaning Python never started. xvfb-run's own auto display-
-# number selection (scanning /tmp/.X*-lock files) is a known hang point on
-# restricted/ephemeral container runtimes. docker-entrypoint-sbc.sh starts
-# Xvfb directly on the fixed DISPLAY set above, with its own bounded (~2s)
-# readiness check, avoiding xvfb-run's auto-detection entirely.
-CMD ["/app/docker-entrypoint-sbc.sh"]
+CMD ["python", "easysbc_sbc_sync.py"]
