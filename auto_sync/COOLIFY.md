@@ -1,11 +1,11 @@
 # Deploying `auto_sync` on Coolify
 
-Three independent Dockerfile-based Coolify resources, all built from this
+Four independent Dockerfile-based Coolify resources, all built from this
 same `/auto_sync` base directory, each with its own dedicated Dockerfile.
 None of them expose a port or need a domain - they only ever talk
 outbound (to fut.gg / api-fc26.easysbc.io) and to `DATABASE_URL`.
 
-All three point `DATABASE_URL` at the **same single Postgres database**
+All four point `DATABASE_URL` at the **same single Postgres database**
 used by `backend` - there is no separate auto_sync database. Do not
 create a new Postgres resource for these; use the connection string of
 the Postgres instance already backing the rest of the deployment.
@@ -15,11 +15,17 @@ the Postgres instance already backing the rest of the deployment.
 | PlayerSync | `Dockerfile.player` | `futgg_player_sync.py`       | Scheduled Task |
 | PriceSync  | `Dockerfile.price`  | `futgg_bulk_price_sync.py`   | Continuous service |
 | SBCSync    | `Dockerfile.sbc`    | `easysbc_sbc_sync.py`        | Scheduled Task |
+| SalesSync  | `Dockerfile.sales`  | `futgg_sales_sync.py`        | Continuous service |
 
 The old per-card Playwright price scraper (`futgg_price_sync.py`) and the
 old headed-Chromium FUTBIN SBC scraper (`futbin_sbc_sync.py`) are **not**
-deployed by any of these three resources - see each Dockerfile's header
+deployed by any of these four resources - see each Dockerfile's header
 comment for why.
+
+None of these four services take a command override in Coolify - each
+Dockerfile bakes in the correct default `CMD` for its script, so
+deploying is just "pick the right Dockerfile" (see each resource's
+**Dockerfile** field below).
 
 ---
 
@@ -128,6 +134,50 @@ rediscovery itself starts failing against `FUTGG_DISCOVER_URL` too (i.e.
 the fallback URL itself has gone stale), to find a new one, or for the
 unrelated diagnostic job it was originally built for (classifying *how*
 FUT.GG's price data is served - see its own module docstring).
+
+---
+
+## SalesSync
+
+- **Repository:** `simonhayes51/tradehq`
+- **Branch:** `main`
+- **Resource type:** Continuous Application
+- **Build Pack:** Dockerfile
+- **Base Directory:** `/auto_sync`
+- **Dockerfile:** `/Dockerfile.sales`
+- **Ports:** None
+- **Domain:** None
+- **Command:** no command override needed - `Dockerfile.sales`'s
+  `CMD ["python", "futgg_sales_sync.py"]` is the resource's default
+  command already, run directly with no shell wrapper. Selecting
+  `Dockerfile.sales` as the build Dockerfile is the entire deployment
+  step.
+- **Coolify resource type: continuous service** (Coolify's normal
+  always-on resource, restart policy "always"/"unless stopped" - **not**
+  a Scheduled Task). `futgg_sales_sync.py` is already long-running: its
+  `__main__` calls `run_forever()`, which loads one fut.gg anchor page
+  once and holds it open for the process lifetime, looping internally
+  (select due cards -> batch sign+fetch -> sleep `CYCLE_SLEEP`/
+  `IDLE_SLEEP` -> repeat). This is the same continuous-service shape as
+  PriceSync, not the one-shot shape PlayerSync/SBCSync use - do not
+  redeploy it as a Scheduled Task, and do not add an outer loop wrapper
+  around it (it already has one).
+
+**Required env vars:**
+- `DATABASE_URL` - required, no default. The same shared database
+  `backend`, PriceSync and SBCSync use - no separate SalesSync database.
+
+**Optional tuning env vars** (all have production-safe defaults - see
+`futgg_sales_sync.py`'s own top-of-file constants for current values):
+`FUTGG_GAME_YEAR` (default `26`), `FUTGG_SALES_PLATFORM` (default `ps5`),
+`PLAYWRIGHT_HEADLESS` (default `true`), `PLAYWRIGHT_TIMEOUT_MS` (default
+`45000`), `FUTGG_SALES_BATCH_SIZE` (default `8`), `FUTGG_SALES_BATCH_DELAY`
+(default `0.5`), `FUTGG_SALES_CYCLE_SLEEP` (default `5.0`),
+`FUTGG_SALES_IDLE_SLEEP` (default `30.0`), `FUTGG_SALES_SELECT_LIMIT`
+(default `200`), `FUTGG_SALES_85_PLUS_INTERVAL_MIN` (default `60`),
+`FUTGG_SALES_80_84_INTERVAL_MIN` (default `240`),
+`FUTGG_SALES_75_79_INTERVAL_MIN` (default `720`),
+`FUTGG_SALES_UNDER_75_INTERVAL_MIN` (default `2880`).
 
 ---
 
@@ -244,7 +294,7 @@ rather than assumed ones.
 
 ---
 
-## If PlayerSync/PriceSync/SBCSync already exist as Coolify resources
+## If PlayerSync/PriceSync/SBCSync/SalesSync already exist as Coolify resources
 
 If a `futgg_player_worker`-style resource is already deployed as a
 **normal service** (the restart-loop bug this document fixes), it needs
@@ -269,3 +319,12 @@ A resource already correctly running `futgg_bulk_price_sync.py` via
 `Dockerfile.price` as a continuous service needs no structural change -
 redeploying picks up the new Dockerfile content (explicit
 `FUTGG_BULK_APPLY=true`) with no resource-type change required.
+
+If an existing `futgg_sales_worker`-style resource is currently deployed
+from the **generic** `Dockerfile` with a command override
+(`python futgg_sales_sync.py` set by hand in Coolify rather than baked
+into the image), switch its **Dockerfile** field to `/Dockerfile.sales`
+and **remove the command override** - `Dockerfile.sales` already bakes in
+the correct default `CMD`, so Coolify no longer needs to be told what to
+run. It stays a continuous service; no resource-type change is required,
+only the Dockerfile field and dropping the manual command.

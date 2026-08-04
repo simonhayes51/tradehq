@@ -1,0 +1,38 @@
+# SalesSync - completed-sales history sync via FUT.GG's signed JSON
+# price-access endpoint.
+#
+# futgg_sales_sync.py is already long-running: its __main__ calls
+# run_forever(), which loads one fut.gg page ONCE (the anchor page) and
+# reuses it for the process lifetime, doing sign+fetch batches against it
+# in an internal loop (select due cards -> batch sign+fetch -> sleep
+# CYCLE_SLEEP/IDLE_SLEEP -> repeat). It is NOT one-shot, so this image
+# runs it directly with no extra loop wrapper - wrapping an
+# already-looping process in another sleep loop would just double-sleep
+# for no benefit, and would throw away the warm browser/page the script
+# deliberately keeps alive between cycles.
+#
+# Deploy this as a normal continuous Coolify service (NOT a Scheduled
+# Task) - see auto_sync/COOLIFY.md.
+#
+# Still needs the Playwright base image: sales are fetched by issuing
+# sign+fetch requests via fetch() from INSIDE a live fut.gg page (same
+# transport as PriceSync) - same-origin, so no CORS, with the browser
+# supplying cookies/TLS/sec-fetch-* headers exactly as the real app does.
+# See futgg_sales_sync.py's own module docstring for the full mechanism.
+#
+# No port: this worker only talks to fut.gg and DATABASE_URL, never
+# serves HTTP.
+
+FROM mcr.microsoft.com/playwright/python:v1.61.0-noble
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+ENV PYTHONUNBUFFERED=1
+ENV PLAYWRIGHT_HEADLESS=true
+
+CMD ["python", "futgg_sales_sync.py"]
