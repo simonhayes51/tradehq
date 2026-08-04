@@ -14,11 +14,14 @@
 # Deploy this as a normal continuous Coolify service (NOT a Scheduled
 # Task) - see auto_sync/COOLIFY.md.
 #
-# Still needs the Playwright base image: sales are fetched by issuing
-# sign+fetch requests via fetch() from INSIDE a live fut.gg page (same
-# transport as PriceSync) - same-origin, so no CORS, with the browser
-# supplying cookies/TLS/sec-fetch-* headers exactly as the real app does.
-# See futgg_sales_sync.py's own module docstring for the full mechanism.
+# Still needs the Playwright base image: sales are fetched via one of two
+# transports (FUTGG_SALES_TRANSPORT=signed_fetch|page_capture|auto) - both
+# run entirely inside a live fut.gg browser context, same-origin, so no
+# CORS, with the browser supplying cookies/TLS/sec-fetch-* headers exactly
+# as the real app does. No new dependencies are required for page_capture;
+# it reuses the same Playwright browser/context signed_fetch already
+# needs. See futgg_sales_sync.py's own module docstring for the full
+# mechanism and COOLIFY.md for the env vars.
 #
 # No port: this worker only talks to fut.gg and DATABASE_URL, never
 # serves HTTP.

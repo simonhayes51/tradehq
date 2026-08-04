@@ -209,6 +209,48 @@ FUT.GG's price data is served - see its own module docstring).
   of the normal queue loop and exits - see "One-card diagnostic mode"
   below.
 
+### Transport env vars (added 2026-08-04, page_capture fallback)
+
+Production evidence confirmed Cloudflare serves a JS challenge
+(`cf-mitigated: challenge`) specifically to the `signed_fetch` transport's
+injected `fetch()` calls, while the same data loads fine when a real
+player page requests it during its own hydration - see
+[`CLOUDFLARE_403_INVESTIGATION.md`](./CLOUDFLARE_403_INVESTIGATION.md).
+The worker now supports a second, slower-but-unblocked transport
+(`page_capture`) and an automatic fallback mode between the two.
+
+- **`FUTGG_SALES_TRANSPORT` - recommended production setting: `auto`
+  (also the default if unset).** `signed_fetch` pins the original
+  injected-fetch transport; `page_capture` pins the new passive-capture
+  transport; `auto` starts on `signed_fetch` and switches the whole
+  process to `page_capture` once the circuit breaker sees a run of
+  challenge/403-shaped failures, logging the switch
+  (`TRANSPORT SWITCH: signed_fetch -> page_capture (...)`). It does not
+  retry the blocked transport every cycle - only after
+  `FUTGG_SALES_SIGNED_REPROBE_MINUTES` does it try a small `signed_fetch`
+  sample again, switching back only if that sample succeeds.
+- `FUTGG_SALES_PAGE_CONCURRENCY` - default `2`, **recommended initial
+  value `2`**. Number of Playwright pages `page_capture` runs
+  concurrently, each reused across many cards (one navigation per card,
+  no injected `fetch()`). Keep this conservative - `page_capture` is a
+  reliability fallback, not a throughput match for `signed_fetch`; see
+  "page_capture throughput" below before raising it.
+- `FUTGG_SALES_PAGE_TIMEOUT_MS` - default `15000`. Per-card `page.goto()`
+  timeout (`wait_until="domcontentloaded"`, not full page load). A card
+  that doesn't respond within this window is treated as failed and never
+  advanced, same as any other failure.
+- `FUTGG_SALES_PAGE_SETTLE_MS` - default `4000`. How long to wait after
+  `domcontentloaded` for the page's own hydration to fire its
+  player-prices request, before giving up on that card. This is the
+  dominant cost per card - lowering it risks missing a slow-hydrating
+  page's response; raising it slows every card down for a rarely-needed
+  margin.
+- `FUTGG_SALES_SIGNED_REPROBE_MINUTES` - default `60`. In `auto` mode,
+  how long to stay parked on `page_capture` before trying a small
+  `signed_fetch` sample again. Deliberately long, not immediate - a
+  Cloudflare challenge is not something that clears itself in seconds,
+  and reprobing too eagerly just burns another sample of failures.
+
 ### One-card diagnostic mode (item 9)
 
 Test a single known card inside Coolify without touching the whole queue
@@ -216,7 +258,15 @@ Test a single known card inside Coolify without touching the whole queue
 manual run, or run locally against the same `DATABASE_URL`:
 
 ```bash
+# signed_fetch (original transport)
 FUTGG_SALES_DIAGNOSTIC_CARD_ID=84131117 FUTGG_SALES_APPLY=false \
+FUTGG_SALES_TRANSPORT=signed_fetch \
+DATABASE_URL=postgresql://... python futgg_sales_sync.py
+
+# page_capture (Cloudflare fallback - the exact command to confirm this
+# transport works against a currently-403ing card)
+FUTGG_SALES_DIAGNOSTIC_CARD_ID=84131117 FUTGG_SALES_APPLY=false \
+FUTGG_SALES_TRANSPORT=page_capture \
 DATABASE_URL=postgresql://... python futgg_sales_sync.py
 ```
 
@@ -224,31 +274,83 @@ DATABASE_URL=postgresql://... python futgg_sales_sync.py
 PriceSync's `FUTGG_DISCOVER_URL` uses) - substitute any real card id you
 want to test, ideally one currently failing in production logs.
 
-**Expected output on a successful fetch** (timestamps/exact values will
-differ):
+**Expected output on a successful `signed_fetch` fetch** (timestamps/exact
+values will differ):
 ```
 ... WARNING ========================================================================
-... WARNING FUTGG_SALES_DIAGNOSTIC_CARD_ID=84131117 - single-card diagnostic mode, apply=False
+... WARNING FUTGG_SALES_DIAGNOSTIC_CARD_ID=84131117 - single-card diagnostic mode, transport=signed_fetch apply=False
 ... WARNING ========================================================================
-... INFO DIAGNOSTIC: card=84131117 name='Eric Garcia' rating=84 next_sales_due_at=None (never_read=True)
+... INFO DIAGNOSTIC: card=84131117 name='Eric Garcia' rating=84 next_sales_due_at=None (never_read=True) source_url=https://www.fut.gg/players/84131117-eric-garcia/26-84131117/
 ... INFO DIAGNOSTIC: anchor page loaded: https://www.fut.gg/players/...
 ... INFO DIAGNOSTIC: card=84131117 SUCCESS: 12 completed auction(s) currentPrice=51000 signStatus=200 dataStatus=200 dataContentType='application/json; charset=utf-8' expiresIn=120 signedUrlAbsolute=False signedUrlOrigin='https://www.fut.gg' sameOriginAsPage=True hasVerifyParam=True
 ... INFO DIAGNOSTIC: would-apply summary: ok=1 failed=0 sales_seen=12 (FUTGG_SALES_APPLY=False - NOT written - dry run)
 ... WARNING ========================================================================
-... WARNING DIAGNOSTIC MODE complete for card=84131117: ok=True
+... WARNING DIAGNOSTIC MODE complete for card=84131117: ok=True transport=signed_fetch
 ... WARNING ========================================================================
 ```
-Exit code `0`. **On the currently-reported failure** the same run instead
-logs a `sales fetch failed card=... error=data_403 signStatus=200
-dataStatus=403 dataContentType=... signedUrlAbsolute=... signedUrlOrigin=...
-sameOriginAsPage=... hasVerifyParam=...` line (see "Diagnosing the 403"
-below for what to read off it) and exits `1`.
+**Expected output on a successful `page_capture` fetch** (this is the
+transport confirmed to work against the same card `signed_fetch` gets
+challenged on):
+```
+... WARNING ========================================================================
+... WARNING FUTGG_SALES_DIAGNOSTIC_CARD_ID=84131117 - single-card diagnostic mode, transport=page_capture apply=False
+... WARNING ========================================================================
+... INFO DIAGNOSTIC: card=84131117 name='Eric Garcia' rating=84 next_sales_due_at=None (never_read=True) source_url=https://www.fut.gg/players/84131117-eric-garcia/26-84131117/
+... INFO DIAGNOSTIC: navigating to card's own source_url: https://www.fut.gg/players/84131117-eric-garcia/26-84131117/
+... INFO DIAGNOSTIC: card=84131117 SUCCESS [page_capture]: 12 completed auction(s) currentPrice=51000 dataStatus=200 dataContentType='application/json; charset=utf-8' elapsed=2.84s (cloudflare_challenged=False)
+... INFO DIAGNOSTIC: would-apply summary: ok=1 failed=0 sales_seen=12 (FUTGG_SALES_APPLY=False - NOT written - dry run)
+... WARNING ========================================================================
+... WARNING DIAGNOSTIC MODE complete for card=84131117: ok=True transport=page_capture
+... WARNING ========================================================================
+```
+Exit code `0` on either transport. **On a Cloudflare-blocked run** (e.g.
+`signed_fetch` against a card Cloudflare is currently challenging) the
+same run instead logs a `sales fetch failed [signed_fetch] card=...
+error=data_403 ...` (or, for `page_capture`, `sales fetch failed
+[page_capture] card=... error=page_capture_challenge dataStatus=403
+cfMitigated=challenge ...`) line and a `DIAGNOSTIC: card=... FAILED
+[...]: ... (cloudflare_challenged=True)` summary, and exits `1`.
 
-### Diagnosing the 403 (root cause - needs confirming from real logs)
+### page_capture throughput (estimated, not live-measured)
+
+This sandbox has no network access to fut.gg, so these are **estimates**
+derived from the transport's own timeout/settle-time env vars, not a
+measured benchmark - confirm with the one-card diagnostic command above
+and a short real run before relying on them. Per card, `page_capture`
+pays one real navigation (`domcontentloaded`, typically ~1-2s for a
+fut.gg player page) plus the fixed `FUTGG_SALES_PAGE_SETTLE_MS` hydration
+wait (default 4s) - roughly **5-6s per card per concurrent page worker**:
+
+| `FUTGG_SALES_PAGE_CONCURRENCY` | ~cards/min | Full backfill (10,064 cards) | 85+ band maintenance (3,272 cards) |
+|---|---|---|---|
+| 1 | ~10-12 | ~14-17 hours | ~4.5-5.5 hours per full pass |
+| 2 (recommended) | ~20-24 | ~7-8.5 hours | ~2.3-2.7 hours per full pass |
+| 3 | ~30-36 | ~4.5-5.5 hours | ~1.5-1.8 hours per full pass |
+
+For comparison, `signed_fetch`'s target sustained rate is ~67-109
+cards/min (see `AdaptiveThrottle`'s own docstring in
+`futgg_sales_sync.py`) - `page_capture` is deliberately **not** a
+throughput match for it, only a reliability fallback for whenever
+Cloudflare blocks the faster transport. In `auto` mode this means: while
+parked on `page_capture`, the 85+ band's 60-minute cadence will not be
+hit exactly at concurrency 1-2 (a full pass takes longer than the
+interval), but backfill and coverage still make steady forward progress,
+and every card it reads counts as a genuine read - no synthetic
+advancement, same data-integrity guarantees as `signed_fetch`. Raising
+`FUTGG_SALES_PAGE_CONCURRENCY` above 3 is not recommended without first
+confirming in real logs that Cloudflare isn't reacting to the increased
+concurrent-page volume the same way it reacted to `signed_fetch`'s
+request volume.
+
+### Diagnosing the 403 (root cause confirmed; page_capture is the implemented fallback)
 
 Confirmed against real production diagnostics: the 403 body is
 Cloudflare's own `Just a moment...` challenge page, not an application
-response - see
+response, specifically on the `signed_fetch` transport's injected
+`fetch()` calls (`cf-mitigated: challenge` on the data response). The
+`page_capture` transport documented above is the resolution -
+`FUTGG_SALES_TRANSPORT=auto` runs `signed_fetch` until the breaker trips
+on this exact failure shape, then switches automatically. See
 [`CLOUDFLARE_403_INVESTIGATION.md`](./CLOUDFLARE_403_INVESTIGATION.md)
 for the full evidence-based, side-by-side comparison against PriceSync
 (the one currently-working script that also talks to FUT.GG) and exactly

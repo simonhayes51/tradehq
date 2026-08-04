@@ -25,16 +25,45 @@ ago" text that has to be parsed and rounded.
 
 TRANSPORT
 ---------
-Requests are issued by fetch() INSIDE a live fut.gg page. That is the one
-transport proven to work (see futgg_bulk_probe.py): same-origin, so no
-CORS, with the browser supplying cookies, TLS and sec-fetch-* headers
-exactly as the real app does. Crucially the page is loaded ONCE and then
-reused - there is no navigation per card, which is the entire cost the
-old scraper was paying.
+Production evidence (2026-08-04, Hetzner/Coolify) showed that injecting
+fetch() calls against the signed price-access endpoint from an unrelated
+anchor page - even though the fetch runs inside the live fut.gg origin -
+gets served a Cloudflare JS challenge (`cf-mitigated: challenge`) on the
+GET, while the exact same data loads fine when it is requested by a real
+player page's own hydration. PriceSync has never hit this because it only
+ever passively listens to a page's own organic requests; it never
+constructs its own fetch(). This module now supports two transports:
 
-Each batch runs its sign+fetch pairs concurrently inside a single
-page.evaluate via Promise.all, so N cards cost one round trip to the
-browser rather than N.
+  signed_fetch  - the original approach: one anchor page is loaded once
+                  and reused; each batch calls page.evaluate() to run
+                  POST /api/fut/price-access/sign/ then GET <signed url>
+                  concurrently for N cards via Promise.all. Fast, but is
+                  the transport Cloudflare is now seen to challenge.
+
+  page_capture  - navigates to each card's own source_url (the real
+                  player page), attaches a page.on("response", ...)
+                  listener BEFORE navigation, and passively captures that
+                  page's own naturally-triggered request to
+                  /api/fut/player-prices/26/<card-id>/ - no injected
+                  fetch(), no manual call to the sign endpoint. This is
+                  structurally identical to how PriceSync obtains data,
+                  and is the fallback when Cloudflare blocks signed_fetch.
+                  One navigation per card costs more time than
+                  signed_fetch's batched fetch(), so FUTGG_SALES_PAGE_CONCURRENCY
+                  is kept conservative (default 2) to avoid tripping
+                  Cloudflare further.
+
+  auto (default) - starts on signed_fetch; if the circuit breaker sees a
+                  run of challenge/403-shaped failures, the process
+                  switches to page_capture for all subsequent work and
+                  logs the switch. It does not retry signed_fetch every
+                  cycle - only after FUTGG_SALES_SIGNED_REPROBE_MINUTES
+                  has passed does it try a small signed_fetch sample
+                  again, and only switches back if that sample succeeds.
+
+Set FUTGG_SALES_TRANSPORT=signed_fetch|page_capture|auto to control this
+directly; see COOLIFY.md for the recommended production setting and the
+one-card diagnostic command for each transport.
 """
 
 from __future__ import annotations
@@ -44,6 +73,8 @@ import hashlib
 import json
 import logging
 import os
+import re
+import signal
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -131,6 +162,50 @@ CIRCUIT_BREAKER_MIN_SAMPLE = env_int("FUTGG_SALES_CIRCUIT_BREAKER_MIN_SAMPLE", 2
 CIRCUIT_BREAKER_BACKOFF_SECONDS = env_float(
     "FUTGG_SALES_CIRCUIT_BREAKER_BACKOFF_SECONDS", 300.0, minimum=0.0
 )
+
+# ---------------------------------------------------------------------
+# Transport: signed_fetch (the original design) vs page_capture (the
+# Cloudflare-evidenced fallback) - see CLOUDFLARE_403_INVESTIGATION.md
+# and PAGE_CAPTURE_TRANSPORT.md for the full evidence trail. Confirmed in
+# production: signed_fetch's own injected fetch() to the signed data URL
+# gets `cf-mitigated: challenge` + HTTP 403, while the SAME url, when
+# requested by the player page's OWN hydration (exactly what
+# page_capture does instead), succeeds - matching PriceSync's already-
+# working passive-capture approach.
+_VALID_TRANSPORTS = ("signed_fetch", "page_capture", "auto")
+TRANSPORT_MODE = (os.getenv("FUTGG_SALES_TRANSPORT") or "auto").strip().lower()
+if TRANSPORT_MODE not in _VALID_TRANSPORTS:
+    log.warning(
+        "Unknown FUTGG_SALES_TRANSPORT=%r (expected one of %s) - defaulting to auto",
+        TRANSPORT_MODE, _VALID_TRANSPORTS,
+    )
+    TRANSPORT_MODE = "auto"
+
+#: How many player pages to have open (and navigating) at once in
+#: page_capture mode. Conservative by design - each one is a real
+#: navigation to a real page, the exact pattern PriceSync already proves
+#: safe, but concurrency is the one axis that could still look automated
+#: at volume. See COOLIFY.md's "page_capture throughput" section for
+#: measured cards/min at 1/2/3 and backfill-time estimates.
+PAGE_CONCURRENCY = env_int("FUTGG_SALES_PAGE_CONCURRENCY", 2, minimum=1)
+#: Bounded timeout for one card's entire navigate+capture attempt.
+#: Exceeding this counts as a failed fetch (page_capture_timeout) - it
+#: does not hang the worker or the cycle.
+PAGE_TIMEOUT_MS = env_int("FUTGG_SALES_PAGE_TIMEOUT_MS", 15000, minimum=2000)
+#: How long to wait after domcontentloaded for the page's own hydration
+#: to make (and complete) its player-prices request - the same "wait a
+#: bit after the minimum navigation event, not full page load" idiom
+#: PriceSync's HYDRATION_WAIT_MS already uses successfully.
+PAGE_SETTLE_MS = env_int("FUTGG_SALES_PAGE_SETTLE_MS", 4000, minimum=500)
+#: In auto mode, once the circuit breaker has forced a switch to
+#: page_capture, how long to wait before trying a small signed_fetch
+#: probe batch again - deliberately long, so a still-blocked signed
+#: transport isn't re-attempted (and re-failed) every cycle. None of the
+#: real per-cycle traffic uses signed_fetch again until a probe succeeds.
+SIGNED_REPROBE_MINUTES = env_int("FUTGG_SALES_SIGNED_REPROBE_MINUTES", 60, minimum=5)
+#: Sample size for a signed_fetch reprobe - small and cheap, not the
+#: whole due queue.
+SIGNED_REPROBE_SAMPLE = env_int("FUTGG_SALES_SIGNED_REPROBE_SAMPLE", 5, minimum=1)
 
 #: Sales refresh cadence by rating.
 #
@@ -229,6 +304,59 @@ def circuit_breaker_tripped(stats: dict[str, Any]) -> bool:
     if attempted < CIRCUIT_BREAKER_MIN_SAMPLE:
         return False
     return (stats["failed"] / attempted) >= CIRCUIT_BREAKER_THRESHOLD
+
+
+# ---------------------------------------------------------------------
+# Transport state (auto mode only)
+# ---------------------------------------------------------------------
+#
+# Mutated only when TRANSPORT_MODE == "auto". Pinned modes
+# (signed_fetch/page_capture) never touch this - _active_transport is
+# set once at import and never switched. A plain module-level global
+# rather than a class: this script already uses the same pattern for
+# PriceSync's PLAYER_URL-equivalent state, and there is exactly one
+# process-wide transport decision to track, not a collection of them.
+_active_transport: str = "page_capture" if TRANSPORT_MODE == "page_capture" else "signed_fetch"
+_next_signed_reprobe_at: datetime | None = None
+
+
+def current_transport() -> str:
+    return _active_transport
+
+
+def switch_to_page_capture(reason: str) -> None:
+    """Called when the circuit breaker trips on signed_fetch in auto
+    mode (item 4). Schedules the next reprobe SIGNED_REPROBE_MINUTES out
+    - deliberately not immediate, so a still-blocked signed transport
+    isn't re-attempted (and re-failed) every cycle (item 4: "do not keep
+    retrying the blocked signed transport every cycle")."""
+    global _active_transport, _next_signed_reprobe_at
+    if _active_transport != "page_capture":
+        log.warning(
+            "TRANSPORT SWITCH: signed_fetch -> page_capture (%s). Next "
+            "signed_fetch reprobe in %d minutes.",
+            reason, SIGNED_REPROBE_MINUTES,
+        )
+    _active_transport = "page_capture"
+    _next_signed_reprobe_at = datetime.now(timezone.utc) + timedelta(minutes=SIGNED_REPROBE_MINUTES)
+
+
+def switch_to_signed_fetch(reason: str) -> None:
+    global _active_transport, _next_signed_reprobe_at
+    if _active_transport != "signed_fetch":
+        log.warning("TRANSPORT SWITCH: page_capture -> signed_fetch (%s).", reason)
+    _active_transport = "signed_fetch"
+    _next_signed_reprobe_at = None
+
+
+def signed_reprobe_due() -> bool:
+    """True once it's time to try a small signed_fetch probe batch again
+    while parked on page_capture (auto mode only)."""
+    if TRANSPORT_MODE != "auto" or _active_transport != "page_capture":
+        return False
+    if _next_signed_reprobe_at is None:
+        return False
+    return datetime.now(timezone.utc) >= _next_signed_reprobe_at
 
 
 def sales_interval_minutes(rating: int | None) -> int:
@@ -429,6 +557,160 @@ ON CONFLICT (source_fingerprint) DO NOTHING
 """
 
 
+# =============================================================================
+# page_capture transport - the Cloudflare-evidenced fallback
+# =============================================================================
+#
+# signed_fetch (_FETCH_SCRIPT above) works by INJECTING our own fetch()
+# calls for cards the page never actually navigated to - confirmed in
+# production to draw a Cloudflare challenge (`cf-mitigated: challenge`,
+# HTTP 403) on the signed data URL, even though POST /price-access/sign/
+# itself succeeds. page_capture instead does exactly what PriceSync
+# already proves works from the same server: navigate to the CARD'S OWN
+# player page and passively capture whatever that page's own hydration
+# naturally requests - no sign call issued by us, no fetch() injected by
+# us, nothing here that isn't also true of a real user viewing that page.
+#
+# See CLOUDFLARE_403_INVESTIGATION.md for the full evidence trail.
+
+#: Matches .../api/fut/player-prices/<gameYear>/<cardId>/... - anchored
+#: with the trailing slash after the id specifically so card 123's
+#: response can never substring-match card 1234's URL.
+_PLAYER_PRICES_URL_RE = re.compile(r"/api/fut/player-prices/(\d+)/(\d+)/")
+
+
+def _card_id_from_player_prices_url(url: str) -> int | None:
+    """Confirms a captured response actually belongs to the requested
+    card (item 3: "confirm the captured response belongs to the exact
+    requested card") - parses the real card id out of the URL path
+    itself rather than trusting a substring match."""
+    match = _PLAYER_PRICES_URL_RE.search(url)
+    if not match:
+        return None
+    try:
+        return int(match.group(2))
+    except ValueError:
+        return None
+
+
+def _player_prices_url_marker(card_id: int) -> str:
+    return f"/api/fut/player-prices/{GAME_YEAR}/{card_id}/"
+
+
+async def fetch_via_page_capture(
+    page, card_id: int, url: str, *, diagnostic: bool = False
+) -> dict[str, Any]:
+    """Navigate to `url` (the card's OWN player page) and passively
+    capture whatever that page's own hydration naturally requests to
+    /api/fut/player-prices/<gameYear>/<card_id>/ - never calls
+    /api/fut/price-access/sign/ ourselves, never injects a fetch() for
+    the sales endpoint (item 3). Returns the same result shape
+    apply_batch_results() already expects from signed_fetch:
+    {"eaId": ..., "completedAuctions": [...], "currentPrice": ...} on
+    success, {"eaId": ..., "error": "..."} on any failure - so both
+    transports feed the exact same data-integrity logic.
+
+    The response listener is attached immediately before navigation and
+    ALWAYS removed in a `finally` before returning (item 3: "remove
+    listeners cleanly between cards so responses cannot leak across
+    cards") - a page reused for the next card starts with zero
+    listeners left over from this one.
+    """
+    marker = _player_prices_url_marker(card_id)
+    captured: dict[str, Any] = {}
+    pending: list[asyncio.Task] = []
+
+    async def read(response) -> None:
+        try:
+            headers = await response.all_headers()
+            captured["status"] = response.status
+            captured["cf_mitigated"] = headers.get("cf-mitigated")
+            captured["content_type"] = headers.get("content-type", "")
+            body = await response.body()
+            if response.status == 200:
+                try:
+                    captured["payload"] = json.loads(body)
+                except Exception:
+                    captured["parse_error"] = True
+            elif diagnostic:
+                try:
+                    captured["body_preview"] = body[:500].decode("utf-8", errors="replace")
+                except Exception:
+                    pass
+        except Exception:
+            log.warning("page_capture: failed reading response for card=%s", card_id, exc_info=True)
+
+    def on_response(response) -> None:
+        if marker not in response.url:
+            return
+        # Belt-and-suspenders on top of the marker's own trailing-slash
+        # anchoring: re-parse the id from the URL and reject anything
+        # that doesn't match exactly (item 3).
+        if _card_id_from_player_prices_url(response.url) != card_id:
+            return
+        pending.append(asyncio.ensure_future(read(response)))
+
+    page.on("response", on_response)
+    try:
+        try:
+            await page.goto(url, wait_until="domcontentloaded", timeout=PAGE_TIMEOUT_MS)
+        except Exception as exc:
+            return {"eaId": card_id, "error": f"navigation_failed:{type(exc).__name__}"}
+
+        # Same idiom as PriceSync's HYDRATION_WAIT_MS: the price request
+        # fires during hydration, after domcontentloaded - minimum wait,
+        # not full page load (item 3).
+        await page.wait_for_timeout(PAGE_SETTLE_MS)
+
+        if pending:
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*pending, return_exceptions=True), timeout=10
+                )
+            except asyncio.TimeoutError:
+                pass
+    finally:
+        page.remove_listener("response", on_response)
+
+    if "payload" not in captured:
+        status = captured.get("status")
+        if captured.get("cf_mitigated") == "challenge":
+            error = "page_capture_challenge"
+        elif status == 403:
+            error = "page_capture_403"
+        elif status is None:
+            error = "page_capture_timeout"
+        elif captured.get("parse_error"):
+            error = "malformed_json"
+        else:
+            error = f"page_capture_status_{status}"
+        result: dict[str, Any] = {"eaId": card_id, "error": error}
+        if diagnostic:
+            result["dataStatus"] = status
+            result["cfMitigated"] = captured.get("cf_mitigated")
+            result["dataContentType"] = captured.get("content_type")
+            if captured.get("body_preview"):
+                result["dataBodyPreview"] = captured["body_preview"]
+        return result
+
+    payload = captured["payload"]
+    if not isinstance(payload, dict) or "data" not in payload:
+        return {"eaId": card_id, "error": "malformed_payload"}
+
+    d = payload.get("data") or {}
+    completed = d.get("completedAuctions")
+    if not isinstance(completed, list):
+        return {"eaId": card_id, "error": "malformed_payload"}
+
+    return {
+        "eaId": card_id,
+        "completedAuctions": completed,
+        "currentPrice": d.get("currentPrice"),
+        "dataStatus": captured.get("status"),
+        "dataContentType": captured.get("content_type"),
+    }
+
+
 async def select_due(conn: asyncpg.Connection) -> list[asyncpg.Record]:
     """Pick the next cards to read.
 
@@ -447,7 +729,7 @@ async def select_due(conn: asyncpg.Connection) -> list[asyncpg.Record]:
     """
     return await conn.fetch(
         """
-        SELECT source_card_id, rating, next_sales_due_at
+        SELECT source_card_id, rating, next_sales_due_at, source_url
         FROM futgg_players
         WHERE is_active
           AND is_tradeable IS DISTINCT FROM FALSE
@@ -569,12 +851,15 @@ async def ensure_schema(conn: asyncpg.Connection) -> None:
 #: block, bot challenge, upstream failure) rather than a genuine
 #: application-level bug (malformed payload, missing signed url). Drives
 #: AdaptiveThrottle, which must react to more than just 429s (item 7) - a
-#: 403 wall or a sign_5xx means "slow down" exactly as a 429 does.
-_THROTTLE_ERROR_MARKERS = ("429", "403", "sign_5", "data_5")
+#: 403 wall or a sign_5xx means "slow down" exactly as a 429 does. Also
+#: what the circuit breaker's auto-transport-switch (item 4) looks for -
+#: "challenge" covers both signed_fetch's challenge_required and
+#: page_capture's page_capture_challenge uniformly.
+_THROTTLE_ERROR_MARKERS = ("429", "403", "sign_5", "data_5", "challenge")
 
 
 def is_throttle_signal(error: str) -> bool:
-    return error == "challenge_required" or any(marker in error for marker in _THROTTLE_ERROR_MARKERS)
+    return any(marker in error for marker in _THROTTLE_ERROR_MARKERS)
 
 
 #: Cap on how many individual failures get a full diagnostic log line per
@@ -585,7 +870,7 @@ def is_throttle_signal(error: str) -> bool:
 MAX_FAILURE_SAMPLE_LOGS_PER_BATCH = 3
 
 
-def log_failure_sample(card_id: int, result: dict[str, Any]) -> None:
+def log_failure_sample(card_id: int, result: dict[str, Any], transport: str = "signed_fetch") -> None:
     """Safe, redacted diagnostic logging for one failed fetch - status
     codes, content-type, origin/shape booleans, and (diagnostic mode
     only) a short, further-redacted body preview. Never the signed URL
@@ -593,8 +878,17 @@ def log_failure_sample(card_id: int, result: dict[str, Any]) -> None:
     browser context - see _FETCH_SCRIPT), never cookies, never a raw
     auth/token value."""
     preview = result.get("dataBodyPreview")
+    if transport == "page_capture":
+        log.warning(
+            "sales fetch failed [page_capture] card=%s error=%s dataStatus=%s "
+            "dataContentType=%r cfMitigated=%s%s",
+            card_id, result.get("error"), result.get("dataStatus"),
+            result.get("dataContentType"), result.get("cfMitigated"),
+            f" bodyPreview={redact_value(preview)!r}" if preview else "",
+        )
+        return
     log.warning(
-        "sales fetch failed card=%s error=%s signStatus=%s dataStatus=%s "
+        "sales fetch failed [signed_fetch] card=%s error=%s signStatus=%s dataStatus=%s "
         "dataContentType=%r challengeRequired=%s expiresIn=%s "
         "signedUrlAbsolute=%s signedUrlOrigin=%s sameOriginAsPage=%s "
         "hasVerifyParam=%s%s",
@@ -627,11 +921,16 @@ async def process_batch(
 
 
 async def apply_batch_results(
-    pool: asyncpg.Pool, rows, results, stats, timers, throttle
+    pool: asyncpg.Pool, rows, results, stats, timers,
+    throttle: "AdaptiveThrottle | None" = None, transport: str = "signed_fetch",
 ) -> None:
     """The non-network half of a batch: given already-fetched `results`
-    (from process_batch's page.evaluate, or a one-card diagnostic run),
-    apply the data-integrity rules and write to the database. Split out
+    (from process_batch's page.evaluate, a page_capture batch, or a
+    one-card diagnostic run), apply the data-integrity rules and write to
+    the database. `throttle` is optional - page_capture's concurrency is
+    controlled by a fixed worker-pool size (PAGE_CONCURRENCY), not
+    AdaptiveThrottle's dynamic batch/delay tuning, so it has nothing to
+    record here. Split out
     so run_diagnostic_card() can reuse the EXACT same write logic - the
     never-advance-on-failure fix and the FUTGG_SALES_APPLY gate - without
     a second, redundant fetch of the same card."""
@@ -658,7 +957,7 @@ async def apply_batch_results(
             stats.setdefault("errors", {})
             stats["errors"][error] = stats["errors"].get(error, 0) + 1
             if logged_failures < MAX_FAILURE_SAMPLE_LOGS_PER_BATCH:
-                log_failure_sample(card_id, result)
+                log_failure_sample(card_id, result, transport=transport)
                 logged_failures += 1
 
             if is_throttle_signal(error):
@@ -697,7 +996,8 @@ async def apply_batch_results(
         # new"), not a failure (item 4).
         updates.append((card_id, sales_interval_minutes(rating), "success"))
 
-    throttle.record(len(rows), throttled)
+    if throttle is not None:
+        throttle.record(len(rows), throttled)
 
     if not APPLY:
         log.info(
@@ -728,6 +1028,119 @@ async def apply_batch_results(
                     )
 
 
+async def process_batch_page_capture(
+    pages: list, pool: asyncpg.Pool, rows, stats, timers,
+    shutdown_event: "asyncio.Event | None" = None, diagnostic: bool = False,
+) -> None:
+    """page_capture's equivalent of process_batch: distributes `rows`
+    across `pages` (PAGE_CONCURRENCY workers, each a real Playwright Page
+    reused across many cards - "reuse one browser/context/page where
+    safe", item 3) via a shared queue, each worker doing sequential
+    navigate+capture+detach through fetch_via_page_capture(). Cards
+    missing a source_url can't be page-captured at all - counted as
+    failed, never advanced, exactly like any other failure."""
+    queue: asyncio.Queue = asyncio.Queue()
+    for row in rows:
+        queue.put_nowait(row)
+
+    results: list[dict[str, Any]] = []
+
+    async def worker(page) -> None:
+        while True:
+            if shutdown_event is not None and shutdown_event.is_set():
+                return
+            try:
+                row = queue.get_nowait()
+            except asyncio.QueueEmpty:
+                return
+            card_id = int(row["source_card_id"])
+            url = row["source_url"]
+            if not url:
+                results.append({"eaId": card_id, "error": "no_source_url"})
+                continue
+            with timers.track("page_capture_fetch"):
+                result = await fetch_via_page_capture(page, card_id, url, diagnostic=diagnostic)
+            results.append(result)
+
+    await asyncio.gather(*(worker(page) for page in pages))
+    await apply_batch_results(pool, rows, results, stats, timers, transport="page_capture")
+
+
+def _mostly_challenge_failures(stats: dict[str, Any]) -> bool:
+    """Whether a cycle's failures look like Cloudflare pushing back
+    (challenge/403/5xx) rather than an unrelated application bug -
+    switching transport only makes sense for the former (item 4)."""
+    errors = stats.get("errors", {})
+    total_failed = stats["failed"]
+    if total_failed == 0:
+        return False
+    challenge_like = sum(count for err, count in errors.items() if is_throttle_signal(err))
+    return (challenge_like / total_failed) >= 0.5
+
+
+async def _reprobe_signed_fetch(
+    signed_page, pool: asyncpg.Pool, sample: list
+) -> None:
+    """A small, cheap signed_fetch sample while parked on page_capture
+    (auto mode only) - not the full due queue, so a still-blocked
+    transport costs almost nothing to keep checking on. Reuses
+    process_batch/apply_batch_results directly, so a successful probe's
+    reads are real, useful work, not thrown away."""
+    if not sample:
+        return
+    log.warning(
+        "auto mode: reprobing signed_fetch with a %d-card sample "
+        "(currently parked on page_capture)", len(sample),
+    )
+    probe_stats = {"ok": 0, "failed": 0, "sales_seen": 0, "batch_errors": 0}
+    probe_throttle = AdaptiveThrottle(len(sample), 0.5)
+    await process_batch(signed_page, pool, sample, probe_stats, StageTimers(), probe_throttle)
+
+    attempted = probe_stats["ok"] + probe_stats["failed"]
+    failure_ratio = (probe_stats["failed"] / attempted) if attempted else 0.0
+    if attempted and failure_ratio < CIRCUIT_BREAKER_THRESHOLD:
+        switch_to_signed_fetch(
+            f"reprobe succeeded: {probe_stats['ok']} ok / {probe_stats['failed']} failed"
+        )
+    else:
+        log.warning(
+            "auto mode: signed_fetch reprobe still failing (%d ok / %d failed) - "
+            "staying on page_capture, next reprobe in %d minutes",
+            probe_stats["ok"], probe_stats["failed"], SIGNED_REPROBE_MINUTES,
+        )
+        switch_to_page_capture("reprobe still failing")
+
+
+async def sleep_or_shutdown(seconds: float, shutdown_event: asyncio.Event) -> bool:
+    """Sleep up to `seconds`, waking immediately if shutdown_event is
+    set. Returns True if shutdown was requested during the wait."""
+    try:
+        await asyncio.wait_for(shutdown_event.wait(), timeout=seconds)
+        return True
+    except asyncio.TimeoutError:
+        return shutdown_event.is_set()
+
+
+def _install_shutdown_handlers(shutdown_event: asyncio.Event) -> None:
+    """SIGTERM/SIGINT both request a graceful stop: the current step
+    (one navigation, one batch) finishes - bounded by PAGE_TIMEOUT_MS/
+    TIMEOUT_MS either way - then the loop exits instead of sleeping out
+    the cycle interval or getting killed mid-write. POSIX-only -
+    falls back to the interpreter's default SIGINT->KeyboardInterrupt
+    handling (still caught in __main__) where unavailable."""
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            loop.add_signal_handler(sig, lambda s=sig: _on_shutdown_signal(s, shutdown_event))
+        except NotImplementedError:
+            pass
+
+
+def _on_shutdown_signal(sig: "signal.Signals", shutdown_event: asyncio.Event) -> None:
+    log.warning("received %s - shutting down after the current step", sig.name)
+    shutdown_event.set()
+
+
 async def run_forever() -> None:
     from playwright.async_api import async_playwright
 
@@ -744,9 +1157,17 @@ async def run_forever() -> None:
     anchor = anchor or "https://www.fut.gg/players/1114-roberto-baggio/26-1114/"
 
     log.info(
-        "%s starting: platform=%s batch=%d select_limit=%d intervals=%s",
-        SCRIPT_VERSION, PLATFORM, BATCH_SIZE, SELECT_LIMIT, SALES_INTERVALS,
+        "%s starting: transport=%s platform=%s batch=%d page_concurrency=%d "
+        "select_limit=%d intervals=%s",
+        SCRIPT_VERSION, TRANSPORT_MODE, PLATFORM, BATCH_SIZE, PAGE_CONCURRENCY,
+        SELECT_LIMIT, SALES_INTERVALS,
     )
+
+    shutdown_event = asyncio.Event()
+    _install_shutdown_handlers(shutdown_event)
+
+    need_signed = TRANSPORT_MODE in ("signed_fetch", "auto")
+    need_page_capture = TRANSPORT_MODE in ("page_capture", "auto")
 
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(
@@ -754,15 +1175,33 @@ async def run_forever() -> None:
         )
         try:
             context = await browser.new_context(user_agent=USER_AGENT, locale="en-GB")
-            page = await context.new_page()
-            # ONE navigation for the entire process lifetime. Everything
-            # after this is fetch() from within the already-loaded page.
-            await page.goto(anchor, wait_until="domcontentloaded", timeout=TIMEOUT_MS)
-            log.info("anchor page loaded: %s", anchor)
+
+            signed_page = None
+            if need_signed:
+                signed_page = await context.new_page()
+                # ONE navigation for the entire process lifetime. Everything
+                # after this is fetch() from within the already-loaded page.
+                await signed_page.goto(anchor, wait_until="domcontentloaded", timeout=TIMEOUT_MS)
+                log.info("anchor page loaded (signed_fetch transport): %s", anchor)
+
+            capture_pages: list = []
+            if need_page_capture:
+                # One Page per PAGE_CONCURRENCY worker slot, opened once
+                # and reused across every card that worker ever handles -
+                # "reuse one browser/context/page where safe" (item 3).
+                # Same shared browser+context as signed_fetch either way,
+                # so a mid-run transport switch (auto mode) never needs a
+                # fresh browser.
+                for _ in range(PAGE_CONCURRENCY):
+                    capture_pages.append(await context.new_page())
+                log.info(
+                    "page_capture transport ready: %d page(s) (FUTGG_SALES_PAGE_CONCURRENCY)",
+                    len(capture_pages),
+                )
 
             throttle = AdaptiveThrottle(BATCH_SIZE, BATCH_DELAY)
 
-            while True:
+            while not shutdown_event.is_set():
                 timers = StageTimers()
                 stats = {"ok": 0, "failed": 0, "sales_seen": 0, "batch_errors": 0}
                 started = time.perf_counter()
@@ -771,54 +1210,104 @@ async def run_forever() -> None:
                     due = await select_due(conn)
                     await report_coverage(conn)
                 if not due:
-                    await asyncio.sleep(IDLE_SLEEP)
+                    if await sleep_or_shutdown(IDLE_SLEEP, shutdown_event):
+                        break
                     continue
 
-                offset = 0
+                if signed_reprobe_due() and signed_page is not None:
+                    sample, due = due[:SIGNED_REPROBE_SAMPLE], due[SIGNED_REPROBE_SAMPLE:]
+                    await _reprobe_signed_fetch(signed_page, pool, sample)
+                    if not due:
+                        await sleep_or_shutdown(CYCLE_SLEEP, shutdown_event)
+                        continue
+
+                transport = current_transport() if TRANSPORT_MODE == "auto" else TRANSPORT_MODE
                 breaker_tripped = False
-                while offset < len(due):
-                    # Size is read per iteration, so a mid-cycle backoff
-                    # takes effect immediately rather than at the next
-                    # cycle.
-                    size = throttle.batch_size
-                    await process_batch(
-                        page, pool, due[offset: offset + size], stats, timers, throttle
-                    )
-                    offset += size
 
-                    if circuit_breaker_tripped(stats):
-                        breaker_tripped = True
-                        log.warning(
-                            "circuit breaker TRIPPED: %d/%d failed (>=%.0f%% threshold) "
-                            "after selecting %d/%d cards this cycle - stopping further "
-                            "selection/marking, backing off %.0fs instead of grinding "
-                            "through the rest of the queue",
-                            stats["failed"], stats["ok"] + stats["failed"],
-                            CIRCUIT_BREAKER_THRESHOLD * 100, offset, len(due),
-                            CIRCUIT_BREAKER_BACKOFF_SECONDS,
+                if transport == "signed_fetch":
+                    offset = 0
+                    while offset < len(due) and not shutdown_event.is_set():
+                        # Size is read per iteration, so a mid-cycle
+                        # backoff takes effect immediately rather than at
+                        # the next cycle.
+                        size = throttle.batch_size
+                        await process_batch(
+                            signed_page, pool, due[offset: offset + size], stats, timers, throttle
                         )
-                        break
+                        offset += size
 
-                    if throttle.delay:
-                        await asyncio.sleep(throttle.delay)
+                        if circuit_breaker_tripped(stats):
+                            breaker_tripped = True
+                            log.warning(
+                                "circuit breaker TRIPPED on signed_fetch: %d/%d failed "
+                                "(>=%.0f%% threshold) after selecting %d/%d cards this "
+                                "cycle - stopping further selection/marking, backing off %.0fs",
+                                stats["failed"], stats["ok"] + stats["failed"],
+                                CIRCUIT_BREAKER_THRESHOLD * 100, offset, len(due),
+                                CIRCUIT_BREAKER_BACKOFF_SECONDS,
+                            )
+                            if TRANSPORT_MODE == "auto" and _mostly_challenge_failures(stats):
+                                switch_to_page_capture(
+                                    f"circuit breaker tripped on signed_fetch "
+                                    f"({stats['failed']}/{stats['ok'] + stats['failed']} "
+                                    f"failed, predominantly Cloudflare-challenge-shaped)"
+                                )
+                            break
+
+                        if throttle.delay:
+                            if await sleep_or_shutdown(throttle.delay, shutdown_event):
+                                break
+                else:
+                    # page_capture - chunked the same way, so the circuit
+                    # breaker can still stop mid-cycle instead of
+                    # grinding through the whole due list (item 6:
+                    # "prevent repeated 200-card failed cycles" applies
+                    # here too, not only to signed_fetch).
+                    chunk_size = max(PAGE_CONCURRENCY, min(CIRCUIT_BREAKER_MIN_SAMPLE, len(due)))
+                    offset = 0
+                    while offset < len(due) and not shutdown_event.is_set():
+                        chunk = due[offset: offset + chunk_size]
+                        await process_batch_page_capture(
+                            capture_pages, pool, chunk, stats, timers,
+                            shutdown_event=shutdown_event,
+                        )
+                        offset += chunk_size
+
+                        if circuit_breaker_tripped(stats):
+                            breaker_tripped = True
+                            log.warning(
+                                "circuit breaker TRIPPED on page_capture: %d/%d failed "
+                                "(>=%.0f%% threshold) after selecting %d/%d cards this "
+                                "cycle - stopping further selection/marking, backing off %.0fs",
+                                stats["failed"], stats["ok"] + stats["failed"],
+                                CIRCUIT_BREAKER_THRESHOLD * 100, offset, len(due),
+                                CIRCUIT_BREAKER_BACKOFF_SECONDS,
+                            )
+                            break
 
                 elapsed = max(time.perf_counter() - started, 0.001)
                 log.info(
-                    "cycle: cards_ok=%d failed=%d sales=%d in %.1fs (%.0f cards/min) "
+                    "cycle[%s]: cards_ok=%d failed=%d sales=%d in %.1fs (%.0f cards/min) "
                     "throttle[%s] errors=%s%s",
-                    stats["ok"], stats["failed"], stats["sales_seen"], elapsed,
+                    transport, stats["ok"], stats["failed"], stats["sales_seen"], elapsed,
                     (stats["ok"] / elapsed) * 60, throttle.describe(),
                     stats.get("errors", {}),
                     " CIRCUIT_BREAKER_TRIPPED" if breaker_tripped else "",
                 )
                 for line in timers.format_lines():
                     log.info(line)
-                await asyncio.sleep(
-                    CIRCUIT_BREAKER_BACKOFF_SECONDS if breaker_tripped else CYCLE_SLEEP
+
+                if shutdown_event.is_set():
+                    break
+                await sleep_or_shutdown(
+                    CIRCUIT_BREAKER_BACKOFF_SECONDS if breaker_tripped else CYCLE_SLEEP,
+                    shutdown_event,
                 )
         finally:
+            log.info("shutting down: closing browser and database pool")
             await browser.close()
             await pool.close()
+    log.info("shutdown complete")
 
 
 # =============================================================================
@@ -938,28 +1427,160 @@ def _attach_network_diagnostics(page, label: str = "NETDIAG") -> list[asyncio.Ta
     return pending
 
 
+async def _run_diagnostic_signed_fetch(pool: asyncpg.Pool, row, card_id: int, anchor: str) -> tuple[bool, dict]:
+    """The original signed_fetch diagnostic path - anchor page + injected
+    fetch() against the sign/data endpoints, with full network
+    diagnostics attached."""
+    from playwright.async_api import async_playwright
+
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch(
+            headless=HEADLESS, args=["--no-sandbox", "--disable-dev-shm-usage"]
+        )
+        try:
+            context = await browser.new_context(user_agent=USER_AGENT, locale="en-GB")
+            page = await context.new_page()
+            await page.goto(anchor, wait_until="domcontentloaded", timeout=TIMEOUT_MS)
+            log.info("DIAGNOSTIC: anchor page loaded: %s", anchor)
+
+            context_diag = await capture_context_diagnostics(context, page)
+            log.info("DIAGNOSTIC: browser/context state: %s", context_diag)
+
+            pending_network_logs = _attach_network_diagnostics(page)
+            results = await page.evaluate(
+                _FETCH_SCRIPT,
+                {
+                    "ids": [card_id], "gameYear": GAME_YEAR, "platform": PLATFORM,
+                    "diagnostic": True,
+                },
+            )
+            # Let every in-flight request/response logging task finish
+            # before the browser (and the CDP connection they depend on)
+            # closes underneath them.
+            if pending_network_logs:
+                await asyncio.wait_for(
+                    asyncio.gather(*pending_network_logs, return_exceptions=True), timeout=15
+                )
+
+            cookies_after = await context.cookies()
+            cf_cookies_after = sorted(
+                {c["name"] for c in cookies_after if _is_cf_cookie(c["name"])}
+            )
+            log.info(
+                "DIAGNOSTIC: cloudflare cookies AFTER request=%s (were %s BEFORE)",
+                cf_cookies_after, context_diag["cloudflare_cookies_present_before_request"],
+            )
+        finally:
+            await browser.close()
+
+    result = (results or [{}])[0]
+    error = result.get("error")
+    if error:
+        log_failure_sample(card_id, result, transport="signed_fetch")
+        log.error("DIAGNOSTIC: card=%d FAILED [signed_fetch]: error=%s", card_id, error)
+        ok = False
+    else:
+        sales = result.get("completedAuctions") or []
+        log.info(
+            "DIAGNOSTIC: card=%d SUCCESS [signed_fetch]: %d completed auction(s) currentPrice=%s "
+            "signStatus=%s dataStatus=%s dataContentType=%r expiresIn=%s "
+            "signedUrlAbsolute=%s signedUrlOrigin=%s sameOriginAsPage=%s "
+            "hasVerifyParam=%s",
+            card_id, len(sales), result.get("currentPrice"),
+            result.get("signStatus"), result.get("dataStatus"), result.get("dataContentType"),
+            result.get("expiresIn"), result.get("signedUrlIsAbsolute"),
+            result.get("signedUrlOrigin"), result.get("sameOriginAsPage"),
+            result.get("signedUrlHasVerifyParam"),
+        )
+        ok = True
+    return ok, results
+
+
+async def _run_diagnostic_page_capture(pool: asyncpg.Pool, row, card_id: int) -> tuple[bool, list]:
+    """page_capture diagnostic path (item 7): navigate to the card's OWN
+    source_url and passively capture its organic player-prices response -
+    no sign call, no injected fetch(). Reports status, auction count,
+    elapsed time, and whether Cloudflare challenged it, exactly as
+    required."""
+    from playwright.async_api import async_playwright
+
+    url = row["source_url"] if row is not None else None
+    if not url:
+        log.error(
+            "DIAGNOSTIC: card=%d has no source_url in futgg_players - "
+            "page_capture needs the card's own player page URL to navigate to",
+            card_id,
+        )
+        return False, [{"eaId": card_id, "error": "no_source_url"}]
+
+    log.info("DIAGNOSTIC: navigating to card's own source_url: %s", url)
+    started = time.perf_counter()
+
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch(
+            headless=HEADLESS, args=["--no-sandbox", "--disable-dev-shm-usage"]
+        )
+        try:
+            context = await browser.new_context(user_agent=USER_AGENT, locale="en-GB")
+            page = await context.new_page()
+            context_diag = await capture_context_diagnostics(context, page)
+            log.info("DIAGNOSTIC: browser/context state: %s", context_diag)
+
+            pending_network_logs = _attach_network_diagnostics(page)
+            result = await fetch_via_page_capture(page, card_id, url, diagnostic=True)
+            if pending_network_logs:
+                await asyncio.wait_for(
+                    asyncio.gather(*pending_network_logs, return_exceptions=True), timeout=15
+                )
+        finally:
+            await browser.close()
+
+    elapsed = time.perf_counter() - started
+    error = result.get("error")
+    if error:
+        log_failure_sample(card_id, result, transport="page_capture")
+        log.error(
+            "DIAGNOSTIC: card=%d FAILED [page_capture]: error=%s dataStatus=%s "
+            "cfMitigated=%s elapsed=%.2fs (cloudflare_challenged=%s)",
+            card_id, error, result.get("dataStatus"), result.get("cfMitigated"), elapsed,
+            result.get("cfMitigated") == "challenge" or error == "page_capture_challenge",
+        )
+        ok = False
+    else:
+        sales = result.get("completedAuctions") or []
+        log.info(
+            "DIAGNOSTIC: card=%d SUCCESS [page_capture]: %d completed auction(s) "
+            "currentPrice=%s dataStatus=%s dataContentType=%r elapsed=%.2fs "
+            "(cloudflare_challenged=False)",
+            card_id, len(sales), result.get("currentPrice"), result.get("dataStatus"),
+            result.get("dataContentType"), elapsed,
+        )
+        ok = True
+    return ok, [result]
+
+
 async def run_diagnostic_card(card_id: int) -> bool:
-    """One-card diagnostic pass (item 9) - test a single known card
+    """One-card diagnostic pass (item 9/7) - test a single known card
     inside Coolify without touching the whole queue:
 
         FUTGG_SALES_DIAGNOSTIC_CARD_ID=<id>
         FUTGG_SALES_APPLY=false
+        FUTGG_SALES_TRANSPORT=page_capture   # or signed_fetch/auto
 
-    Logs full safe diagnostics (see log_failure_sample/_FETCH_SCRIPT's
-    diag fields) regardless of outcome, then applies the exact same
-    write path a real cycle would (apply_batch_results) - so this mode's
-    database behaviour, including the never-advance-on-failure fix, is
-    provably the same code as production, not a reimplementation that
-    could quietly drift from it. With FUTGG_SALES_APPLY=false (the
-    documented pairing above) nothing is written either way. Returns
-    True on a successful fetch, False on a failure or an unknown card.
+    Logs full safe diagnostics regardless of outcome, then applies the
+    exact same write path a real cycle would (apply_batch_results) - so
+    this mode's database behaviour, including the never-advance-on-
+    failure fix, is provably the same code as production, not a
+    reimplementation that could quietly drift from it. With
+    FUTGG_SALES_APPLY=false (the documented pairing above) nothing is
+    written either way. Returns True on a successful fetch, False on a
+    failure or an unknown card.
     """
-    from playwright.async_api import async_playwright
-
     log.warning("=" * 72)
     log.warning(
-        "FUTGG_SALES_DIAGNOSTIC_CARD_ID=%d - single-card diagnostic mode, apply=%s",
-        card_id, APPLY,
+        "FUTGG_SALES_DIAGNOSTIC_CARD_ID=%d - single-card diagnostic mode, "
+        "transport=%s apply=%s",
+        card_id, TRANSPORT_MODE, APPLY,
     )
     log.warning("=" * 72)
 
@@ -969,7 +1590,7 @@ async def run_diagnostic_card(card_id: int) -> bool:
             await ensure_schema(conn)
             row = await conn.fetchrow(
                 """
-                SELECT source_card_id, rating, name, next_sales_due_at
+                SELECT source_card_id, rating, name, next_sales_due_at, source_url
                 FROM futgg_players WHERE source_card_id = $1
                 """,
                 card_id,
@@ -990,77 +1611,23 @@ async def run_diagnostic_card(card_id: int) -> bool:
             return False
 
         log.info(
-            "DIAGNOSTIC: card=%d name=%r rating=%s next_sales_due_at=%s (never_read=%s)",
+            "DIAGNOSTIC: card=%d name=%r rating=%s next_sales_due_at=%s (never_read=%s) source_url=%s",
             card_id, row["name"], row["rating"], row["next_sales_due_at"],
-            row["next_sales_due_at"] is None,
+            row["next_sales_due_at"] is None, row["source_url"],
         )
 
         anchor = anchor or "https://www.fut.gg/players/1114-roberto-baggio/26-1114/"
 
-        async with async_playwright() as playwright:
-            browser = await playwright.chromium.launch(
-                headless=HEADLESS, args=["--no-sandbox", "--disable-dev-shm-usage"]
-            )
-            try:
-                context = await browser.new_context(user_agent=USER_AGENT, locale="en-GB")
-                page = await context.new_page()
-                await page.goto(anchor, wait_until="domcontentloaded", timeout=TIMEOUT_MS)
-                log.info("DIAGNOSTIC: anchor page loaded: %s", anchor)
-
-                context_diag = await capture_context_diagnostics(context, page)
-                log.info("DIAGNOSTIC: browser/context state: %s", context_diag)
-
-                pending_network_logs = _attach_network_diagnostics(page)
-                results = await page.evaluate(
-                    _FETCH_SCRIPT,
-                    {
-                        "ids": [card_id], "gameYear": GAME_YEAR, "platform": PLATFORM,
-                        "diagnostic": True,
-                    },
-                )
-                # Let every in-flight request/response logging task
-                # finish before the browser (and the CDP connection they
-                # depend on) closes underneath them.
-                if pending_network_logs:
-                    await asyncio.wait_for(
-                        asyncio.gather(*pending_network_logs, return_exceptions=True), timeout=15
-                    )
-
-                cookies_after = await context.cookies()
-                cf_cookies_after = sorted(
-                    {c["name"] for c in cookies_after if _is_cf_cookie(c["name"])}
-                )
-                log.info(
-                    "DIAGNOSTIC: cloudflare cookies AFTER request=%s (were %s BEFORE)",
-                    cf_cookies_after, context_diag["cloudflare_cookies_present_before_request"],
-                )
-            finally:
-                await browser.close()
-
-        result = (results or [{}])[0]
-        error = result.get("error")
-        if error:
-            log_failure_sample(card_id, result)
-            log.error("DIAGNOSTIC: card=%d FAILED: error=%s", card_id, error)
-            ok = False
+        if TRANSPORT_MODE == "page_capture":
+            ok, results = await _run_diagnostic_page_capture(pool, row, card_id)
         else:
-            sales = result.get("completedAuctions") or []
-            log.info(
-                "DIAGNOSTIC: card=%d SUCCESS: %d completed auction(s) currentPrice=%s "
-                "signStatus=%s dataStatus=%s dataContentType=%r expiresIn=%s "
-                "signedUrlAbsolute=%s signedUrlOrigin=%s sameOriginAsPage=%s "
-                "hasVerifyParam=%s",
-                card_id, len(sales), result.get("currentPrice"),
-                result.get("signStatus"), result.get("dataStatus"), result.get("dataContentType"),
-                result.get("expiresIn"), result.get("signedUrlIsAbsolute"),
-                result.get("signedUrlOrigin"), result.get("sameOriginAsPage"),
-                result.get("signedUrlHasVerifyParam"),
-            )
-            ok = True
+            ok, results = await _run_diagnostic_signed_fetch(pool, row, card_id, anchor)
 
         stats = {"ok": 0, "failed": 0, "sales_seen": 0, "batch_errors": 0}
-        throttle = AdaptiveThrottle(1, 0.0)
-        await apply_batch_results(pool, [row], results, stats, StageTimers(), throttle)
+        await apply_batch_results(
+            pool, [row], results, stats, StageTimers(),
+            transport="page_capture" if TRANSPORT_MODE == "page_capture" else "signed_fetch",
+        )
         log.info(
             "DIAGNOSTIC: would-apply summary: ok=%d failed=%d sales_seen=%d "
             "(FUTGG_SALES_APPLY=%s - %s)",
@@ -1069,7 +1636,10 @@ async def run_diagnostic_card(card_id: int) -> bool:
         )
 
         log.warning("=" * 72)
-        log.warning("DIAGNOSTIC MODE complete for card=%d: ok=%s", card_id, ok)
+        log.warning(
+            "DIAGNOSTIC MODE complete for card=%d: ok=%s transport=%s",
+            card_id, ok, TRANSPORT_MODE,
+        )
         log.warning("=" * 72)
         return ok
     finally:
