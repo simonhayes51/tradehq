@@ -51,7 +51,7 @@ from typing import Any
 
 import asyncpg
 
-from futgg_instrumentation import StageTimers
+from futgg_instrumentation import StageTimers, redact_value
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("futgg_sales_sync")
@@ -100,6 +100,37 @@ CYCLE_SLEEP = env_float("FUTGG_SALES_CYCLE_SLEEP", 5.0, minimum=0.0)
 IDLE_SLEEP = env_float("FUTGG_SALES_IDLE_SLEEP", 30.0, minimum=5.0)
 #: How many cards to pull per selection pass.
 SELECT_LIMIT = env_int("FUTGG_SALES_SELECT_LIMIT", 200, minimum=1)
+
+#: Write to the database. Default on - matches futgg_bulk_price_sync.py's
+#: FUTGG_BULK_APPLY convention. Set to false for a dry run (e.g. alongside
+#: FUTGG_SALES_DIAGNOSTIC_CARD_ID) where nothing should be written.
+APPLY = env_bool("FUTGG_SALES_APPLY", True)
+
+#: One card's eaId - if set, run a single-card diagnostic pass instead of
+#: the normal queue-driven loop (see run_diagnostic_card()). Meant for
+#: testing inside Coolify without touching the whole queue - combine with
+#: FUTGG_SALES_APPLY=false to guarantee no database write either way.
+DIAGNOSTIC_CARD_ID = (os.getenv("FUTGG_SALES_DIAGNOSTIC_CARD_ID") or "").strip()
+
+#: A previously-read card whose refresh attempt fails gets retried again
+#: soon rather than waiting out its full rating-based interval - but this
+#: must never be confused with a successful read (see sales_interval_minutes,
+#: always >= 5 minutes and rating-tiered) or applied to a NEVER-read card
+#: (which must stay NULL/never_read on failure - see process_batch).
+FAILURE_RETRY_BACKOFF_MINUTES = env_int("FUTGG_SALES_FAILURE_RETRY_BACKOFF_MINUTES", 2, minimum=1)
+
+#: Circuit breaker: if a cycle's running failure ratio reaches this once at
+#: least CIRCUIT_BREAKER_MIN_SAMPLE cards have been attempted, stop
+#: selecting/marking more cards for the rest of the cycle and sleep
+#: CIRCUIT_BREAKER_BACKOFF_SECONDS before the next one, instead of grinding
+#: through the full SELECT_LIMIT queue against a broken endpoint (the
+#: observed production failure: 200 cards/cycle, ~100% failed, every few
+#: seconds).
+CIRCUIT_BREAKER_THRESHOLD = env_float("FUTGG_SALES_CIRCUIT_BREAKER_THRESHOLD", 0.8, minimum=0.0)
+CIRCUIT_BREAKER_MIN_SAMPLE = env_int("FUTGG_SALES_CIRCUIT_BREAKER_MIN_SAMPLE", 20, minimum=1)
+CIRCUIT_BREAKER_BACKOFF_SECONDS = env_float(
+    "FUTGG_SALES_CIRCUIT_BREAKER_BACKOFF_SECONDS", 300.0, minimum=0.0
+)
 
 #: Sales refresh cadence by rating.
 #
@@ -187,6 +218,19 @@ class AdaptiveThrottle:
         return f"batch={self.batch_size} delay={self.delay:.2f}s"
 
 
+def circuit_breaker_tripped(stats: dict[str, Any]) -> bool:
+    """True once a cycle's running failure ratio reaches
+    CIRCUIT_BREAKER_THRESHOLD, but only after at least
+    CIRCUIT_BREAKER_MIN_SAMPLE cards have actually been attempted (item 6)
+    - a single unlucky batch of 8 must not trip a 5-minute backoff; the
+    production incident this guards against was ~100% failed over 200
+    cards, not a blip."""
+    attempted = stats["ok"] + stats["failed"]
+    if attempted < CIRCUIT_BREAKER_MIN_SAMPLE:
+        return False
+    return (stats["failed"] / attempted) >= CIRCUIT_BREAKER_THRESHOLD
+
+
 def sales_interval_minutes(rating: int | None) -> int:
     if rating is None:
         return SALES_INTERVALS["under_75"]
@@ -202,9 +246,33 @@ def sales_interval_minutes(rating: int | None) -> int:
 # The signing + fetch pair, executed inside the page so it is same-origin
 # and carries the browser's own cookies/TLS. Promise.all means a batch of
 # N cards costs ONE round trip to the browser instead of N.
+#
+# Every result also carries a small set of SAFE diagnostic fields (never
+# the signed URL itself, never cookies/tokens) so a live failure can be
+# root-caused from logs instead of guessed at:
+#   signStatus / dataStatus   - HTTP status of each leg
+#   dataContentType           - what the data leg actually served (a WAF
+#                                block page is usually text/html, not json)
+#   expiresIn                 - the signed token's advertised lifetime
+#   challengeRequired         - FUT.GG's own "you got a bot challenge" flag
+#   signedUrlIsAbsolute / signedUrlOrigin / signedUrlPath / sameOriginAsPage
+#                              - whether the signed URL points somewhere
+#                                other than the current page's own origin
+#                                (the query string, which carries the
+#                                verify token, never leaves this scope -
+#                                only origin+path are read out of it)
+#   signedUrlHasVerifyParam   - sanity check that signing actually
+#                                attached a token at all, without ever
+#                                exposing its value
+#   dataBodyPreview           - ONLY populated when `diagnostic` is true
+#                                (the one-card diagnostic mode) - a short
+#                                response-body prefix, further redacted by
+#                                redact_value() on the Python side before
+#                                it's ever logged.
 _FETCH_SCRIPT = """
-async ({ ids, gameYear, platform }) => {
+async ({ ids, gameYear, platform, diagnostic }) => {
     const one = async (eaId) => {
+        const diag = {};
         try {
             const target = `/api/fut/player-prices/${gameYear}/${eaId}/?platform=${platform}`;
             const signRes = await fetch('/api/fut/price-access/sign/', {
@@ -213,26 +281,69 @@ async ({ ids, gameYear, platform }) => {
                 body: JSON.stringify({ url: target }),
                 credentials: 'include',
             });
-            if (!signRes.ok) return { eaId, error: 'sign_' + signRes.status };
+            diag.signStatus = signRes.status;
+            if (!signRes.ok) return { eaId, error: 'sign_' + signRes.status, ...diag };
+
             const signed = await signRes.json();
             const signedUrl = signed && signed.data && signed.data.url;
-            if (!signedUrl) return { eaId, error: 'no_signed_url' };
-            if (signed.data.challengeRequired) return { eaId, error: 'challenge_required' };
+            diag.expiresIn = (signed && signed.data && signed.data.expiresIn != null)
+                ? signed.data.expiresIn : null;
+            diag.challengeRequired = !!(signed && signed.data && signed.data.challengeRequired);
+            if (!signedUrl) return { eaId, error: 'no_signed_url', ...diag };
+
+            diag.signedUrlIsAbsolute = /^https?:\\/\\//i.test(signedUrl);
+            diag.signedUrlHasVerifyParam = signedUrl.indexOf('verify=') !== -1;
+            try {
+                const parsed = new URL(signedUrl, location.href);
+                diag.signedUrlOrigin = parsed.origin;
+                diag.signedUrlPath = parsed.pathname;
+                diag.sameOriginAsPage = parsed.origin === location.origin;
+            } catch (e) {
+                diag.signedUrlOrigin = null;
+                diag.signedUrlPath = null;
+                diag.sameOriginAsPage = null;
+            }
+
+            if (diag.challengeRequired) return { eaId, error: 'challenge_required', ...diag };
 
             const dataRes = await fetch(signedUrl, {
                 headers: { 'accept': 'application/json' },
                 credentials: 'include',
             });
-            if (!dataRes.ok) return { eaId, error: 'data_' + dataRes.status };
-            const payload = await dataRes.json();
-            const d = (payload && payload.data) || {};
+            diag.dataStatus = dataRes.status;
+            diag.dataContentType = dataRes.headers.get('content-type') || '';
+
+            if (!dataRes.ok) {
+                if (diagnostic) {
+                    try { diag.dataBodyPreview = (await dataRes.text()).slice(0, 500); } catch (e) {}
+                }
+                return { eaId, error: 'data_' + dataRes.status, ...diag };
+            }
+
+            let payload;
+            try {
+                payload = await dataRes.json();
+            } catch (e) {
+                if (diagnostic) {
+                    try { diag.dataBodyPreview = (await dataRes.clone().text()).slice(0, 500); } catch (e2) {}
+                }
+                return { eaId, error: 'malformed_json', ...diag };
+            }
+            if (!payload || typeof payload !== 'object' || !('data' in payload)) {
+                if (diagnostic) diag.dataBodyPreview = JSON.stringify(payload).slice(0, 500);
+                return { eaId, error: 'malformed_payload', ...diag };
+            }
+
+            const d = payload.data || {};
+            const completedAuctions = Array.isArray(d.completedAuctions) ? d.completedAuctions : [];
             return {
                 eaId,
-                completedAuctions: d.completedAuctions || [],
-                currentPrice: d.currentPrice || null,
+                completedAuctions,
+                currentPrice: d.currentPrice != null ? d.currentPrice : null,
+                ...diag,
             };
         } catch (e) {
-            return { eaId, error: String(e) };
+            return { eaId, error: 'exception:' + String(e && e.message ? e.message : e), ...diag };
         }
     };
     return await Promise.all(ids.map(one));
@@ -435,6 +546,17 @@ async def ensure_schema(conn: asyncpg.Connection) -> None:
     await conn.execute(
         "ALTER TABLE futgg_players ADD COLUMN IF NOT EXISTS last_sales_status TEXT"
     )
+    # Added for incident recovery: without a timestamp of when
+    # last_sales_status was actually written, a repair after a bad
+    # deploy (like the 2026-08-04 data_403 incident - see COOLIFY.md's
+    # "SalesSync incident repair" section) can only scope "which rows
+    # were touched during the incident" by reverse-engineering it from
+    # next_sales_due_at, which only works for as long as the backoff
+    # constant that wrote it stays unchanged and no later write has
+    # touched the row since. This column makes any future repair exact.
+    await conn.execute(
+        "ALTER TABLE futgg_players ADD COLUMN IF NOT EXISTS last_sales_status_at TIMESTAMPTZ"
+    )
     await conn.execute(
         "CREATE INDEX IF NOT EXISTS futgg_players_sales_due_idx "
         "ON futgg_players (next_sales_due_at) "
@@ -442,16 +564,58 @@ async def ensure_schema(conn: asyncpg.Connection) -> None:
     )
 
 
-async def process_batch(page, pool: asyncpg.Pool, rows, stats, timers, throttle) -> None:
+#: Throttle-worthy error markers - anything that looks like FUT.GG
+#: pushing back on request volume/origin (rate limit, WAF/Cloudflare
+#: block, bot challenge, upstream failure) rather than a genuine
+#: application-level bug (malformed payload, missing signed url). Drives
+#: AdaptiveThrottle, which must react to more than just 429s (item 7) - a
+#: 403 wall or a sign_5xx means "slow down" exactly as a 429 does.
+_THROTTLE_ERROR_MARKERS = ("429", "403", "sign_5", "data_5")
+
+
+def is_throttle_signal(error: str) -> bool:
+    return error == "challenge_required" or any(marker in error for marker in _THROTTLE_ERROR_MARKERS)
+
+
+#: Cap on how many individual failures get a full diagnostic log line per
+#: batch - a 403-everything cycle can fail all 200 cards, and logging
+#: each one in full would be pure noise. stats["errors"] already carries
+#: the full per-cycle count breakdown; this is just enough samples to see
+#: the actual HTTP/shape evidence without flooding the log.
+MAX_FAILURE_SAMPLE_LOGS_PER_BATCH = 3
+
+
+def log_failure_sample(card_id: int, result: dict[str, Any]) -> None:
+    """Safe, redacted diagnostic logging for one failed fetch - status
+    codes, content-type, origin/shape booleans, and (diagnostic mode
+    only) a short, further-redacted body preview. Never the signed URL
+    itself (the query string carrying the verify token never leaves the
+    browser context - see _FETCH_SCRIPT), never cookies, never a raw
+    auth/token value."""
+    preview = result.get("dataBodyPreview")
+    log.warning(
+        "sales fetch failed card=%s error=%s signStatus=%s dataStatus=%s "
+        "dataContentType=%r challengeRequired=%s expiresIn=%s "
+        "signedUrlAbsolute=%s signedUrlOrigin=%s sameOriginAsPage=%s "
+        "hasVerifyParam=%s%s",
+        card_id, result.get("error"), result.get("signStatus"), result.get("dataStatus"),
+        result.get("dataContentType"), result.get("challengeRequired"), result.get("expiresIn"),
+        result.get("signedUrlIsAbsolute"), result.get("signedUrlOrigin"), result.get("sameOriginAsPage"),
+        result.get("signedUrlHasVerifyParam"),
+        f" bodyPreview={redact_value(preview)!r}" if preview else "",
+    )
+
+
+async def process_batch(
+    page, pool: asyncpg.Pool, rows, stats, timers, throttle, diagnostic: bool = False
+) -> None:
     ids = [int(r["source_card_id"]) for r in rows]
-    by_id = {int(r["source_card_id"]): r for r in rows}
-    captured_at = datetime.now(timezone.utc)
 
     with timers.track("fetch_batch"):
         try:
             results = await page.evaluate(
                 _FETCH_SCRIPT,
-                {"ids": ids, "gameYear": GAME_YEAR, "platform": PLATFORM},
+                {"ids": ids, "gameYear": GAME_YEAR, "platform": PLATFORM, "diagnostic": diagnostic},
             )
         except Exception:
             log.warning("batch fetch failed", exc_info=True)
@@ -459,35 +623,89 @@ async def process_batch(page, pool: asyncpg.Pool, rows, stats, timers, throttle)
             throttle.record(len(ids), len(ids))
             return
 
+    await apply_batch_results(pool, rows, results, stats, timers, throttle)
+
+
+async def apply_batch_results(
+    pool: asyncpg.Pool, rows, results, stats, timers, throttle
+) -> None:
+    """The non-network half of a batch: given already-fetched `results`
+    (from process_batch's page.evaluate, or a one-card diagnostic run),
+    apply the data-integrity rules and write to the database. Split out
+    so run_diagnostic_card() can reuse the EXACT same write logic - the
+    never-advance-on-failure fix and the FUTGG_SALES_APPLY gate - without
+    a second, redundant fetch of the same card."""
+    by_id = {int(r["source_card_id"]): r for r in rows}
+    captured_at = datetime.now(timezone.utc)
+
     to_insert: list[tuple] = []
     updates: list[tuple] = []
     throttled = 0
+    logged_failures = 0
     for result in results or []:
         card_id = int(result.get("eaId"))
         row = by_id.get(card_id)
         rating = row["rating"] if row is not None else None
+        # True only for a card that has NEVER had a successful (or even
+        # attempted) read before this batch - see select_due()'s
+        # never-read-first ordering and report_coverage()'s never_read
+        # count, both keyed off next_sales_due_at IS NULL.
+        was_never_read = row is not None and row["next_sales_due_at"] is None
         error = result.get("error")
+
         if error:
             stats["failed"] += 1
             stats.setdefault("errors", {})
             stats["errors"][error] = stats["errors"].get(error, 0) + 1
-            if "429" in error or error == "challenge_required":
-                # Rate-limited, not evaluated. Deliberately leave the
-                # schedule untouched so the card stays due and is retried
-                # once the throttle has adapted - pushing it out would
-                # silently drop cards purely because we asked too fast.
+            if logged_failures < MAX_FAILURE_SAMPLE_LOGS_PER_BATCH:
+                log_failure_sample(card_id, result)
+                logged_failures += 1
+
+            if is_throttle_signal(error):
                 throttled += 1
-            else:
-                updates.append((card_id, 5, f"error:{error}"))
+
+            # DATA-INTEGRITY FIX (item 4): a failed fetch of ANY kind
+            # (data_403, sign_502, challenge_required, network errors,
+            # malformed payloads, ...) must never count as a successful
+            # read. A never-read card (next_sales_due_at IS NULL) must
+            # stay exactly that - NULL - so it stays first in the
+            # backfill queue and the never_read coverage count doesn't
+            # fall on a cycle that wrote zero real sales. This is the fix
+            # for the production bug: every failed card used to get
+            # `next_sales_due_at = NOW() + 5 minutes` regardless of
+            # success, which silently converted "never read" into "read
+            # (but failed)" - 200 cards/cycle, exactly matching the
+            # observed never_read drop.
+            #
+            # An already-read card whose refresh attempt failed instead
+            # gets a short, clearly-distinct retry backoff
+            # (FAILURE_RETRY_BACKOFF_MINUTES, always far shorter than any
+            # real sales_interval_minutes() tier) so it's retried soon
+            # without masquerading as completed coverage - last_sales_status
+            # is tagged "error:..." rather than "success" either way.
+            if not was_never_read:
+                updates.append((card_id, FAILURE_RETRY_BACKOFF_MINUTES, f"error:{error}"))
             continue
 
         sale_rows = build_sale_rows(card_id, result.get("completedAuctions") or [], captured_at)
         to_insert.extend(sale_rows)
         stats["ok"] += 1
         stats["sales_seen"] += len(sale_rows)
+        # A genuinely successful fetch counts as read whether or not it
+        # returned any sales this time - zero completedAuctions for a
+        # well-formed response is a real observation ("checked, nothing
+        # new"), not a failure (item 4).
         updates.append((card_id, sales_interval_minutes(rating), "success"))
 
-    throttle.record(len(ids), throttled)
+    throttle.record(len(rows), throttled)
+
+    if not APPLY:
+        log.info(
+            "FUTGG_SALES_APPLY=false - not writing to database. Would have "
+            "inserted %d sale row(s) and updated %d card(s) (sample: %s)",
+            len(to_insert), len(updates), updates[:10],
+        )
+        return
 
     with timers.track("db_write"):
         async with pool.acquire() as conn:
@@ -502,7 +720,8 @@ async def process_batch(page, pool: asyncpg.Pool, rows, stats, timers, throttle)
                         """
                         UPDATE futgg_players
                         SET next_sales_due_at = NOW() + ($2 * INTERVAL '1 minute'),
-                            last_sales_status = $3
+                            last_sales_status = $3,
+                            last_sales_status_at = NOW()
                         WHERE source_card_id = $1
                         """,
                         card_id, minutes, status,
@@ -556,6 +775,7 @@ async def run_forever() -> None:
                     continue
 
                 offset = 0
+                breaker_tripped = False
                 while offset < len(due):
                     # Size is read per iteration, so a mid-cycle backoff
                     # takes effect immediately rather than at the next
@@ -565,30 +785,189 @@ async def run_forever() -> None:
                         page, pool, due[offset: offset + size], stats, timers, throttle
                     )
                     offset += size
+
+                    if circuit_breaker_tripped(stats):
+                        breaker_tripped = True
+                        log.warning(
+                            "circuit breaker TRIPPED: %d/%d failed (>=%.0f%% threshold) "
+                            "after selecting %d/%d cards this cycle - stopping further "
+                            "selection/marking, backing off %.0fs instead of grinding "
+                            "through the rest of the queue",
+                            stats["failed"], stats["ok"] + stats["failed"],
+                            CIRCUIT_BREAKER_THRESHOLD * 100, offset, len(due),
+                            CIRCUIT_BREAKER_BACKOFF_SECONDS,
+                        )
+                        break
+
                     if throttle.delay:
                         await asyncio.sleep(throttle.delay)
 
                 elapsed = max(time.perf_counter() - started, 0.001)
                 log.info(
                     "cycle: cards_ok=%d failed=%d sales=%d in %.1fs (%.0f cards/min) "
-                    "throttle[%s] errors=%s",
+                    "throttle[%s] errors=%s%s",
                     stats["ok"], stats["failed"], stats["sales_seen"], elapsed,
                     (stats["ok"] / elapsed) * 60, throttle.describe(),
                     stats.get("errors", {}),
+                    " CIRCUIT_BREAKER_TRIPPED" if breaker_tripped else "",
                 )
                 for line in timers.format_lines():
                     log.info(line)
-                await asyncio.sleep(CYCLE_SLEEP)
+                await asyncio.sleep(
+                    CIRCUIT_BREAKER_BACKOFF_SECONDS if breaker_tripped else CYCLE_SLEEP
+                )
         finally:
             await browser.close()
             await pool.close()
 
 
+async def run_diagnostic_card(card_id: int) -> bool:
+    """One-card diagnostic pass (item 9) - test a single known card
+    inside Coolify without touching the whole queue:
+
+        FUTGG_SALES_DIAGNOSTIC_CARD_ID=<id>
+        FUTGG_SALES_APPLY=false
+
+    Logs full safe diagnostics (see log_failure_sample/_FETCH_SCRIPT's
+    diag fields) regardless of outcome, then applies the exact same
+    write path a real cycle would (apply_batch_results) - so this mode's
+    database behaviour, including the never-advance-on-failure fix, is
+    provably the same code as production, not a reimplementation that
+    could quietly drift from it. With FUTGG_SALES_APPLY=false (the
+    documented pairing above) nothing is written either way. Returns
+    True on a successful fetch, False on a failure or an unknown card.
+    """
+    from playwright.async_api import async_playwright
+
+    log.warning("=" * 72)
+    log.warning(
+        "FUTGG_SALES_DIAGNOSTIC_CARD_ID=%d - single-card diagnostic mode, apply=%s",
+        card_id, APPLY,
+    )
+    log.warning("=" * 72)
+
+    pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=2, command_timeout=60)
+    try:
+        async with pool.acquire() as conn:
+            await ensure_schema(conn)
+            row = await conn.fetchrow(
+                """
+                SELECT source_card_id, rating, name, next_sales_due_at
+                FROM futgg_players WHERE source_card_id = $1
+                """,
+                card_id,
+            )
+            anchor = await conn.fetchval(
+                """
+                SELECT source_url FROM futgg_players
+                WHERE is_active AND source_url IS NOT NULL
+                ORDER BY rating DESC NULLS LAST LIMIT 1
+                """
+            )
+
+        if row is None:
+            log.error(
+                "DIAGNOSTIC: card_id=%d not found in futgg_players - nothing to test",
+                card_id,
+            )
+            return False
+
+        log.info(
+            "DIAGNOSTIC: card=%d name=%r rating=%s next_sales_due_at=%s (never_read=%s)",
+            card_id, row["name"], row["rating"], row["next_sales_due_at"],
+            row["next_sales_due_at"] is None,
+        )
+
+        anchor = anchor or "https://www.fut.gg/players/1114-roberto-baggio/26-1114/"
+
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch(
+                headless=HEADLESS, args=["--no-sandbox", "--disable-dev-shm-usage"]
+            )
+            try:
+                context = await browser.new_context(user_agent=USER_AGENT, locale="en-GB")
+                page = await context.new_page()
+                await page.goto(anchor, wait_until="domcontentloaded", timeout=TIMEOUT_MS)
+                log.info("DIAGNOSTIC: anchor page loaded: %s", anchor)
+
+                results = await page.evaluate(
+                    _FETCH_SCRIPT,
+                    {
+                        "ids": [card_id], "gameYear": GAME_YEAR, "platform": PLATFORM,
+                        "diagnostic": True,
+                    },
+                )
+            finally:
+                await browser.close()
+
+        result = (results or [{}])[0]
+        error = result.get("error")
+        if error:
+            log_failure_sample(card_id, result)
+            log.error("DIAGNOSTIC: card=%d FAILED: error=%s", card_id, error)
+            ok = False
+        else:
+            sales = result.get("completedAuctions") or []
+            log.info(
+                "DIAGNOSTIC: card=%d SUCCESS: %d completed auction(s) currentPrice=%s "
+                "signStatus=%s dataStatus=%s dataContentType=%r expiresIn=%s "
+                "signedUrlAbsolute=%s signedUrlOrigin=%s sameOriginAsPage=%s "
+                "hasVerifyParam=%s",
+                card_id, len(sales), result.get("currentPrice"),
+                result.get("signStatus"), result.get("dataStatus"), result.get("dataContentType"),
+                result.get("expiresIn"), result.get("signedUrlIsAbsolute"),
+                result.get("signedUrlOrigin"), result.get("sameOriginAsPage"),
+                result.get("signedUrlHasVerifyParam"),
+            )
+            ok = True
+
+        stats = {"ok": 0, "failed": 0, "sales_seen": 0, "batch_errors": 0}
+        throttle = AdaptiveThrottle(1, 0.0)
+        await apply_batch_results(pool, [row], results, stats, StageTimers(), throttle)
+        log.info(
+            "DIAGNOSTIC: would-apply summary: ok=%d failed=%d sales_seen=%d "
+            "(FUTGG_SALES_APPLY=%s - %s)",
+            stats["ok"], stats["failed"], stats["sales_seen"], APPLY,
+            "written to database" if APPLY else "NOT written - dry run",
+        )
+
+        log.warning("=" * 72)
+        log.warning("DIAGNOSTIC MODE complete for card=%d: ok=%s", card_id, ok)
+        log.warning("=" * 72)
+        return ok
+    finally:
+        await pool.close()
+
+
+async def main() -> bool | None:
+    if DIAGNOSTIC_CARD_ID:
+        try:
+            return await run_diagnostic_card(int(DIAGNOSTIC_CARD_ID))
+        except ValueError:
+            log.error(
+                "FUTGG_SALES_DIAGNOSTIC_CARD_ID=%r is not a valid integer card id",
+                DIAGNOSTIC_CARD_ID,
+            )
+            return False
+    await run_forever()
+    return None
+
+
 if __name__ == "__main__":
     try:
-        asyncio.run(run_forever())
+        result = asyncio.run(main())
     except KeyboardInterrupt:
         log.info("stopped")
+        sys.exit(0)
     except Exception:
         log.exception("futgg_sales_sync failed")
-    sys.exit(0)
+        sys.exit(0 if not DIAGNOSTIC_CARD_ID else 1)
+    # run_forever() (result is None) never returns except via
+    # KeyboardInterrupt/exception above, handled the same way as every
+    # other continuous worker in this repo - always exit 0 so a
+    # container-runtime restart policy doesn't treat a clean stop as a
+    # crash. The one-card diagnostic mode DOES have a meaningful
+    # success/failure result, and exits accordingly so it's scriptable.
+    if result is None:
+        sys.exit(0)
+    sys.exit(0 if result else 1)

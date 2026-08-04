@@ -179,6 +179,124 @@ FUT.GG's price data is served - see its own module docstring).
 `FUTGG_SALES_75_79_INTERVAL_MIN` (default `720`),
 `FUTGG_SALES_UNDER_75_INTERVAL_MIN` (default `2880`).
 
+### Data-integrity + resilience env vars (added for the 2026-08-04 incident)
+
+- `FUTGG_SALES_APPLY` - default `true`. Set to `false` for a dry run
+  (nothing written to the database, would-be writes only logged) -
+  combine with `FUTGG_SALES_DIAGNOSTIC_CARD_ID` below for a fully
+  read-only single-card test.
+- `FUTGG_SALES_FAILURE_RETRY_BACKOFF_MINUTES` - default `2`. How long a
+  *previously-read* card whose refresh attempt failed waits before being
+  retried - always far shorter than any real `sales_interval_minutes()`
+  tier (minimum 5), so it's never confused with genuine coverage. A
+  *never-read* card whose attempt fails is never given this backoff at
+  all - it stays exactly `NULL` (still due immediately, still counted in
+  `never_read`) rather than getting any schedule write on failure.
+- `FUTGG_SALES_CIRCUIT_BREAKER_THRESHOLD` - default `0.8` (80%). Once a
+  cycle's running failure ratio reaches this (see
+  `FUTGG_SALES_CIRCUIT_BREAKER_MIN_SAMPLE` below), the cycle stops
+  selecting/marking further cards immediately instead of grinding through
+  the rest of `FUTGG_SALES_SELECT_LIMIT`.
+- `FUTGG_SALES_CIRCUIT_BREAKER_MIN_SAMPLE` - default `20`. Minimum cards
+  attempted before the breaker can trip - a single unlucky 8-card batch
+  must not open it.
+- `FUTGG_SALES_CIRCUIT_BREAKER_BACKOFF_SECONDS` - default `300` (5
+  minutes). Sleep before the next cycle when the breaker trips, instead
+  of the normal `FUTGG_SALES_CYCLE_SLEEP` (5s) - this is what stops the
+  "200-cards-failed every few seconds" pattern from the incident logs.
+- `FUTGG_SALES_DIAGNOSTIC_CARD_ID` - unset by default. When set to a real
+  `source_card_id`, the worker runs a single-card diagnostic pass instead
+  of the normal queue loop and exits - see "One-card diagnostic mode"
+  below.
+
+### One-card diagnostic mode (item 9)
+
+Test a single known card inside Coolify without touching the whole queue
+- e.g. temporarily override this Coolify resource's env/command for one
+manual run, or run locally against the same `DATABASE_URL`:
+
+```bash
+FUTGG_SALES_DIAGNOSTIC_CARD_ID=84131117 FUTGG_SALES_APPLY=false \
+DATABASE_URL=postgresql://... python futgg_sales_sync.py
+```
+
+`84131117` above is Eric Garcia's `source_card_id` (same reference card
+PriceSync's `FUTGG_DISCOVER_URL` uses) - substitute any real card id you
+want to test, ideally one currently failing in production logs.
+
+**Expected output on a successful fetch** (timestamps/exact values will
+differ):
+```
+... WARNING ========================================================================
+... WARNING FUTGG_SALES_DIAGNOSTIC_CARD_ID=84131117 - single-card diagnostic mode, apply=False
+... WARNING ========================================================================
+... INFO DIAGNOSTIC: card=84131117 name='Eric Garcia' rating=84 next_sales_due_at=None (never_read=True)
+... INFO DIAGNOSTIC: anchor page loaded: https://www.fut.gg/players/...
+... INFO DIAGNOSTIC: card=84131117 SUCCESS: 12 completed auction(s) currentPrice=51000 signStatus=200 dataStatus=200 dataContentType='application/json; charset=utf-8' expiresIn=120 signedUrlAbsolute=False signedUrlOrigin='https://www.fut.gg' sameOriginAsPage=True hasVerifyParam=True
+... INFO DIAGNOSTIC: would-apply summary: ok=1 failed=0 sales_seen=12 (FUTGG_SALES_APPLY=False - NOT written - dry run)
+... WARNING ========================================================================
+... WARNING DIAGNOSTIC MODE complete for card=84131117: ok=True
+... WARNING ========================================================================
+```
+Exit code `0`. **On the currently-reported failure** the same run instead
+logs a `sales fetch failed card=... error=data_403 signStatus=200
+dataStatus=403 dataContentType=... signedUrlAbsolute=... signedUrlOrigin=...
+sameOriginAsPage=... hasVerifyParam=...` line (see "Diagnosing the 403"
+below for what to read off it) and exits `1`.
+
+### Diagnosing the 403 (root cause - needs confirming from real logs)
+
+This sandbox has no live network access to fut.gg, so the exact cause
+could not be directly confirmed here - the diagnostic fields above exist
+specifically so the NEXT real failure in Coolify's logs (or a one-card
+diagnostic run) answers it directly instead of guessing. What the code
+review here established and ruled out, and the leading hypothesis:
+
+- **Not a CORS/browser-level block.** `dataRes.status` is being read as a
+  real `403` (not a thrown/opaque response), which only happens for a
+  response the browser actually let through to script - i.e. the request
+  reached FUT.GG's server/edge and it deliberately rejected it. A CORS
+  failure would show up as a caught exception (`error: 'exception:...'`),
+  not `data_403`.
+- **Signing itself works** (per the observed logs, `sign_502` was rare -
+  1 in 200 - while `data_403` was the overwhelming majority), so this is
+  specific to the SECOND request, not a broken sign step.
+- **Leading hypothesis, matching this repo's own established pattern**
+  (FUTBIN's Cloudflare blocking Railway's/a datacentre's network origin
+  while a residential connection worked fine - see `README.md`'s SBC
+  collector history): FUT.GG's data-serving edge may be blocking this
+  Hetzner-hosted Coolify deployment's IP/network origin specifically on
+  the signed data endpoint, while the sign endpoint itself (possibly
+  served by a less-protected path) still succeeds. This is a hypothesis,
+  not a confirmed fact - the new `signedUrlOrigin`/`sameOriginAsPage`
+  fields will show directly whether the signed URL even points at the
+  same origin as the anchor page (a cross-origin CDN target with a
+  stricter WAF would also explain it), and `dataContentType` on a failure
+  will show whether the 403 body is JSON (an application-level rejection)
+  or `text/html` (a WAF/challenge page) - read that off the next real
+  failure or a one-card diagnostic run before assuming which it is.
+- Other angles the diagnostic fields also rule in/out directly: token
+  expiry (`expiresIn`, compared against how long the sign->fetch gap
+  actually was), and a possible new requirement that the requested eaId
+  match the anchor page's own card (test with
+  `FUTGG_SALES_DIAGNOSTIC_CARD_ID` set to the SAME card whose
+  `source_url` is being used as the anchor - if that succeeds while other
+  cards still 403, this is confirmed).
+
+### SalesSync incident repair (2026-08-04 18:56 UTC data_403 incident)
+
+The pre-fix worker wrote `next_sales_due_at = NOW() + 5 minutes` on every
+failed fetch, including `data_403`/`sign_502` - silently converting
+never-read cards into "read (but failed)" and pushing already-read cards'
+due dates out with no genuine sales data. See
+`auto_sync/sql/repair_salessync_20260804_403_incident.sql` for the exact
+repair SQL (preview SELECT, the UPDATE, and a verification SELECT), with
+its own header explaining the scoping caveat in detail. **Not run
+automatically by anything** - read the file, run the preview SELECT
+first, then the UPDATE, against the same database this worker uses.
+Never resets a card whose last recorded attempt was `last_sales_status =
+'success'`.
+
 ---
 
 ## SBCSync

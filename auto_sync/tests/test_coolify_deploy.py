@@ -215,13 +215,17 @@ def test_dockerfile_sales_exposes_no_port():
 def test_futgg_sales_sync_is_actually_long_running():
     """Guards the "use it directly, no loop wrapper" deployment choice,
     same reasoning as the PriceSync check above - if this script's
-    __main__ ever stops calling run_forever(), Dockerfile.sales/
-    COOLIFY.md's "continuous service" guidance silently goes stale."""
+    main()/__main__ ever stops calling run_forever() for the normal
+    (non-diagnostic) path, Dockerfile.sales/COOLIFY.md's "continuous
+    service" guidance silently goes stale. main() also supports a
+    one-card diagnostic short-circuit (FUTGG_SALES_DIAGNOSTIC_CARD_ID) -
+    that's a distinct, explicitly opt-in one-shot mode, not the normal
+    deployment path this check guards."""
     text = _read(AUTO_SYNC_DIR / "futgg_sales_sync.py")
-    assert "asyncio.run(run_forever())" in text
     assert "async def run_forever() -> None:" in text
-    main_block = text.rsplit('if __name__ == "__main__":', 1)[-1]
-    assert "run_forever()" in main_block
+    assert "asyncio.run(main())" in text
+    main_fn_block = text.split("async def main() -> bool | None:", 1)[-1].split("\n\n\n", 1)[0]
+    assert "await run_forever()" in main_fn_block
 
 
 # ---------------------------------------------------------------------
@@ -334,6 +338,41 @@ def test_coolify_doc_documents_sales_setup_exactly():
     assert "**Domain:** None" in sales_section
     assert "DATABASE_URL" in sales_section
     assert "no command override" in sales_section.lower()
+
+
+def test_coolify_doc_documents_sales_integrity_env_vars_and_diagnostic_mode():
+    text = _read(AUTO_SYNC_DIR / "COOLIFY.md")
+    sales_section = text.split("## SalesSync", 1)[1].split("## SBCSync", 1)[0]
+    for var in (
+        "FUTGG_SALES_APPLY",
+        "FUTGG_SALES_FAILURE_RETRY_BACKOFF_MINUTES",
+        "FUTGG_SALES_CIRCUIT_BREAKER_THRESHOLD",
+        "FUTGG_SALES_CIRCUIT_BREAKER_MIN_SAMPLE",
+        "FUTGG_SALES_CIRCUIT_BREAKER_BACKOFF_SECONDS",
+        "FUTGG_SALES_DIAGNOSTIC_CARD_ID",
+    ):
+        assert var in sales_section
+    assert "repair_salessync_20260804_403_incident.sql" in sales_section
+
+
+def test_repair_sql_file_exists_and_is_not_auto_run():
+    sql_path = AUTO_SYNC_DIR / "sql" / "repair_salessync_20260804_403_incident.sql"
+    assert sql_path.exists()
+    text = sql_path.read_text()
+    assert "2026-08-04 18:56:00" in text
+    sql_lines = [
+        line for line in text.splitlines()
+        if line.strip() and not line.strip().startswith("--")
+    ]
+    sql_only = " ".join(sql_lines)
+    assert "last_sales_status LIKE 'error:%'" in sql_only
+    # Every real SQL statement targets error rows only - never a
+    # statement that would match/reset a genuinely successful row.
+    assert "last_sales_status = 'success'" not in sql_only
+    # Not wired into ensure_schema() or any other code path that would
+    # run it automatically - it must only ever be run by hand.
+    for py_file in AUTO_SYNC_DIR.glob("*.py"):
+        assert "repair_salessync_20260804_403_incident" not in py_file.read_text()
 
 
 def test_coolify_doc_documents_sbc_setup_exactly():
