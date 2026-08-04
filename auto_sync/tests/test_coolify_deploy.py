@@ -98,11 +98,13 @@ def test_futgg_bulk_price_sync_is_actually_long_running():
     """Guards the "use it directly, no loop wrapper" deployment choice: if
     this script ever loses its internal loop, Dockerfile.price/COOLIFY.md's
     "continuous service" guidance silently goes stale and it needs a
-    wrapper + Scheduled Task instead."""
+    wrapper + Scheduled Task instead. The loop condition is
+    shutdown_event-aware (graceful SIGTERM/SIGINT), not a bare `while
+    True`, but it is still an unbounded cycle -> sleep -> repeat loop."""
     text = _read(AUTO_SYNC_DIR / "futgg_bulk_price_sync.py")
     assert "asyncio.run(run_forever())" in text
-    assert re.search(r"while True:", text)
-    assert re.search(r"await asyncio\.sleep\(INTERVAL_SECONDS\)", text)
+    assert re.search(r"while not shutdown_event\.is_set\(\):", text)
+    assert re.search(r"await sleep_or_shutdown\(", text)
 
 
 # ---------------------------------------------------------------------
@@ -131,6 +133,48 @@ def test_dockerfile_sbc_does_not_need_playwright():
 def test_dockerfile_sbc_exposes_no_port():
     text = _read(AUTO_SYNC_DIR / "Dockerfile.sbc")
     assert "EXPOSE" not in text
+
+
+def test_dockerfile_sbc_installs_only_its_own_minimal_requirements():
+    """SBCSync must not install the shared requirements.txt (which also
+    pulls in beautifulsoup4/requests/python-dotenv/playwright/tzdata for
+    the Playwright-based workers) - only requirements-sbc.txt
+    (aiohttp + asyncpg), which easysbc_sbc_sync.py + monitoring.py
+    actually import."""
+    text = _read(AUTO_SYNC_DIR / "Dockerfile.sbc")
+    assert "requirements-sbc.txt" in text
+    assert "COPY requirements.txt" not in text
+    reqs = _read(AUTO_SYNC_DIR / "requirements-sbc.txt")
+    pinned = [
+        line.strip() for line in reqs.splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    assert any(p.lower().startswith("aiohttp") for p in pinned)
+    assert any(p.lower().startswith("asyncpg") for p in pinned)
+    assert not any("playwright" in p.lower() for p in pinned)
+    assert not any("beautifulsoup4" in p.lower() for p in pinned)
+
+
+def test_easysbc_sbc_sync_exits_nonzero_on_failure_zero_on_success():
+    """Dockerfile.sbc requires: exit 0 on success, non-zero on a real
+    failure - so Coolify's Scheduled Task run history reflects real
+    outcomes, not just "the container didn't crash"."""
+    text = _read(AUTO_SYNC_DIR / "easysbc_sbc_sync.py")
+    main_block = text.rsplit('if __name__ == "__main__":', 1)[-1]
+    assert "ok = asyncio.run(crawl_once())" in main_block
+    assert "sys.exit(0 if ok else 1)" in main_block
+    assert "async def crawl_once() -> bool:" in text
+
+
+def test_easysbc_sbc_sync_guards_against_overlapping_runs():
+    """A Coolify Scheduled Task run that overlaps the previous one (a
+    slow run still going, or a manual trigger during a scheduled one)
+    must not race writes - guarded by a Postgres advisory lock, same
+    idiom futgg_player_sync.py uses."""
+    text = _read(AUTO_SYNC_DIR / "easysbc_sbc_sync.py")
+    assert "pg_try_advisory_lock" in text
+    assert "pg_advisory_unlock" in text
+    assert "EASYSBC_LOCK_KEY" in text
 
 
 def test_easysbc_sbc_sync_is_actually_one_shot():
@@ -212,3 +256,25 @@ def test_coolify_doc_covers_all_three_resources():
         assert name in text
     for dockerfile in ("Dockerfile.player", "Dockerfile.price", "Dockerfile.sbc"):
         assert dockerfile in text
+
+
+def test_coolify_doc_documents_self_healing_price_env_vars():
+    text = _read(AUTO_SYNC_DIR / "COOLIFY.md")
+    for var in (
+        "FUTGG_DISCOVER_URL",
+        "FUTGG_DISCOVERY_ENABLED",
+        "FUTGG_DISCOVERY_RETRY_COUNT",
+        "FUTGG_DISCOVERY_FAILURE_BACKOFF_SECONDS",
+    ):
+        assert var in text
+
+
+def test_coolify_doc_documents_sbc_setup_exactly():
+    text = _read(AUTO_SYNC_DIR / "COOLIFY.md")
+    sbc_section = text.split("## SBCSync", 1)[1]
+    assert "simonhayes51/tradehq" in sbc_section
+    assert "**Branch:** `main`" in sbc_section
+    assert "Build pack:** Dockerfile" in sbc_section
+    assert "python easysbc_sbc_sync.py" in sbc_section
+    assert "30 6 * * *" in sbc_section
+    assert "EASYSBC_DIAGNOSTIC=true" in sbc_section

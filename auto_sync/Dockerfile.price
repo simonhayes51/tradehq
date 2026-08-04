@@ -27,6 +27,20 @@
 # future edit could silently change. Override to "false" only for a
 # read-only coverage-check run.
 #
+# SELF-HEALING REDISCOVERY: when the normal page stops yielding the feed
+# (FUT.GG restructured something, or the specific card this run picked no
+# longer works), the worker automatically retries against
+# FUTGG_DISCOVER_URL and adopts it going forward on success - see
+# futgg_bulk_price_sync.py's own module docstring for the full mechanism,
+# and auto_sync/COOLIFY.md for the required/optional env vars
+# (FUTGG_DISCOVER_URL, FUTGG_DISCOVERY_ENABLED,
+# FUTGG_DISCOVERY_RETRY_COUNT, FUTGG_DISCOVERY_FAILURE_BACKOFF_SECONDS).
+# FUTGG_DISCOVER_URL is deliberately NOT set here - it must be configured
+# per-deployment in Coolify, not baked into the image; without it,
+# automatic recovery cannot do anything (logged clearly, not silently
+# skipped) and the worker behaves exactly as it did before this feature
+# existed.
+#
 # No port: this worker only talks to fut.gg and DATABASE_URL, never
 # serves HTTP.
 

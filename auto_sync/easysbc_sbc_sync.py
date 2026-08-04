@@ -71,6 +71,18 @@ verify further:
 Do one supervised manual run and read the log/heartbeat output before
 scheduling this as a real Cron Job - same discipline as
 futbin_sbc_sync.py and futbin_card_art_backfill.py.
+
+NO API AUTHENTICATION NEEDED - api-fc26.easysbc.io is a plain,
+unauthenticated public JSON API (confirmed above); the only required
+credential-shaped config this script needs at all is DATABASE_URL, and it
+fails fast with a clear message if that's missing.
+
+DIAGNOSTIC MODE - set EASYSBC_DIAGNOSTIC=true to run a read-only check of
+the listing/detail/challenge endpoints' current response shape (logs raw
+structure, touches no database table) instead of a real sync. Use this
+before trusting a real run if EasySBC's API shape is ever suspected to
+have changed - see run_diagnostic() below - rather than guessing at a
+payload-shape fix blind.
 """
 import os
 import re
@@ -79,6 +91,7 @@ import json
 import random
 import asyncio
 import logging
+import time
 from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any, DefaultDict, Dict, List, Optional, Set, Tuple
@@ -96,7 +109,11 @@ log = logging.getLogger("easysbc_sbc_sync")
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
-    raise RuntimeError("DATABASE_URL is required")
+    raise RuntimeError(
+        "DATABASE_URL is required (the same shared database backend/"
+        "PriceSync use - see auto_sync/COOLIFY.md). No other credential "
+        "is needed: api-fc26.easysbc.io takes no API key/auth."
+    )
 
 API_BASE = "https://api-fc26.easysbc.io"
 LISTING_PAGE_SIZE = int(os.getenv("EASYSBC_LISTING_PAGE_SIZE", "50"))
@@ -105,8 +122,24 @@ MAX_LISTING_PAGES = int(os.getenv("EASYSBC_MAX_LISTING_PAGES", "50"))
 DETAIL_STALE_HOURS = int(os.getenv("SBC_DETAIL_STALE_HOURS", "20"))
 MAX_DETAIL_PAGES = int(os.getenv("SBC_MAX_DETAIL_PAGES", "0"))
 REQUEST_DELAY_SECONDS = float(os.getenv("SBC_REQUEST_DELAY_SECONDS", "1.5"))
-HTTP_TIMEOUT = aiohttp.ClientTimeout(total=15)
+# Explicit connect/read sub-timeouts (not just one blanket `total`), so a
+# hung TCP handshake and a slow-trickling response are distinguished in
+# whichever one actually fires - both still bounded by `total` overall.
+HTTP_TIMEOUT = aiohttp.ClientTimeout(total=20, sock_connect=10, sock_read=15)
 MAX_RETRIES = int(os.getenv("SBC_MAX_RETRIES", "3"))
+
+# Guards against two Coolify Scheduled Task runs overlapping (a run that
+# takes longer than the cron interval, or a manual trigger while the
+# scheduled one is still going) - same pg_try_advisory_lock idiom
+# futgg_player_sync.py uses for the same reason. Distinct key from every
+# other advisory lock in this repo (futgg_player_sync's 7741021, the
+# migration runner's 7741003).
+EASYSBC_LOCK_KEY = int(os.getenv("EASYSBC_LOCK_KEY", "7741042"))
+
+# Read-only diagnostic pass instead of a real sync - see module docstring.
+DIAGNOSTIC_MODE = os.getenv("EASYSBC_DIAGNOSTIC", "false").strip().lower() in (
+    "1", "true", "yes", "on",
+)
 
 # Same UA convention already used for futbin.com elsewhere in this repo
 # (bin_sales_history_sync.py) - kept consistent rather than inventing a
@@ -622,7 +655,14 @@ async def ensure_tables(conn: asyncpg.Connection) -> None:
 async def upsert_event(
     conn: asyncpg.Connection,
     set_fields: Dict[str, Any],
-) -> int:
+) -> Tuple[int, bool]:
+    """Returns (event_id, was_inserted). `xmax = 0` is the standard
+    Postgres idiom for telling an ON CONFLICT DO UPDATE apart from a
+    fresh INSERT within the same statement - xmax is the deleting
+    transaction id on a row version, which is unset (0) only for a row
+    version just created by this INSERT, never for one touched by the
+    DO UPDATE branch. Used to report real inserted/updated counts rather
+    than only a total "sets_found"."""
     row = await conn.fetchrow(
         """
         INSERT INTO market_events (
@@ -635,7 +675,7 @@ async def upsert_event(
             description = EXCLUDED.description,
             payload = EXCLUDED.payload,
             updated_at = now()
-        RETURNING id
+        RETURNING id, (xmax = 0) AS inserted
         """,
         set_fields["external_id"],
         set_fields["title"],
@@ -648,7 +688,7 @@ async def upsert_event(
             f"Could not upsert listing: {set_fields['external_id']}"
         )
 
-    return int(row["id"])
+    return int(row["id"]), bool(row["inserted"])
 
 
 async def get_due_external_ids(
@@ -754,197 +794,329 @@ async def write_detail(
 # Main crawl
 # =============================================================================
 
-async def crawl_once() -> None:
+async def run_diagnostic(session: aiohttp.ClientSession, diag: Diagnostics) -> bool:
+    """Read-only check of the current EasySBC API response shape - no
+    database writes, no advisory lock needed. Use this (EASYSBC_DIAGNOSTIC
+    =true) to confirm the listing/detail/challenge endpoints still return
+    what this script expects BEFORE trusting a real scheduled run, instead
+    of guessing at a payload-shape fix from a production failure alone.
+    Returns True if the listing endpoint returned at least one usable
+    item; the caller uses this as crawl_once()'s success flag for this
+    mode."""
+    log.warning("=" * 72)
+    log.warning("EASYSBC_DIAGNOSTIC MODE - read-only, no database writes")
+    log.warning("=" * 72)
+
+    url = f"{API_BASE}/sbc-sets?page=1&limit={LISTING_PAGE_SIZE}"
+    log.info("GET %s", url)
+    payload = await _get_json_with_retry(session, url, diag)
+    if payload is None:
+        log.error(
+            "DIAGNOSTIC: listing request failed outright (see http_* "
+            "counters below) - cannot say anything about response shape."
+        )
+        log.info("diagnostics: %s", dict(diag))
+        return False
+
+    log.info("DIAGNOSTIC: listing payload type=%s", type(payload).__name__)
+    if isinstance(payload, dict):
+        log.info("DIAGNOSTIC: listing top-level keys=%s", list(payload)[:20])
+
+    items = _extract_list(payload)
+    if items is None:
+        log.error(
+            "DIAGNOSTIC: listing response is neither a bare list nor a "
+            "dict with a recognised data/sets/items/results/docs key - "
+            "_extract_list() needs updating for the new shape. Raw "
+            "payload preview: %s",
+            json.dumps(payload, default=str)[:2000],
+        )
+        return False
+
+    log.info("DIAGNOSTIC: listing yielded %d item(s)", len(items))
+    if not items:
+        log.warning("DIAGNOSTIC: listing returned zero items - nothing further to check.")
+        return False
+
+    first = items[0]
+    log.info(
+        "DIAGNOSTIC: first item type=%s keys=%s",
+        type(first).__name__,
+        list(first)[:30] if isinstance(first, dict) else "<not a dict>",
+    )
+    parsed = parse_set_fields(first) if isinstance(first, dict) else None
+    log.info("DIAGNOSTIC: parse_set_fields() on first item -> %s", parsed)
+
+    set_id = first.get("id") if isinstance(first, dict) else None
+    if set_id is None:
+        log.error("DIAGNOSTIC: first item has no 'id' field - parse_set_fields() will reject every item.")
+        return parsed is not None
+
+    detail_url = f"{API_BASE}/sbc-sets/{set_id}"
+    log.info("GET %s", detail_url)
+    detail_payload = await _get_json_with_retry(session, detail_url, diag)
+    log.info(
+        "DIAGNOSTIC: detail payload type=%s keys=%s",
+        type(detail_payload).__name__,
+        list(detail_payload)[:30] if isinstance(detail_payload, dict) else "<not a dict>",
+    )
+
+    challenges_url = f"{API_BASE}/sbcs?setId={set_id}"
+    log.info("GET %s", challenges_url)
+    challenges_payload = await _get_json_with_retry(session, challenges_url, diag)
+    challenges_list = challenges_payload if isinstance(challenges_payload, list) else _extract_list(challenges_payload)
+    log.info(
+        "DIAGNOSTIC: challenges payload type=%s count=%s",
+        type(challenges_payload).__name__,
+        len(challenges_list) if challenges_list is not None else "?",
+    )
+    if challenges_list:
+        log.info(
+            "DIAGNOSTIC: first challenge keys=%s parsed=%s",
+            list(challenges_list[0]) if isinstance(challenges_list[0], dict) else "<not a dict>",
+            parse_challenge_fields(challenges_list[0], 0) if isinstance(challenges_list[0], dict) else None,
+        )
+
+    log.info("diagnostics: %s", dict(diag))
+    log.warning("=" * 72)
+    log.warning("DIAGNOSTIC MODE complete - no database writes were made")
+    log.warning("=" * 72)
+    return parsed is not None and bool(challenges_list)
+
+
+async def crawl_once() -> bool:
+    """Returns True on a successful run (or a benign no-op, e.g. skipped
+    because another run already holds the advisory lock), False on a
+    genuine failure. __main__ uses this to set the process exit code, so
+    Coolify's own Scheduled Task run history shows failures distinctly -
+    not just the heartbeat table."""
+    started = time.perf_counter()
     log.info("crawl_once() starting")
 
     diag: Diagnostics = defaultdict(int)
 
-    log.info("Connecting to database...")
+    if DIAGNOSTIC_MODE:
+        # Read-only and network-only - no database writes, so no need for
+        # the advisory lock (safe to run alongside a real sync) or even a
+        # DB pool at all.
+        async with aiohttp.ClientSession() as session:
+            return await run_diagnostic(session, diag)
+
+    # Advisory lock, held for the whole run via a dedicated connection -
+    # same pg_try_advisory_lock idiom futgg_player_sync.py uses to stop
+    # two overlapping runs (a slow run still going when the next
+    # scheduled trigger fires, or a manual trigger during a scheduled
+    # one) from racing each other's writes. Non-blocking: a run that
+    # can't get the lock skips immediately rather than queueing behind
+    # the one already in progress.
+    lock_conn = await asyncpg.connect(DATABASE_URL)
+    got_lock = await lock_conn.fetchval("SELECT pg_try_advisory_lock($1)", EASYSBC_LOCK_KEY)
+    if not got_lock:
+        log.warning("Another easysbc_sbc_sync run already holds the lock - skipping this run.")
+        await lock_conn.close()
+        return True
+
     try:
-        pool = await asyncio.wait_for(
-            asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=4),
-            timeout=30,
-        )
-    except asyncio.TimeoutError:
-        log.error("Database pool creation timed out after 30s")
-        raise
-    log.info("Database pool ready")
+        log.info("Connecting to database...")
+        try:
+            pool = await asyncio.wait_for(
+                asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=4),
+                timeout=30,
+            )
+        except asyncio.TimeoutError:
+            log.error("Database pool creation timed out after 30s")
+            raise
+        log.info("Database pool ready")
 
-    sets_found = 0
-    sets_due = 0
-    details_attempted = 0
-    details_written = 0
-    details_failed = 0
+        sets_found = 0
+        sets_inserted = 0
+        sets_updated = 0
+        sets_due = 0
+        sets_skipped_not_due = 0
+        details_attempted = 0
+        details_written = 0
+        details_failed = 0
 
-    try:
-        async with pool.acquire() as conn:
-            log.info("Ensuring tables exist...")
-            await asyncio.wait_for(ensure_tables(conn), timeout=30)
-            log.info("Tables ready")
-
-        nations: List[str] = []
-        leagues: List[str] = []
         try:
             async with pool.acquire() as conn:
-                nations = await fetch_reference_names(conn, "nation")
-                leagues = await fetch_reference_names(conn, "league")
-            log.info(
-                "Loaded %d real nation names and %d real league names "
-                "from fut_players for requirement classification",
-                len(nations),
-                len(leagues),
-            )
-        except Exception as exc:
-            # fut_players may not be populated yet on a fresh database -
-            # degrade to no nation/league tagging rather than failing the
-            # whole SBC crawl over it.
-            log.warning(
-                "Could not load nation/league reference data: %s",
-                exc,
-            )
+                log.info("Ensuring tables exist...")
+                await asyncio.wait_for(ensure_tables(conn), timeout=30)
+                log.info("Tables ready")
 
-        async with aiohttp.ClientSession() as session:
-            log.info("Fetching SBC set listing from %s...", API_BASE)
-            raw_sets = await fetch_listing(session, diag)
-            sets_found = len(raw_sets)
-            log.info("Listing: %d sets found", sets_found)
-
-            if sets_found == 0:
-                await heartbeat(
-                    pool,
-                    "easysbc_sbc_sync",
-                    ok=False,
-                    detail="Zero sets found on listing endpoint",
-                )
-                await alert(
-                    "easysbc_sbc_sync: zero SBC sets found on "
-                    f"{API_BASE}/sbc-sets - check the listing response "
-                    "shape hasn't changed."
-                )
-                return
-
-            parsed_sets: Dict[str, Dict[str, Any]] = {}
-            for raw_set in raw_sets:
-                set_fields = parse_set_fields(raw_set)
-                if set_fields is None:
-                    diag["set_parse_failed"] += 1
-                    continue
-                parsed_sets[set_fields["external_id"]] = set_fields
-
-            event_ids: Dict[str, int] = {}
-            async with pool.acquire() as conn:
-                for external_id, set_fields in parsed_sets.items():
-                    event_ids[external_id] = await upsert_event(
-                        conn, set_fields
-                    )
-
-                due_ids = await get_due_external_ids(conn, event_ids)
-
-            sets_due = len(due_ids)
-            log.info(
-                "SBC details due: %d of %d", sets_due, len(parsed_sets)
-            )
-
-            due_list = [
-                parsed_sets[eid] for eid in due_ids if eid in parsed_sets
-            ]
-
-            if MAX_DETAIL_PAGES > 0:
-                due_list = due_list[:MAX_DETAIL_PAGES]
-
-            for set_fields in due_list:
-                details_attempted += 1
-                external_id = set_fields["external_id"]
-
+            nations: List[str] = []
+            leagues: List[str] = []
+            try:
+                async with pool.acquire() as conn:
+                    nations = await fetch_reference_names(conn, "nation")
+                    leagues = await fetch_reference_names(conn, "league")
                 log.info(
-                    "Loading SBC detail %d/%d: %s (id=%s)",
-                    details_attempted,
-                    len(due_list),
-                    set_fields["title"],
-                    external_id,
+                    "Loaded %d real nation names and %d real league names "
+                    "from fut_players for requirement classification",
+                    len(nations),
+                    len(leagues),
+                )
+            except Exception as exc:
+                # fut_players may not be populated yet on a fresh database -
+                # degrade to no nation/league tagging rather than failing the
+                # whole SBC crawl over it.
+                log.warning(
+                    "Could not load nation/league reference data: %s",
+                    exc,
                 )
 
-                # Listing items look MongoDB-document-shaped and likely
-                # already carry everything, but that isn't confirmed for
-                # every field - fall back to the per-id endpoint only if
-                # something we actually need is missing.
-                if (
-                    set_fields.get("total_cost_coins") is None
-                    and set_fields.get("ends_at") is None
-                ):
-                    detail_raw = await fetch_set_detail(
-                        session, set_fields["set_id"], diag
-                    )
-                    if detail_raw is not None:
-                        refreshed = parse_set_fields(detail_raw)
-                        if refreshed is not None:
-                            set_fields = refreshed
+            async with aiohttp.ClientSession() as session:
+                log.info("Fetching SBC set listing from %s...", API_BASE)
+                raw_sets = await fetch_listing(session, diag)
+                sets_found = len(raw_sets)
+                log.info("Listing: %d sets found", sets_found)
 
-                raw_challenges = await fetch_challenges(
-                    session, set_fields["set_id"], diag
+                if sets_found == 0:
+                    detail = "Zero sets found on listing endpoint"
+                    await heartbeat(pool, "easysbc_sbc_sync", ok=False, detail=detail)
+                    await alert(
+                        "easysbc_sbc_sync: zero SBC sets found on "
+                        f"{API_BASE}/sbc-sets - check the listing response "
+                        "shape hasn't changed (try EASYSBC_DIAGNOSTIC=true)."
+                    )
+                    return False
+
+                parsed_sets: Dict[str, Dict[str, Any]] = {}
+                for raw_set in raw_sets:
+                    set_fields = parse_set_fields(raw_set)
+                    if set_fields is None:
+                        diag["set_parse_failed"] += 1
+                        continue
+                    parsed_sets[set_fields["external_id"]] = set_fields
+
+                event_ids: Dict[str, int] = {}
+                async with pool.acquire() as conn:
+                    for external_id, set_fields in parsed_sets.items():
+                        event_id, was_inserted = await upsert_event(conn, set_fields)
+                        event_ids[external_id] = event_id
+                        if was_inserted:
+                            sets_inserted += 1
+                        else:
+                            sets_updated += 1
+
+                    due_ids = await get_due_external_ids(conn, event_ids)
+
+                sets_due = len(due_ids)
+                sets_skipped_not_due = len(parsed_sets) - sets_due
+                log.info(
+                    "SBC details due: %d of %d (%d unchanged/not yet stale, skipped)",
+                    sets_due, len(parsed_sets), sets_skipped_not_due,
                 )
 
-                if not raw_challenges:
-                    details_failed += 1
-                    diag["zero_challenges"] += 1
-                    log.warning(
-                        "Zero challenges returned for set id=%s (%s)",
-                        external_id,
-                        set_fields["title"],
-                    )
-                    await polite_delay()
-                    continue
-
-                challenges = [
-                    parse_challenge_fields(raw, index)
-                    for index, raw in enumerate(raw_challenges)
+                due_list = [
+                    parsed_sets[eid] for eid in due_ids if eid in parsed_sets
                 ]
 
-                async with pool.acquire() as conn:
-                    await write_detail(
-                        conn,
-                        event_ids[external_id],
-                        set_fields,
-                        challenges,
-                        nations,
-                        leagues,
+                if MAX_DETAIL_PAGES > 0:
+                    due_list = due_list[:MAX_DETAIL_PAGES]
+
+                for set_fields in due_list:
+                    details_attempted += 1
+                    external_id = set_fields["external_id"]
+
+                    log.info(
+                        "Loading SBC detail %d/%d: %s (id=%s)",
+                        details_attempted,
+                        len(due_list),
+                        set_fields["title"],
+                        external_id,
                     )
 
-                details_written += 1
-                await polite_delay()
+                    # Listing items look MongoDB-document-shaped and likely
+                    # already carry everything, but that isn't confirmed for
+                    # every field - fall back to the per-id endpoint only if
+                    # something we actually need is missing.
+                    if (
+                        set_fields.get("total_cost_coins") is None
+                        and set_fields.get("ends_at") is None
+                    ):
+                        detail_raw = await fetch_set_detail(
+                            session, set_fields["set_id"], diag
+                        )
+                        if detail_raw is not None:
+                            refreshed = parse_set_fields(detail_raw)
+                            if refreshed is not None:
+                                set_fields = refreshed
 
-        summary = (
-            f"sets_found={sets_found} sets_due={sets_due} "
-            f"details_attempted={details_attempted} "
-            f"details_written={details_written} "
-            f"details_failed={details_failed} "
-            f"http_429={diag['http_429']} http_5xx={diag['http_5xx']} "
-            f"http_non_200={diag['http_non_200']} "
-            f"http_exceptions={diag['http_exceptions']} "
-            f"json_decode_errors={diag['json_decode_errors']} "
-            f"set_parse_failed={diag['set_parse_failed']} "
-            f"zero_challenges={diag['zero_challenges']}"
-        )
-        log.info("Run complete. %s", summary)
+                    raw_challenges = await fetch_challenges(
+                        session, set_fields["set_id"], diag
+                    )
 
-        ok = details_attempted == 0 or details_written > 0
+                    if not raw_challenges:
+                        details_failed += 1
+                        diag["zero_challenges"] += 1
+                        log.warning(
+                            "Zero challenges returned for set id=%s (%s)",
+                            external_id,
+                            set_fields["title"],
+                        )
+                        await polite_delay()
+                        continue
 
-        await heartbeat(pool, "easysbc_sbc_sync", ok=ok, detail=summary)
+                    challenges = [
+                        parse_challenge_fields(raw, index)
+                        for index, raw in enumerate(raw_challenges)
+                    ]
 
-        if not ok:
-            await alert(f"easysbc_sbc_sync: run failed. {summary}")
+                    async with pool.acquire() as conn:
+                        await write_detail(
+                            conn,
+                            event_ids[external_id],
+                            set_fields,
+                            challenges,
+                            nations,
+                            leagues,
+                        )
 
+                    details_written += 1
+                    await polite_delay()
+
+            elapsed = time.perf_counter() - started
+            summary = (
+                f"elapsed={elapsed:.1f}s "
+                f"sets_found={sets_found} sets_inserted={sets_inserted} "
+                f"sets_updated={sets_updated} sets_due={sets_due} "
+                f"sets_skipped_not_due={sets_skipped_not_due} "
+                f"details_attempted={details_attempted} "
+                f"details_written={details_written} "
+                f"details_failed={details_failed} "
+                f"http_429={diag['http_429']} http_5xx={diag['http_5xx']} "
+                f"http_non_200={diag['http_non_200']} "
+                f"http_exceptions={diag['http_exceptions']} "
+                f"json_decode_errors={diag['json_decode_errors']} "
+                f"set_parse_failed={diag['set_parse_failed']} "
+                f"zero_challenges={diag['zero_challenges']}"
+            )
+            log.info("Run complete. %s", summary)
+
+            ok = details_attempted == 0 or details_written > 0
+
+            await heartbeat(pool, "easysbc_sbc_sync", ok=ok, detail=summary)
+
+            if not ok:
+                await alert(f"easysbc_sbc_sync: run failed. {summary}")
+
+            return ok
+
+        finally:
+            await pool.close()
     finally:
-        await pool.close()
+        await lock_conn.execute("SELECT pg_advisory_unlock($1)", EASYSBC_LOCK_KEY)
+        await lock_conn.close()
 
 
 if __name__ == "__main__":
     log.info("SBC worker process started (easysbc.io API)")
     try:
-        asyncio.run(crawl_once())
+        ok = asyncio.run(crawl_once())
     except KeyboardInterrupt:
         log.warning("SBC sync interrupted")
         sys.exit(130)
     except Exception as exc:
         log.exception("SBC sync crashed: %s", exc)
         sys.exit(1)
+    sys.exit(0 if ok else 1)
