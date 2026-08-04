@@ -121,6 +121,18 @@ DISCORD_USERS_ME = "https://discord.com/api/users/@me"
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 DISCORD_SERVER_ID = os.getenv("DISCORD_SERVER_ID")
 
+# TEMPORARY dev bypass: skips the whole Discord OAuth round-trip (no
+# client id/secret/bot token needed) and every membership/permission gate
+# that depends on it, logging in as a fixed fake Discord identity instead.
+# Hard-fails if ever left on in production - this must never reach a real
+# deploy. Flip DISABLE_DISCORD_AUTH back to unset/"0" to restore normal
+# Discord login.
+DISABLE_DISCORD_AUTH = os.getenv("DISABLE_DISCORD_AUTH", "0") == "1"
+if DISABLE_DISCORD_AUTH and IS_PROD:
+    raise ValueError("DISABLE_DISCORD_AUTH must not be set in production")
+DEV_DISCORD_ID = int(os.getenv("DEV_DISCORD_ID", "1000000000000000001"))
+DEV_USERNAME = os.getenv("DEV_USERNAME", "Dev User")
+
 # Stripe
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
 
@@ -807,6 +819,8 @@ async def get_discord_user_info(access_token: str):
             return await resp.json()
 
 async def get_member_role_names(discord_user_id: str) -> list[str]:
+    if DISABLE_DISCORD_AUTH:
+        return []
     if not (DISCORD_BOT_TOKEN and DISCORD_SERVER_ID):
         return []
     try:
@@ -866,6 +880,8 @@ async def user_has_premium_role(user_id: str) -> bool:
 
 
 async def check_server_membership(discord_id: int | str) -> bool:
+    if DISABLE_DISCORD_AUTH:
+        return True
     if not (DISCORD_BOT_TOKEN and DISCORD_SERVER_ID):
         return True
 
@@ -1064,8 +1080,97 @@ async def health_check(request: Request):
     except Exception as e:
         return {"status": "unhealthy", "database": "disconnected", "error": str(e)}
 
+async def _establish_dashboard_session(
+    request: Request, discord_id: int, username: str, avatar_url: str, global_name: str
+) -> None:
+    """Upserts the user + profile and populates the session - the shared
+    tail end of both a real Discord OAuth callback and the
+    DISABLE_DISCORD_AUTH dev bypass in /api/login."""
+    async with request.app.state.pool.acquire() as conn:
+        if await _table_exists(conn, "user_profiles"):
+            await conn.execute(
+                """
+                INSERT INTO user_profiles (user_id, username, avatar_url, global_name, updated_at)
+                VALUES ($1, $2, $3, $4, NOW())
+                ON CONFLICT (user_id)
+                DO UPDATE SET
+                    username = EXCLUDED.username,
+                    avatar_url = EXCLUDED.avatar_url,
+                    global_name = EXCLUDED.global_name,
+                    updated_at = NOW()
+                """,
+                str(discord_id), username, avatar_url, global_name
+            )
+
+    user_row = None
+    app_user_id = str(discord_id)
+    try:
+        async with request.app.state.pool.acquire() as conn:
+            # Ensure users row exists (core DB uses TEXT ids; simplest is discord_id as string id)
+            user_row = await conn.fetchrow(
+                """
+                INSERT INTO public.users (id, discord_id, username, avatar_url)
+                VALUES ($1, $2, $3, $4)
+                ON CONFLICT (discord_id) DO UPDATE SET
+                    discord_id = EXCLUDED.discord_id,
+                    username = EXCLUDED.username,
+                    avatar_url = EXCLUDED.avatar_url
+                RETURNING id, discord_id, tier, plan, premium_until, roles
+                """,
+                str(discord_id), discord_id, username, avatar_url
+            )
+
+            app_user_id = str(user_row["id"])
+
+            if await _table_exists(conn, "user_profiles"):
+                await conn.execute(
+                    """
+                    INSERT INTO public.user_profiles (user_id, username, avatar_url, global_name, updated_at)
+                    VALUES ($1, $2, $3, $4, NOW())
+                    ON CONFLICT (user_id) DO UPDATE SET
+                        username = EXCLUDED.username,
+                        avatar_url = EXCLUDED.avatar_url,
+                        global_name = EXCLUDED.global_name,
+                        updated_at = NOW()
+                    """,
+                    app_user_id, username, avatar_url, global_name
+                )
+    except Exception as exc:
+        logging.warning("User upsert failed; proceeding with session-only login: %s", exc)
+
+    request.session["user_id"] = app_user_id
+    request.session["discord_id"] = discord_id
+    request.session["username"] = username
+    request.session["avatar_url"] = avatar_url
+    request.session["global_name"] = global_name
+    request.session["user"] = {
+        "id": app_user_id,
+        "discord_id": discord_id,
+        "username": username,
+        "avatar_url": avatar_url,
+        "global_name": global_name,
+        "tier": (user_row.get("tier") if isinstance(user_row, dict) else user_row["tier"])
+        if user_row
+        else None,
+    }
+
+    # Discord roles lookup uses discord_id
+    request.session["roles"] = await get_member_role_names(discord_id)
+
+
 @app.get("/api/login")
-async def login():
+async def login(request: Request):
+    if DISABLE_DISCORD_AUTH:
+        # See DISABLE_DISCORD_AUTH's definition near the top of the file -
+        # skips Discord entirely and logs in as a fixed dev identity.
+        logging.warning(
+            "DISABLE_DISCORD_AUTH is set - bypassing Discord OAuth, logging in as dev identity %s",
+            DEV_DISCORD_ID,
+        )
+        avatar_url = f"https://cdn.discordapp.com/embed/avatars/{DEV_DISCORD_ID % 5}.png"
+        await _establish_dashboard_session(request, DEV_DISCORD_ID, DEV_USERNAME, avatar_url, DEV_USERNAME)
+        return RedirectResponse(f"{FRONTEND_URL}/#/")
+
     state = secrets.token_urlsafe(24)
     OAUTH_STATE[state] = {"flow": "dashboard", "ts": time.time()}
     params = {
@@ -1179,86 +1284,7 @@ async def callback(request: Request):
         )
         global_name = user_data.get('global_name') or user_data.get('username') or "User"
 
-        # Store user profile in database (if table exists)
-        async with request.app.state.pool.acquire() as conn:
-            if await _table_exists(conn, "user_profiles"):
-                await conn.execute(
-                    """
-                    INSERT INTO user_profiles (user_id, username, avatar_url, global_name, updated_at)
-                    VALUES ($1, $2, $3, $4, NOW())
-                    ON CONFLICT (user_id) 
-                    DO UPDATE SET 
-                        username = EXCLUDED.username,
-                        avatar_url = EXCLUDED.avatar_url,
-                        global_name = EXCLUDED.global_name,
-                        updated_at = NOW()
-                    """,
-                    user_id, username, avatar_url, global_name
-                )
-
-               # discord_user_id is the snowflake you already have in `user_id` here
-        discord_user_id = int(user_id)
-        
-                        # --- Upsert user + profile, then set session ---
-        user_row = None
-        app_user_id = str(discord_id)
-        try:
-            async with request.app.state.pool.acquire() as conn:
-                # Ensure users row exists (core DB uses TEXT ids; simplest is discord_id as string id)
-                user_row = await conn.fetchrow(
-                    """
-                    INSERT INTO public.users (id, discord_id, username, avatar_url)
-                    VALUES ($1, $2, $3, $4)
-                    ON CONFLICT (discord_id) DO UPDATE SET 
-                        discord_id = EXCLUDED.discord_id,
-                        username = EXCLUDED.username,
-                        avatar_url = EXCLUDED.avatar_url
-                    RETURNING id, discord_id, tier, plan, premium_until, roles
-                    """,
-                    str(discord_id),   # users.id is TEXT
-                    discord_id,        # users.discord_id is BIGINT
-                    username,          # Add username
-                    avatar_url         # Add avatar_url
-                )
-
-                app_user_id = str(user_row["id"])
-
-                # Upsert user profile (user_profiles.user_id is VARCHAR in your core DB)
-                if await _table_exists(conn, "user_profiles"):
-                    await conn.execute(
-                        """
-                        INSERT INTO public.user_profiles (user_id, username, avatar_url, global_name, updated_at)
-                        VALUES ($1, $2, $3, $4, NOW())
-                        ON CONFLICT (user_id) DO UPDATE SET
-                            username = EXCLUDED.username,
-                            avatar_url = EXCLUDED.avatar_url,
-                            global_name = EXCLUDED.global_name,
-                            updated_at = NOW()
-                        """,
-                        app_user_id, username, avatar_url, global_name
-                    )
-        except Exception as exc:
-            logging.warning("User upsert failed; proceeding with session-only login: %s", exc)
-
-        # Session
-        request.session["user_id"] = app_user_id
-        request.session["discord_id"] = discord_id
-        request.session["username"] = username
-        request.session["avatar_url"] = avatar_url
-        request.session["global_name"] = global_name
-        request.session["user"] = {
-            "id": app_user_id,
-            "discord_id": discord_id,
-            "username": username,
-            "avatar_url": avatar_url,
-            "global_name": global_name,
-            "tier": (user_row.get("tier") if isinstance(user_row, dict) else user_row["tier"])
-            if user_row
-            else None,
-        }
-
-        # Discord roles lookup uses discord_id
-        request.session["roles"] = await get_member_role_names(discord_id)
+        await _establish_dashboard_session(request, discord_id, username, avatar_url, global_name)
 
         return RedirectResponse(f"{FRONTEND_URL}/#/")
 
