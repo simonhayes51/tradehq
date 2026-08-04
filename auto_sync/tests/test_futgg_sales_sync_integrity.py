@@ -755,6 +755,7 @@ class _FakeCapturePage:
         self.goto_calls: list[str] = []
         self.goto_exception: Exception | None = None
         self.responses_to_fire: list = []
+        self.nav_response = None  # what page.goto() itself returns
 
     async def goto(self, url, wait_until="domcontentloaded", timeout=None):
         self.goto_calls.append(url)
@@ -763,6 +764,7 @@ class _FakeCapturePage:
         for response in self.responses_to_fire:
             for cb in list(self._listeners.get("response", [])):
                 cb(response)
+        return self.nav_response
 
     def on(self, event, cb):
         self._listeners.setdefault(event, []).append(cb)
@@ -900,6 +902,42 @@ async def test_page_capture_navigation_failure_does_not_raise(monkeypatch):
 
     assert result["eaId"] == 777
     assert result["error"].startswith("navigation_failed:")
+
+
+@run_async
+async def test_page_capture_distinguishes_nav_level_challenge_from_api_level(monkeypatch):
+    """2026-08-04 finding: a page_capture_timeout could mean either "the
+    API subrequest never fired for some unrelated reason" or "the player
+    page navigation itself was Cloudflare's interstitial, so the real app
+    never ran to make its own request at all" - these need to be
+    distinguishable, not both collapsed into the same opaque timeout."""
+    monkeypatch.setattr(mod, "PAGE_SETTLE_MS", 5)
+    page = _FakeCapturePage()
+    page.nav_response = _FakeCaptureResponse(
+        "https://www.fut.gg/players/x/", status=403,
+        headers={"cf-mitigated": "challenge", "content-type": "text/html; charset=UTF-8"},
+    )
+    page.responses_to_fire = []  # the real app never loaded, so no API subrequest ever fires
+
+    result = await mod.fetch_via_page_capture(page, 888, "https://www.fut.gg/players/x/")
+
+    assert result["error"] == "page_capture_nav_challenge"
+    assert result["navStatus"] == 403
+    assert result["navCfMitigated"] == "challenge"
+
+
+@run_async
+async def test_page_capture_reports_nav_status_even_when_nav_itself_succeeds(monkeypatch):
+    monkeypatch.setattr(mod, "PAGE_SETTLE_MS", 5)
+    page = _FakeCapturePage()
+    page.nav_response = _FakeCaptureResponse("https://www.fut.gg/players/y/", status=200)
+    page.responses_to_fire = []  # page loaded fine, but no API subrequest ever fired regardless
+
+    result = await mod.fetch_via_page_capture(page, 999, "https://www.fut.gg/players/y/")
+
+    assert result["error"] == "page_capture_timeout"
+    assert result["navStatus"] == 200
+    assert result["navCfMitigated"] is None
 
 
 @run_async
