@@ -148,10 +148,9 @@ FUT.GG's price data is served - see its own module docstring).
 - **Ports:** None
 - **Domain:** None
 - **Command:** no command override needed - `Dockerfile.sales`'s
-  `CMD ["python", "futgg_sales_sync.py"]` is the resource's default
-  command already, run directly with no shell wrapper. Selecting
-  `Dockerfile.sales` as the build Dockerfile is the entire deployment
-  step.
+  `CMD ["/app/docker-entrypoint-sales.sh"]` is the resource's default
+  command already. Selecting `Dockerfile.sales` as the build Dockerfile
+  is the entire deployment step.
 - **Coolify resource type: continuous service** (Coolify's normal
   always-on resource, restart policy "always"/"unless stopped" - **not**
   a Scheduled Task). `futgg_sales_sync.py` is already long-running: its
@@ -163,6 +162,42 @@ FUT.GG's price data is served - see its own module docstring).
   redeploy it as a Scheduled Task, and do not add an outer loop wrapper
   around it (it already has one).
 
+### Headed Chromium via Xvfb (2026-08-04 headless-detection finding)
+
+Production diagnostics on a real deployed instance confirmed the actual
+root cause of the Cloudflare 403: it is **not** about which transport
+requests `/api/fut/player-prices/26/<id>/?verify=...` (the `page_capture`
+fallback above was built on that premise and it turned out to be wrong) -
+a `page_capture` diagnostic run got challenged identically to
+`signed_fetch`, on a fully organic page navigation. What differed was
+that the browser's own `navigator.userAgentData` (User-Agent Client
+Hints) leaked `HeadlessChrome` in that worker's own outbound Google
+Analytics traffic (`uafvl=HeadlessChrome;...`), regardless of the spoofed
+`User-Agent` HEADER this worker sets - Playwright's UA override patches
+the header, not the Client Hints API, so Cloudflare can still see
+through it. This matches the same headed-vs-headless difference already
+confirmed for FUTBIN's Cloudflare in this repo's history (see
+`Dockerfile.sbc`'s git log) - though FUTBIN ultimately still blocked
+headed traffic for an unrelated reason (a network/IP-level WAF block),
+which is not evidence this won't work for FUT.GG's differently-configured
+Cloudflare.
+
+`Dockerfile.sales` now runs headed Chromium against a real (virtual) X11
+display: `docker-entrypoint-sales.sh` starts Xvfb on `DISPLAY=:99` with a
+bounded (~2s) readiness check before exec'ing `futgg_sales_sync.py`
+directly (same idiom as the retired Xvfb-based `Dockerfile.sbc` -
+`exec`, not a second process, so SIGTERM/SIGINT still reach the worker
+directly for its own graceful shutdown). `PLAYWRIGHT_HEADLESS=false` is
+the image's default now - **do not override it back to `true`** on this
+Coolify resource; that reintroduces the exact signal being challenged.
+No new dependency: Xvfb already ships in the Playwright base image, same
+as it did for the old FUTBIN worker.
+
+**Verify with the one-card diagnostic** (below) after any redeploy - the
+`(cloudflare_challenged=...)` field in its output is the direct
+confirmation headed mode actually cleared the challenge for this site,
+not an assumption carried over from FUTBIN's case.
+
 **Required env vars:**
 - `DATABASE_URL` - required, no default. The same shared database
   `backend`, PriceSync and SBCSync use - no separate SalesSync database.
@@ -170,7 +205,8 @@ FUT.GG's price data is served - see its own module docstring).
 **Optional tuning env vars** (all have production-safe defaults - see
 `futgg_sales_sync.py`'s own top-of-file constants for current values):
 `FUTGG_GAME_YEAR` (default `26`), `FUTGG_SALES_PLATFORM` (default `ps5`),
-`PLAYWRIGHT_HEADLESS` (default `true`), `PLAYWRIGHT_TIMEOUT_MS` (default
+`PLAYWRIGHT_HEADLESS` (default `false` - see "Headed Chromium via Xvfb"
+above; do not set this to `true`), `PLAYWRIGHT_TIMEOUT_MS` (default
 `45000`), `FUTGG_SALES_BATCH_SIZE` (default `8`), `FUTGG_SALES_BATCH_DELAY`
 (default `0.5`), `FUTGG_SALES_CYCLE_SLEEP` (default `5.0`),
 `FUTGG_SALES_IDLE_SLEEP` (default `30.0`), `FUTGG_SALES_SELECT_LIMIT`
@@ -342,15 +378,24 @@ confirming in real logs that Cloudflare isn't reacting to the increased
 concurrent-page volume the same way it reacted to `signed_fetch`'s
 request volume.
 
-### Diagnosing the 403 (root cause confirmed; page_capture is the implemented fallback)
+### Diagnosing the 403 (root cause confirmed: headless detection, not transport)
 
 Confirmed against real production diagnostics: the 403 body is
 Cloudflare's own `Just a moment...` challenge page, not an application
-response, specifically on the `signed_fetch` transport's injected
-`fetch()` calls (`cf-mitigated: challenge` on the data response). The
-`page_capture` transport documented above is the resolution -
-`FUTGG_SALES_TRANSPORT=auto` runs `signed_fetch` until the breaker trips
-on this exact failure shape, then switches automatically. See
+response (`cf-mitigated: challenge` on the data response). The
+transport-switch fix above (`page_capture`/`auto`) was built on an
+initial hypothesis - that only `signed_fetch`'s injected `fetch()` calls
+were being caught, and a fully organic page navigation would pass
+through untouched - which a later diagnostic run **disproved**: a
+`page_capture` run against the same card was challenged identically. The
+actual differentiator, confirmed from that same run's own outbound
+analytics traffic, is the browser running **headless** - see "Headed
+Chromium via Xvfb" above for the full evidence and the fix that's
+actually driving this (`PLAYWRIGHT_HEADLESS=false` + Xvfb). The
+`page_capture`/`auto` transport machinery is left in place regardless -
+it is still a legitimate reliability safeguard against transport-level
+throttling/blocking independent of the headless finding, just not the
+thing that turned out to fix this specific 403. See
 [`CLOUDFLARE_403_INVESTIGATION.md`](./CLOUDFLARE_403_INVESTIGATION.md)
 for the full evidence-based, side-by-side comparison against PriceSync
 (the one currently-working script that also talks to FUT.GG) and exactly

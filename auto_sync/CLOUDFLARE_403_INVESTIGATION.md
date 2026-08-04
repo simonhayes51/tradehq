@@ -1,23 +1,36 @@
 # SalesSync Cloudflare 403 investigation
 
-**Status: CONFIRMED from real production diagnostics (2026-08-04,
-Hetzner/Coolify), and resolved with a fallback transport.** The
-production run confirmed exactly the structural difference this document
-originally hypothesised: `POST /api/fut/price-access/sign/` returns 200,
-but the injected `GET /api/fut/player-prices/...` fetch is served a
-Cloudflare JS challenge (`cf-mitigated: challenge`) - while the exact
-same endpoint, requested by a real player page's own hydration instead of
-an injected `fetch()`, loads successfully (this is also, independently,
-how PriceSync has always worked, and why it was never affected).
-`futgg_sales_sync.py` now implements a second transport,
-`page_capture` (navigate to the card's own `source_url`, passively
-capture its organic response - structurally identical to PriceSync's
-approach), plus an `auto` mode that starts on the original `signed_fetch`
-transport and falls back to `page_capture` once the circuit breaker sees
-a run of challenge-shaped failures. See `COOLIFY.md`'s "Transport env
-vars" section for the env vars, one-card diagnostic commands, and
-estimated throughput. The rest of this document is kept as the original
-evidence trail that led to that fix.
+**Status: root cause CONFIRMED as headless-browser detection, not
+transport - fixed via headed Chromium (Xvfb).** This document's original
+hypothesis (below) was that only the injected-`fetch()` transport was
+being caught, and a fully organic page navigation - matching how
+PriceSync has always worked - would bypass the challenge entirely. A
+follow-up production diagnostic run **disproved that specific
+hypothesis**: a `page_capture` navigation (the fully organic transport
+built to test it) was challenged identically to `signed_fetch` on the
+exact same card. That same run's own outbound Google Analytics traffic
+carried the real answer: `navigator.userAgentData` (User-Agent Client
+Hints) reported `HeadlessChrome`, regardless of the spoofed `User-Agent`
+HEADER this worker sets - Playwright's UA override patches the header,
+not the Client Hints API, so Cloudflare's bot management can still see
+through it. `Dockerfile.sales` now runs headed Chromium against a real
+(virtual) X11 display via Xvfb (`docker-entrypoint-sales.sh`,
+`PLAYWRIGHT_HEADLESS=false`) - the same headed-vs-headless difference
+already proven for FUTBIN's Cloudflare elsewhere in this repo's history,
+though FUTBIN ultimately still blocked headed traffic for an unrelated
+IP/network-level WAF reason, which is not evidence against this fix
+working for FUT.GG's differently-configured Cloudflare. See
+`COOLIFY.md`'s "Headed Chromium via Xvfb" section for the full
+before/after evidence and the one-card diagnostic command to confirm it
+in production.
+
+`futgg_sales_sync.py`'s `page_capture`/`auto` transport machinery (added
+in response to the original, now-superseded hypothesis) is left in
+place - it remains a legitimate reliability safeguard against
+throttling/blocking independent of the headless finding - but it was not
+itself the fix for this 403. The rest of this document is kept as the
+original evidence trail; read it as history, not as the current
+diagnosis.
 
 ## The established facts (from the production diagnostic run)
 

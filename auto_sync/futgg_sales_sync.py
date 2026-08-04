@@ -25,14 +25,23 @@ ago" text that has to be parsed and rounded.
 
 TRANSPORT
 ---------
-Production evidence (2026-08-04, Hetzner/Coolify) showed that injecting
-fetch() calls against the signed price-access endpoint from an unrelated
-anchor page - even though the fetch runs inside the live fut.gg origin -
-gets served a Cloudflare JS challenge (`cf-mitigated: challenge`) on the
-GET, while the exact same data loads fine when it is requested by a real
-player page's own hydration. PriceSync has never hit this because it only
-ever passively listens to a page's own organic requests; it never
-constructs its own fetch(). This module now supports two transports:
+Production evidence (2026-08-04, Hetzner/Coolify) first showed that
+injecting fetch() calls against the signed price-access endpoint from an
+unrelated anchor page - even though the fetch runs inside the live
+fut.gg origin - gets served a Cloudflare JS challenge
+(`cf-mitigated: challenge`) on the GET. The initial hypothesis was that a
+fully organic page navigation (matching how PriceSync has always worked)
+would bypass this. A LATER diagnostic run disproved that: a page_capture
+navigation against the exact same card got challenged identically. The
+actual differentiator, confirmed from that same run's own outbound
+Google Analytics traffic (`navigator.userAgentData` leaking
+`HeadlessChrome` regardless of the spoofed User-Agent header), is the
+browser running headless - see Dockerfile.sales/docker-entrypoint-
+sales.sh for the actual fix (headed Chromium via Xvfb) and COOLIFY.md's
+"Headed Chromium via Xvfb" section for the full evidence trail. The two
+transports below are kept regardless - page_capture/auto remain a real
+reliability safeguard against throttling/blocking independent of the
+headless finding - but neither transport by itself was the fix:
 
   signed_fetch  - the original approach: one anchor page is loaded once
                   and reused; each batch calls page.evaluate() to run

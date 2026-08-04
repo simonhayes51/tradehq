@@ -191,15 +191,48 @@ def test_easysbc_sbc_sync_is_actually_one_shot():
 # ---------------------------------------------------------------------
 
 
-def test_dockerfile_sales_runs_sales_sync_directly_no_shell_no_loop_wrapper():
+def test_dockerfile_sales_runs_the_xvfb_entrypoint_which_execs_sales_sync_directly():
+    """CMD now bootstraps Xvfb (headed Chromium - 2026-08-04
+    headless-detection finding) via docker-entrypoint-sales.sh rather than
+    calling python directly. That script must still end by exec'ing
+    futgg_sales_sync.py directly (not `sh -c`, not a second sleep/loop
+    wrapper around an already-looping script) - exec replaces the shell
+    process so SIGTERM/SIGINT still reach the worker directly for its own
+    graceful-shutdown handling, and no wrapper double-loops run_forever()."""
     text = _read(AUTO_SYNC_DIR / "Dockerfile.sales")
-    assert re.search(r'CMD\s*\[\s*"python"\s*,\s*"futgg_sales_sync\.py"\s*\]', text)
-    # Must be the exec-form CMD (no shell wrapper) and no extra sleep/loop
-    # wrapper script invoked instead of the script directly.
+    assert re.search(r'CMD\s*\[\s*"/app/docker-entrypoint-sales\.sh"\s*\]', text)
     cmd_lines = [line for line in text.splitlines() if line.strip().upper().startswith("CMD")]
     assert len(cmd_lines) == 1
     assert "sh -c" not in cmd_lines[0]
-    assert "/bin/sh" not in cmd_lines[0]
+
+    entrypoint = _read(AUTO_SYNC_DIR / "docker-entrypoint-sales.sh")
+    assert re.search(r'^exec python futgg_sales_sync\.py\s*$', entrypoint, re.MULTILINE)
+    # No sleep/loop wrapper around the already-looping script - a real
+    # shell `while` loop keyword (not just the word appearing in a
+    # comment) would double-loop run_forever().
+    code_lines = [
+        line for line in entrypoint.splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    assert not any(re.search(r'\bwhile\b', line) for line in code_lines)
+
+
+def test_dockerfile_sales_defaults_to_headed_chromium_via_xvfb():
+    """PLAYWRIGHT_HEADLESS=false + a real DISPLAY is the fix for the
+    confirmed root cause (Cloudflare challenging based on the
+    HeadlessChrome signal in navigator.userAgentData, independent of
+    transport) - see docker-entrypoint-sales.sh's own comment."""
+    text = _read(AUTO_SYNC_DIR / "Dockerfile.sales")
+    assert "ENV PLAYWRIGHT_HEADLESS=false" in text
+    assert "ENV DISPLAY=:99" in text
+    assert "Xvfb" in text
+
+
+def test_docker_entrypoint_sales_is_executable():
+    path = AUTO_SYNC_DIR / "docker-entrypoint-sales.sh"
+    assert path.exists()
+    import os
+    assert os.access(path, os.X_OK), "docker-entrypoint-sales.sh must be executable (git mode bit)"
 
 
 def test_dockerfile_sales_uses_playwright_base():

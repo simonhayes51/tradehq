@@ -23,19 +23,52 @@
 # needs. See futgg_sales_sync.py's own module docstring for the full
 # mechanism and COOLIFY.md for the env vars.
 #
+# HEADED CHROMIUM VIA XVFB (2026-08-04 headless-detection finding):
+# production diagnostics confirmed Cloudflare challenges
+# /api/fut/player-prices/26/<id>/?verify=... based on the browser being
+# HEADLESS (leaked via navigator.userAgentData's own "HeadlessChrome" -
+# visible in this worker's own outbound analytics traffic - regardless of
+# the spoofed User-Agent header), not on which transport requests it -
+# both signed_fetch and a fully organic page_capture navigation were
+# challenged identically while headless. Running headed instead removes
+# that signal, matching the same headed-vs-headless difference already
+# confirmed for FUTBIN's Cloudflare (see Dockerfile.sbc's git history);
+# see docker-entrypoint-sales.sh's own comment for the full reasoning and
+# caveat. PLAYWRIGHT_HEADLESS=false is the default here; override back to
+# true only if a real X display is not wanted for some reason (then this
+# worker is back to being challenged, per the diagnostic evidence).
+#
 # No port: this worker only talks to fut.gg and DATABASE_URL, never
 # serves HTTP.
 
 FROM mcr.microsoft.com/playwright/python:v1.61.0-noble
+
+ENV PYTHONUNBUFFERED=1
+ENV DISPLAY=:99
 
 WORKDIR /app
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Belt-and-suspenders: the official Playwright Python image already ships
+# Chromium plus its Linux system deps (including, in every version
+# checked at the time this was written, Xvfb) - not reinstalled here per
+# the instruction not to duplicate what the base image already provides.
+# Intentionally not a hard build failure if missing, so a base-image
+# change surfaces as a clear runtime log line instead of a silent,
+# confusing worker crash.
+RUN command -v Xvfb > /dev/null 2>&1 \
+    && echo "Xvfb present in base image" \
+    || echo "WARNING: Xvfb not found in base image - worker will fail at runtime"
+
 COPY . .
 
-ENV PYTHONUNBUFFERED=1
-ENV PLAYWRIGHT_HEADLESS=true
+# chmod runs AFTER the full COPY, not before - relying on git to preserve
+# the executable bit through clone/checkout is fragile; this guarantees
+# it regardless.
+RUN chmod +x /app/docker-entrypoint-sales.sh
 
-CMD ["python", "futgg_sales_sync.py"]
+ENV PLAYWRIGHT_HEADLESS=false
+
+CMD ["/app/docker-entrypoint-sales.sh"]
