@@ -1,14 +1,15 @@
 # Local/dev "docker compose up" convenience only. The actual Coolify
 # production deployment does NOT use this file to orchestrate auto_sync's
-# workers - PlayerSync, PriceSync and SBCSync are each their own
-# Dockerfile-based Coolify resource (base directory /auto_sync, a
-# dedicated Dockerfile.player / Dockerfile.price / Dockerfile.sbc, no
-# domain, no port), with PlayerSync and SBCSync run as Coolify Scheduled
-# Tasks rather than always-on services - see auto_sync/COOLIFY.md for the
-# exact setup of each. This file mirrors that split (same three dedicated
-# Dockerfiles, same "no ports" rule) so `docker compose up` still gives a
-# working local stack, but Coolify's own resource config is the source of
-# truth for how each worker actually runs in production.
+# workers - PlayerSync, PriceSync, SBCSync and SalesSync are each their
+# own Dockerfile-based Coolify resource (base directory /auto_sync, a
+# dedicated Dockerfile.player / Dockerfile.price / Dockerfile.sbc /
+# Dockerfile.sales, no domain, no port), with PlayerSync and SBCSync run
+# as Coolify Scheduled Tasks and PriceSync/SalesSync run as continuous
+# services - see auto_sync/COOLIFY.md for the exact setup of each. This
+# file mirrors that split (same four dedicated Dockerfiles, same "no
+# ports" rule) so `docker compose up` still gives a working local stack,
+# but Coolify's own resource config is the source of truth for how each
+# worker actually runs in production.
 #
 # DATABASE_URL is external, not something this file provisions. There is
 # deliberately no `postgres:` service here - the real deployment points
@@ -71,10 +72,10 @@ services:
       - "8080:8080"
 
   # --- auto_sync workers --------------------------------------------------
-  # Three dedicated Dockerfiles, not one shared image with overridden
+  # Four dedicated Dockerfiles, not one shared image with overridden
   # commands - see each Dockerfile's own header comment for why each
   # worker needs its own base image/behaviour. No worker exposes a port
-  # or has a domain; all three only ever talk outbound (to fut.gg /
+  # or has a domain; all four only ever talk outbound (to fut.gg /
   # api-fc26.easysbc.io) and to DATABASE_URL.
   #
   # futgg_price_sync.py (the old per-card Playwright price scraper) is
@@ -124,7 +125,12 @@ services:
   futgg_sales_worker:
     build:
       context: ./auto_sync
+      dockerfile: Dockerfile.sales
+    # Long-running (run_forever(): one anchor page load, then internal
+    # batch sign+fetch -> sleep -> repeat loop, holds a warm Playwright
+    # page between cycles), same reasoning as futgg_bulk_price_worker
+    # above - stays `unless-stopped`, must run as exactly one continuous
+    # instance.
     restart: unless-stopped
     environment:
       DATABASE_URL: ${DATABASE_URL}
-    command: ["python", "futgg_sales_sync.py"]

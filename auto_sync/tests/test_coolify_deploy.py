@@ -187,6 +187,44 @@ def test_easysbc_sbc_sync_is_actually_one_shot():
 
 
 # ---------------------------------------------------------------------
+# Dockerfile.sales
+# ---------------------------------------------------------------------
+
+
+def test_dockerfile_sales_runs_sales_sync_directly_no_shell_no_loop_wrapper():
+    text = _read(AUTO_SYNC_DIR / "Dockerfile.sales")
+    assert re.search(r'CMD\s*\[\s*"python"\s*,\s*"futgg_sales_sync\.py"\s*\]', text)
+    # Must be the exec-form CMD (no shell wrapper) and no extra sleep/loop
+    # wrapper script invoked instead of the script directly.
+    cmd_lines = [line for line in text.splitlines() if line.strip().upper().startswith("CMD")]
+    assert len(cmd_lines) == 1
+    assert "sh -c" not in cmd_lines[0]
+    assert "/bin/sh" not in cmd_lines[0]
+
+
+def test_dockerfile_sales_uses_playwright_base():
+    text = _read(AUTO_SYNC_DIR / "Dockerfile.sales")
+    assert "playwright/python" in text
+
+
+def test_dockerfile_sales_exposes_no_port():
+    text = _read(AUTO_SYNC_DIR / "Dockerfile.sales")
+    assert "EXPOSE" not in text
+
+
+def test_futgg_sales_sync_is_actually_long_running():
+    """Guards the "use it directly, no loop wrapper" deployment choice,
+    same reasoning as the PriceSync check above - if this script's
+    __main__ ever stops calling run_forever(), Dockerfile.sales/
+    COOLIFY.md's "continuous service" guidance silently goes stale."""
+    text = _read(AUTO_SYNC_DIR / "futgg_sales_sync.py")
+    assert "asyncio.run(run_forever())" in text
+    assert "async def run_forever() -> None:" in text
+    main_block = text.rsplit('if __name__ == "__main__":', 1)[-1]
+    assert "run_forever()" in main_block
+
+
+# ---------------------------------------------------------------------
 # docker-compose.yml
 # ---------------------------------------------------------------------
 
@@ -210,6 +248,15 @@ def test_compose_workers_use_the_dedicated_dockerfiles():
     assert services["futgg_player_worker"]["build"]["dockerfile"] == "Dockerfile.player"
     assert services["futgg_bulk_price_worker"]["build"]["dockerfile"] == "Dockerfile.price"
     assert services["futgg_sbc_worker"]["build"]["dockerfile"] == "Dockerfile.sbc"
+    assert services["futgg_sales_worker"]["build"]["dockerfile"] == "Dockerfile.sales"
+
+
+def test_compose_sales_worker_has_no_command_override():
+    """SalesSync must not override the container command in compose
+    either - Dockerfile.sales already bakes in the correct default CMD,
+    matching the "no command overrides in Coolify" requirement."""
+    services = _compose()["services"]
+    assert "command" not in services["futgg_sales_worker"]
 
 
 def test_compose_workers_expose_no_ports():
@@ -240,7 +287,12 @@ def test_compose_continuous_workers_do_restart():
 
 def test_compose_workers_use_external_database_url():
     services = _compose()["services"]
-    for name in ("futgg_player_worker", "futgg_bulk_price_worker", "futgg_sbc_worker"):
+    for name in (
+        "futgg_player_worker",
+        "futgg_bulk_price_worker",
+        "futgg_sbc_worker",
+        "futgg_sales_worker",
+    ):
         db_url = services[name]["environment"]["DATABASE_URL"]
         assert db_url == "${DATABASE_URL}"
 
@@ -250,11 +302,11 @@ def test_compose_workers_use_external_database_url():
 # ---------------------------------------------------------------------
 
 
-def test_coolify_doc_covers_all_three_resources():
+def test_coolify_doc_covers_all_four_resources():
     text = _read(AUTO_SYNC_DIR / "COOLIFY.md")
-    for name in ("PlayerSync", "PriceSync", "SBCSync"):
+    for name in ("PlayerSync", "PriceSync", "SBCSync", "SalesSync"):
         assert name in text
-    for dockerfile in ("Dockerfile.player", "Dockerfile.price", "Dockerfile.sbc"):
+    for dockerfile in ("Dockerfile.player", "Dockerfile.price", "Dockerfile.sbc", "Dockerfile.sales"):
         assert dockerfile in text
 
 
@@ -267,6 +319,21 @@ def test_coolify_doc_documents_self_healing_price_env_vars():
         "FUTGG_DISCOVERY_FAILURE_BACKOFF_SECONDS",
     ):
         assert var in text
+
+
+def test_coolify_doc_documents_sales_setup_exactly():
+    text = _read(AUTO_SYNC_DIR / "COOLIFY.md")
+    sales_section = text.split("## SalesSync", 1)[1].split("## SBCSync", 1)[0]
+    assert "simonhayes51/tradehq" in sales_section
+    assert "**Branch:** `main`" in sales_section
+    assert "Continuous Application" in sales_section
+    assert "Build Pack:** Dockerfile" in sales_section
+    assert "Base Directory:** `/auto_sync`" in sales_section
+    assert "**Dockerfile:** `/Dockerfile.sales`" in sales_section
+    assert "**Ports:** None" in sales_section
+    assert "**Domain:** None" in sales_section
+    assert "DATABASE_URL" in sales_section
+    assert "no command override" in sales_section.lower()
 
 
 def test_coolify_doc_documents_sbc_setup_exactly():
