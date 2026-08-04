@@ -32,6 +32,17 @@
 # path) is left in the repo, unused by this Dockerfile, in case FUTBIN's
 # block ever lifts and that path needs revisiting - see README.md.
 #
+# ONLY REQUIRED DEPENDENCIES: requirements-sbc.txt (aiohttp + asyncpg),
+# not the shared auto_sync/requirements.txt - see that file's own header
+# comment for why. easysbc_sbc_sync.py itself and its one local import,
+# monitoring.py, need nothing else.
+#
+# EXIT CODE: easysbc_sbc_sync.py's __main__ exits 0 on a genuinely
+# successful (or benignly lock-skipped) run and non-zero on a real
+# failure (crawl_once() returning False, or an uncaught exception) - so
+# Coolify's Scheduled Task run history reflects real success/failure, not
+# just "the container didn't crash".
+#
 # No port: this worker only talks to api-fc26.easysbc.io and
 # DATABASE_URL, never serves HTTP.
 
@@ -39,8 +50,8 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements-sbc.txt .
+RUN pip install --no-cache-dir -r requirements-sbc.txt
 
 COPY . .
 

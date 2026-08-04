@@ -47,6 +47,34 @@ feed against our own catalogue and refuses to write when:
 Those checks run on live data every cycle, which a one-off manual
 approval does not. FUTGG_BULK_APPLY=false forces a read-only cycle if you
 want to inspect coverage without writing.
+
+SELF-HEALING REDISCOVERY
+------------------------
+PLAYER_URL (below) is resolved ONCE at process startup from whichever
+card in our own catalogue currently looks like the best bet
+(resolve_player_url()) and then reused, unchanged, for every cycle for
+the rest of the process's life. If that specific card's page stops
+working - the card became untradeable/inactive without the flag being
+updated, FUT.GG restructured its URLs, or the page otherwise stops
+triggering the bulk-feed fetch - every single cycle fails identically
+("Feed not captured (index=False dyn=False)") until someone notices and
+intervenes by hand: run futgg_discover.py against a known-good URL,
+confirm the feed is still fetchable at all, then restart this worker so
+resolve_player_url() gets another chance to land somewhere that works.
+
+That manual loop is now automatic. When a cycle fails to capture the feed,
+rediscover() re-runs the SAME capture logic (harvest_feed) against
+FUTGG_DISCOVER_URL - a stable, operator-maintained "known good" player
+page kept specifically for this purpose (see COOLIFY.md) - reusing the
+already-warm browser/page rather than launching a second one. If that
+succeeds, its result IS the retried capture (one page load answers both
+"does rediscovery work" and "here is this cycle's feed" - no need to
+navigate a second time), PLAYER_URL is updated to FUTGG_DISCOVER_URL for
+every future cycle, and the cycle continues through decode/coverage/write
+normally instead of waiting for the next scheduled interval. If
+rediscovery also fails, the cycle backs off for
+FUTGG_DISCOVERY_FAILURE_BACKOFF_SECONDS (longer than the normal cadence)
+rather than hammering a broken feed every FUTGG_BULK_INTERVAL_SECONDS.
 """
 
 from __future__ import annotations
@@ -55,6 +83,7 @@ import asyncio
 import json
 import logging
 import os
+import signal
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -109,6 +138,31 @@ HYDRATION_WAIT_MS = env_int("FUTGG_BULK_HYDRATION_WAIT_MS", 6000, minimum=1000)
 #: would overwrite good prices with nothing.
 MIN_COVERAGE_PCT = float(os.getenv("FUTGG_BULK_MIN_COVERAGE_PCT", "50"))
 
+#: A stable, operator-maintained "known good" FUT.GG player URL to fall
+#: back to when the normal PLAYER_URL stops yielding the feed - e.g.
+#: https://www.fut.gg/players/245037-eric-garcia/26-84131117/, confirmed
+#: working in production. Not hardcoded: the worker refuses to guess a
+#: URL on your behalf, so automatic recovery is a no-op (logged clearly,
+#: not silently skipped) until this is set.
+DISCOVER_URL = (os.getenv("FUTGG_DISCOVER_URL") or "").strip()
+#: Master switch for automatic rediscovery. Defaults on; set to false to
+#: restore the old "fail every cycle until someone notices" behaviour.
+DISCOVERY_ENABLED = env_bool("FUTGG_DISCOVERY_ENABLED", True)
+#: How many rediscovery attempts to make within a single failed cycle
+#: before giving up and backing off. Each attempt is one page load
+#: against DISCOVER_URL; a successful attempt's capture is reused
+#: directly as the cycle's retried feed capture, so this is NOT
+#: multiplied against a separate "retry capture" count.
+DISCOVERY_RETRY_COUNT = env_int("FUTGG_DISCOVERY_RETRY_COUNT", 1, minimum=0)
+#: How long to sleep before the next cycle after a feed-capture failure
+#: that automatic rediscovery could not fix (either disabled, unset, or
+#: also failed). Deliberately longer than FUTGG_BULK_INTERVAL_SECONDS -
+#: a broken feed is not going to fix itself in 5 minutes, and hammering
+#: FUT.GG every cycle while broken helps nobody.
+DISCOVERY_FAILURE_BACKOFF_SECONDS = env_int(
+    "FUTGG_DISCOVERY_FAILURE_BACKOFF_SECONDS", 900, minimum=60
+)
+
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -136,8 +190,12 @@ def decode_ids(index: dict[str, Any]) -> list[int]:
     return ids
 
 
-async def harvest_feed(page) -> dict[str, Any]:
-    """Load a player page and read the bulk feed off the wire."""
+async def harvest_feed(page, url: str) -> dict[str, Any]:
+    """Load `url` and read the bulk feed off the wire.
+
+    Not tied to PLAYER_URL - used both for the normal cycle (against the
+    resolved PLAYER_URL) and for rediscovery (against FUTGG_DISCOVER_URL),
+    on the same warm page/context either way."""
     captured: dict[str, Any] = {}
     pending: list[asyncio.Task] = []
 
@@ -163,9 +221,9 @@ async def harvest_feed(page) -> dict[str, Any]:
 
     page.on("response", on_response)
     try:
-        await page.goto(PLAYER_URL, wait_until="domcontentloaded", timeout=TIMEOUT_MS)
+        await page.goto(url, wait_until="domcontentloaded", timeout=TIMEOUT_MS)
     except Exception:
-        log.warning("navigation failed", exc_info=True)
+        log.warning("navigation failed for url=%s", url, exc_info=True)
     # The feed is requested during hydration, after domcontentloaded.
     await page.wait_for_timeout(HYDRATION_WAIT_MS)
     if pending:
@@ -177,6 +235,75 @@ async def harvest_feed(page) -> dict[str, Any]:
             log.warning("timed out reading %d captured responses", len(pending))
     page.remove_listener("response", on_response)
     return captured
+
+
+#: Guards rediscover() so two overlapping cycles (there should only ever
+#: be one, since run_forever() is a single sequential loop - but this is
+#: cheap insurance, and lets rediscover() be called safely from anywhere
+#: else in the future) can't both drive a rediscovery page load at once
+#: and race each other's PLAYER_URL update.
+_discovery_lock = asyncio.Lock()
+
+
+async def rediscover(page, *, attempt: int, max_attempts: int) -> dict[str, Any] | None:
+    """One rediscovery attempt: load FUTGG_DISCOVER_URL and try to capture
+    the feed from it. On success, returns the captured payload (which the
+    caller uses directly as this cycle's retried capture - no second page
+    load needed) and updates the module-level PLAYER_URL so every future
+    cycle uses the known-good URL instead of repeating the same failure.
+    Returns None on any failure, having logged the exact reason."""
+    global PLAYER_URL
+
+    if _discovery_lock.locked():
+        log.warning(
+            "discovery already in progress elsewhere - skipping duplicate "
+            "attempt %d/%d", attempt, max_attempts,
+        )
+        return None
+
+    async with _discovery_lock:
+        log.warning(
+            "attempting automatic rediscovery against FUTGG_DISCOVER_URL=%s "
+            "(attempt %d/%d)", DISCOVER_URL, attempt, max_attempts,
+        )
+        try:
+            captured = await harvest_feed(page, DISCOVER_URL)
+        except Exception:
+            log.exception(
+                "rediscovery FAILED (attempt %d/%d) - navigation to "
+                "FUTGG_DISCOVER_URL raised", attempt, max_attempts,
+            )
+            return None
+
+        index = captured.get(INDEX_MARKER)
+        dyn = captured.get(DYN_MARKER)
+        if index is None or dyn is None:
+            log.error(
+                "rediscovery FAILED (attempt %d/%d) - FUTGG_DISCOVER_URL=%s "
+                "did not yield the feed either (index=%s dyn=%s). Either "
+                "FUT.GG changed its asset naming again, or this fallback "
+                "URL itself is now stale and needs updating.",
+                attempt, max_attempts, DISCOVER_URL,
+                index is not None, dyn is not None,
+            )
+            return None
+
+        log.info(
+            "rediscovery SUCCEEDED (attempt %d/%d) - new index asset=%s "
+            "(%d B) new dyn asset=%s (%d B)",
+            attempt, max_attempts,
+            captured.get(f"{INDEX_MARKER}__url", "?").rsplit("/", 1)[-1],
+            captured.get(f"{INDEX_MARKER}__bytes", 0),
+            captured.get(f"{DYN_MARKER}__url", "?").rsplit("/", 1)[-1],
+            captured.get(f"{DYN_MARKER}__bytes", 0),
+        )
+        if PLAYER_URL != DISCOVER_URL:
+            log.info(
+                "updating cached PLAYER_URL for future cycles: %s -> %s",
+                PLAYER_URL, DISCOVER_URL,
+            )
+            PLAYER_URL = DISCOVER_URL
+        return captured
 
 
 PLAYER_URL = ""  # resolved at startup from the database
@@ -196,19 +323,66 @@ async def resolve_player_url(pool: asyncpg.Pool) -> str:
     return url or "https://www.fut.gg/players/1114-roberto-baggio/26-1114/"
 
 
-async def ingest_once(pool: asyncpg.Pool, page, timers: StageTimers) -> dict[str, Any]:
+async def ingest_once(
+    pool: asyncpg.Pool,
+    page,
+    timers: StageTimers,
+    shutdown_event: asyncio.Event | None = None,
+) -> dict[str, Any]:
     with timers.track("harvest"):
-        captured = await harvest_feed(page)
+        captured = await harvest_feed(page, PLAYER_URL)
 
     index = captured.get(INDEX_MARKER)
     dyn = captured.get(DYN_MARKER)
     if index is None or dyn is None:
-        log.error(
-            "Feed not captured (index=%s dyn=%s). The page may have failed to "
-            "load, or the asset naming changed - re-run futgg_discover to check.",
-            index is not None, dyn is not None,
+        log.warning(
+            "Feed not captured (index=%s dyn=%s) on PLAYER_URL=%s.",
+            index is not None, dyn is not None, PLAYER_URL,
         )
-        return {"ok": False}
+
+        if not DISCOVERY_ENABLED:
+            log.info(
+                "automatic rediscovery disabled (FUTGG_DISCOVERY_ENABLED=false) "
+                "- not attempting recovery this cycle."
+            )
+        elif not DISCOVER_URL:
+            log.error(
+                "FUTGG_DISCOVER_URL is not set - cannot attempt automatic "
+                "recovery. Set it to a known-good FUT.GG player URL (see "
+                "COOLIFY.md) so this worker can self-heal."
+            )
+        else:
+            for attempt in range(1, DISCOVERY_RETRY_COUNT + 1):
+                if shutdown_event is not None and shutdown_event.is_set():
+                    log.info(
+                        "shutdown requested - abandoning discovery retry "
+                        "loop after %d/%d attempts", attempt - 1, DISCOVERY_RETRY_COUNT,
+                    )
+                    break
+                with timers.track("discovery"):
+                    recovered = await rediscover(
+                        page, attempt=attempt, max_attempts=DISCOVERY_RETRY_COUNT
+                    )
+                if recovered is not None:
+                    captured = recovered
+                    index = captured.get(INDEX_MARKER)
+                    dyn = captured.get(DYN_MARKER)
+                    break
+
+        if index is None or dyn is None:
+            log.error(
+                "Feed capture failed and automatic recovery did not succeed "
+                "- backing off %ds before the next attempt instead of the "
+                "normal %ds cycle interval.",
+                DISCOVERY_FAILURE_BACKOFF_SECONDS, INTERVAL_SECONDS,
+            )
+            return {"ok": False, "reason": "feed_not_captured"}
+
+        log.info(
+            "recovered via rediscovery - continuing this cycle with the "
+            "newly captured feed instead of waiting for the next scheduled "
+            "interval."
+        )
 
     log.info(
         "captured index=%s (%d B) dyn=%s (%d B)",
@@ -408,6 +582,40 @@ async def ingest_once(pool: asyncpg.Pool, page, timers: StageTimers) -> dict[str
     }
 
 
+async def sleep_or_shutdown(seconds: float, shutdown_event: asyncio.Event) -> bool:
+    """Sleep up to `seconds`, waking immediately if shutdown_event is set.
+    Returns True if shutdown was requested during the wait (so the caller
+    can break its loop right away instead of sleeping out the full
+    interval/backoff first)."""
+    try:
+        await asyncio.wait_for(shutdown_event.wait(), timeout=seconds)
+        return True
+    except asyncio.TimeoutError:
+        return shutdown_event.is_set()
+
+
+def _install_shutdown_handlers(shutdown_event: asyncio.Event) -> None:
+    """SIGTERM/SIGINT both request a graceful stop: finish the in-flight
+    step (bounded by the same Playwright/DB timeouts every step already
+    has), then exit the main loop instead of sleeping out the interval or
+    getting killed mid-write. add_signal_handler is POSIX-only - falls
+    back to the interpreter's default SIGINT->KeyboardInterrupt handling
+    (still caught below) on platforms where it isn't available."""
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            loop.add_signal_handler(
+                sig, lambda s=sig: _on_shutdown_signal(s, shutdown_event)
+            )
+        except NotImplementedError:
+            pass
+
+
+def _on_shutdown_signal(sig: signal.Signals, shutdown_event: asyncio.Event) -> None:
+    log.warning("received %s - shutting down after the current step", sig.name)
+    shutdown_event.set()
+
+
 async def run_forever() -> None:
     global PLAYER_URL
     from playwright.async_api import async_playwright
@@ -415,11 +623,23 @@ async def run_forever() -> None:
     pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=4, command_timeout=120)
     PLAYER_URL = await resolve_player_url(pool)
     log.info(
-        "%s starting: platform=%s interval=%ss apply=%s url=%s",
+        "%s starting: platform=%s interval=%ss apply=%s url=%s "
+        "discovery_enabled=%s discover_url=%s discovery_retry_count=%d "
+        "discovery_failure_backoff=%ds",
         SCRIPT_VERSION, PLATFORM, INTERVAL_SECONDS, APPLY, PLAYER_URL,
+        DISCOVERY_ENABLED, DISCOVER_URL or "<unset>", DISCOVERY_RETRY_COUNT,
+        DISCOVERY_FAILURE_BACKOFF_SECONDS,
     )
     if not APPLY:
         log.warning("READ-ONLY MODE - coverage will be reported, nothing written.")
+    if DISCOVERY_ENABLED and not DISCOVER_URL:
+        log.warning(
+            "FUTGG_DISCOVERY_ENABLED is true but FUTGG_DISCOVER_URL is unset - "
+            "automatic recovery will not be able to do anything until it is set."
+        )
+
+    shutdown_event = asyncio.Event()
+    _install_shutdown_handlers(shutdown_event)
 
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(
@@ -428,20 +648,32 @@ async def run_forever() -> None:
         try:
             context = await browser.new_context(user_agent=USER_AGENT, locale="en-GB")
             page = await context.new_page()
-            while True:
+            while not shutdown_event.is_set():
                 timers = StageTimers()
                 started = time.perf_counter()
+                result: dict[str, Any] = {}
                 try:
-                    await ingest_once(pool, page, timers)
+                    result = await ingest_once(pool, page, timers, shutdown_event=shutdown_event)
                 except Exception:
                     log.exception("ingest failed")
                 log.info("cycle took %.1fs", time.perf_counter() - started)
                 for line in timers.format_lines():
                     log.info(line)
-                await asyncio.sleep(INTERVAL_SECONDS)
+
+                if shutdown_event.is_set():
+                    break
+
+                next_sleep = (
+                    DISCOVERY_FAILURE_BACKOFF_SECONDS
+                    if result.get("reason") == "feed_not_captured"
+                    else INTERVAL_SECONDS
+                )
+                await sleep_or_shutdown(next_sleep, shutdown_event)
         finally:
+            log.info("shutting down: closing browser and database pool")
             await browser.close()
             await pool.close()
+    log.info("shutdown complete")
 
 
 if __name__ == "__main__":
