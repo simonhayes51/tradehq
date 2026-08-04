@@ -1,12 +1,23 @@
 # SalesSync Cloudflare 403 investigation
 
-**Status: evidence-based structural comparison, awaiting runtime
-confirmation from the new instrumentation.** This document does not
-claim to have fixed the 403 - it identifies the one concrete,
-code-provable behavioural difference between SalesSync and the
-currently-working PriceSync, and lists exactly what to read off the new
-diagnostic logging (see "Instrumentation" below) to confirm or rule it
-out. No code was changed to "fix" the 403 itself - only to observe it.
+**Status: CONFIRMED from real production diagnostics (2026-08-04,
+Hetzner/Coolify), and resolved with a fallback transport.** The
+production run confirmed exactly the structural difference this document
+originally hypothesised: `POST /api/fut/price-access/sign/` returns 200,
+but the injected `GET /api/fut/player-prices/...` fetch is served a
+Cloudflare JS challenge (`cf-mitigated: challenge`) - while the exact
+same endpoint, requested by a real player page's own hydration instead of
+an injected `fetch()`, loads successfully (this is also, independently,
+how PriceSync has always worked, and why it was never affected).
+`futgg_sales_sync.py` now implements a second transport,
+`page_capture` (navigate to the card's own `source_url`, passively
+capture its organic response - structurally identical to PriceSync's
+approach), plus an `auto` mode that starts on the original `signed_fetch`
+transport and falls back to `page_capture` once the circuit breaker sees
+a run of challenge-shaped failures. See `COOLIFY.md`'s "Transport env
+vars" section for the env vars, one-card diagnostic commands, and
+estimated throughput. The rest of this document is kept as the original
+evidence trail that led to that fix.
 
 ## The established facts (from the production diagnostic run)
 

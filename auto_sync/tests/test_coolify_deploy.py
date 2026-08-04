@@ -356,6 +356,28 @@ def test_coolify_doc_documents_sales_integrity_env_vars_and_diagnostic_mode():
     assert "CLOUDFLARE_403_INVESTIGATION.md" in sales_section
 
 
+def test_coolify_doc_documents_sales_transport_env_vars_and_recommendation():
+    text = _read(AUTO_SYNC_DIR / "COOLIFY.md")
+    sales_section = text.split("## SalesSync", 1)[1].split("## SBCSync", 1)[0]
+    for var in (
+        "FUTGG_SALES_TRANSPORT",
+        "FUTGG_SALES_PAGE_CONCURRENCY",
+        "FUTGG_SALES_PAGE_TIMEOUT_MS",
+        "FUTGG_SALES_PAGE_SETTLE_MS",
+        "FUTGG_SALES_SIGNED_REPROBE_MINUTES",
+    ):
+        assert var in sales_section
+    # Recommended production setting must be explicit, not left implicit.
+    assert "`auto`" in sales_section
+    assert "recommended" in sales_section.lower()
+    # Both diagnostic commands (signed_fetch and page_capture) must be documented.
+    assert "FUTGG_SALES_TRANSPORT=signed_fetch" in sales_section
+    assert "FUTGG_SALES_TRANSPORT=page_capture" in sales_section
+    # Throughput estimates must be clearly labelled as estimates, not a
+    # claimed live measurement this sandbox has no network access to take.
+    assert "estimate" in sales_section.lower()
+
+
 def test_cloudflare_investigation_doc_exists_and_covers_both_scripts():
     doc = AUTO_SYNC_DIR / "CLOUDFLARE_403_INVESTIGATION.md"
     assert doc.exists()

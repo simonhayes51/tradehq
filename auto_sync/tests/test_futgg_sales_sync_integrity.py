@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import json
 import logging
 import os
 import sys
@@ -141,6 +142,16 @@ async def _fetch_player(conn_dsn: str, card_id: int) -> dict:
             card_id,
         )
         return dict(row)
+    finally:
+        await conn.close()
+
+
+async def _set_source_url(conn_dsn: str, card_id: int, url: str) -> None:
+    conn = await asyncpg.connect(conn_dsn)
+    try:
+        await conn.execute(
+            "UPDATE futgg_players SET source_url = $1 WHERE source_card_id = $2", url, card_id
+        )
     finally:
         await conn.close()
 
@@ -709,3 +720,425 @@ async def test_network_diagnostics_detects_missing_cookie_header(caplog):
 
     text = "\n".join(r.message for r in caplog.records)
     assert "hasCookieHeader=False" in text
+
+
+# ---------------------------------------------------------------------
+# page_capture transport: passive response capture via real player-page
+# navigation (no injected fetch(), no manual sign call - item 3/4/8).
+# ---------------------------------------------------------------------
+
+
+class _FakeCaptureResponse:
+    def __init__(self, url, status=200, headers=None, json_body=None, raw_body=b""):
+        self.url = url
+        self.status = status
+        self._headers = headers or {}
+        self._body = json.dumps(json_body).encode() if json_body is not None else raw_body
+
+    async def all_headers(self):
+        return self._headers
+
+    async def body(self):
+        return self._body
+
+
+class _FakeCapturePage:
+    """Minimal Playwright Page double: on()/remove_listener() for the
+    "response" event, goto() that optionally fires queued responses (as
+    a real navigation's hydration would), wait_for_timeout() as a no-op
+    async sleep. Reused across multiple fetch_via_page_capture() calls in
+    a single test so listener leakage across cards is directly
+    observable."""
+
+    def __init__(self):
+        self._listeners: dict[str, list] = {}
+        self.goto_calls: list[str] = []
+        self.goto_exception: Exception | None = None
+        self.responses_to_fire: list = []
+
+    async def goto(self, url, wait_until="domcontentloaded", timeout=None):
+        self.goto_calls.append(url)
+        if self.goto_exception is not None:
+            raise self.goto_exception
+        for response in self.responses_to_fire:
+            for cb in list(self._listeners.get("response", [])):
+                cb(response)
+
+    def on(self, event, cb):
+        self._listeners.setdefault(event, []).append(cb)
+
+    def remove_listener(self, event, cb):
+        listeners = self._listeners.get(event, [])
+        if cb in listeners:
+            listeners.remove(cb)
+
+    async def wait_for_timeout(self, ms):
+        await asyncio.sleep(0)
+
+    def listener_count(self, event="response") -> int:
+        return len(self._listeners.get(event, []))
+
+
+def _player_prices_response(card_id, *, completed=None, current_price=250, status=200,
+                             cf_mitigated=None, game_year="26"):
+    headers = {"content-type": "application/json"}
+    if cf_mitigated:
+        headers["cf-mitigated"] = cf_mitigated
+    return _FakeCaptureResponse(
+        f"https://www.fut.gg/api/fut/player-prices/{game_year}/{card_id}/?platform=ps5",
+        status=status,
+        headers=headers,
+        json_body={"data": {"completedAuctions": completed or [], "currentPrice": current_price}},
+    )
+
+
+@run_async
+async def test_page_capture_captures_the_correct_target_response(monkeypatch):
+    monkeypatch.setattr(mod, "PAGE_SETTLE_MS", 5)
+    page = _FakeCapturePage()
+    page.responses_to_fire = [
+        _player_prices_response(84131117, completed=[{"soldPrice": 1000}], current_price=1200),
+    ]
+
+    result = await mod.fetch_via_page_capture(
+        page, 84131117, "https://www.fut.gg/players/84131117-eric-garcia/26-84131117/",
+    )
+
+    assert result["eaId"] == 84131117
+    assert result["completedAuctions"] == [{"soldPrice": 1000}]
+    assert result["currentPrice"] == 1200
+    assert "error" not in result
+    assert page.goto_calls == ["https://www.fut.gg/players/84131117-eric-garcia/26-84131117/"]
+
+
+@run_async
+async def test_page_capture_ignores_a_response_for_an_unrelated_player(monkeypatch):
+    monkeypatch.setattr(mod, "PAGE_SETTLE_MS", 5)
+    page = _FakeCapturePage()
+    # A different card's response fires during the same navigation (e.g. a
+    # sidebar "similar players" widget) - must never be mistaken for the
+    # requested card's own data.
+    page.responses_to_fire = [_player_prices_response(999999, completed=[{"soldPrice": 1}])]
+
+    result = await mod.fetch_via_page_capture(page, 84131117, "https://www.fut.gg/players/x/")
+
+    assert result["eaId"] == 84131117
+    assert result["error"] == "page_capture_timeout"
+
+
+@run_async
+async def test_page_capture_removes_the_listener_between_cards(monkeypatch):
+    monkeypatch.setattr(mod, "PAGE_SETTLE_MS", 5)
+    page = _FakeCapturePage()
+
+    page.responses_to_fire = [_player_prices_response(111)]
+    await mod.fetch_via_page_capture(page, 111, "https://www.fut.gg/players/a/")
+    assert page.listener_count() == 0, "listener must be removed after the first card"
+
+    # A second card's response must never be readable by anything left
+    # over from the first card - and the first card's response, if it
+    # somehow fired again, must not leak into the second card's result.
+    page.responses_to_fire = [_player_prices_response(222, completed=[{"soldPrice": 5}])]
+    result = await mod.fetch_via_page_capture(page, 222, "https://www.fut.gg/players/b/")
+    assert page.listener_count() == 0
+    assert result["eaId"] == 222
+    assert result["completedAuctions"] == [{"soldPrice": 5}]
+
+
+@run_async
+async def test_page_capture_zero_sales_response_is_a_success_not_a_failure(monkeypatch):
+    monkeypatch.setattr(mod, "PAGE_SETTLE_MS", 5)
+    page = _FakeCapturePage()
+    page.responses_to_fire = [_player_prices_response(333, completed=[])]
+
+    result = await mod.fetch_via_page_capture(page, 333, "https://www.fut.gg/players/c/")
+
+    assert "error" not in result
+    assert result["completedAuctions"] == []
+
+
+@run_async
+async def test_page_capture_timeout_is_reported_as_a_failure(monkeypatch):
+    monkeypatch.setattr(mod, "PAGE_SETTLE_MS", 5)
+    page = _FakeCapturePage()
+    page.responses_to_fire = []  # nothing ever fires - simulates a hang
+
+    result = await mod.fetch_via_page_capture(page, 444, "https://www.fut.gg/players/d/")
+
+    assert result["error"] == "page_capture_timeout"
+
+
+@run_async
+async def test_page_capture_403_is_reported_as_a_failure(monkeypatch):
+    monkeypatch.setattr(mod, "PAGE_SETTLE_MS", 5)
+    page = _FakeCapturePage()
+    page.responses_to_fire = [_player_prices_response(555, status=403)]
+
+    result = await mod.fetch_via_page_capture(page, 555, "https://www.fut.gg/players/e/")
+
+    assert result["error"] == "page_capture_403"
+
+
+@run_async
+async def test_page_capture_cloudflare_challenge_is_reported_distinctly(monkeypatch):
+    monkeypatch.setattr(mod, "PAGE_SETTLE_MS", 5)
+    page = _FakeCapturePage()
+    page.responses_to_fire = [_player_prices_response(666, status=403, cf_mitigated="challenge")]
+
+    result = await mod.fetch_via_page_capture(page, 666, "https://www.fut.gg/players/f/")
+
+    assert result["error"] == "page_capture_challenge"
+
+
+@run_async
+async def test_page_capture_navigation_failure_does_not_raise(monkeypatch):
+    monkeypatch.setattr(mod, "PAGE_SETTLE_MS", 5)
+    page = _FakeCapturePage()
+    page.goto_exception = TimeoutError("navigation timed out")
+
+    result = await mod.fetch_via_page_capture(page, 777, "https://www.fut.gg/players/g/")
+
+    assert result["eaId"] == 777
+    assert result["error"].startswith("navigation_failed:")
+
+
+@run_async
+async def test_page_capture_failure_never_advances_a_never_read_card(monkeypatch, dsn):
+    monkeypatch.setattr(mod, "APPLY", True)
+    monkeypatch.setattr(mod, "PAGE_SETTLE_MS", 5)
+    await _seed_players(dsn, [_row(84131117, next_sales_due_at=None)])
+    await _set_source_url(dsn, 84131117, "https://www.fut.gg/players/x/")
+    pool = await asyncpg.create_pool(dsn, min_size=1, max_size=2)
+    try:
+        rows = await pool.fetch(
+            "SELECT source_card_id, rating, next_sales_due_at, source_url FROM futgg_players"
+        )
+        page = _FakeCapturePage()
+        page.responses_to_fire = [_player_prices_response(84131117, status=403, cf_mitigated="challenge")]
+        stats = _Stats()
+        await mod.process_batch_page_capture(
+            [page], pool, rows, stats, mod.StageTimers(),
+        )
+        after = await _fetch_player(dsn, 84131117)
+        assert after["next_sales_due_at"] is None
+        assert stats["failed"] == 1
+        assert stats["ok"] == 0
+    finally:
+        await pool.close()
+
+
+@run_async
+async def test_page_capture_success_advances_the_card_and_writes_sales(monkeypatch, dsn):
+    monkeypatch.setattr(mod, "APPLY", True)
+    monkeypatch.setattr(mod, "PAGE_SETTLE_MS", 5)
+    await _seed_players(dsn, [_row(84131117, next_sales_due_at=None)])
+    await _set_source_url(dsn, 84131117, "https://www.fut.gg/players/84131117-eric-garcia/26-84131117/")
+    pool = await asyncpg.create_pool(dsn, min_size=1, max_size=2)
+    try:
+        rows = await pool.fetch(
+            "SELECT source_card_id, rating, next_sales_due_at, source_url FROM futgg_players"
+        )
+        page = _FakeCapturePage()
+        page.responses_to_fire = [_player_prices_response(84131117, completed=[{"soldPrice": 900}])]
+        stats = _Stats()
+        await mod.process_batch_page_capture([page], pool, rows, stats, mod.StageTimers())
+        after = await _fetch_player(dsn, 84131117)
+        assert after["next_sales_due_at"] is not None
+        assert after["last_sales_status"] == "success"
+        assert stats["ok"] == 1
+    finally:
+        await pool.close()
+
+
+@run_async
+async def test_page_capture_missing_source_url_counts_as_failure(monkeypatch, dsn):
+    monkeypatch.setattr(mod, "APPLY", True)
+    monkeypatch.setattr(mod, "PAGE_SETTLE_MS", 5)
+    await _seed_players(dsn, [_row(84131117, next_sales_due_at=None)])
+    pool = await asyncpg.create_pool(dsn, min_size=1, max_size=2)
+    try:
+        rows = await pool.fetch(
+            "SELECT source_card_id, rating, next_sales_due_at, source_url FROM futgg_players"
+        )
+        assert rows[0]["source_url"] is None
+        page = _FakeCapturePage()
+        stats = _Stats()
+        await mod.process_batch_page_capture([page], pool, rows, stats, mod.StageTimers())
+        after = await _fetch_player(dsn, 84131117)
+        assert after["next_sales_due_at"] is None
+        assert stats["failed"] == 1
+        assert page.goto_calls == []
+    finally:
+        await pool.close()
+
+
+@run_async
+async def test_page_capture_worker_pool_stops_promptly_on_shutdown(monkeypatch, dsn):
+    monkeypatch.setattr(mod, "APPLY", False)
+    monkeypatch.setattr(mod, "PAGE_SETTLE_MS", 5)
+    await _seed_players(dsn, [
+        _row(1, next_sales_due_at=None), _row(2, next_sales_due_at=None), _row(3, next_sales_due_at=None),
+    ])
+    pool = await asyncpg.create_pool(dsn, min_size=1, max_size=2)
+    try:
+        rows = await pool.fetch(
+            "SELECT source_card_id, rating, next_sales_due_at, source_url FROM futgg_players"
+        )
+        page = _FakeCapturePage()
+        shutdown_event = asyncio.Event()
+        shutdown_event.set()  # already shutting down before the worker ever starts a card
+        stats = _Stats()
+        await asyncio.wait_for(
+            mod.process_batch_page_capture(
+                [page], pool, rows, stats, mod.StageTimers(), shutdown_event=shutdown_event,
+            ),
+            timeout=5,
+        )
+        # Nothing was attempted - the worker must check the shutdown event
+        # before pulling a card, not mid-navigation-and-crash.
+        assert page.goto_calls == []
+        assert stats["ok"] == 0
+        assert stats["failed"] == 0
+    finally:
+        await pool.close()
+
+
+class TestTransportAutoFallback:
+    """Auto-mode transport switching (item 4): switches from signed_fetch
+    to page_capture on a Cloudflare-challenge-shaped failure run, does not
+    thrash back on every cycle, and only reprobes signed_fetch after the
+    configured cooldown."""
+
+    def setup_method(self):
+        # Each test starts from a clean slate regardless of import-time
+        # state or a previous test's mutation of these globals.
+        mod._active_transport = "signed_fetch"
+        mod._next_signed_reprobe_at = None
+
+    def teardown_method(self):
+        mod._active_transport = "signed_fetch"
+        mod._next_signed_reprobe_at = None
+
+    def test_mostly_challenge_failures_true_when_all_challenge_shaped(self):
+        stats = {"failed": 4, "errors": {"page_capture_challenge": 3, "page_capture_403": 1}}
+        assert mod._mostly_challenge_failures(stats) is True
+
+    def test_mostly_challenge_failures_false_for_unrelated_bug(self):
+        stats = {"failed": 4, "errors": {"malformed_payload": 4}}
+        assert mod._mostly_challenge_failures(stats) is False
+
+    def test_mostly_challenge_failures_false_when_nothing_failed(self):
+        assert mod._mostly_challenge_failures({"failed": 0, "errors": {}}) is False
+
+    def test_switch_to_page_capture_sets_reprobe_deadline(self, monkeypatch):
+        monkeypatch.setattr(mod, "TRANSPORT_MODE", "auto")
+        monkeypatch.setattr(mod, "SIGNED_REPROBE_MINUTES", 60)
+        mod.switch_to_page_capture("challenge threshold tripped")
+        assert mod.current_transport() == "page_capture"
+        assert mod._next_signed_reprobe_at is not None
+        assert mod.signed_reprobe_due() is False  # deadline is 60 minutes out, not now
+
+    def test_signed_reprobe_due_false_before_deadline_true_after(self, monkeypatch):
+        monkeypatch.setattr(mod, "TRANSPORT_MODE", "auto")
+        mod.switch_to_page_capture("challenge threshold tripped")
+        assert mod.signed_reprobe_due() is False
+        mod._next_signed_reprobe_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+        assert mod.signed_reprobe_due() is True
+
+    def test_signed_reprobe_never_due_outside_auto_mode(self, monkeypatch):
+        monkeypatch.setattr(mod, "TRANSPORT_MODE", "page_capture")
+        mod._active_transport = "page_capture"
+        mod._next_signed_reprobe_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+        assert mod.signed_reprobe_due() is False
+
+    def test_switching_to_the_already_active_transport_does_not_thrash(self, monkeypatch, caplog):
+        monkeypatch.setattr(mod, "TRANSPORT_MODE", "auto")
+        mod.switch_to_page_capture("first trip")
+        with caplog.at_level(logging.WARNING, logger="futgg_sales_sync"):
+            caplog.clear()
+            mod.switch_to_page_capture("still failing")  # already on page_capture
+        # No repeated "TRANSPORT SWITCH" log line for a no-op switch - only
+        # a genuine transition should be logged once.
+        switch_lines = [r.message for r in caplog.records if "TRANSPORT SWITCH" in r.message]
+        assert switch_lines == []
+
+    def test_switch_back_to_signed_fetch_clears_the_reprobe_deadline(self, monkeypatch):
+        monkeypatch.setattr(mod, "TRANSPORT_MODE", "auto")
+        mod.switch_to_page_capture("trip")
+        assert mod._next_signed_reprobe_at is not None
+        mod.switch_to_signed_fetch("reprobe succeeded")
+        assert mod.current_transport() == "signed_fetch"
+        assert mod._next_signed_reprobe_at is None
+
+
+@run_async
+async def test_diagnostic_mode_page_capture_never_writes_when_apply_is_false(monkeypatch, dsn):
+    monkeypatch.setattr(mod, "APPLY", False)
+    monkeypatch.setattr(mod, "TRANSPORT_MODE", "page_capture")
+    monkeypatch.setattr(mod, "PAGE_SETTLE_MS", 5)
+    await _seed_players(dsn, [{
+        "source_card_id": 84131117, "rating": 91, "name": "Eric Garcia",
+        "next_sales_due_at": None,
+    }])
+    conn = await asyncpg.connect(dsn)
+    try:
+        await conn.execute(
+            "UPDATE futgg_players SET source_url = $1 WHERE source_card_id = $2",
+            "https://www.fut.gg/players/84131117-eric-garcia/26-84131117/", 84131117,
+        )
+    finally:
+        await conn.close()
+
+    class _FakeDiagCapturePage(_FakeCapturePage):
+        async def evaluate(self, script, *args):
+            if "navigator.webdriver" in script:
+                return False
+            if "navigator.userAgent" in script:
+                return "FakeUA/1.0"
+            return None
+
+    class _FakeContext:
+        async def cookies(self):
+            return []
+
+        async def new_page(self):
+            page = _FakeDiagCapturePage()
+            page.responses_to_fire = [_player_prices_response(84131117, completed=[{"soldPrice": 700}])]
+            return page
+
+    class _FakeBrowser:
+        async def new_context(self, **kwargs):
+            return _FakeContext()
+
+        async def close(self):
+            return None
+
+    class _FakePlaywright:
+        class chromium:
+            @staticmethod
+            async def launch(**kwargs):
+                return _FakeBrowser()
+
+    class _FakePlaywrightCM:
+        async def __aenter__(self):
+            return _FakePlaywright()
+
+        async def __aexit__(self, *a):
+            return False
+
+    monkeypatch.setattr(
+        "playwright.async_api.async_playwright", lambda: _FakePlaywrightCM(),
+    )
+
+    original_dsn = mod.DATABASE_URL
+    monkeypatch.setattr(mod, "DATABASE_URL", dsn)
+    try:
+        ok = await mod.run_diagnostic_card(84131117)
+    finally:
+        mod.DATABASE_URL = original_dsn
+
+    assert ok is True
+    after = await _fetch_player(dsn, 84131117)
+    # Diagnostic mode with FUTGG_SALES_APPLY=false must never write -
+    # next_sales_due_at stays exactly as seeded (NULL).
+    assert after["next_sales_due_at"] is None
