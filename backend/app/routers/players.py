@@ -1,0 +1,1292 @@
+# app/routers/players.py
+
+from __future__ import annotations
+
+import time
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+
+# If you already have this service, it's safe to import (it doesn't import main)
+from app.services.price_history import get_price_history
+from app.db import get_player_db, get_player_pool
+from app.futbin_client import fetch_price_by_url
+from app.auth.entitlements import require_feature
+from app.services.player_card_ondemand import ensure_cards_requested
+
+router = APIRouter(prefix="/api/players", tags=["players"])
+
+# Lazy Buyer Score is a pool-wide ranking (every card gets percentile-ranked
+# against every other tracked card), so computing it fresh per request means
+# every single player-detail page load pays for re-scoring the ENTIRE Gold
+# Rare pool - including a per-sale LATERAL "as of" bin_history lookup across
+# every card's last 7 days of sales. That's expensive and was blocking the
+# whole detail panel (bundled in the same Promise.all as price). Same
+# in-process TTL cache pattern as dashboard.py's _cached_totals: compute the
+# whole pool once per window, serve every request in that window as a cheap
+# dict lookup. 300s matches fair_value_mv's own refresh cadence - no point
+# recomputing more often than the data underneath it changes.
+_LBO_CACHE_TTL_SECONDS = 300
+_lbo_pool_cache: Dict[int, Dict[str, Any]] = {}
+_lbo_pool_cache_at: float = 0.0
+
+# ------------------------------
+# Helpers
+# ------------------------------
+
+def _plat(p: str) -> str:
+    p = (p or "").lower()
+    if p in ("ps", "playstation", "console"):
+        return "ps"
+    if p in ("xbox", "xb"):
+        return "xbox"
+    if p in ("pc", "origin"):
+        return "pc"
+    return "ps"
+
+# ------------------------------
+# Endpoints
+# ------------------------------
+
+@router.get("/resolve")
+async def resolve_player_by_name(
+    name: str = Query(..., description="Player name to resolve"),
+    conn = Depends(get_player_db),
+):
+    """
+    Resolve a player by name to get their card details
+    """
+    try:
+        # Search for exact match first, then fuzzy match
+        row = await conn.fetchrow(
+            """
+            SELECT card_id, name, rating, version, image_url, club, league, nation, position, altposition, price_num, price,
+                   generated_card_url, generated_card_status, generated_card_flagged
+            FROM fut_players
+            WHERE LOWER(name) = LOWER($1)
+            ORDER BY rating DESC
+            LIMIT 1
+            """,
+            name.strip()
+        )
+
+        if not row:
+            # Try fuzzy matching
+            row = await conn.fetchrow(
+                """
+                SELECT card_id, name, rating, version, image_url, club, league, nation, position, altposition, price_num, price,
+                       generated_card_url, generated_card_status, generated_card_flagged
+                FROM fut_players
+                WHERE LOWER(name) ILIKE LOWER($1)
+                ORDER BY rating DESC
+                LIMIT 1
+                """,
+                f"%{name.strip()}%"
+            )
+
+        if not row:
+            raise HTTPException(status_code=404, detail="Player not found")
+
+        if row["generated_card_status"] != "ready" or row["generated_card_flagged"]:
+            pool = await get_player_pool()
+            await ensure_cards_requested(pool, [str(row["card_id"])])
+
+        return {
+            "card_id": int(row["card_id"]),
+            "name": row["name"],
+            "rating": row["rating"],
+            "version": row["version"],
+            "image_url": row["image_url"],
+            "club": row["club"],
+            "league": row["league"],
+            "nation": row["nation"],
+            "position": row["position"],
+            "altposition": row["altposition"],
+            "price": row["price"],
+            "price_num": row["price_num"],
+            "generated_card_url": row["generated_card_url"],
+            "generated_card_status": row["generated_card_status"],
+            "generated_card_flagged": row["generated_card_flagged"],
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Resolution failed: {e}")
+
+@router.get("/search")
+async def search_players(
+    q: str = Query("", description="name or card_id substring"),
+    pos: Optional[str] = Query(None, description="exact position code like ST, CAM, CB"),
+    limit: int = Query(50, description="max results"),
+    conn = Depends(get_player_db),
+):
+    q = (q or "").strip()
+    p = (pos or "").strip().upper() or None
+
+    where: List[str] = []
+    params: List[Any] = []
+
+    if q:
+        where.append("(LOWER(name) LIKE LOWER($1) OR card_id::text LIKE $1)")
+        params.append(f"%{q}%")
+
+    if p:
+        params.append(p)
+        idx = len(params)  # position param index
+        where.append(
+            f"""
+            (
+              UPPER(position) = ${idx}
+              OR (
+                COALESCE(altposition, '') <> ''
+                AND EXISTS (
+                  SELECT 1
+                  FROM regexp_split_to_table(altposition, '[,;/|\\s]+') ap
+                  WHERE UPPER(TRIM(ap)) = ${idx}
+                )
+              )
+            )
+            """
+        )
+
+    base_where = " AND ".join(where) if where else "TRUE"
+    limit_idx = len(params) + 1
+
+    sql = f"""
+        SELECT
+          card_id, name, rating, version, image_url, club, league, nation,
+          position, altposition, price, price_num,
+          generated_card_url, generated_card_status, generated_card_flagged
+        FROM fut_players
+        WHERE {base_where}
+        ORDER BY
+          CASE WHEN price IS NULL THEN 1 ELSE 0 END,
+          rating DESC NULLS LAST,
+          name ASC
+        LIMIT ${limit_idx}
+    """
+
+    params.append(limit)
+    rows = await conn.fetch(sql, *params)
+
+    players = [
+        {
+            "card_id": int(r["card_id"]),
+            "name": r["name"],
+            "rating": r["rating"],
+            "version": r["version"],
+            "image_url": r["image_url"],
+            "club": r["club"],
+            "league": r["league"],
+            "nation": r["nation"],
+            "position": r["position"],
+            "altposition": r["altposition"],
+            "price": r["price"],
+            "price_num": r["price_num"],
+            "generated_card_url": r["generated_card_url"],
+            "generated_card_status": r["generated_card_status"],
+            "generated_card_flagged": r["generated_card_flagged"],
+        }
+        for r in rows
+    ]
+
+    needs_card = [
+        str(r["card_id"]) for r in rows
+        if r["generated_card_status"] != "ready" or r["generated_card_flagged"]
+    ]
+    if needs_card:
+        pool = await get_player_pool()
+        await ensure_cards_requested(pool, needs_card)
+
+    return {"players": players, "data": players}
+
+@router.get("/autocomplete")
+async def players_autocomplete(
+    q: str = Query("", description="name or card_id substring"),
+    pos: Optional[str] = Query(None, description="position filter like ST, CAM, CB"),
+    conn = Depends(get_player_db),
+):
+    """
+    Lightweight autocomplete list for UI dropdowns.
+    Returns items with {value, label, card_id, name, rating, version, image_url, position}.
+    """
+    q = (q or "").strip()
+    p = (pos or "").strip().upper() or None
+
+    where: List[str] = []
+    params: List[Any] = []
+
+    if q:
+        where.append("(LOWER(name) LIKE LOWER($1) OR card_id::text LIKE $1)")
+        params.append(f"%{q}%")
+
+    if p:
+        params.append(p)
+        idx = len(params)
+        where.append(
+            f"""
+            (
+              UPPER(position) = ${idx}
+              OR (
+                COALESCE(altposition, '') <> ''
+                AND EXISTS (
+                  SELECT 1
+                  FROM regexp_split_to_table(altposition, '[,;/|\\s]+') ap
+                  WHERE UPPER(TRIM(ap)) = ${idx}
+                )
+              )
+            )
+            """
+        )
+
+    base_where = " AND ".join(where) if where else "TRUE"
+    sql = f"""
+        SELECT card_id, name, rating, version, image_url, position,
+               generated_card_url, generated_card_status, generated_card_flagged
+        FROM fut_players
+        WHERE {base_where}
+        ORDER BY rating DESC NULLS LAST, name ASC
+        LIMIT 20
+    """
+    rows = await conn.fetch(sql, *params)
+
+    items: List[Dict[str, Any]] = []
+    needs_card: List[str] = []
+    for r in rows:
+        cid = int(r["card_id"])
+        name = r["name"]
+        rating = r["rating"]
+        ver = r["version"] or ""
+        pos_label = r["position"] or ""
+        label = f"{name} ({rating}) {ver} {pos_label}".strip()
+        items.append({
+            "value": cid,
+            "label": label,
+            "card_id": cid,
+            "name": name,
+            "rating": rating,
+            "version": ver,
+            "image_url": r["image_url"],
+            "position": pos_label,
+            "generated_card_url": r["generated_card_url"],
+            "generated_card_status": r["generated_card_status"],
+        })
+        if r["generated_card_status"] != "ready" or r["generated_card_flagged"]:
+            needs_card.append(str(cid))
+
+    if needs_card:
+        pool = await get_player_pool()
+        await ensure_cards_requested(pool, needs_card)
+
+    return {"items": items}
+
+
+# NOTE: /batch/... routes must be registered before /{card_id}/... routes.
+# card_id is typed str on some routes and int on others, and Starlette
+# matches path segments before FastAPI's parameter validation runs - so a
+# request to /batch/meta would otherwise be captured by /{card_id}/meta
+# (card_id="batch", str always validates) instead of ever reaching this
+# handler. Confirmed via isolated test: this silently broke /batch/meta
+# for as long as it was declared after /{card_id}/meta.
+@router.get("/batch/meta")
+async def batch_meta(
+    ids: str = Query(..., description="CSV of card_ids"),
+    conn = Depends(get_player_db),
+):
+    """
+    Batch metadata fetch for up to ~100 ids at once.
+    """
+    raw_ids = [x.strip() for x in ids.split(",") if x.strip()]
+    if not raw_ids:
+        return {"items": []}
+    rows = await conn.fetch(
+        """
+        SELECT card_id, name, rating, version, image_url, club, league, nation, position, altposition, price, price_num
+        FROM fut_players
+        WHERE card_id::text = ANY($1::text[])
+        """,
+        raw_ids,
+    )
+    out: List[Dict[str, Any]] = []
+    for r in rows:
+        d = dict(r)
+        d["card_id"] = int(d["card_id"])
+        out.append(d)
+    return {"items": out}
+
+
+@router.get("/batch/market-metrics")
+async def batch_market_metrics(
+    ids: str = Query(..., description="CSV of card_ids, up to ~150 at once"),
+    conn = Depends(get_player_db),
+):
+    """
+    Batch version of /{card_id}/market-metrics for list views (search
+    results, watchlist, trade finder) that need liquidity/real-price/snipe
+    signals for many cards without one request per card.
+    """
+    raw_ids = [x.strip() for x in ids.split(",") if x.strip()][:150]
+    if not raw_ids:
+        return {"items": {}}
+    try:
+        id_list = [int(x) for x in raw_ids]
+    except ValueError:
+        raise HTTPException(status_code=400, detail="ids must be integers")
+
+    try:
+        stats_rows = await conn.fetch(
+            """
+            WITH stats AS (
+                SELECT
+                    player_id,
+                    COUNT(*) FILTER (WHERE sold_at >= NOW() - INTERVAL '1 hour') AS n_1h,
+                    COUNT(*) FILTER (WHERE sold_at >= NOW() - INTERVAL '24 hours') AS n_24h,
+                    COUNT(*) FILTER (WHERE sold_at >= NOW() - INTERVAL '7 days') AS n_7d,
+                    PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY sold_price)
+                        FILTER (WHERE sold_at >= NOW() - INTERVAL '24 hours') AS median_24h,
+                    PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY sold_price)
+                        FILTER (WHERE sold_at >= NOW() - INTERVAL '7 days') AS median_7d,
+                    STDDEV_POP(sold_price) FILTER (WHERE sold_at >= NOW() - INTERVAL '24 hours') AS stddev_24h,
+                    STDDEV_POP(sold_price) FILTER (WHERE sold_at >= NOW() - INTERVAL '7 days') AS stddev_7d
+                FROM sales_history
+                WHERE player_id = ANY($1::bigint[])
+                GROUP BY player_id
+            ),
+            snipe AS (
+                SELECT sh.player_id, COUNT(*) AS snipe_count_24h
+                FROM sales_history sh
+                JOIN stats s ON s.player_id = sh.player_id
+                WHERE sh.sold_at >= NOW() - INTERVAL '24 hours'
+                  AND s.median_24h IS NOT NULL
+                  AND sh.sold_price <= s.median_24h * 0.85
+                GROUP BY sh.player_id
+            )
+            SELECT
+                stats.player_id, stats.n_1h, stats.n_24h, stats.n_7d,
+                stats.median_24h, stats.median_7d, stats.stddev_24h, stats.stddev_7d,
+                COALESCE(snipe.snipe_count_24h, 0) AS snipe_count_24h
+            FROM stats
+            LEFT JOIN snipe ON snipe.player_id = stats.player_id
+            """,
+            id_list,
+        )
+
+        bin_rows = await conn.fetch(
+            """
+            SELECT DISTINCT ON (player_id, platform) player_id, platform, lowest_bin
+            FROM bin_history
+            WHERE player_id = ANY($1::bigint[]) AND lowest_bin IS NOT NULL
+            ORDER BY player_id, platform, captured_at DESC
+            """,
+            id_list,
+        )
+
+        bins_by_card: Dict[int, Dict[str, int]] = {}
+        for r in bin_rows:
+            bins_by_card.setdefault(int(r["player_id"]), {})[r["platform"]] = r["lowest_bin"]
+
+        items: Dict[str, Any] = {}
+        for r in stats_rows:
+            cid = int(r["player_id"])
+            n_24h = r["n_24h"] or 0
+            median_24h = float(r["median_24h"]) if r["median_24h"] is not None else None
+            median_7d = float(r["median_7d"]) if r["median_7d"] is not None else None
+            stddev_24h = float(r["stddev_24h"]) if r["stddev_24h"] is not None else None
+            ps_bin = bins_by_card.get(cid, {}).get("ps")
+
+            # Same guard as the single-card endpoint and fair_value_mv's
+            # data_quality_suspect - this query also reads sales_history
+            # directly, bypassing that matview entirely.
+            data_quality_suspect = bool(
+                ps_bin and median_24h is not None
+                and (median_24h < ps_bin * 0.1 or median_24h > ps_bin * 10)
+            )
+
+            # A BIN-listing-price gap only, NOT a fair-value gap: sales_history
+            # is PS-only, so there's no PC-side completed-sale data to back a
+            # "worth" claim on that platform - this must never be labeled as
+            # fair value, only as what each platform's current listings show.
+            pc_bin = bins_by_card.get(cid, {}).get("pc")
+            ps_pc_bin_gap_pct = (
+                round((pc_bin - ps_bin) / ps_bin * 100, 2) if ps_bin and pc_bin else None
+            )
+            if data_quality_suspect:
+                median_24h = None
+                median_7d = None
+
+            divergence_pct_24h = None
+            if ps_bin and median_24h is not None:
+                divergence_pct_24h = round((median_24h - ps_bin) / ps_bin * 100, 2)
+
+            cv_24h = round((stddev_24h or 0) / median_24h, 4) if median_24h else None
+            snipe_index_24h = (
+                round((r["snipe_count_24h"] or 0) / n_24h, 3)
+                if n_24h > 0 and not data_quality_suspect else None
+            )
+
+            margin = None
+            if ps_bin and median_24h is not None:
+                net_after_tax = median_24h * 0.95
+                est_margin_coins = round(net_after_tax - ps_bin)
+                margin = {
+                    "buyAt": ps_bin,
+                    "sellAt": round(median_24h),
+                    "netAfterTax": round(net_after_tax),
+                    "estMarginCoins": est_margin_coins,
+                    "estMarginPct": round(est_margin_coins / ps_bin * 100, 2),
+                }
+
+            items[str(cid)] = {
+                "currentBin": bins_by_card.get(cid, {}),
+                "psPcBinGapPct": ps_pc_bin_gap_pct,
+                "dataQualitySuspect": data_quality_suspect,
+                "realPrice": {
+                    "medianSold24h": median_24h,
+                    "medianSold7d": median_7d,
+                    "sampleSize24h": n_24h,
+                    "sampleSize7d": r["n_7d"] or 0,
+                },
+                "divergencePct24h": divergence_pct_24h,
+                "liquidity": {
+                    "salesLast1h": r["n_1h"] or 0,
+                    "salesLast24h": n_24h,
+                    "salesPerHour24h": round(n_24h / 24.0, 2),
+                },
+                "volatility": {
+                    "stddev24h": stddev_24h,
+                    "stddev7d": float(r["stddev_7d"]) if r["stddev_7d"] is not None else None,
+                    "coefficientOfVariation24h": cv_24h,
+                },
+                "snipeIndex24h": snipe_index_24h,
+                "taxAwareMargin": margin,
+            }
+
+        return {"items": items}
+    except Exception:
+        return {"items": {}}
+
+
+@router.get("/{card_id}")
+async def get_player(card_id: str, conn = Depends(get_player_db)):
+    """
+    Return a single player's metadata from fut_players by card_id.
+    """
+    row = await conn.fetchrow(
+        """
+        SELECT card_id, name, rating, version, image_url, club, league, nation, position, altposition, price, price_num,
+               games_played_console, games_played_pc, avg_goals_console, avg_goals_pc,
+               top_chem_style_console, top_chem_style_pc,
+               card_bg_image, card_cutout_image, card_cutout_type, card_name, player_url,
+               pace, shooting, passing, dribbling, defending, physicality,
+               nation_image, league_image, club_image,
+               generated_card_url, generated_card_at, generated_card_status, generated_card_flagged
+        FROM fut_players
+        WHERE card_id::text = $1
+        """,
+        str(card_id),
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Player not found")
+    d = dict(row)
+    d["card_id"] = int(d["card_id"])
+    # NUMERIC columns come back as Decimal, which the JSON encoder can't
+    # serialize directly - same pattern as the market-metrics endpoint.
+    if d["avg_goals_console"] is not None:
+        d["avg_goals_console"] = float(d["avg_goals_console"])
+    if d["avg_goals_pc"] is not None:
+        d["avg_goals_pc"] = float(d["avg_goals_pc"])
+
+    if d["generated_card_status"] != "ready" or d["generated_card_flagged"]:
+        pool = await get_player_pool()
+        await ensure_cards_requested(pool, [str(d["card_id"])])
+
+    return d
+
+@router.get("/{card_id}/meta")
+async def get_player_meta(card_id: str, conn = Depends(get_player_db)):
+    """
+    Small alias for metadata (same as GET /{card_id}) to keep clients flexible.
+    """
+    return await get_player(card_id, conn)  # type: ignore[arg-type]
+
+@router.get("/{card_id}/price")
+async def get_player_price_route(
+    card_id: int,
+    platform: str = Query("ps", description="ps|xbox|pc|console"),
+    conn = Depends(get_player_db),
+):
+    """
+    Return latest price preferring local data:
+      1) fut_candles last close (per platform)
+      2) fut_players.price_num snapshot
+      3) FUT.GG currentPrice (fallback)
+    """
+    plat = _plat(platform)
+
+    # 1) Try fut_candles (latest close) with correct per-platform filter
+    try:
+        where: List[str] = ["player_card_id::text = $1"]
+        params: List[Any] = [str(card_id)]
+
+        if plat == "ps":
+            where.append("platform IN ('ps','playstation','console')")
+        else:
+            params.append(plat)
+            where.append(f"platform = ${len(params)}")
+
+        sql = f"""
+            SELECT close, open_time
+            FROM fut_candles
+            WHERE {' AND '.join(where)}
+            ORDER BY open_time DESC
+            LIMIT 1
+        """
+        row = await conn.fetchrow(sql, *params)
+        if row and row["close"] is not None:
+            return {
+                "card_id": card_id,
+                "platform": plat,
+                "price": int(row["close"]),
+                "isExtinct": False,
+                "updatedAt": row["open_time"],
+                "source": "candles",
+            }
+    except Exception:
+        pass
+
+    # 2) fut_players snapshot
+    try:
+        row = await conn.fetchrow(
+            """
+            SELECT price_num, updated_at
+            FROM fut_players
+            WHERE card_id::text = $1
+            """,
+            str(card_id),
+        )
+        if row and row["price_num"] is not None:
+            return {
+                "card_id": card_id,
+                "platform": plat,
+                "price": int(row["price_num"]),
+                "isExtinct": False,
+                "updatedAt": row["updated_at"],
+                "source": "players",
+            }
+    except Exception:
+        pass
+
+    # 3) futbin.com live fetch (on-demand, freshest available - seconds old).
+    try:
+        player_url = await conn.fetchval(
+            "SELECT player_url FROM fut_players WHERE card_id::text = $1",
+            str(card_id),
+        )
+        if player_url:
+            price = await fetch_price_by_url(player_url, plat)
+            if price is not None:
+                return {
+                    "card_id": card_id,
+                    "platform": plat,
+                    "price": price,
+                    "isExtinct": False,
+                    "updatedAt": None,
+                    "source": "futbin",
+                }
+    except Exception:
+        pass
+
+    return {
+        "card_id": card_id,
+        "platform": plat,
+        "price": None,
+        "isExtinct": False,
+        "updatedAt": None,
+        "source": "none",
+    }
+
+
+@router.get("/{card_id}/history")
+async def get_player_history_route(
+    card_id: int,
+    platform: str = Query("ps", description="ps|xbox|pc|console"),
+    tf: str = Query("today", description="today|24h|7d|30d|all"),
+    conn = Depends(get_player_db),
+):
+    """
+    Return OHLC candles for a player.
+    Order: futbin-backed service first; if empty, fall back to fut_candles.
+    Includes 'ts' (epoch seconds) + 'iso' for robust client parsing.
+    """
+    plat = _plat(platform)
+
+    # 1) Try futbin-backed service (get_price_history returns {"points": [...]})
+    try:
+        data = await get_price_history(card_id, plat, tf)
+        points = data.get("points") if isinstance(data, dict) else None
+        if points:
+            candles = []
+            for pt in points:
+                price = pt.get("price")
+                iso = pt.get("t")
+                if price is None or not iso:
+                    continue
+                try:
+                    ts = int(datetime.fromisoformat(iso).timestamp())
+                except Exception:
+                    continue
+                candles.append({
+                    "ts": ts,
+                    "iso": iso,
+                    "open_time": iso,  # compat
+                    "open": int(price),
+                    "high": int(price),
+                    "low": int(price),
+                    "close": int(price),
+                })
+            if candles:
+                return {
+                    "card_id": card_id,
+                    "platform": plat,
+                    "tf": tf,
+                    "history": candles,
+                    "source": "futbin",
+                }
+    except Exception:
+        pass  # fall through
+
+    # 2) DB fallback
+    try:
+        tf_map = {
+            "today": "2 days",
+            "24h":  "1 day",
+            "7d":   "7 days",
+            "30d":  "30 days",
+            "all":  None,
+        }
+        window = tf_map.get(tf, "2 days")
+
+        where: List[str] = ["player_card_id::text = $1"]
+        params: List[Any] = [str(card_id)]
+
+        if plat == "ps":
+            where.append("platform IN ('ps','playstation','console')")
+        else:
+            params.append(plat)
+            where.append(f"platform = ${len(params)}")
+
+        if window:
+            params.append(window)  # e.g. "24 hours"
+            where.append(f"open_time >= now() - (${len(params)}::interval)")
+
+        sql = f"""
+            SELECT open_time, open, high, low, close
+            FROM fut_candles
+            WHERE {' AND '.join(where)}
+            ORDER BY open_time ASC
+            LIMIT 2000
+        """
+        rows = await conn.fetch(sql, *params)
+
+        candles = [
+            {
+                "ts":  int(r["open_time"].timestamp()),
+                "iso": r["open_time"].isoformat(),
+                "open_time": r["open_time"].isoformat(),  # compat
+                "open":   int(r["open"])   if r["open"]   is not None else None,
+                "high":   int(r["high"])   if r["high"]   is not None else None,
+                "low":    int(r["low"])    if r["low"]    is not None else None,
+                "close":  int(r["close"])  if r["close"]  is not None else None,
+            }
+            for r in rows
+        ]
+
+        if not candles:
+            where2: List[str] = ["player_card_id::text = $1"]
+            params2: List[Any] = [str(card_id)]
+            if plat == "ps":
+                where2.append("platform IN ('ps','playstation','console')")
+            else:
+                params2.append(plat)
+                where2.append(f"platform = ${len(params2)}")
+
+            sql2 = f"""
+                SELECT open_time, open, high, low, close
+                FROM fut_candles
+                WHERE {' AND '.join(where2)}
+                ORDER BY open_time ASC
+                LIMIT 2000
+            """
+            rows = await conn.fetch(sql2, *params2)
+            candles = [
+                {
+                    "ts":  int(r["open_time"].timestamp()),
+                    "iso": r["open_time"].isoformat(),
+                    "open_time": r["open_time"].isoformat(),
+                    "open": int(r["open"]) if r["open"] is not None else None,
+                    "high": int(r["high"]) if r["high"] is not None else None,
+                    "low":  int(r["low"])  if r["low"]  is not None else None,
+                    "close":int(r["close"])if r["close"]is not None else None,
+                }
+                for r in rows
+            ]
+
+        return {
+            "card_id": card_id,
+            "platform": plat,
+            "tf": tf,
+            "history": candles,
+            "source": "candles",
+        }
+    except Exception:
+        return {"card_id": card_id, "platform": plat, "tf": tf, "history": [], "source": "none"}
+
+
+@router.get("/{card_id}/bin-history")
+async def get_player_bin_history_route(
+    card_id: int,
+    platform: Optional[str] = Query(None, description="ps|xbox|pc|console - omit for both markets"),
+    limit: int = Query(200, ge=1, le=2000),
+    conn = Depends(get_player_db),
+):
+    """
+    Timeline of lowest-BIN snapshots from bin_history (populated by the
+    separate auto_sync bin_sales_history_sync.py worker every 10 minutes -
+    this endpoint only reads it, it never writes). Each row is one point in
+    time; nothing is ever overwritten on the collector side, so this can
+    return the same price repeated across many captured_at timestamps if
+    the market hasn't moved.
+    """
+    plat = _plat(platform) if platform else None
+    try:
+        where: List[str] = ["player_id = $1"]
+        params: List[Any] = [card_id]
+        if plat:
+            params.append(plat)
+            where.append(f"platform = ${len(params)}")
+        params.append(limit)
+
+        sql = f"""
+            SELECT platform, lowest_bin, captured_at
+            FROM bin_history
+            WHERE {' AND '.join(where)}
+            ORDER BY captured_at DESC
+            LIMIT ${len(params)}
+        """
+        rows = await conn.fetch(sql, *params)
+        points = [
+            {
+                "platform": r["platform"],
+                "lowestBin": r["lowest_bin"],
+                "capturedAt": r["captured_at"].isoformat(),
+            }
+            for r in rows
+        ]
+        return {"card_id": card_id, "platform": plat, "points": points}
+    except Exception:
+        # bin_history/sales_history live in the same DB as fut_players but
+        # are populated by a separate service - if that service's tables
+        # somehow aren't there yet (fresh DB, not deployed), fail soft
+        # rather than 500 a page that's otherwise working fine.
+        return {"card_id": card_id, "platform": plat, "points": []}
+
+
+@router.get("/{card_id}/sales-history")
+async def get_player_sales_history_route(
+    card_id: int,
+    limit: int = Query(50, ge=1, le=500),
+    conn = Depends(get_player_db),
+):
+    """
+    Real completed sales from sales_history (populated by the same
+    bin_sales_history_sync.py worker, deduped on (player_id, sold_at,
+    sold_price) at write time - read-only here). PS/Xbox market only, per
+    the collector's own scope. Most recent first.
+    """
+    try:
+        rows = await conn.fetch(
+            """
+            SELECT listed_price, sold_price, ea_tax, net_price, sold_at, captured_at
+            FROM sales_history
+            WHERE player_id = $1
+            ORDER BY sold_at DESC
+            LIMIT $2
+            """,
+            card_id, limit,
+        )
+        sales = [
+            {
+                "listedPrice": r["listed_price"],
+                "soldPrice": r["sold_price"],
+                "eaTax": r["ea_tax"],
+                "netPrice": r["net_price"],
+                "soldAt": r["sold_at"].isoformat(),
+                "capturedAt": r["captured_at"].isoformat(),
+            }
+            for r in rows
+        ]
+        return {"card_id": card_id, "platform": "ps", "sales": sales}
+    except Exception:
+        return {"card_id": card_id, "platform": "ps", "sales": []}
+
+
+@router.get("/{card_id}/sales-candles")
+async def get_player_sales_candles_route(
+    card_id: int,
+    bucket_hours: float = Query(1, gt=0, le=24, description="candle width in hours"),
+    days: int = Query(7, ge=1, le=30, description="lookback window in days"),
+    conn = Depends(get_player_db),
+):
+    """
+    Real OHLC candles built from actual completed sales (sales_history),
+    not the BIN-snapshot line the frontend used to show. Also returns the
+    raw sale points in the same window so the chart can overlay individual
+    sale markers on top of the candles. PS market only, per the collector's
+    scope.
+    """
+    try:
+        bucket_seconds = bucket_hours * 3600
+        rows = await conn.fetch(
+            """
+            WITH bucketed AS (
+                SELECT
+                    to_timestamp(floor(extract(epoch FROM sold_at) / $2::float) * $2::float) AS bucket_start,
+                    sold_price,
+                    sold_at,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY floor(extract(epoch FROM sold_at) / $2::float)
+                        ORDER BY sold_at ASC
+                    ) AS rn_open,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY floor(extract(epoch FROM sold_at) / $2::float)
+                        ORDER BY sold_at DESC
+                    ) AS rn_close
+                FROM sales_history
+                WHERE player_id = $1 AND sold_at >= NOW() - make_interval(days => $3)
+            )
+            SELECT
+                bucket_start,
+                MAX(CASE WHEN rn_open = 1 THEN sold_price END) AS open,
+                MAX(sold_price) AS high,
+                MIN(sold_price) AS low,
+                MAX(CASE WHEN rn_close = 1 THEN sold_price END) AS close,
+                COUNT(*) AS volume
+            FROM bucketed
+            GROUP BY bucket_start
+            ORDER BY bucket_start ASC
+            """,
+            card_id, bucket_seconds, days,
+        )
+        candles = [
+            {
+                "time": int(r["bucket_start"].timestamp()),
+                "open": r["open"],
+                "high": r["high"],
+                "low": r["low"],
+                "close": r["close"],
+                "volume": r["volume"],
+            }
+            for r in rows
+        ]
+
+        # Capped well below what a high-liquidity card can produce (seen up
+        # to ~12k sales/day in production) - beyond this, individual markers
+        # would just paint a solid line on top of the candles instead of
+        # conveying anything; the candle bodies/wicks already are the real
+        # sale data at that volume, just aggregated.
+        sale_rows = await conn.fetch(
+            """
+            SELECT sold_price, sold_at
+            FROM sales_history
+            WHERE player_id = $1 AND sold_at >= NOW() - make_interval(days => $2)
+            ORDER BY sold_at ASC
+            LIMIT 300
+            """,
+            card_id, days,
+        )
+        sales = [
+            {"time": int(r["sold_at"].timestamp()), "price": r["sold_price"]}
+            for r in sale_rows
+        ]
+
+        return {"card_id": card_id, "platform": "ps", "bucketHours": bucket_hours, "candles": candles, "sales": sales}
+    except Exception:
+        return {"card_id": card_id, "platform": "ps", "bucketHours": bucket_hours, "candles": [], "sales": []}
+
+
+@router.get("/{card_id}/backtest", dependencies=[Depends(require_feature("backtest"))])
+async def get_player_backtest_route(
+    card_id: int,
+    buy_below: float = Query(..., gt=0, description="simulate buying whenever a sale clears at or below this price"),
+    hold_sales: int = Query(1, ge=1, le=20, description="sell at the Nth sale after the buy (1 = the very next sale)"),
+    days: int = Query(30, ge=1, le=30, description="lookback window in days"),
+    conn = Depends(get_player_db),
+):
+    """
+    Backtests a simple flip rule against real completed sales - something
+    no BIN-only price site can offer, since it requires actual transaction
+    history: "whenever this card sold at or below X, what if I'd bought it
+    and sold at the Nth sale after that, net of EA's tax?" Bounded to the
+    last 5000 sales in the window so a high-liquidity card doesn't force an
+    unbounded LEAD() window scan.
+    """
+    try:
+        rows = await conn.fetch(
+            """
+            WITH recent AS (
+                SELECT sold_price, sold_at
+                FROM sales_history
+                WHERE player_id = $1 AND sold_at >= NOW() - make_interval(days => $4)
+                ORDER BY sold_at DESC
+                LIMIT 5000
+            ),
+            base AS (
+                SELECT
+                    sold_price AS buy_price,
+                    sold_at AS buy_time,
+                    LEAD(sold_price, $3) OVER (ORDER BY sold_at) AS sell_price,
+                    LEAD(sold_at, $3) OVER (ORDER BY sold_at) AS sell_time
+                FROM recent
+            )
+            SELECT
+                buy_price, buy_time, sell_price, sell_time,
+                (sell_price * 0.95) AS net_sell,
+                (sell_price * 0.95 - buy_price) AS profit
+            FROM base
+            WHERE buy_price <= $2 AND sell_price IS NOT NULL
+            ORDER BY buy_time ASC
+            """,
+            card_id, buy_below, hold_sales, days,
+        )
+
+        if not rows:
+            return {
+                "card_id": card_id,
+                "rule": {"buyBelow": buy_below, "holdSales": hold_sales, "days": days},
+                "trades": [],
+                "summary": None,
+            }
+
+        profits = [float(r["profit"]) for r in rows]
+        wins = [p for p in profits if p > 0]
+        total_profit = sum(profits)
+        n = len(profits)
+
+        trades = [
+            {
+                "buyAt": r["buy_price"],
+                "buyTime": r["buy_time"].isoformat(),
+                "sellAt": r["sell_price"],
+                "sellTime": r["sell_time"].isoformat(),
+                "netSell": round(float(r["net_sell"])),
+                "profitCoins": round(float(r["profit"])),
+                "profitPct": round(float(r["profit"]) / r["buy_price"] * 100, 2) if r["buy_price"] else None,
+            }
+            for r in rows[-100:]  # most recent 100 for display; summary covers all
+        ]
+
+        return {
+            "card_id": card_id,
+            "rule": {"buyBelow": buy_below, "holdSales": hold_sales, "days": days},
+            "trades": trades,
+            "summary": {
+                "tradeCount": n,
+                "winCount": len(wins),
+                "winRate": round(len(wins) / n * 100, 1),
+                "totalProfitCoins": round(total_profit),
+                "avgProfitCoins": round(total_profit / n),
+                "bestTradeCoins": round(max(profits)),
+                "worstTradeCoins": round(min(profits)),
+            },
+        }
+    except Exception:
+        return {
+            "card_id": card_id,
+            "rule": {"buyBelow": buy_below, "holdSales": hold_sales, "days": days},
+            "trades": [],
+            "summary": None,
+        }
+
+
+@router.get("/{card_id}/lazy-buyer-score")
+async def get_player_lazy_buyer_score_route(
+    card_id: int,
+    conn = Depends(get_player_db),
+):
+    """
+    "Lazy Buyer Odds" (LBO): how often this card's sales in the last 7
+    days sold for more than the PS BIN price that was actually live *at
+    the moment of that sale* - not just compared to today's BIN snapshot,
+    which would misjudge every card whose price has moved since (a sale
+    from Monday against Monday's BIN, not Friday's) - benchmarked against
+    the same rate across the whole tracked (Gold Rare) pool. Confidence
+    Score is this card's percentile rank on a blended, cross-pool
+    normalized score (70% LBO + 20% sales volume + 10% games played, or
+    70/30 when games-played coverage is missing for this card - see
+    bin_sales_history_sync.py's tiered scrape coverage). Sales volume and
+    the data-quality gate come from fair_value_mv, so this inherits that
+    matview's existing 5-minute refresh cadence rather than adding a
+    second one; the LBO calculation itself reads bin_history directly
+    since it needs the full timestamped snapshot history, not just the
+    matview's single current_bin column.
+
+    Final Score itself is intentionally not returned - only used
+    internally to produce the Confidence Score ranking. The whole pool is
+    computed and cached together (see _lbo_pool_cache) rather than
+    per-request, since ranking one card requires ranking all of them.
+    """
+    pool = await _get_lazy_buyer_pool(conn)
+    row = pool.get(card_id)
+    if not row:
+        return {
+            "card_id": card_id,
+            "available": False,
+            "reason": "insufficient_sales_history",
+        }
+    return {
+        "card_id": card_id,
+        "available": True,
+        "lboRate7d": row["lboRate7d"],
+        "poolAvgLboRate7d": row["poolAvgLboRate7d"],
+        "sampleSize7d": row["sampleSize7d"],
+        "confidenceScore": row["confidenceScore"],
+    }
+
+
+async def _get_lazy_buyer_pool(conn) -> Dict[int, Dict[str, Any]]:
+    """Whole-pool Lazy Buyer Score computation, cached in-process for
+    _LBO_CACHE_TTL_SECONDS. Returns {card_id: {...}} for every card that
+    clears the sample-size/quality gate; cards not present didn't clear it."""
+    global _lbo_pool_cache, _lbo_pool_cache_at
+    now = time.monotonic()
+    if _lbo_pool_cache and (now - _lbo_pool_cache_at) < _LBO_CACHE_TTL_SECONDS:
+        return _lbo_pool_cache
+
+    rows = await conn.fetch(
+        """
+        WITH bin_snapshots AS (
+            SELECT player_id AS card_id, captured_at, lowest_bin
+            FROM bin_history
+            WHERE platform = 'ps' AND lowest_bin IS NOT NULL
+        ),
+        sales_with_bin AS (
+            SELECT sh.player_id AS card_id, sh.sold_price, bh.lowest_bin AS bin_at_sale
+            FROM sales_history sh
+            JOIN LATERAL (
+                SELECT bs.lowest_bin
+                FROM bin_snapshots bs
+                WHERE bs.card_id = sh.player_id AND bs.captured_at <= sh.sold_at
+                ORDER BY bs.captured_at DESC
+                LIMIT 1
+            ) bh ON true
+            WHERE sh.sold_at >= NOW() - INTERVAL '7 days'
+        ),
+        sales_agg AS (
+            SELECT card_id,
+                   COUNT(*) AS n_sales,
+                   COUNT(*) FILTER (WHERE sold_price > bin_at_sale) AS n_above
+            FROM sales_with_bin
+            GROUP BY card_id
+        ),
+        pool AS (
+            SELECT
+                sa.card_id,
+                sa.n_sales,
+                (sa.n_above::numeric / sa.n_sales) AS lbo,
+                fv.sales_7d,
+                COALESCE(fp.games_played_console, fp.games_played_pc) AS games_played
+            FROM sales_agg sa
+            JOIN fair_value_mv fv ON fv.card_id = sa.card_id
+            JOIN fut_players fp ON fp.card_id = sa.card_id
+            WHERE sa.n_sales >= 5 AND NOT fv.data_quality_suspect
+        ),
+        ranked AS (
+            SELECT
+                *,
+                PERCENT_RANK() OVER (ORDER BY lbo) AS lbo_rank,
+                PERCENT_RANK() OVER (ORDER BY sales_7d) AS volume_rank,
+                PERCENT_RANK() OVER (ORDER BY games_played) AS games_rank,
+                AVG(lbo) OVER () AS pool_avg_lbo
+            FROM pool
+        ),
+        scored AS (
+            SELECT
+                *,
+                CASE WHEN games_played IS NOT NULL
+                    THEN 0.7 * lbo_rank + 0.2 * volume_rank + 0.1 * games_rank
+                    ELSE 0.7 * lbo_rank + 0.3 * volume_rank
+                END AS final_score
+            FROM ranked
+        ),
+        confidence AS (
+            SELECT *, PERCENT_RANK() OVER (ORDER BY final_score) AS confidence_score
+            FROM scored
+        )
+        SELECT card_id, n_sales, lbo, pool_avg_lbo, confidence_score
+        FROM confidence
+        """
+    )
+
+    pool_by_card = {
+        r["card_id"]: {
+            "lboRate7d": round(float(r["lbo"]) * 100, 1),
+            "poolAvgLboRate7d": round(float(r["pool_avg_lbo"]) * 100, 1),
+            "sampleSize7d": r["n_sales"],
+            "confidenceScore": round(float(r["confidence_score"]) * 100, 1),
+        }
+        for r in rows
+    }
+    _lbo_pool_cache = pool_by_card
+    _lbo_pool_cache_at = now
+    return _lbo_pool_cache
+
+
+@router.get("/{card_id}/market-metrics")
+async def get_player_market_metrics_route(
+    card_id: int,
+    conn = Depends(get_player_db),
+):
+    """
+    The real numbers a trader needs that plain BIN price doesn't give you,
+    computed from bin_history/sales_history: real sold price vs current
+    BIN, liquidity (sales/hour), volatility (sold-price stddev), a snipe
+    index (how often sales clear well below the trailing median), and a
+    tax-aware margin estimate. sales_history only covers the PS market, so
+    BIN comparisons here use the ps platform to match.
+    """
+    try:
+        bin_rows = await conn.fetch(
+            """
+            SELECT DISTINCT ON (platform) platform, lowest_bin, captured_at
+            FROM bin_history
+            WHERE player_id = $1 AND lowest_bin IS NOT NULL
+            ORDER BY platform, captured_at DESC
+            """,
+            card_id,
+        )
+        current_bin = {r["platform"]: r["lowest_bin"] for r in bin_rows}
+        ps_bin = current_bin.get("ps")
+
+        stats = await conn.fetchrow(
+            """
+            WITH stats AS (
+                SELECT
+                    COUNT(*) FILTER (WHERE sold_at >= NOW() - INTERVAL '1 hour') AS n_1h,
+                    COUNT(*) FILTER (WHERE sold_at >= NOW() - INTERVAL '24 hours') AS n_24h,
+                    COUNT(*) FILTER (WHERE sold_at >= NOW() - INTERVAL '7 days') AS n_7d,
+                    PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY sold_price)
+                        FILTER (WHERE sold_at >= NOW() - INTERVAL '24 hours') AS median_24h,
+                    PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY sold_price)
+                        FILTER (WHERE sold_at >= NOW() - INTERVAL '7 days') AS median_7d,
+                    STDDEV_POP(sold_price) FILTER (WHERE sold_at >= NOW() - INTERVAL '24 hours') AS stddev_24h,
+                    STDDEV_POP(sold_price) FILTER (WHERE sold_at >= NOW() - INTERVAL '7 days') AS stddev_7d
+                FROM sales_history
+                WHERE player_id = $1
+            )
+            SELECT
+                stats.*,
+                (
+                    SELECT COUNT(*) FROM sales_history
+                    WHERE player_id = $1
+                      AND sold_at >= NOW() - INTERVAL '24 hours'
+                      AND sold_price <= stats.median_24h * 0.85
+                ) AS snipe_count_24h
+            FROM stats
+            """,
+            card_id,
+        )
+
+        n_1h = stats["n_1h"] or 0
+        n_24h = stats["n_24h"] or 0
+        n_7d = stats["n_7d"] or 0
+        median_24h = float(stats["median_24h"]) if stats["median_24h"] is not None else None
+        median_7d = float(stats["median_7d"]) if stats["median_7d"] is not None else None
+        stddev_24h = float(stats["stddev_24h"]) if stats["stddev_24h"] is not None else None
+        stddev_7d = float(stats["stddev_7d"]) if stats["stddev_7d"] is not None else None
+        snipe_count_24h = stats["snipe_count_24h"] or 0
+
+        # Same sanity check as fair_value_mv's data_quality_suspect - this
+        # endpoint computes its own stats straight from sales_history and
+        # never goes through that matview, so it needs its own copy of the
+        # guard. Confirmed live: a scraper URL-resolution bug (now fixed)
+        # attributed a card's OWN gold/base card's real sales to its
+        # Star Performer card_id - internally consistent numbers, wildly
+        # wrong card. A median more than 10x off the live BIN in either
+        # direction isn't a real discount/premium, it's a sign this
+        # specific card's data can't be trusted yet.
+        data_quality_suspect = bool(
+            ps_bin and median_24h is not None
+            and (median_24h < ps_bin * 0.1 or median_24h > ps_bin * 10)
+        )
+
+        if data_quality_suspect:
+            median_24h = None
+            median_7d = None
+
+        divergence_pct_24h = None
+        if ps_bin and median_24h is not None:
+            divergence_pct_24h = round((median_24h - ps_bin) / ps_bin * 100, 2)
+
+        # A BIN-listing-price gap only, NOT a fair-value gap: sales_history
+        # is PS-only, so there's no PC-side completed-sale data to back a
+        # "worth" claim on that platform - this must never be labeled as
+        # fair value, only as what each platform's current listings show.
+        pc_bin = current_bin.get("pc")
+        ps_pc_bin_gap_pct = (
+            round((pc_bin - ps_bin) / ps_bin * 100, 2) if ps_bin and pc_bin else None
+        )
+
+        cv_24h = round((stddev_24h or 0) / median_24h, 4) if median_24h else None
+
+        snipe_index_24h = round(snipe_count_24h / n_24h, 3) if n_24h > 0 and not data_quality_suspect else None
+
+        margin = None
+        if ps_bin and median_24h is not None:
+            net_after_tax = median_24h * 0.95
+            est_margin_coins = round(net_after_tax - ps_bin)
+            margin = {
+                "buyAt": ps_bin,
+                "sellAt": round(median_24h),
+                "netAfterTax": round(net_after_tax),
+                "estMarginCoins": est_margin_coins,
+                "estMarginPct": round(est_margin_coins / ps_bin * 100, 2),
+            }
+
+        return {
+            "card_id": card_id,
+            "currentBin": current_bin,
+            "psPcBinGapPct": ps_pc_bin_gap_pct,
+            "dataQualitySuspect": data_quality_suspect,
+            "realPrice": {
+                "medianSold24h": median_24h,
+                "medianSold7d": median_7d,
+                "sampleSize24h": n_24h,
+                "sampleSize7d": n_7d,
+            },
+            "divergencePct24h": divergence_pct_24h,
+            "liquidity": {
+                "salesLast1h": n_1h,
+                "salesLast24h": n_24h,
+                "salesPerHour24h": round(n_24h / 24.0, 2),
+            },
+            "volatility": {
+                "stddev24h": stddev_24h,
+                "stddev7d": stddev_7d,
+                "coefficientOfVariation24h": cv_24h,
+            },
+            "snipeIndex24h": snipe_index_24h,
+            "taxAwareMargin": margin,
+        }
+    except Exception:
+        return {
+            "card_id": card_id,
+            "currentBin": {},
+            "realPrice": {"medianSold24h": None, "medianSold7d": None, "sampleSize24h": 0, "sampleSize7d": 0},
+            "divergencePct24h": None,
+            "liquidity": {"salesLast1h": 0, "salesLast24h": 0, "salesPerHour24h": 0},
+            "volatility": {"stddev24h": None, "stddev7d": None, "coefficientOfVariation24h": None},
+            "snipeIndex24h": None,
+            "taxAwareMargin": None,
+        }

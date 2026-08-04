@@ -1,0 +1,491 @@
+.club-page {
+  min-height: 100vh;
+  padding: 34px clamp(24px, 3vw, 48px) 80px;
+  max-width: 1600px;
+  margin: auto;
+  color: var(--v2-text);
+  background: radial-gradient(circle at 86% 0, rgba(156, 255, 59, 0.045), transparent 28%), var(--v2-bg);
+  font-family: Inter, system-ui, sans-serif;
+}
+.club-hero {
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+  align-items: flex-end;
+  margin-bottom: 28px;
+}
+.club-hero span,
+.eyebrow,
+.panel-title span {
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  color: var(--v2-accent);
+  font-weight: 800;
+}
+.club-hero h1 {
+  font-size: 34px;
+  margin: 6px 0;
+}
+.club-hero p,
+.muted {
+  color: var(--v2-muted);
+  max-width: 680px;
+}
+.club-add,
+.club-empty a {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--v2-accent);
+  color: #07120d;
+  padding: 12px 16px;
+  border-radius:3px;
+  font-weight: 800;
+}
+.club-kpis {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 14px;
+}
+.club-kpi,
+.club-panel,
+.trade-card,
+.achievement,
+.history-table {
+  background: var(--v2-card);
+  border: 1px solid var(--v2-border);
+  border-radius:4px;
+}
+.club-kpi {
+  padding: 18px;
+  display: flex;
+  gap: 14px;
+  align-items: center;
+}
+.club-kpi > span {
+  width: 42px;
+  height: 42px;
+  border-radius:4px;
+  background: color-mix(in srgb, var(--v2-accent) 13%, transparent);
+  display: grid;
+  place-items: center;
+  color: var(--v2-accent);
+}
+.club-kpi small,
+.club-stat span {
+  display: block;
+  color: var(--v2-muted);
+  font-size: 12px;
+}
+.club-kpi strong {
+  font-size: 24px;
+}
+.club-summary-grid {
+  display: grid;
+  grid-template-columns: 1.6fr 1fr;
+  gap: 14px;
+  margin-top: 14px;
+}
+.club-panel {
+  padding: 20px;
+}
+.panel-title h2 {
+  margin: 5px 0 16px;
+}
+.account-stats {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 18px;
+}
+.club-stat strong {
+  font-size: 18px;
+}
+.profit-chart {
+  height: 230px;
+  color: var(--v2-accent);
+}
+.profit-chart svg {
+  width: 100%;
+  height: 180px;
+  overflow: visible;
+}
+.profit-chart > div {
+  display: flex;
+  justify-content: space-between;
+  color: var(--v2-muted);
+  font-size: 12px;
+}
+.profit-chart strong {
+  color: var(--v2-text);
+  font-size: 20px;
+}
+.club-tabs {
+  display: flex;
+  gap: 8px;
+  margin: 26px 0 14px;
+  overflow: auto;
+}
+.club-tabs button {
+  border: 1px solid var(--v2-border);
+  background: transparent;
+  color: var(--v2-muted);
+  padding: 10px 14px;
+  border-radius:3px;
+  white-space: nowrap;
+}
+.club-tabs button.active {
+  background: var(--v2-card);
+  color: var(--v2-accent);
+  border-color: var(--v2-accent);
+}
+.club-tabs span {
+  background: rgba(255, 255, 255, 0.08);
+  padding: 2px 6px;
+  border-radius:999px;
+  margin-left: 5px;
+}
+.trade-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+}
+.trade-card {
+  padding: 18px;
+}
+.trade-top,
+.trade-meta,
+.club-modal-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.trade-top span {
+  font-size: 12px;
+  color: var(--v2-muted);
+}
+.trade-top h3 {
+  font-size: 20px;
+  margin: 4px 0;
+}
+.trade-top > b {
+  font-size: 10px;
+  color: var(--v2-accent);
+  border: 1px solid currentColor;
+  padding: 5px 8px;
+  border-radius:999px;
+}
+.trade-numbers {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 14px;
+  padding: 16px 0;
+  border-block: 1px solid var(--v2-border);
+}
+.trade-verdict {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--v2-border);
+}
+.trade-verdict p {
+  font-size: 12px;
+  color: var(--v2-muted);
+  margin: 0;
+}
+.trade-meta {
+  font-size: 12px;
+  color: var(--v2-muted);
+  padding: 12px 0;
+}
+.trade-meta span {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.close-trade,
+.club-modal-actions button,
+.club-success button {
+  width: 100%;
+  background: var(--v2-accent);
+  color: #07120d;
+  border: 0;
+  border-radius:3px;
+  padding: 11px;
+  font-weight: 800;
+}
+.history-head,
+.history-row {
+  display: grid;
+  grid-template-columns: 2fr repeat(4, 1fr);
+  gap: 12px;
+  align-items: center;
+  padding: 14px 18px;
+}
+.history-head {
+  font-size: 11px;
+  color: var(--v2-muted);
+  border-bottom: 1px solid var(--v2-border);
+}
+.history-row {
+  border-bottom: 1px solid var(--v2-border);
+}
+.history-row:last-child {
+  border: 0;
+}
+.history-row small {
+  display: block;
+  color: var(--v2-muted);
+}
+.positive {
+  color: #55d99b;
+}
+.negative {
+  color: #ff6b73;
+}
+.performance-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 14px;
+}
+.performance-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 15px;
+  align-items: center;
+  padding: 13px 0;
+  border-bottom: 1px solid var(--v2-border);
+}
+.performance-row span {
+  display: block;
+  color: var(--v2-muted);
+  font-size: 12px;
+}
+.performance-row em {
+  font-style: normal;
+  color: var(--v2-accent);
+}
+.achievement-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+}
+.achievement {
+  padding: 18px;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 12px;
+  align-items: center;
+  opacity: 0.48;
+}
+.achievement.unlocked {
+  opacity: 1;
+  border-color: color-mix(in srgb, var(--v2-accent) 45%, var(--v2-border));
+}
+.achievement > span {
+  font-size: 28px;
+}
+.achievement h3 {
+  margin: 0;
+}
+.achievement p {
+  margin: 4px 0 0;
+  color: var(--v2-muted);
+  font-size: 13px;
+}
+.club-empty,
+.club-loading {
+  min-height: 280px;
+  display: grid;
+  place-items: center;
+  text-align: center;
+  align-content: center;
+  gap: 10px;
+  background: var(--v2-card);
+  border: 1px dashed var(--v2-border);
+  border-radius:4px;
+}
+.club-empty > span {
+  color: var(--v2-accent);
+}
+.club-empty h2,
+.club-empty p {
+  margin: 0;
+}
+.club-empty p {
+  color: var(--v2-muted);
+  max-width: 460px;
+}
+.club-alert,
+.club-error {
+  color: #ff8b91;
+}
+.club-alert {
+  padding: 12px;
+  border: 1px solid #7e3034;
+  border-radius:3px;
+  margin-bottom: 14px;
+}
+.club-alert button {
+  margin-left: 10px;
+  text-decoration: underline;
+}
+.club-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: rgba(0, 0, 0, 0.76);
+  display: grid;
+  place-items: center;
+  padding: 18px;
+}
+.club-modal {
+  position: relative;
+  width: min(620px, 100%);
+  background: #161616;
+  border: 1px solid var(--v2-border);
+  border-radius:5px;
+  padding: 24px;
+}
+.club-modal-x {
+  position: absolute;
+  right: 16px;
+  top: 16px;
+  color: var(--v2-muted);
+}
+.club-modal-title {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  margin-bottom: 20px;
+}
+.club-modal-title > svg {
+  color: var(--v2-accent);
+}
+.club-modal-title h2 {
+  margin: 3px 0;
+}
+.club-modal-title p {
+  color: var(--v2-muted);
+  margin: 0;
+}
+.club-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 14px;
+}
+.club-form-grid label,
+.close-modal label {
+  display: block;
+}
+.club-form-grid label.wide {
+  grid-column: 1/-1;
+}
+.club-form-grid label > span,
+.close-modal label > span {
+  display: block;
+  font-size: 12px;
+  color: var(--v2-muted);
+  margin-bottom: 6px;
+}
+.club-form-grid em {
+  float: right;
+  font-style: normal;
+}
+.club-form-grid input,
+.club-form-grid select,
+.club-form-grid textarea,
+.close-modal input {
+  width: 100%;
+  background: #0e0e0e;
+  border: 1px solid var(--v2-border);
+  border-radius:3px;
+  padding: 11px;
+  color: var(--v2-text);
+}
+.club-preview,
+.close-breakdown {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+  margin: 16px 0;
+}
+.club-preview > div,
+.close-breakdown > div {
+  padding: 12px;
+  background: #0e0e0e;
+  border-radius:3px;
+}
+.club-preview span {
+  display: block;
+  color: var(--v2-muted);
+  font-size: 11px;
+}
+.club-modal-actions {
+  gap: 10px;
+  margin-top: 16px;
+}
+.club-modal-actions .secondary {
+  background: transparent;
+  color: var(--v2-text);
+  border: 1px solid var(--v2-border);
+}
+.club-success {
+  text-align: center;
+  padding: 30px;
+}
+.club-success > span {
+  width: 60px;
+  height: 60px;
+  margin: auto;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: rgba(85, 217, 138, 0.14);
+  color: #55d99b;
+}
+.close-modal h2 {
+  margin: 5px 0 20px;
+}
+@media (max-width: 1000px) {
+  .club-kpis,
+  .trade-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .club-summary-grid {
+    grid-template-columns: 1fr;
+  }
+  .achievement-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+@media (max-width: 700px) {
+  .club-page {
+    padding: 20px 14px 90px;
+  }
+  .club-hero {
+    display: block;
+  }
+  .club-add {
+    margin-top: 16px;
+  }
+  .club-kpis,
+  .trade-grid,
+  .performance-grid,
+  .achievement-grid {
+    grid-template-columns: 1fr;
+  }
+  .history-table {
+    overflow: auto;
+  }
+  .history-head,
+  .history-row {
+    min-width: 720px;
+  }
+  .club-form-grid {
+    grid-template-columns: 1fr;
+  }
+  .club-form-grid label.wide {
+    grid-column: auto;
+  }
+}

@@ -1,0 +1,23 @@
+.v2-market-freshness {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.3;
+  white-space: normal;
+}
+.v2-market-freshness.is-compact { padding: 3px 8px; font-size: 10px; }
+.v2-market-freshness.is-live {
+  border: 1px solid rgba(57, 255, 138, 0.32);
+  background: rgba(57, 255, 138, 0.08);
+  color: #7bffc1;
+}
+.v2-market-freshness.is-stale {
+  border: 1px solid rgba(242, 201, 76, 0.4);
+  background: rgba(242, 201, 76, 0.1);
+  color: #f2c94c;
+}
+.v2-market-freshness svg { flex: 0 0 auto; }

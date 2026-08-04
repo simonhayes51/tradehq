@@ -1,0 +1,439 @@
+.v2-destination {
+  min-height: 100vh;
+  padding: 44px clamp(20px, 4vw, 64px) 80px;
+  background:
+    radial-gradient(circle at 80% 0, rgba(156, 255, 59, 0.06), transparent 30%),
+    #101010;
+  color: #f8f8f8;
+  font-family: Inter, system-ui, sans-serif;
+}
+.v2-page-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 28px;
+}
+.v2-page-head > div > span {
+  color: #3bffa4;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+}
+.v2-page-head h1 {
+  margin: 6px 0 8px;
+  font-size: clamp(34px, 5vw, 56px);
+  letter-spacing: -0.045em;
+}
+.v2-page-head p {
+  max-width: 680px;
+  margin: 0;
+  color: #a2a2a2;
+  line-height: 1.6;
+}
+.v2-search-box {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: 720px;
+  height: 56px;
+  padding: 0 17px;
+  border: 1px solid #3e3e3e;
+  border-radius:4px;
+  background: #171717;
+  color: #a6a6a6;
+}
+.v2-search-box input {
+  flex: 1;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: #fff;
+  font-size: 17px;
+}
+.v2-page-state {
+  display: grid;
+  place-items: center;
+  min-height: 260px;
+  margin-top: 20px;
+  padding: 30px;
+  border: 1px dashed #3e3e3e;
+  border-radius:4px;
+  color: #909090;
+  text-align: center;
+}
+.v2-page-state p {
+  margin: 10px 0;
+}
+.v2-page-state a,
+.v2-page-state button,
+.v2-primary-link,
+.v2-icon-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 10px 14px;
+  border: 1px solid #3bffa4;
+  border-radius:3px;
+  background: #3bffa4;
+  color: #101010;
+  font-weight: 850;
+  text-decoration: none;
+}
+.v2-player-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 22px;
+}
+.v2-player-result {
+  display: grid;
+  grid-template-columns: 74px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 16px;
+  min-height: 112px;
+  padding: 12px 18px;
+  border: 1px solid #343434;
+  border-radius:4px;
+  background: #161616;
+  color: #fff;
+  text-decoration: none;
+}
+.v2-player-result:hover,
+.v2-market-row:hover {
+  border-color: #487560;
+  background: #102019;
+}
+.v2-player-result > img {
+  width: 68px;
+  height: 86px;
+  object-fit: contain;
+}
+.v2-player-result div span,
+.v2-player-result div small {
+  display: block;
+  color: #909090;
+  font-size: 11px;
+}
+.v2-player-result div strong {
+  display: block;
+  margin: 4px 0;
+  font-size: 17px;
+}
+.coin-value {
+  display: inline-flex !important;
+  align-items: center;
+  gap: 0.34em;
+  white-space: nowrap;
+}
+.coin-value img {
+  width: 0.72em !important;
+  height: 0.72em !important;
+  min-width: 12px;
+  object-fit: contain;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.4));
+}
+.coin-value-empty {
+  color: #909090;
+}
+.v2-segmented {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 18px;
+}
+.v2-segmented button {
+  padding: 10px 18px;
+  border: 1px solid #3e3e3e;
+  border-radius:3px;
+  background: #161616;
+  color: #a6a6a6;
+  font-weight: 800;
+}
+.v2-segmented button.active {
+  border-color: #3bffa4;
+  background: #14291f;
+  color: #fff;
+}
+.v2-icon-action {
+  background: #171717;
+  color: #fff;
+  border-color: #3e3e3e;
+}
+.v2-market-list {
+  border: 1px solid #343434;
+  border-radius:4px;
+  overflow: hidden;
+  background: #161616;
+}
+.v2-market-row {
+  display: grid;
+  grid-template-columns: 42px 64px minmax(0, 1fr) 130px 100px;
+  align-items: center;
+  gap: 14px;
+  min-height: 88px;
+  padding: 10px 18px;
+  border-bottom: 1px solid #2e2e2e;
+  color: #fff;
+  text-decoration: none;
+}
+.v2-market-row:last-child {
+  border-bottom: 0;
+}
+.v2-market-row > img {
+  width: 58px;
+  height: 68px;
+  object-fit: contain;
+}
+.v2-market-rank {
+  color: #767676;
+  font-size: 12px;
+  font-weight: 900;
+}
+.v2-market-row small {
+  display: block;
+  margin-top: 4px;
+  color: #909090;
+}
+.v2-market-row > b {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+.positive {
+  color: #3bffa4 !important;
+}
+.negative {
+  color: #ff6574 !important;
+}
+.v2-watch-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+.v2-watch-card {
+  padding: 20px;
+  border: 1px solid #343434;
+  border-radius:15px;
+  background: #161616;
+}
+.v2-watch-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #3bffa4;
+}
+.v2-watch-top span {
+  color: #a6a6a6;
+  font-size: 12px;
+}
+.v2-watch-top small {
+  margin-left: auto;
+  color: #767676;
+}
+.v2-watch-card a {
+  color: #fff;
+  text-decoration: none;
+}
+.v2-watch-card h2 {
+  margin: 18px 0;
+  font-size: 21px;
+}
+.v2-watch-price,
+.v2-watch-change {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 0;
+  border-top: 1px solid #2e2e2e;
+  color: #909090;
+}
+.v2-watch-price .coin-value {
+  color: #fff;
+  font-size: 20px;
+  font-weight: 900;
+}
+.v2-watch-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 14px;
+}
+.v2-watch-actions button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid #3e3e3e;
+  border-radius:2px;
+  background: #1c1c1c;
+  color: #fff;
+}
+.v2-watch-actions .danger {
+  color: #ff8792;
+}
+.v2-root .coin-value {
+  font-variant-numeric: tabular-nums;
+}
+@media (max-width: 1000px) {
+  .v2-watch-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 700px) {
+  .v2-destination {
+    padding: 28px 14px 90px;
+  }
+  .v2-page-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .v2-player-grid,
+  .v2-watch-grid {
+    grid-template-columns: 1fr;
+  }
+  .v2-market-row {
+    grid-template-columns: 28px 48px minmax(0, 1fr) auto;
+  }
+  .v2-market-row > img {
+    width: 44px;
+    height: 56px;
+  }
+  .v2-market-row > .coin-value {
+    display: none !important;
+  }
+  .v2-market-row > b {
+    font-size: 12px;
+  }
+  .v2-player-result {
+    grid-template-columns: 60px minmax(0, 1fr) auto;
+  }
+}
+
+/* Shared destination-page polish. */
+.v2-destination {
+  max-width: 1600px;
+  margin: 0 auto;
+  padding: 34px clamp(24px, 3vw, 48px) 80px;
+  background: radial-gradient(circle at 86% 0, rgba(156, 255, 59, 0.045), transparent 28%), var(--v2-bg);
+}
+.v2-page-head { align-items: center; margin-bottom: 24px; }
+.v2-page-head > div > span { display: inline-flex; align-items: center; color: #a6a6a6; }
+.v2-page-head h1 { margin: 5px 0 6px; font-size: clamp(36px, 4vw, 52px); line-height: 1; letter-spacing: -0.04em; }
+.v2-page-head p { font-size: 15px; line-height: 1.5; }
+.v2-search-box { max-width: 900px; height: 58px; border-color: #404040; background: #161616; box-shadow: 0 12px 30px rgba(0,0,0,.14); }
+.v2-search-box:focus-within { border-color: #3bffa4; box-shadow: 0 0 0 3px rgba(156,255,59,.08); }
+.v2-page-state.compact { min-height: 120px; }
+.v2-player-start { display: grid; grid-template-columns: minmax(0,1.3fr) minmax(280px,.7fr); gap: 1px; max-width: 900px; margin-top: 18px; border: 1px solid #343434; border-radius:4px; overflow: hidden; background: #343434; }
+.v2-player-start > div { padding: 26px; background: #161616; }
+.v2-player-start-copy > span, .v2-search-examples > small { display: flex; align-items: center; gap: 6px; color: #3bffa4; font-size: 10px; font-weight: 900; letter-spacing: .11em; }
+.v2-player-start-copy h2 { margin: 8px 0; font-size: 23px; }
+.v2-player-start-copy p { max-width: 540px; margin: 0; color: #a2a2a2; line-height: 1.6; }
+.v2-search-examples { display: grid; align-content: center; gap: 7px; }
+.v2-search-examples > small { margin-bottom: 3px; color: #909090; }
+.v2-search-examples button { display: flex; align-items: center; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #2e2e2e; color: #e6e6e6; text-align: left; }
+.v2-search-examples button:hover { color: #3bffa4; }
+.v2-player-grid { gap: 10px; max-width: 1180px; }
+.v2-player-result { min-height: 124px; padding: 12px 16px; border-color: #343434; background: linear-gradient(135deg,#171717,#121212); }
+.v2-player-result > img { width: 74px; height: 96px; filter: drop-shadow(0 10px 12px rgba(0,0,0,.36)); }
+.v2-player-result-copy > strong { font-size: 18px; }
+.v2-meta-pills { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 9px; }
+.v2-meta-pills > span { display: inline-flex !important; width: auto !important; margin: 0 !important; padding: 4px 7px; border: 1px solid #424242; border-radius:999px; background: #1e1e1e; color: #bbbbbb !important; font-size: 9px !important; font-weight: 850; line-height: 1; white-space: nowrap; }
+.v2-meta-pills > span:first-child { border-color: rgba(156,255,59,.32); background: rgba(156,255,59,.08); color: #7bffc1 !important; }
+.v2-result-price { text-align: right; }
+.v2-result-price > small { display: block; margin-bottom: 6px; color: #767676; font-size: 9px; font-weight: 900; letter-spacing: .08em; }
+.v2-result-price > .coin-value { font-size: 18px; font-weight: 900; }
+.v2-market-head, .v2-market-row { grid-template-columns: 42px 64px minmax(0,1fr) 150px 110px; }
+.v2-market-head { display: grid; align-items: center; gap: 14px; padding: 10px 18px; border-bottom: 1px solid #343434; color: #767676; font-size: 9px; font-weight: 900; letter-spacing: .09em; text-transform: uppercase; }
+.v2-market-head span:nth-child(4), .v2-market-head span:nth-child(5) { text-align: right; }
+.v2-market-row { min-height: 98px; }
+.v2-market-row > img { width: 62px; height: 76px; filter: drop-shadow(0 8px 9px rgba(0,0,0,.35)); }
+.v2-market-row > div > strong { font-size: 16px; }
+.v2-market-row > .coin-value { justify-content: flex-end; font-size: 17px; font-weight: 850; }
+.v2-market-row.unverified { opacity: .78; }
+.v2-market-row .needs-review { display: flex; align-items: center; justify-content: flex-end; gap: 5px; color: #ffd34d; font-size: 11px; }
+.v2-data-note { display: flex; align-items: center; gap: 8px; margin: 0 0 12px; padding: 10px 12px; border: 1px solid rgba(255,211,77,.25); border-radius:3px; background: rgba(255,211,77,.06); color: #c8b66d; font-size: 12px; }
+.v2-watch-grid { grid-template-columns: repeat(3,minmax(0,1fr)); gap: 12px; }
+.v2-watch-card { display: flex; flex-direction: column; min-height: 360px; padding: 16px; background: linear-gradient(145deg,#171717,#121212); }
+.v2-watch-top { font-size: 10px; font-weight: 900; letter-spacing: .08em; }
+.v2-watch-identity { display: grid; grid-template-columns: 86px minmax(0,1fr) auto; align-items: center; gap: 12px; min-height: 126px; margin-top: 8px; }
+.v2-watch-identity > img { width: 82px; height: 108px; object-fit: contain; filter: drop-shadow(0 10px 12px rgba(0,0,0,.38)); }
+.v2-watch-card .v2-watch-identity h2 { margin: 0; font-size: 19px; line-height: 1.15; }
+.v2-watch-identity > svg { color: #767676; }
+.v2-watch-values { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
+.v2-watch-values > div { padding: 11px; border: 1px solid #343434; border-radius:3px; background: #151515; }
+.v2-watch-values span { display: block; margin-bottom: 5px; color: #868686; font-size: 9px; font-weight: 900; letter-spacing: .08em; }
+.v2-watch-values .coin-value { font-size: 17px; font-weight: 900; }
+.v2-watch-change { margin-top: 8px; }
+.v2-watch-actions { margin-top: auto; }
+.v2-watch-actions button { flex: 1; justify-content: center; }
+
+/* Alert UI: header toggle, panel, per-card modal - added onto v2's
+   Watchlist page (already existed on v1's, backend already live). */
+.v2-watch-head-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.v2-alerts-toggle {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 9px 14px; border: 1px solid #3e3e3e; border-radius: 2px;
+  background: #1c1c1c; color: #fff; font-weight: 700; font-size: 13px; cursor: pointer;
+}
+.v2-alerts-toggle:hover { border-color: var(--v2-accent); color: var(--v2-accent); }
+.v2-alerts-count {
+  display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 4px;
+  border-radius: 999px; background: var(--v2-accent); color: #101010; font-size: 11px; font-weight: 900;
+}
+.v2-alerts-panel {
+  margin: 16px 0; padding: 18px; border: 1px solid #343434; border-radius: 4px;
+  background: linear-gradient(145deg,#171717,#121212);
+}
+.v2-alerts-panel h2 { margin: 0 0 12px; font-size: 18px; }
+.v2-alerts-panel ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.v2-alerts-panel li {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
+  padding: 10px 12px; border: 1px solid #2a2a2a; border-radius: 3px; background: #141414; font-size: 13px;
+}
+.v2-alert-detail { margin-top: 4px; color: #868686; font-size: 11px; }
+.v2-alerts-panel .danger { border: 1px solid #3e3e3e; border-radius: 2px; background: transparent; color: #ff8792; padding: 6px 8px; cursor: pointer; }
+
+.v2-modal-backdrop {
+  position: fixed; inset: 0; z-index: 100; background: rgba(0,0,0,.72);
+  display: grid; place-items: center; padding: 18px;
+}
+.v2-modal {
+  width: min(440px, 100%); padding: 22px; border: 1px solid #3e3e3e; border-radius: 4px;
+  background: linear-gradient(145deg,#171717,#121212); box-shadow: 0 30px 80px rgba(0,0,0,.5);
+}
+.v2-modal-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
+.v2-modal-head h2 { margin: 0; font-size: 19px; }
+.v2-modal-close {
+  border: 1px solid #3e3e3e; border-radius: 2px; background: #1c1c1c; color: #fff;
+  width: 30px; height: 30px; cursor: pointer;
+}
+.v2-modal form { display: grid; gap: 14px; }
+.v2-modal label { display: grid; gap: 6px; font-size: 12px; font-weight: 700; color: #b0b0b0; }
+.v2-modal input, .v2-modal select {
+  width: 100%; height: 40px; padding: 0 10px; border: 1px solid #3e3e3e; border-radius: 2px;
+  background: #101010; color: #fff; font-size: 14px; font-weight: 600;
+}
+.v2-modal-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.v2-modal-submit {
+  width: 100%; height: 42px; border: 0; border-radius: 2px; background: var(--v2-accent);
+  color: #101010; font-weight: 900; cursor: pointer;
+}
+.v2-modal-submit:disabled { opacity: .6; cursor: not-allowed; }
+
+@media (max-width: 1100px) { .v2-watch-grid { grid-template-columns: repeat(2,minmax(0,1fr)); } }
+@media (max-width: 700px) {
+  .v2-destination { padding: 24px 14px 90px; }
+  .v2-page-head h1 { font-size: 36px; }
+  .v2-page-head { gap: 16px; }
+  .v2-player-start { grid-template-columns: 1fr; }
+  .v2-player-start > div { padding: 20px; }
+  .v2-player-grid, .v2-watch-grid { grid-template-columns: 1fr; }
+  .v2-player-result { grid-template-columns: 66px minmax(0,1fr); min-height: 112px; }
+  .v2-player-result > img { width: 62px; height: 84px; }
+  .v2-result-price { grid-column: 2; display: flex; align-items: center; gap: 7px; text-align: left; }
+  .v2-result-price > small { margin: 0; }
+  .v2-market-head { display: none; }
+  .v2-market-row { grid-template-columns: 25px 54px minmax(0,1fr) auto; gap: 9px; padding: 9px 10px; }
+  .v2-market-row > img { width: 52px; height: 66px; }
+  .v2-market-row > div > strong { font-size: 14px; }
+  .v2-watch-card { min-height: 340px; }
+}

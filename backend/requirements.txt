@@ -1,0 +1,22 @@
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+asyncpg==0.29.0
+aiohttp==3.9.0
+python-dotenv==1.0.0
+python-multipart==0.0.6
+pydantic
+itsdangerous
+matplotlib
+requests
+beautifulsoup4
+httpx<0.28  # starlette 0.27.x's TestClient breaks on httpx>=0.28 (dropped the `app=` kwarg); unpinned, this silently installed an incompatible httpx and made TestClient-based tests impossible to run
+PyJWT==2.9.0
+stripe
+lightweight-charts
+email-validator==2.2.0
+redis>=5.0
+pytest>=8.0
+boto3>=1.34
+botocore>=1.34
+playwright==1.49.0
+openai==1.54.0  # pinned conservatively; requires httpx<1,>=0.23.0, compatible with the httpx<0.28 pin above

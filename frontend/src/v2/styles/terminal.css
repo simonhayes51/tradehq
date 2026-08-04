@@ -1,0 +1,1632 @@
+/* src/v2/styles/terminal.css
+ *
+ * Literal port of the reference "FC27 Intelligence" terminal design the
+ * user supplied directly (api.ts/App.tsx/main.tsx/styles.css). Class
+ * names and values are kept as given so the visual result matches
+ * exactly - only the top-level global selectors (:root, body, *, bare
+ * button/a/p/h1-h3 tag selectors) are rescoped under .terminal-shell so
+ * this doesn't leak into v1 or other v2 pages sharing this bundle, the
+ * same reason tokens.css scopes everything under .v2-root.
+ */
+.terminal-shell {
+  color-scheme: dark;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: #f8f8f8;
+  font-synthesis: none;
+  text-rendering: geometricPrecision;
+
+  display: grid;
+  grid-template-columns: 206px minmax(0, 1fr);
+  min-height: 100vh;
+  padding: 12px 14px;
+  gap: 14px;
+  background:
+    linear-gradient(90deg, rgba(255, 255, 255, 0.018) 1px, transparent 1px),
+    linear-gradient(rgba(255, 255, 255, 0.018) 1px, transparent 1px),
+    radial-gradient(circle at 20% 0%, rgba(103, 232, 95, 0.08), transparent 28%),
+    radial-gradient(circle at 80% 8%, rgba(85, 131, 255, 0.08), transparent 26%),
+    #080808;
+  background-size: 42px 42px, 42px 42px, auto, auto, auto;
+}
+
+.terminal-shell * {
+  box-sizing: border-box;
+}
+
+.terminal-shell button,
+.terminal-shell input {
+  font: inherit;
+}
+
+.terminal-shell button,
+.terminal-shell a {
+  color: inherit;
+}
+
+.terminal-shell a {
+  text-decoration: none;
+}
+
+.terminal-shell p,
+.terminal-shell h1,
+.terminal-shell h2,
+.terminal-shell h3 {
+  margin: 0;
+}
+
+.terminal-shell .sidebar {
+  /* v1's global src/index.css also defines a bare .sidebar rule with an
+     explicit width - this rule doesn't otherwise touch `width` at all
+     (relying on the grid track to size it, like the reference), so
+     without this, v1's width declaration is the only one in the
+     cascade and wins regardless of this selector's higher specificity. */
+  width: auto;
+  position: sticky;
+  top: 12px;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  height: calc(100vh - 24px);
+  padding: 10px;
+  border: 1px solid rgba(151, 164, 183, 0.16);
+  border-radius:2px;
+  background:
+    linear-gradient(180deg, rgba(16, 24, 34, 0.82), rgba(6, 11, 17, 0.78)),
+    rgba(7, 11, 17, 0.9);
+  box-shadow: 0 22px 80px rgba(0, 0, 0, 0.34);
+}
+
+.terminal-shell .brand-lockup,
+.terminal-shell .nav-item,
+.terminal-shell .upgrade-panel span,
+.terminal-shell .section-heading span,
+.terminal-shell .section-heading button,
+.terminal-shell .analysis-header,
+.terminal-shell .analysis-header span,
+.terminal-shell .analysis-actions,
+.terminal-shell .decision-matrix,
+.terminal-shell .metric-ring-row,
+.terminal-shell .evidence-panel p,
+.terminal-shell .alert-label,
+.terminal-shell .mover,
+.terminal-shell .profile-chip,
+.terminal-shell .icon-button,
+.terminal-shell .decision-proof-row,
+.terminal-shell .signal-foot {
+  display: flex;
+  align-items: center;
+}
+
+.terminal-shell .brand-lockup {
+  gap: 10px;
+  min-height: 44px;
+  padding: 0 4px 10px;
+}
+
+.terminal-shell .brand-mark {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius:2px;
+  color: #07100c;
+  background: linear-gradient(135deg, #8af5c3, #64d29f);
+  box-shadow: 0 0 24px rgba(103, 232, 95, 0.24);
+}
+
+.terminal-shell .brand-lockup strong {
+  font-size: 16px;
+  letter-spacing: 0;
+}
+
+.terminal-shell .nav-list {
+  display: grid;
+  gap: 5px;
+  align-content: start;
+  padding-top: 10px;
+}
+
+.terminal-shell .nav-item {
+  position: relative;
+  gap: 10px;
+  min-height: 42px;
+  padding: 0 10px;
+  border-radius:2px;
+  color: #e0e0e0;
+  transition: background 180ms ease, color 180ms ease, transform 180ms ease;
+}
+
+.terminal-shell .nav-item:hover,
+.terminal-shell .nav-item.active {
+  color: #ffffff;
+  background: linear-gradient(90deg, rgba(103, 232, 95, 0.15), rgba(255, 255, 255, 0.04));
+}
+
+.terminal-shell .nav-item.active::before {
+  content: "";
+  position: absolute;
+  left: -10px;
+  width: 2px;
+  height: 32px;
+  border-radius:999px;
+  background: #5fe8a8;
+}
+
+.terminal-shell .nav-item svg {
+  color: #d5e2f4;
+}
+
+.terminal-shell .nav-item.active svg {
+  color: #5fe8a8;
+}
+
+.terminal-shell .nav-item em {
+  margin-left: auto;
+  min-width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border-radius:999px;
+  color: #d2ffea;
+  background: rgba(103, 232, 95, 0.2);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 800;
+}
+
+.terminal-shell .upgrade-panel {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid rgba(255, 209, 102, 0.22);
+  border-radius:2px;
+  background:
+    radial-gradient(circle at 20% 0%, rgba(255, 209, 102, 0.12), transparent 48%),
+    rgba(255, 255, 255, 0.035);
+}
+
+.terminal-shell .upgrade-panel span {
+  gap: 7px;
+  color: #ffe680;
+  font-size: 12px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.terminal-shell .upgrade-panel p {
+  color: #cbcbcb;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.terminal-shell .upgrade-panel button,
+.terminal-shell .section-heading button,
+.terminal-shell .analysis-actions button,
+.terminal-shell .rail-panel header button {
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius:2px;
+  background: rgba(255, 255, 255, 0.045);
+  color: #f8f8f8;
+  cursor: pointer;
+  transition: transform 180ms ease, border-color 180ms ease, background 180ms ease;
+}
+
+.terminal-shell .upgrade-panel button {
+  min-height: 34px;
+  color: #ffe680;
+  border-color: rgba(255, 209, 102, 0.46);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.terminal-shell .workspace {
+  width: min(1320px, 100%);
+  margin: 0 auto;
+}
+
+.terminal-shell .topbar {
+  display: grid;
+  grid-template-columns: minmax(320px, 1fr) auto;
+  align-items: center;
+  min-height: 58px;
+  gap: 14px;
+}
+
+.terminal-shell .command-center {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  height: 40px;
+  padding: 0 8px 0 14px;
+  border: 1px solid rgba(151, 164, 183, 0.18);
+  border-radius:2px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.052), rgba(255, 255, 255, 0.028)),
+    rgba(8, 12, 18, 0.9);
+  color: #b5b5b5;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045);
+}
+
+.terminal-shell .command-center strong {
+  margin-right: 7px;
+  color: #fafafa;
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+.terminal-shell .command-center kbd {
+  min-width: 32px;
+  padding: 4px 7px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius:2px;
+  color: #d6d6d6;
+  font-size: 11px;
+}
+
+.terminal-shell .operator-cluster {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.terminal-shell .live-status {
+  display: grid;
+  grid-template-columns: 9px auto;
+  align-items: center;
+  gap: 9px;
+  color: #e7e7e7;
+}
+
+.terminal-shell .live-status > span {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #5fe8a8;
+  box-shadow: 0 0 0 0 rgba(103, 232, 95, 0.48);
+  animation: signalPulse 2.1s infinite;
+}
+
+.terminal-shell .live-status.fallback > span {
+  background: #f2c94c;
+}
+
+.terminal-shell .live-status strong,
+.terminal-shell .live-status small {
+  display: block;
+}
+
+.terminal-shell .live-status strong {
+  font-size: 12px;
+}
+
+.terminal-shell .live-status small {
+  margin-top: 2px;
+  color: #9f9f9f;
+  font-size: 11px;
+}
+
+.terminal-shell .icon-button {
+  position: relative;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  border-radius:2px;
+  background: rgba(255, 255, 255, 0.035);
+  cursor: pointer;
+}
+
+.terminal-shell .icon-button span {
+  position: absolute;
+  top: -6px;
+  right: -5px;
+  width: 17px;
+  height: 17px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: #fff;
+  background: #ff4444;
+  font-size: 10px;
+  font-weight: 900;
+}
+
+.terminal-shell .profile-chip {
+  gap: 8px;
+  min-height: 34px;
+  color: #fafafa;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.terminal-shell .profile-chip svg {
+  width: 30px;
+  height: 30px;
+  padding: 7px;
+  border-radius: 50%;
+  background: #173f9d;
+}
+
+.terminal-shell .profile-chip em {
+  padding: 2px 5px;
+  border: 1px solid rgba(255, 209, 102, 0.52);
+  border-radius:2px;
+  color: #ffd84a;
+  font-size: 9px;
+  font-style: normal;
+}
+
+.terminal-shell .terminal-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  gap: 14px;
+}
+
+.terminal-shell .main-column {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.terminal-shell .opportunity-strip,
+.terminal-shell .analysis-board,
+.terminal-shell .movers-row,
+.terminal-shell .rail-panel,
+.terminal-shell .morning-brief-panel {
+  border: 1px solid rgba(151, 164, 183, 0.17);
+  border-radius:2px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.052), rgba(255, 255, 255, 0.023)),
+    rgba(7, 11, 17, 0.88);
+  box-shadow: 0 22px 74px rgba(0, 0, 0, 0.26);
+}
+
+.terminal-shell .morning-brief-panel {
+  display: grid;
+  grid-template-columns: 230px minmax(0, 1fr) 116px;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px;
+}
+
+.terminal-shell .market-regime-read {
+  padding-right: 14px;
+  border-right: 1px solid rgba(151, 164, 183, 0.13);
+}
+
+.terminal-shell .market-regime-read span,
+.terminal-shell .brief-copy span,
+.terminal-shell .brief-stat small {
+  display: block;
+  color: #9c9c9c;
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.terminal-shell .market-regime-read strong {
+  display: block;
+  margin-top: 5px;
+  color: #f8f8f8;
+  font-size: 24px;
+  line-height: 1;
+}
+
+.terminal-shell .market-regime-read p,
+.terminal-shell .brief-copy p,
+.terminal-shell .brief-stat em {
+  color: #c4c4c4;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.terminal-shell .market-regime-read p {
+  margin-top: 7px;
+}
+
+.terminal-shell .brief-copy span {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #e6e6e6;
+}
+
+.terminal-shell .brief-copy span svg {
+  color: #7aa7ff;
+}
+
+.terminal-shell .brief-copy p {
+  margin-top: 7px;
+  font-size: 13px;
+}
+
+.terminal-shell .brief-stat {
+  display: grid;
+  justify-items: end;
+  gap: 3px;
+}
+
+.terminal-shell .brief-stat strong {
+  color: #f8f8f8;
+  font-size: 25px;
+  line-height: 1;
+}
+
+.terminal-shell .brief-stat em {
+  font-style: normal;
+}
+
+.terminal-shell .opportunity-strip {
+  padding: 14px 16px 16px;
+}
+
+.terminal-shell .section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.terminal-shell .section-heading span,
+.terminal-shell .analysis-header span {
+  gap: 8px;
+  color: #fafafa;
+  font-size: 14px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.terminal-shell .section-heading span svg,
+.terminal-shell .analysis-header span svg {
+  color: #5fe8a8;
+}
+
+.terminal-shell .section-heading h1 {
+  margin-top: 4px;
+  color: #b3b3b3;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.terminal-shell .section-heading button {
+  gap: 8px;
+  min-height: 34px;
+  padding: 0 12px;
+  color: #ececec;
+  font-size: 13px;
+}
+
+.terminal-shell .opportunity-cards {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.terminal-shell .op-card {
+  position: relative;
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr) 60px;
+  gap: 11px;
+  align-items: center;
+  min-height: 214px;
+  padding: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius:2px;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 0% 0%, rgba(103, 232, 95, 0.13), transparent 58%),
+    rgba(3, 8, 12, 0.54);
+  transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+}
+
+.terminal-shell .op-card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(120deg, transparent, rgba(255, 255, 255, 0.045), transparent);
+  transform: translateX(-120%);
+  transition: transform 450ms ease;
+}
+
+.terminal-shell .op-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.34);
+}
+
+.terminal-shell .op-card:hover::after {
+  transform: translateX(120%);
+}
+
+.terminal-shell .op-card.buy {
+  border-color: rgba(103, 232, 95, 0.72);
+}
+
+.terminal-shell .op-card.wait {
+  border-color: rgba(242, 201, 76, 0.72);
+  background:
+    radial-gradient(circle at 0% 0%, rgba(242, 201, 76, 0.13), transparent 58%),
+    rgba(3, 8, 12, 0.54);
+}
+
+.terminal-shell .op-card.sell {
+  border-color: rgba(255, 68, 68, 0.72);
+  background:
+    radial-gradient(circle at 0% 0%, rgba(255, 68, 68, 0.13), transparent 58%),
+    rgba(3, 8, 12, 0.54);
+}
+
+.terminal-shell .op-card.empty {
+  grid-template-columns: 1fr;
+  border-color: rgba(151, 164, 183, 0.18);
+  background: rgba(255, 255, 255, 0.022);
+}
+
+.terminal-shell .op-card.empty .op-content span {
+  color: #b6b6b6;
+}
+
+.terminal-shell .rank-pill {
+  position: absolute;
+  top: 10px;
+  left: 12px;
+  z-index: 2;
+  min-width: 30px;
+  height: 25px;
+  display: grid;
+  place-items: center;
+  border-radius:999px;
+  color: #07100c;
+  background: #5fe8a8;
+  font-size: 12px;
+  font-weight: 950;
+}
+
+.terminal-shell .wait .rank-pill {
+  background: #f2c94c;
+}
+
+.terminal-shell .sell .rank-pill {
+  color: #fff;
+  background: #ff4444;
+}
+
+.terminal-shell .op-content {
+  min-width: 0;
+}
+
+.terminal-shell .op-content span {
+  color: #5fe8a8;
+  font-size: 18px;
+  font-weight: 950;
+}
+
+.terminal-shell .wait .op-content span {
+  color: #f2c94c;
+}
+
+.terminal-shell .sell .op-content span {
+  color: #ff5959;
+}
+
+.terminal-shell .op-content strong,
+.terminal-shell .op-content small,
+.terminal-shell .op-content p,
+.terminal-shell .op-content em {
+  display: block;
+}
+
+.terminal-shell .op-content strong {
+  margin-top: 6px;
+  font-size: 18px;
+}
+
+.terminal-shell .op-content small {
+  margin-top: 5px;
+  color: #c8c8c8;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+/* op-content gets whatever's left after the art (84px) and ring (60px)
+   columns plus gaps/padding - roughly 100-140px in this 3-cards-wide
+   strip (266-330px op-card). That's still tight, which is why stats are
+   a single-column label-left/value-right list rather than a 2-column
+   grid (a 2-column grid only has ~35-58px per cell here, not enough for
+   "Confidence"/"Expected Profit" without wrapping into each other).
+   The art column previously drifted to 140px (matching PlayerCard's
+   "w-32" prop) without this math being redone, which squeezed
+   op-content down to ~68px and wrapped every word onto its own line -
+   both the CSS column and the "w-32" prop (see HomeDashboard.jsx's
+   PlayerCard) were brought back down together. */
+.terminal-shell .op-stats-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.terminal-shell .op-stats-grid > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.terminal-shell .op-content p {
+  color: #9b9b9b;
+  font-size: 11px;
+}
+
+.terminal-shell .op-content em {
+  margin-top: 2px;
+  color: #fafafa;
+  font-size: 13px;
+  font-style: normal;
+  font-weight: 900;
+}
+
+.terminal-shell .wait .op-content em {
+  color: #f2c94c;
+}
+
+.terminal-shell .sell .op-content em {
+  color: #ff5959;
+}
+
+.terminal-shell .signal-foot {
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 11px;
+}
+
+.terminal-shell .signal-foot b {
+  padding: 4px 6px;
+  border-radius:2px;
+  color: #bbbbbb;
+  background: rgba(255, 255, 255, 0.045);
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.terminal-shell .op-card > button {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  color: #5fe8a8;
+  background: transparent;
+  cursor: pointer;
+}
+
+/* Wraps the real bg+cutout+name+stats card art (PlayerCardArt, the same
+   component Player Search/Compare use, non-compact) - replaces this
+   file's original hand-drawn hexagon/gold-gradient placeholder card. */
+.terminal-shell .player-card-art {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+/* PlayerCardArt's own root div (the direct child here) has no card
+   template to visually frame it until card_bg_image/card_cutout_image
+   are backfilled for a given card - give it a light border/corner
+   radius so it doesn't read as a loose, unbounded photo in the
+   meantime. */
+.terminal-shell .player-card-art > div {
+  border-radius:2px;
+  overflow: hidden;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14);
+}
+
+.terminal-shell .confidence-ring {
+  --ring: 270deg;
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 60px;
+  height: 60px;
+  border-radius: 50%;
+  background: conic-gradient(#5fe8a8 var(--ring), rgba(255, 255, 255, 0.11) 0deg);
+  color: #fafafa;
+  animation: ringBreathe 2.8s ease-in-out infinite;
+}
+
+.terminal-shell .confidence-ring::before {
+  content: "";
+  position: absolute;
+  inset: 7px;
+  border-radius: 50%;
+  background: #171717;
+}
+
+.terminal-shell .confidence-ring strong,
+.terminal-shell .confidence-ring span {
+  position: relative;
+  z-index: 1;
+}
+
+.terminal-shell .confidence-ring strong {
+  font-size: 17px;
+}
+
+.terminal-shell .confidence-ring span {
+  margin-left: 1px;
+  font-size: 11px;
+}
+
+.terminal-shell .confidence-ring.compact {
+  width: 54px;
+  height: 54px;
+}
+
+.terminal-shell .confidence-ring.compact::before {
+  inset: 7px;
+}
+
+.terminal-shell .analysis-board {
+  padding: 14px;
+}
+
+.terminal-shell .analysis-header {
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.terminal-shell .analysis-actions {
+  gap: 8px;
+}
+
+.terminal-shell .analysis-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 32px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+.terminal-shell .asset-grid {
+  display: grid;
+  grid-template-columns: 192px minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.terminal-shell .asset-kicker {
+  color: #b6b6b6;
+  font-size: 13px;
+}
+
+.terminal-shell .asset-thesis h2 {
+  margin-top: 4px;
+  font-size: 28px;
+  line-height: 1.05;
+}
+
+.terminal-shell .decision-summary {
+  max-width: 780px;
+  margin-top: 7px;
+  color: #d0d0d0;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.terminal-shell .decision-matrix {
+  display: grid;
+  grid-template-columns: 1.1fr 1fr 1fr 1.1fr;
+  margin-top: 11px;
+  border: 1px solid rgba(151, 164, 183, 0.14);
+  border-radius:2px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.terminal-shell .decision-proof-row {
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 9px;
+}
+
+.terminal-shell .decision-proof-row span {
+  padding: 5px 8px;
+  border: 1px solid rgba(151, 164, 183, 0.12);
+  border-radius:999px;
+  color: #bababa;
+  background: rgba(255, 255, 255, 0.025);
+  font-size: 11px;
+}
+
+.terminal-shell .decision-metric {
+  min-height: 72px;
+  padding: 12px 14px;
+  border-right: 1px solid rgba(151, 164, 183, 0.12);
+}
+
+.terminal-shell .decision-metric:last-child {
+  border-right: 0;
+}
+
+.terminal-shell .decision-metric span {
+  display: block;
+  color: #9c9c9c;
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.terminal-shell .decision-metric strong {
+  display: block;
+  margin-top: 8px;
+  color: #fafafa;
+  font-size: 19px;
+}
+
+.terminal-shell .decision-metric.buy strong {
+  color: #5fe8a8;
+}
+
+.terminal-shell .decision-metric.sell strong {
+  color: #ff5959;
+}
+
+.terminal-shell .metric-ring-row {
+  gap: 9px;
+  margin-top: 5px;
+}
+
+.terminal-shell .metric-ring-row .confidence-ring {
+  width: 32px;
+  height: 32px;
+  animation: none;
+}
+
+.terminal-shell .metric-ring-row .confidence-ring::before {
+  inset: 5px;
+}
+
+.terminal-shell .metric-ring-row .confidence-ring strong {
+  display: none;
+}
+
+.terminal-shell .market-facts {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  margin-top: 12px;
+  border: 1px solid rgba(151, 164, 183, 0.12);
+  border-radius:2px;
+  overflow: hidden;
+}
+
+.terminal-shell .fact-cell {
+  min-height: 68px;
+  padding: 10px 12px;
+  border-right: 1px solid rgba(151, 164, 183, 0.12);
+  background: rgba(255, 255, 255, 0.018);
+}
+
+.terminal-shell .fact-cell:last-child {
+  border-right: 0;
+}
+
+.terminal-shell .fact-cell span,
+.terminal-shell .fact-cell strong,
+.terminal-shell .fact-cell em {
+  display: block;
+}
+
+.terminal-shell .fact-cell span {
+  color: #9c9c9c;
+  font-size: 11px;
+}
+
+.terminal-shell .fact-cell strong {
+  margin-top: 5px;
+  font-size: 13px;
+}
+
+.terminal-shell .fact-cell em {
+  margin-top: 3px;
+  color: #ff5959;
+  font-size: 11px;
+  font-style: normal;
+}
+
+.terminal-shell .fact-cell em.good {
+  color: #5fe8a8;
+}
+
+.terminal-shell .evidence-priority {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 260px;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.terminal-shell .analysis-lower {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 260px;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.terminal-shell .price-module,
+.terminal-shell .evidence-panel,
+.terminal-shell .history-panel,
+.terminal-shell .raw-context-panel {
+  border: 1px solid rgba(151, 164, 183, 0.12);
+  border-radius:2px;
+  background: rgba(3, 8, 12, 0.36);
+}
+
+.terminal-shell .price-module {
+  min-height: 274px;
+  padding: 8px 8px 0;
+}
+
+.terminal-shell .time-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 2px 2px 0;
+}
+
+.terminal-shell .time-tabs button {
+  min-width: 37px;
+  height: 24px;
+  border: 0;
+  border-radius:2px;
+  color: #aaaaaa;
+  background: transparent;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.terminal-shell .time-tabs button.active {
+  color: #d2ffea;
+  background: rgba(103, 232, 95, 0.18);
+}
+
+.terminal-shell .evidence-stack {
+  display: grid;
+  gap: 8px;
+}
+
+.terminal-shell .evidence-panel,
+.terminal-shell .history-panel,
+.terminal-shell .raw-context-panel {
+  padding: 11px;
+}
+
+.terminal-shell .evidence-panel h3,
+.terminal-shell .history-panel h3,
+.terminal-shell .raw-context-panel h3 {
+  margin-bottom: 9px;
+  font-size: 13px;
+  text-transform: uppercase;
+}
+
+.terminal-shell .evidence-panel p {
+  gap: 8px;
+  min-height: 25px;
+  color: #d8d8d8;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.terminal-shell .evidence-panel svg {
+  flex: 0 0 auto;
+  color: #5fe8a8;
+}
+
+.terminal-shell .history-panel > p {
+  color: #b1b1b1;
+  font-size: 12px;
+}
+
+.terminal-shell .history-panel div {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+  margin-top: 10px;
+}
+
+.terminal-shell .history-panel span {
+  color: #9c9c9c;
+  font-size: 10px;
+}
+
+.terminal-shell .history-panel strong {
+  display: block;
+  margin-top: 3px;
+  color: #fafafa;
+  font-size: 13px;
+}
+
+.terminal-shell .history-panel span:first-child strong {
+  color: #5fe8a8;
+}
+
+.terminal-shell .decision-empty {
+  display: grid;
+  place-items: center;
+  min-height: 260px;
+  padding: 28px;
+  border: 1px solid rgba(151, 164, 183, 0.12);
+  border-radius:2px;
+  background: rgba(3, 8, 12, 0.36);
+  text-align: center;
+}
+
+.terminal-shell .decision-empty strong {
+  display: block;
+  font-size: 18px;
+}
+
+.terminal-shell .decision-empty p,
+.terminal-shell .mover-empty,
+.terminal-shell .empty-rail {
+  color: #b6b6b6;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.terminal-shell .decision-empty p {
+  max-width: 480px;
+  margin-top: 8px;
+}
+
+.terminal-shell .mover-empty {
+  grid-column: span 5;
+}
+
+.terminal-shell .accountability-panel > p,
+.terminal-shell .raw-context-panel p {
+  color: #b1b1b1;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.terminal-shell .raw-context-panel span {
+  display: block;
+  margin-top: 9px;
+  padding-top: 9px;
+  border-top: 1px solid rgba(151, 164, 183, 0.1);
+  color: #d0d0d0;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+/* A fixed 5-column grid reserves 1/5 of the row's width per mover
+   regardless of how many actually render - dashboard.py's movers query
+   returns at most 3 distinct slots, so those 3 were squeezed into 3/5
+   of the available width while the other 2/5 sat empty. A flex row
+   gives however many real movers there are an equal share of the full
+   width instead. */
+.terminal-shell .movers-row {
+  display: flex;
+  align-items: center;
+  min-height: 88px;
+  padding: 12px 14px;
+  gap: 12px;
+}
+
+.terminal-shell .row-title {
+  flex: 0 0 auto;
+  font-size: 14px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.terminal-shell .row-title small {
+  color: #a3a3a3;
+  font-weight: 600;
+}
+
+.terminal-shell .mover {
+  flex: 1 1 0;
+  gap: 8px;
+  min-width: 0;
+}
+
+.terminal-shell .avatar {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+
+.terminal-shell .avatar > div {
+  border-radius:2px;
+  overflow: hidden;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14);
+}
+
+.terminal-shell .mover div {
+  min-width: 0;
+}
+
+.terminal-shell .mover strong,
+.terminal-shell .mover span {
+  display: block;
+}
+
+.terminal-shell .mover strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.terminal-shell .mover span,
+.terminal-shell .mover small {
+  color: #aaaaaa;
+  font-size: 11px;
+}
+
+.terminal-shell .mover em {
+  margin-left: auto;
+  color: #5fe8a8;
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 900;
+}
+
+/* Strategy Signals reuses .mover's row markup/styling (avatar + name +
+   roi + price already look right), but stacks rows vertically instead
+   of .movers-row's fixed-count horizontal strip - .mover's own
+   `flex: 1 1 0` assumes a flex row parent and would otherwise stretch
+   each row to an equal fraction of the list's height. */
+.terminal-shell .strategy-signals .time-tabs {
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+/* Strategy names ("Swing Trade", "Lazy Buyer") run longer than the
+   Player Breakdown price-chart tabs (1H/24H/7D/...) this class was
+   built for, so they need real horizontal padding instead of relying
+   on min-width to keep neighbouring labels from crowding together. */
+.terminal-shell .strategy-signals .time-tabs button {
+  min-width: 0;
+  padding: 0 12px;
+}
+
+.terminal-shell .strategy-signal-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.terminal-shell .strategy-signal-list .mover {
+  flex: 0 0 auto;
+  width: 100%;
+  padding: 8px 4px;
+}
+
+.terminal-shell .intelligence-rail {
+  display: grid;
+  align-content: start;
+  gap: 0;
+  border: 1px solid rgba(151, 164, 183, 0.17);
+  border-radius:2px;
+  overflow: hidden;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.018)),
+    rgba(7, 11, 17, 0.88);
+}
+
+.terminal-shell .rail-panel {
+  border: 0;
+  border-bottom: 1px solid rgba(151, 164, 183, 0.13);
+  border-radius: 0;
+  padding: 13px;
+  background: transparent;
+  box-shadow: none;
+}
+
+.terminal-shell .rail-panel:last-child {
+  border-bottom: 0;
+}
+
+.terminal-shell .rail-panel header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.terminal-shell .rail-panel h2 {
+  font-size: 14px;
+  text-transform: uppercase;
+}
+
+.terminal-shell .rail-panel header button {
+  border: 0;
+  background: transparent;
+  color: #b1b1b1;
+  font-size: 12px;
+}
+
+.terminal-shell .alert-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  width: 100%;
+  min-height: 82px;
+  margin-top: 7px;
+  padding: 11px 34px 11px 11px;
+  border: 1px solid rgba(103, 232, 95, 0.24);
+  border-radius:2px;
+  background:
+    linear-gradient(90deg, rgba(103, 232, 95, 0.12), rgba(103, 232, 95, 0.04)),
+    rgba(255, 255, 255, 0.025);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: transform 180ms ease, border-color 180ms ease;
+}
+
+.terminal-shell .alert-row:hover {
+  transform: translateX(3px);
+  border-color: rgba(103, 232, 95, 0.5);
+}
+
+.terminal-shell .alert-row.sell {
+  border-color: rgba(255, 68, 68, 0.3);
+  background:
+    linear-gradient(90deg, rgba(255, 68, 68, 0.12), rgba(255, 68, 68, 0.04)),
+    rgba(255, 255, 255, 0.025);
+}
+
+.terminal-shell .alert-row.market {
+  border-color: rgba(169, 104, 255, 0.3);
+  background:
+    linear-gradient(90deg, rgba(169, 104, 255, 0.13), rgba(169, 104, 255, 0.04)),
+    rgba(255, 255, 255, 0.025);
+}
+
+.terminal-shell .alert-label {
+  gap: 6px;
+  color: #79f8bd;
+  font-size: 10px;
+  font-weight: 950;
+}
+
+.terminal-shell .sell .alert-label {
+  color: #ff6969;
+}
+
+.terminal-shell .market .alert-label {
+  color: #d19cff;
+}
+
+.terminal-shell .alert-row time {
+  color: #b6b6b6;
+  font-size: 11px;
+}
+
+.terminal-shell .alert-row strong,
+.terminal-shell .alert-row p {
+  grid-column: 1 / -1;
+}
+
+.terminal-shell .alert-row strong {
+  margin-top: 5px;
+  font-size: 14px;
+}
+
+.terminal-shell .alert-row p {
+  margin-top: 4px;
+  color: #cccccc;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.terminal-shell .alert-row > svg {
+  position: absolute;
+  right: 9px;
+  top: 50%;
+  color: currentColor;
+  transform: translateY(-50%);
+}
+
+.terminal-shell .state-module {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 11px;
+  align-items: center;
+}
+
+.terminal-shell .state-module strong {
+  display: block;
+  color: #5fe8a8;
+  font-size: 20px;
+}
+
+.terminal-shell .state-module p {
+  margin-top: 6px;
+  color: #d2d2d2;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.terminal-shell .rail-comparison {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 4px;
+  color: #b1b1b1;
+  font-size: 11px;
+}
+
+.terminal-shell .rail-comparison strong {
+  color: #5fe8a8;
+}
+
+.terminal-shell .countdown-module strong {
+  display: block;
+  color: #f2c94c;
+  font-size: 28px;
+  line-height: 1;
+}
+
+.terminal-shell .countdown-module p,
+.terminal-shell .ai-change-list p {
+  margin-top: 7px;
+  color: #cecece;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.terminal-shell .ai-change-list {
+  display: grid;
+  gap: 9px;
+}
+
+.terminal-shell .ai-change-list p {
+  position: relative;
+  margin: 0;
+  padding-left: 14px;
+}
+
+.terminal-shell .ai-change-list p::before {
+  content: "";
+  position: absolute;
+  top: 6px;
+  left: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #7aa7ff;
+  box-shadow: 0 0 0 4px rgba(122, 167, 255, 0.08);
+}
+
+.terminal-shell .accountability-list {
+  display: grid;
+  gap: 7px;
+}
+
+.terminal-shell .call-result {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr) 52px 52px;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  color: #d3d3d3;
+  font-size: 12px;
+}
+
+.terminal-shell .call-result span {
+  color: #5fe8a8;
+  font-weight: 950;
+}
+
+.terminal-shell .call-result strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.terminal-shell .call-result em {
+  color: #fafafa;
+  font-style: normal;
+  font-weight: 900;
+}
+
+.terminal-shell .call-result small {
+  color: #5fe8a8;
+  font-size: 11px;
+}
+
+.terminal-shell .rail-panel.danger h2 {
+  color: #ff5959;
+}
+
+.terminal-shell .risk-list {
+  display: grid;
+  gap: 10px;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.terminal-shell .risk-list li {
+  position: relative;
+  padding-left: 18px;
+  color: #d3d3d3;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.terminal-shell .risk-list li::before {
+  content: "";
+  position: absolute;
+  top: 5px;
+  left: 0;
+  width: 8px;
+  height: 8px;
+  border: 2px solid #ff4444;
+  border-radius: 50%;
+}
+
+.terminal-shell .empty-rail {
+  margin: 0;
+  padding: 10px;
+  border: 1px solid rgba(151, 164, 183, 0.12);
+  border-radius:2px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.terminal-shell .disclaimer {
+  padding: 12px 0 0;
+  color: #989898;
+  text-align: center;
+  font-size: 11px;
+}
+
+.terminal-shell .upgrade-panel button:hover,
+.terminal-shell .section-heading button:hover,
+.terminal-shell .analysis-actions button:hover {
+  transform: translateY(-1px);
+  border-color: rgba(103, 232, 95, 0.4);
+  background: rgba(103, 232, 95, 0.07);
+}
+
+@keyframes signalPulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(103, 232, 95, 0.46);
+  }
+  70% {
+    box-shadow: 0 0 0 9px rgba(103, 232, 95, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(103, 232, 95, 0);
+  }
+}
+
+@keyframes ringBreathe {
+  0%,
+  100% {
+    filter: drop-shadow(0 0 0 rgba(103, 232, 95, 0));
+  }
+  50% {
+    filter: drop-shadow(0 0 10px rgba(103, 232, 95, 0.2));
+  }
+}
+
+@media (max-width: 1280px) {
+  .terminal-shell {
+    grid-template-columns: 72px minmax(0, 1fr);
+  }
+
+  .terminal-shell .brand-lockup strong,
+  .terminal-shell .nav-item span,
+  .terminal-shell .upgrade-panel {
+    display: none;
+  }
+
+  .terminal-shell .sidebar {
+    padding: 9px;
+  }
+
+  .terminal-shell .brand-lockup,
+  .terminal-shell .nav-item {
+    justify-content: center;
+  }
+
+  .terminal-shell .nav-item em {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+  }
+}
+
+@media (max-width: 1120px) {
+  .terminal-shell .terminal-grid,
+  .terminal-shell .analysis-lower,
+  .terminal-shell .evidence-priority,
+  .terminal-shell .morning-brief-panel {
+    grid-template-columns: 1fr;
+  }
+
+  .terminal-shell .intelligence-rail {
+    grid-template-columns: 1fr;
+  }
+
+  .terminal-shell .market-facts {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .terminal-shell .fact-cell:nth-child(3) {
+    border-right: 0;
+  }
+}
+
+@media (max-width: 880px) {
+  .terminal-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .terminal-shell .sidebar {
+    position: static;
+    height: auto;
+  }
+
+  .terminal-shell .nav-list {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .terminal-shell .brand-lockup strong,
+  .terminal-shell .nav-item span,
+  .terminal-shell .upgrade-panel {
+    display: grid;
+  }
+
+  .terminal-shell .topbar,
+  .terminal-shell .opportunity-cards,
+  .terminal-shell .asset-grid,
+  .terminal-shell .decision-matrix,
+  .terminal-shell .intelligence-rail {
+    grid-template-columns: 1fr;
+  }
+
+  .terminal-shell .movers-row {
+    flex-wrap: wrap;
+  }
+
+  .terminal-shell .operator-cluster {
+    justify-content: space-between;
+  }
+
+  .terminal-shell .player-card.featured {
+    justify-self: center;
+  }
+
+  .terminal-shell .market-facts {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 560px) {
+  .terminal-shell {
+    padding: 8px;
+  }
+
+  .terminal-shell .nav-list,
+  .terminal-shell .market-facts {
+    grid-template-columns: 1fr;
+  }
+
+  .terminal-shell .op-card {
+    grid-template-columns: 120px minmax(0, 1fr);
+  }
+
+  .terminal-shell .op-card .confidence-ring {
+    grid-column: 1 / -1;
+    justify-self: start;
+  }
+}

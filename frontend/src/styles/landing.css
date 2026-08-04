@@ -1,0 +1,30 @@
+:root{
+  --bg:#0e1320; --bg2:#141826; --card:#1a2033;
+  --text:#e6e9f2; --muted:#9aa3b2;
+  --accent:#9b5cff; --accent2:#2bf57a;
+}
+.landing-body{color:var(--text);background:var(--bg)}
+.parallax-bg{
+  position:absolute;inset:-10px;
+  background:
+    radial-gradient(900px 400px at 20% -10%, rgba(155,92,255,.25), transparent 60%),
+    radial-gradient(700px 300px at 80% 110%, rgba(43,245,122,.15), transparent 60%),
+    linear-gradient(180deg, #0b0f1a 0%, #0f1422 100%);
+  background-attachment: fixed;
+  will-change: transform;
+  transform: translateZ(0);
+}
+.card-surface{
+  background:linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.02));
+  border:1px solid rgba(255,255,255,.06);
+  box-shadow:0 10px 30px rgba(0,0,0,.45);
+}
+.btn-solid-primary{
+  background:linear-gradient(135deg, var(--accent2), #18d96b); color:#04160c;
+}
+.btn-solid-secondary{
+  background:linear-gradient(135deg, var(--accent), #6c41ff); color:white;
+}
+.section-alt{
+  background: linear-gradient(180deg, var(--bg) 0%, var(--bg2) 100%);
+}

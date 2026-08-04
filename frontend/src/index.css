@@ -1,0 +1,217 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ------------------------------------
+   Theme tokens (tweak to taste)
+------------------------------------ */
+:root {
+  /* layout */
+  --sidebar-width: 16rem;
+
+  /* light palette (default) */
+  --bg: 255 255 255;                 /* bg-white */
+  --bg-muted: 248 250 252;           /* slate-50 */
+  --card: 255 255 255;               /* white */
+  --border: 226 232 240;             /* slate-200 */
+  --ring: 94 234 212;                /* teal-300 (subtle ring) */
+  --text: 17 24 39;                  /* gray-900 */
+  --text-muted: 71 85 105;           /* slate-600 */
+  --accent: 132 204 22;              /* lime-500 (your brand) */
+  --accent-ink: 17 24 39;            /* contrast text on accent */
+  --shadow: 2 6 23 / 0.06;           /* soft shadow */
+}
+
+/* dark overrides via <html class="dark"> */
+.dark :root {
+  --bg: 0 0 0;                       /* black */
+  --bg-muted: 10 10 10;              /* near-black */
+  --card: 17 24 39;                  /* gray-900 */
+  --border: 38 38 38;                /* neutral-800 */
+  --ring: 132 204 22;                /* lime-500 */
+  --text: 241 245 249;               /* slate-100 */
+  --text-muted: 148 163 184;         /* slate-400 */
+  --accent: 132 204 22;              /* lime-500 */
+  --accent-ink: 0 0 0;               /* black text on lime */
+  --shadow: 0 0 0 / 0;               /* keep flat on dark */
+}
+
+/* ------------------------------------
+   Base (light is default)
+------------------------------------ */
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  @apply antialiased;
+  background-color: rgb(var(--bg));
+  color: rgb(var(--text));
+  transition: background-color 200ms ease, color 200ms ease;
+}
+
+/* Useful global containers */
+.app-surface {
+  background-color: rgb(var(--bg-muted));
+}
+
+.card {
+  background-color: rgb(var(--card));
+  border: 1px solid rgb(var(--border));
+  box-shadow: 0 10px 25px rgba(var(--shadow));
+  @apply rounded-xl;
+}
+
+.card-hover {
+  @apply transition-transform;
+}
+.card-hover:hover {
+  transform: translateY(-2px);
+}
+
+/* Headings scale nicely in both themes */
+h1, h2, h3 {
+  @apply tracking-tight;
+}
+h1 { @apply text-3xl md:text-4xl font-bold; }
+h2 { @apply text-2xl md:text-3xl font-semibold; }
+h3 { @apply text-xl md:text-2xl font-semibold; }
+
+/* ------------------------------------
+   Interactive elements
+------------------------------------ */
+.btn {
+  @apply inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg font-medium transition-all;
+  border: 1px solid rgb(var(--border));
+  background-color: rgb(var(--card));
+  color: rgb(var(--text));
+}
+.btn:hover {
+  box-shadow: 0 8px 20px rgba(var(--shadow));
+  transform: translateY(-1px);
+}
+
+.btn-accent {
+  background-color: rgb(var(--accent));
+  color: rgb(var(--accent-ink));
+  border-color: rgb(var(--accent));
+}
+.btn-accent:hover {
+  filter: brightness(0.95);
+}
+
+.input, .select, .textarea {
+  @apply w-full rounded-lg px-3 py-2 outline-none transition ring-0;
+  background-color: rgb(var(--card));
+  color: rgb(var(--text));
+  border: 1px solid rgb(var(--border));
+}
+.input:focus, .select:focus, .textarea:focus {
+  box-shadow: 0 0 0 4px rgba(var(--ring) / 0.25);
+  border-color: rgb(var(--accent));
+}
+
+/* Pills / tags */
+.pill {
+  @apply inline-flex items-center gap-2 px-2.5 py-1 rounded-full text-sm;
+  background-color: rgb(var(--bg-muted));
+  color: rgb(var(--text-muted));
+  border: 1px solid rgb(var(--border));
+}
+
+/* ------------------------------------
+   Navigation / Sidebar
+------------------------------------ */
+.sidebar {
+  width: var(--sidebar-width);
+  background-color: rgb(var(--card));
+  border-right: 1px solid rgb(var(--border));
+}
+.nav-link {
+  @apply flex items-center gap-2 px-3 py-2 rounded-md transition;
+  color: rgb(var(--text-muted));
+}
+.nav-link:hover {
+  background-color: rgb(var(--bg-muted));
+  color: rgb(var(--text));
+}
+.nav-link.active {
+  background-color: rgba(var(--accent) / 0.12);
+  color: rgb(var(--text));
+  border: 1px solid rgba(var(--accent) / 0.35);
+}
+
+/* ------------------------------------
+   Tables
+------------------------------------ */
+.table {
+  @apply w-full text-sm;
+  border: 1px solid rgb(var(--border));
+  background: rgb(var(--card));
+  @apply rounded-xl overflow-hidden;
+}
+.table thead th {
+  @apply text-left font-semibold;
+  background: rgb(var(--bg-muted));
+  color: rgb(var(--text));
+  border-bottom: 1px solid rgb(var(--border));
+}
+.table tbody tr {
+  border-bottom: 1px solid rgb(var(--border));
+}
+.table tbody tr:hover {
+  background: rgb(var(--bg-muted));
+}
+.table td, .table th {
+  @apply px-4 py-3;
+}
+
+/* ------------------------------------
+   Scrollbars (light & dark)
+------------------------------------ */
+.custom-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(100,116,139,.35) transparent; /* slate-500-ish */
+}
+.custom-scrollbar::-webkit-scrollbar {
+  width: 8px; height: 8px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background-color: rgba(100,116,139,.35);
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+.custom-scrollbar:hover::-webkit-scrollbar-thumb {
+  background-color: rgba(100,116,139,.55);
+}
+.custom-scrollbar::-webkit-scrollbar-thumb:active {
+  background-color: rgba(100,116,139,.75);
+}
+.custom-scrollbar::-webkit-scrollbar-button { display: none; }
+
+/* Dark-specific tweak for scrollbar to keep contrast */
+.dark .custom-scrollbar {
+  scrollbar-color: rgba(148,163,184,.35) transparent;
+}
+.dark .custom-scrollbar::-webkit-scrollbar-thumb {
+  background-color: rgba(148,163,184,.35);
+}
+.dark .custom-scrollbar:hover::-webkit-scrollbar-thumb {
+  background-color: rgba(148,163,184,.55);
+}
+.dark .custom-scrollbar::-webkit-scrollbar-thumb:active {
+  background-color: rgba(148,163,184,.75);
+}
+
+/* ------------------------------------
+   Utilities (optional helpers)
+------------------------------------ */
+.text-muted { color: rgb(var(--text-muted)); }
+.border-token { border-color: rgb(var(--border)); }
+.bg-surface { background-color: rgb(var(--card)); }
+.bg-muted { background-color: rgb(var(--bg-muted)); }
+.ring-accent { box-shadow: 0 0 0 4px rgba(var(--ring) / 0.25); }

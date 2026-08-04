@@ -1,0 +1,505 @@
+"""
+Focused tests for futgg_player_sync.py's pagination-based discovery
+(collect_listing_urls). Deliberately avoid anything needing a live browser
+launch or a live DB connection - neither is available in this sandbox (no
+network egress to fut.gg, no Postgres) - so these use a fake Playwright
+Page simulating a paginated FUT.GG listing.
+"""
+import asyncio
+import functools
+import os
+import re
+import sys
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+# The module raises at import time if DATABASE_URL is unset (same
+# fail-fast guard every worker in this repo uses) - never connected to in
+# these tests, just needs to be present for the import to succeed.
+os.environ.setdefault("DATABASE_URL", "postgresql://test:test@localhost/test")
+
+import futgg_player_sync as mod
+
+
+def run_async(coro_fn):
+    """No pytest-asyncio in this environment - a plain asyncio.run()
+    wrapper avoids adding a new test-only dependency for a handful of
+    coroutine tests."""
+    @functools.wraps(coro_fn)
+    def wrapper(*args, **kwargs):
+        return asyncio.run(coro_fn(*args, **kwargs))
+    return wrapper
+
+
+def _card_href(card_id: int) -> str:
+    return f"/players/{card_id}-player-{card_id}/26-{1000 + card_id}/"
+
+
+class _FakeResponse:
+    def __init__(self, status):
+        self.status = status
+
+
+class _FakeLocator:
+    def __init__(self, hrefs=None, should_timeout=False):
+        self._hrefs = hrefs or []
+        self._should_timeout = should_timeout
+
+    @property
+    def first(self):
+        return self
+
+    async def is_visible(self, timeout=None):
+        return False
+
+    async def click(self, timeout=None):
+        pass
+
+    async def wait_for(self, state=None, timeout=None):
+        if self._should_timeout:
+            raise mod.PlaywrightTimeoutError("no matching element")
+        return None
+
+    async def evaluate_all(self, script):
+        return self._hrefs
+
+
+class _FakeListingPage:
+    """Simulates FUT.GG's paginated listing. pages_hrefs maps page number
+    -> list of hrefs found there; a page number beyond the dict (or one
+    marked in empty_from) simulates running past the end of the
+    catalogue (no card links present). stale_reads maps page number -> how
+    many times reading that page's hrefs should return the PREVIOUS
+    page's content first (simulating the real observed client-render
+    race), before returning the real content - proves the stabilize-retry
+    loop in collect_listing_urls() actually retries instead of trusting
+    the first read."""
+
+    def __init__(self, pages_hrefs, status=200, empty_from=None, stale_reads=None):
+        self.goto_urls = []
+        self._pages_hrefs = pages_hrefs
+        self._status = status
+        self._empty_from = empty_from
+        self._current_page = 1
+        self._reads_remaining_stale = dict(stale_reads or {})
+
+    async def goto(self, url, wait_until=None, timeout=None):
+        self.goto_urls.append(url)
+        match = re.search(r"page=(\d+)", url)
+        self._current_page = int(match.group(1)) if match else 1
+        return _FakeResponse(self._status)
+
+    async def wait_for_timeout(self, ms):
+        pass  # no real delay in tests - the stabilize-retry loop still runs its logic
+
+    def locator(self, selector):
+        if selector == "a[href*='/players/']":
+            no_links = self._empty_from is not None and self._current_page >= self._empty_from
+            return _FakeLocator(should_timeout=no_links)
+        if selector == "a[href]":
+            remaining = self._reads_remaining_stale.get(self._current_page, 0)
+            if remaining > 0:
+                self._reads_remaining_stale[self._current_page] = remaining - 1
+                stale_hrefs = self._pages_hrefs.get(self._current_page - 1, [])
+                return _FakeLocator(hrefs=stale_hrefs)
+            hrefs = self._pages_hrefs.get(self._current_page, [])
+            return _FakeLocator(hrefs=hrefs)
+        return _FakeLocator()
+
+
+@run_async
+async def test_collect_listing_urls_navigates_pages_in_order(monkeypatch):
+    monkeypatch.setattr(mod, "MAX_PAGES", 3)
+    monkeypatch.setattr(mod, "PLAYER_LIMIT", 0)
+    monkeypatch.setattr(mod, "IDLE_ROUNDS", 10)
+    monkeypatch.setattr(mod, "PAGE_DELAY", 0)
+    pages_hrefs = {
+        1: [_card_href(1), _card_href(2)],
+        2: [_card_href(3)],
+        3: [_card_href(4)],
+    }
+    page = _FakeListingPage(pages_hrefs)
+
+    urls = await mod.collect_listing_urls(page)
+
+    assert page.goto_urls == [
+        "https://www.fut.gg/players/new/?page=1",
+        "https://www.fut.gg/players/new/?page=2",
+        "https://www.fut.gg/players/new/?page=3",
+    ]
+    assert len(urls) == 4
+
+
+def test_collect_listing_urls_no_scroll_calls():
+    """collect_listing_urls itself must never call window.scrollTo or a
+    scroll-settle wait_for_timeout - confirmed via source inspection of
+    the function BODY, excluding its own docstring (which explains what
+    it no longer does, by name, for historical context). The fake page
+    used elsewhere in this file doesn't even implement .evaluate()/
+    .wait_for_timeout(), so a real call would raise AttributeError too."""
+    doc = mod.collect_listing_urls.__doc__
+    consts = [
+        c for c in mod.collect_listing_urls.__code__.co_consts
+        if isinstance(c, str) and c != doc
+    ]
+    joined = " ".join(consts)
+    assert "scrollTo" not in joined
+    assert "wait_for_timeout" not in joined
+
+
+@run_async
+async def test_collect_listing_urls_stops_at_max_pages(monkeypatch):
+    monkeypatch.setattr(mod, "MAX_PAGES", 2)
+    monkeypatch.setattr(mod, "PLAYER_LIMIT", 0)
+    monkeypatch.setattr(mod, "IDLE_ROUNDS", 10)
+    monkeypatch.setattr(mod, "PAGE_DELAY", 0)
+    # Pages 1-5 all have distinct cards, but MAX_PAGES caps the walk at 2.
+    pages_hrefs = {n: [_card_href(n)] for n in range(1, 6)}
+    page = _FakeListingPage(pages_hrefs)
+
+    urls = await mod.collect_listing_urls(page)
+
+    assert page.goto_urls == [
+        "https://www.fut.gg/players/new/?page=1",
+        "https://www.fut.gg/players/new/?page=2",
+    ]
+    assert len(urls) == 2
+
+
+@run_async
+async def test_collect_listing_urls_stops_early_after_idle_pages(monkeypatch):
+    monkeypatch.setattr(mod, "MAX_PAGES", 400)
+    monkeypatch.setattr(mod, "PLAYER_LIMIT", 0)
+    monkeypatch.setattr(mod, "IDLE_ROUNDS", 2)
+    monkeypatch.setattr(mod, "PAGE_DELAY", 0)
+    monkeypatch.setattr(mod, "LISTING_STABILIZE_MAX_ATTEMPTS", 2)
+    monkeypatch.setattr(mod, "LISTING_STABILIZE_POLL_MS", 0)
+    # Page 1 has cards; pages 2+ repeat the SAME cards (zero new) - should
+    # stop after 2 consecutive idle pages (pages 2 and 3), well short of
+    # the 400-page cap.
+    pages_hrefs = {
+        1: [_card_href(1), _card_href(2)],
+        2: [_card_href(1), _card_href(2)],
+        3: [_card_href(1), _card_href(2)],
+        4: [_card_href(1), _card_href(2)],
+    }
+    page = _FakeListingPage(pages_hrefs)
+
+    urls = await mod.collect_listing_urls(page)
+
+    assert page.goto_urls == [
+        "https://www.fut.gg/players/new/?page=1",
+        "https://www.fut.gg/players/new/?page=2",
+        "https://www.fut.gg/players/new/?page=3",
+    ]
+    assert len(urls) == 2
+
+
+@run_async
+async def test_collect_listing_urls_stops_when_no_card_links_present(monkeypatch):
+    monkeypatch.setattr(mod, "MAX_PAGES", 400)
+    monkeypatch.setattr(mod, "PLAYER_LIMIT", 0)
+    monkeypatch.setattr(mod, "IDLE_ROUNDS", 4)
+    monkeypatch.setattr(mod, "PAGE_DELAY", 0)
+    # Simulates running past the real end of a 3-page catalogue - page 4
+    # onward has no card links at all (not just zero NEW ones).
+    pages_hrefs = {
+        1: [_card_href(1)],
+        2: [_card_href(2)],
+        3: [_card_href(3)],
+    }
+    page = _FakeListingPage(pages_hrefs, empty_from=4)
+
+    urls = await mod.collect_listing_urls(page)
+
+    assert page.goto_urls == [
+        "https://www.fut.gg/players/new/?page=1",
+        "https://www.fut.gg/players/new/?page=2",
+        "https://www.fut.gg/players/new/?page=3",
+        "https://www.fut.gg/players/new/?page=4",
+    ]
+    assert len(urls) == 3
+
+
+@run_async
+async def test_collect_listing_urls_respects_player_limit(monkeypatch):
+    monkeypatch.setattr(mod, "MAX_PAGES", 400)
+    monkeypatch.setattr(mod, "PLAYER_LIMIT", 3)
+    monkeypatch.setattr(mod, "IDLE_ROUNDS", 10)
+    monkeypatch.setattr(mod, "PAGE_DELAY", 0)
+    pages_hrefs = {
+        1: [_card_href(1), _card_href(2)],
+        2: [_card_href(3), _card_href(4)],
+        3: [_card_href(5)],
+    }
+    page = _FakeListingPage(pages_hrefs)
+
+    urls = await mod.collect_listing_urls(page)
+
+    assert len(urls) == 3
+    assert page.goto_urls == [
+        "https://www.fut.gg/players/new/?page=1",
+        "https://www.fut.gg/players/new/?page=2",
+    ]
+
+
+@run_async
+async def test_collect_listing_urls_retries_stale_content_until_it_updates(monkeypatch):
+    """Regression test for the live bug: a full-scan run oscillated
+    30-new/0-new across pages instead of accumulating steadily, because
+    some pages were read before their client-rendered content had
+    actually swapped in from the previous page. Without the
+    stabilize-retry loop, page 2 here would read as "0 new" (still
+    showing page 1's cards) and the run would stop early via idle-page
+    detection, missing real content on pages 2 and 3."""
+    monkeypatch.setattr(mod, "MAX_PAGES", 3)
+    monkeypatch.setattr(mod, "PLAYER_LIMIT", 0)
+    monkeypatch.setattr(mod, "IDLE_ROUNDS", 10)
+    monkeypatch.setattr(mod, "PAGE_DELAY", 0)
+    monkeypatch.setattr(mod, "LISTING_STABILIZE_MAX_ATTEMPTS", 5)
+    monkeypatch.setattr(mod, "LISTING_STABILIZE_POLL_MS", 0)
+    pages_hrefs = {
+        1: [_card_href(1), _card_href(2)],
+        2: [_card_href(3), _card_href(4)],
+        3: [_card_href(5)],
+    }
+    # Page 2's first 2 reads return page 1's stale content; the 3rd read
+    # (within the 5-attempt budget) returns page 2's real content.
+    page = _FakeListingPage(pages_hrefs, stale_reads={2: 2})
+
+    urls = await mod.collect_listing_urls(page)
+
+    assert len(urls) == 5
+
+
+@run_async
+async def test_collect_listing_urls_gives_up_after_stabilize_attempts_exhausted(monkeypatch):
+    """If a page's content never stabilizes into something new within the
+    attempt budget (a genuine end-of-catalogue page re-serving the same
+    content, not just a slow render), the stabilize loop must give up and
+    treat it as a real zero-new page rather than retrying forever."""
+    monkeypatch.setattr(mod, "MAX_PAGES", 3)
+    monkeypatch.setattr(mod, "PLAYER_LIMIT", 0)
+    monkeypatch.setattr(mod, "IDLE_ROUNDS", 1)
+    monkeypatch.setattr(mod, "PAGE_DELAY", 0)
+    monkeypatch.setattr(mod, "LISTING_STABILIZE_MAX_ATTEMPTS", 3)
+    monkeypatch.setattr(mod, "LISTING_STABILIZE_POLL_MS", 0)
+    pages_hrefs = {
+        1: [_card_href(1)],
+        2: [_card_href(1)],  # genuinely identical to page 1, every read
+        3: [_card_href(1)],
+    }
+    page = _FakeListingPage(pages_hrefs)
+
+    urls = await mod.collect_listing_urls(page)
+
+    assert len(urls) == 1
+    assert page.goto_urls == [
+        "https://www.fut.gg/players/new/?page=1",
+        "https://www.fut.gg/players/new/?page=2",
+    ]
+
+
+@run_async
+async def test_collect_listing_urls_retries_page_one_when_grid_not_yet_rendered(monkeypatch):
+    """Regression test for a live failure: every page logged '0 new
+    cards' and pagination stopped immediately. Root cause - the earlier
+    "a[href*='/players/']" wait_for can resolve instantly against the
+    site's static nav link (which also contains '/players/') before the
+    client-rendered card grid has populated, so the very first
+    _read_card_hrefs() on page 1 can legitimately come back empty. The
+    stabilize-retry loop must still retry in that case - a bug in the
+    original "or not previous_page_hrefs" condition treated "no previous
+    page to compare against" (true for page 1, and for any page
+    following a genuinely-empty previous page) as "trust this read
+    immediately", skipping the retry entirely and then propagating the
+    empty previous_page_hrefs forward so every later page did the same,
+    which is exactly the observed 0/0/0/0-then-stop pattern."""
+    monkeypatch.setattr(mod, "MAX_PAGES", 2)
+    monkeypatch.setattr(mod, "PLAYER_LIMIT", 0)
+    monkeypatch.setattr(mod, "IDLE_ROUNDS", 10)
+    monkeypatch.setattr(mod, "PAGE_DELAY", 0)
+    monkeypatch.setattr(mod, "LISTING_STABILIZE_MAX_ATTEMPTS", 5)
+    monkeypatch.setattr(mod, "LISTING_STABILIZE_POLL_MS", 0)
+    pages_hrefs = {
+        1: [_card_href(1), _card_href(2)],
+        2: [_card_href(3)],
+    }
+    # Page 1's first 2 reads come back empty (grid not yet rendered); the
+    # 3rd read (within budget) returns the real content.
+    page = _FakeListingPage(pages_hrefs, stale_reads={1: 2})
+
+    urls = await mod.collect_listing_urls(page)
+
+    assert len(urls) == 3
+    assert page.goto_urls == [
+        "https://www.fut.gg/players/new/?page=1",
+        "https://www.fut.gg/players/new/?page=2",
+    ]
+
+
+def test_full_scan_selects_the_full_page_cap(monkeypatch):
+    monkeypatch.setenv("FUTGG_LISTING_FULL_SCAN", "true")
+    monkeypatch.setenv("FUTGG_LISTING_MAX_PAGES", "5")
+    monkeypatch.setenv("FUTGG_LISTING_MAX_PAGES_FULL", "400")
+    import importlib
+    reloaded = importlib.reload(mod)
+    try:
+        assert reloaded.FULL_SCAN is True
+        assert reloaded.MAX_PAGES == 400
+    finally:
+        monkeypatch.delenv("FUTGG_LISTING_FULL_SCAN", raising=False)
+        monkeypatch.delenv("FUTGG_LISTING_MAX_PAGES", raising=False)
+        monkeypatch.delenv("FUTGG_LISTING_MAX_PAGES_FULL", raising=False)
+        importlib.reload(mod)
+
+
+def test_daily_mode_is_the_default():
+    assert mod.FULL_SCAN is False
+    assert mod.MAX_PAGES == mod.MAX_PAGES_DAILY
+    assert mod.MAX_PAGES_DAILY == 5
+    assert mod.MAX_PAGES_FULL == 400
+
+
+def test_scroll_round_config_removed():
+    assert not hasattr(mod, "SCROLL_ROUNDS")
+    assert not hasattr(mod, "LISTING_URL")
+
+
+class _FakeCardLocator:
+    def __init__(self, should_timeout=False):
+        self._should_timeout = should_timeout
+
+    @property
+    def first(self):
+        return self
+
+    async def wait_for(self, state=None, timeout=None):
+        if self._should_timeout:
+            raise mod.PlaywrightTimeoutError("card never appeared")
+
+
+class _FakeCardPage:
+    """Simulates a single card-detail page for _fetch_worker() tests -
+    goto() returns status codes from a per-URL map (default 200), so
+    tests can simulate specific cards failing/blocking without a real
+    browser or network."""
+
+    def __init__(self, statuses=None):
+        self.statuses = statuses or {}
+        self.visited: list[str] = []
+
+    async def goto(self, url, wait_until=None, timeout=None):
+        self.visited.append(url)
+        return _FakeResponse(self.statuses.get(url, 200))
+
+    def locator(self, selector):
+        return _FakeCardLocator()
+
+    async def wait_for_timeout(self, ms):
+        pass
+
+    async def content(self):
+        return "<html></html>"
+
+
+class _FakeAcquireCtx:
+    async def __aenter__(self):
+        return None
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+class _FakePool:
+    def acquire(self):
+        return _FakeAcquireCtx()
+
+
+class _FetchWorkerHarness:
+    """Wires _fetch_worker()'s two real I/O dependencies (parse_futgg_card,
+    upsert_card, both DB/HTML-parsing in production) to fakes, so the
+    test only exercises queue distribution / stats / circuit-breaker
+    behaviour."""
+
+    def __init__(self, monkeypatch, card_ids_by_url):
+        self.upserted: list[int] = []
+        self.card_ids_by_url = card_ids_by_url
+
+        def fake_parse(html, url, *a, **kw):
+            from futgg_common import FutggCard
+            card_id = card_ids_by_url[url]
+            return FutggCard(
+                source_card_id=card_id, source_player_id=1, source_slug="x",
+                game_year=26, source_url=url, name=f"Card {card_id}",
+                rating=75, rarity="Rare",
+            )
+
+        async def fake_upsert(conn, card):
+            self.upserted.append(card.source_card_id)
+
+        monkeypatch.setattr(mod, "parse_futgg_card", fake_parse)
+        monkeypatch.setattr(mod, "upsert_card", fake_upsert)
+        monkeypatch.setattr(mod, "REQUEST_DELAY", 0)
+
+
+@run_async
+async def test_fetch_worker_pool_processes_every_target_exactly_once(monkeypatch):
+    urls = [f"https://www.fut.gg/players/{n}-p/26-{n}/" for n in range(1, 11)]
+    card_ids_by_url = {url: n for n, url in enumerate(urls, start=1)}
+    harness = _FetchWorkerHarness(monkeypatch, card_ids_by_url)
+
+    queue: "asyncio.Queue" = asyncio.Queue()
+    for index, url in enumerate(urls, start=1):
+        queue.put_nowait((index, url, False))
+
+    pages = [_FakeCardPage() for _ in range(3)]
+    stats = {"new": 0, "updated": 0, "failed": 0}
+    breaker = mod.CircuitBreaker(threshold=5)
+
+    await asyncio.gather(
+        *(
+            mod._fetch_worker(i + 1, page, pool=_FakePool(), queue=queue, total=len(urls), stats=stats, breaker=breaker)
+            for i, page in enumerate(pages)
+        )
+    )
+
+    assert sorted(harness.upserted) == list(range(1, 11))
+    assert stats["new"] == 10
+    assert stats["failed"] == 0
+    assert queue.empty()
+    # Total visits across the pool must equal the target count exactly
+    # once each - which page happened to visit which URL isn't asserted:
+    # with instant fake I/O (no real suspension point) a single worker
+    # can legitimately drain the whole queue before its siblings are
+    # ever scheduled, so "every page visited something" isn't a
+    # meaningful assertion here. Real Playwright navigations always
+    # suspend on actual I/O, which is what makes the pool actually
+    # concurrent in production.
+    assert sum(len(page.visited) for page in pages) == len(urls)
+
+
+@run_async
+async def test_fetch_worker_circuit_breaker_stops_remaining_work(monkeypatch):
+    urls = [f"https://www.fut.gg/players/{n}-p/26-{n}/" for n in range(1, 11)]
+    card_ids_by_url = {url: n for n, url in enumerate(urls, start=1)}
+    _FetchWorkerHarness(monkeypatch, card_ids_by_url)
+
+    queue: "asyncio.Queue" = asyncio.Queue()
+    for index, url in enumerate(urls, start=1):
+        queue.put_nowait((index, url, False))
+
+    # A single page that returns HTTP 403 for every URL - should trip
+    # the breaker well before all 10 targets are attempted.
+    page = _FakeCardPage(statuses={url: 403 for url in urls})
+    stats = {"new": 0, "updated": 0, "failed": 0}
+    breaker = mod.CircuitBreaker(threshold=3)
+
+    await mod._fetch_worker(1, page, pool=_FakePool(), queue=queue, total=len(urls), stats=stats, breaker=breaker)
+
+    assert breaker.tripped
+    assert stats["failed"] == 3
+    # The remaining targets were never dequeued/attempted once tripped.
+    assert not queue.empty()

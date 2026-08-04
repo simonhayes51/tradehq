@@ -1,0 +1,28 @@
+
+# FUT.GG replacement pipeline.
+#
+# futgg_player_worker: one-shot. Run daily as a Cron Job to discover and
+# refresh card metadata.
+#
+# futgg_price_worker: a CONTINUOUS worker - deploy as a normal Railway
+# service, NOT a Cron Job. It holds a Postgres advisory lock, keeps its
+# browser alive between batches, and picks due cards on its own schedule
+# (next_price_due_at, keyed off rating). On a cron it would fight that
+# lock and pay the browser cold-start cost every invocation - a cold
+# context previously failed an entire startup batch on its own.
+#
+# DATABASE_URL is the only variable it requires. Every other setting has a
+# production-tuned default; override only with a measured reason.
+futgg_player_worker: python futgg_player_sync.py
+futgg_price_worker: python futgg_price_sync.py
+
+# Bulk price ingest: one page load harvests the whole ~27k-card price
+# feed, bypassing the per-card signing endpoint that rate-limits the
+# scraper. Continuous service. Dry run until FUTGG_BULK_APPLY=true.
+futgg_bulk_price_worker: python futgg_bulk_price_sync.py
+
+# Sales history via the signed JSON endpoint. One page load for the whole
+# process lifetime; every card after that is a fetch() from inside it.
+# Replaces the per-card page scraping in futgg_price_sync.
+futgg_sales_worker: python futgg_sales_sync.py
+

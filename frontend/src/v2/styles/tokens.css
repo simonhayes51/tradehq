@@ -1,0 +1,236 @@
+/* src/v2/styles/tokens.css
+ *
+ * v2 design tokens, scoped under .v2-root so they can never leak into or
+ * clash with v1's styling. Not a second Tailwind config - consumed via
+ * Tailwind arbitrary-value classes (bg-[var(--v2-card)] etc.), which
+ * avoids touching the single shared build/PostCSS pipeline.
+ *
+ * Palette matches the FUT Trader Hub marketing site: near-black concrete,
+ * chrome/off-white text, one signal-green accent - no navy tint.
+ */
+@import url('https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+.v2-root {
+  --v2-bg: #08090a;
+  --v2-card: #111214;
+  --v2-elevated: #17181b;
+  --v2-border: #222327;
+  --v2-text: #f3f3f2;
+  --v2-muted: #8d8f95;
+  --v2-dim: #5c5e64;
+  --v2-accent: #39ff8a;
+  --v2-positive: #39ff8a;
+  --v2-negative: #ff5c5c;
+  --v2-warning: #f2c94c;
+  --v2-radius: 4px;
+  --v2-font: 'Inter', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --v2-font-display: 'Oswald', ui-sans-serif, system-ui, sans-serif;
+  --v2-font-mono: 'JetBrains Mono', 'SF Mono', Consolas, monospace;
+
+  --bg: var(--v2-bg);
+  --panel: var(--v2-card);
+  --panel2: var(--v2-elevated);
+  --line: var(--v2-border);
+  --text: var(--v2-text);
+  --muted: var(--v2-muted);
+  --green: var(--v2-accent);
+  --amber: var(--v2-warning);
+  --red: var(--v2-negative);
+
+  position: relative;
+  background: var(--v2-bg);
+  color: var(--v2-text);
+  min-height: 100vh;
+  font-family: var(--v2-font);
+}
+
+/* concrete grain + faint blueprint grid, behind all shell content */
+.v2-root::before,
+.v2-root::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+}
+.v2-root::before {
+  opacity: .5;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.35'/%3E%3C/svg%3E");
+}
+.v2-root::after {
+  background-image:
+    linear-gradient(rgba(255,255,255,.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,.035) 1px, transparent 1px);
+  background-size: 56px 56px;
+  mask-image: radial-gradient(ellipse 70% 60% at 50% 0%, #000 40%, transparent 100%);
+}
+.v2-global-nav,
+.v2-shell-content {
+  position: relative;
+  z-index: 1;
+}
+
+.v2-shell-content { min-width: 0; padding-left: 228px; }
+.home-in-shell { margin-left: 0 !important; }
+.v2-global-nav .nav-short-label { display: none; }
+/* Account is reachable via the tier chip on desktop already, so the
+   nav-list copy of it (needed for mobile, see Sidebar.jsx) stays hidden
+   until the mobile breakpoint below. */
+.v2-global-nav .mobile-only-nav { display: none; }
+
+/* headings inherit the site's condensed display face */
+.v2-root h1,
+.v2-root h2,
+.v2-root .lead-head h1,
+.v2-root .pulse-head h2,
+.v2-root .section-head h2 {
+  font-family: var(--v2-font-display);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: -.01em;
+}
+
+@media (max-width: 800px) {
+  .v2-shell-content { padding-left: 0; }
+  .v2-global-nav { padding-bottom: calc(8px + env(safe-area-inset-bottom)); height: calc(68px + env(safe-area-inset-bottom)); }
+  .v2-global-nav .desktop-only-nav { display: none; }
+  .v2-global-nav .mobile-only-nav { display: flex; }
+  .v2-global-nav .nav-full-label { display: none; }
+  .v2-global-nav .nav-short-label { display: block; font-size: 9px; font-weight: 700; }
+  .v2-global-nav nav a { flex: 1; min-width: 0; flex-direction: column; justify-content: center; gap: 3px; padding: 0 2px; }
+  .v2-global-nav nav a span { display: block; }
+}
+
+/* Keyboard-only focus ring, scoped under .v2-root like everything else
+   here - nothing in v2 sets outline-none, so the browser default was
+   already showing on Tab, just low-contrast against this dark palette.
+   :focus-visible (not :focus) so mouse/touch clicks stay ring-free. */
+.v2-root a:focus-visible,
+.v2-root button:focus-visible,
+.v2-root input:focus-visible,
+.v2-root [tabindex]:focus-visible {
+  outline: 2px solid var(--v2-accent);
+  outline-offset: 2px;
+  border-radius:2px;
+}
+
+/* ---------------------------------------------------------------------
+ * Marketing-site parity pass: eyebrow labels, the ticker, the brand
+ * mark and primary buttons all lifted straight from the landing page's
+ * look. Selectors are doubled up under .v2-root so they win regardless
+ * of which page's own CSS file happens to load after this one.
+ * ------------------------------------------------------------------- */
+
+/* Eyebrow labels - the small caption above every page's <h1>/<h2> -
+   go mono + signal green, same as the landing page's "// ROADMAP" style. */
+.v2-root .v2-page-head > div > span,
+.v2-root .club-hero > div > span,
+.v2-root .lead-label,
+.v2-root .panel-label,
+.v2-root .section-head span,
+.v2-root .quick-eyebrow {
+  font-family: var(--v2-font-mono);
+  color: var(--v2-accent) !important;
+  font-weight: 600 !important;
+  letter-spacing: .14em !important;
+}
+
+/* Brand mark: square monogram + wordmark, matching the landing nav. */
+.v2-root .fut-brand {
+  font-family: var(--v2-font-display);
+  text-transform: uppercase;
+  letter-spacing: .01em;
+  gap: 10px !important;
+}
+.v2-root .fut-brand .brand-mark {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  background: var(--v2-text);
+  color: var(--v2-bg);
+  font-family: var(--v2-font-display);
+  font-weight: 700;
+  font-size: 13px;
+}
+.v2-root .fut-brand b { color: var(--v2-accent); font-weight: 600; }
+
+/* Ticker: plain mono text with pipe separators and a bold accent value -
+   no dot icons, edge-fade mask - lifted from the landing page's ticker. */
+.v2-root .fut-ticker {
+  background: var(--v2-card) !important;
+  mask-image: linear-gradient(90deg, transparent, #000 6%, #000 94%, transparent);
+}
+.v2-root .fut-ticker > div {
+  gap: 0 !important;
+}
+.v2-root .fut-ticker span {
+  font-family: var(--v2-font-mono) !important;
+  font-size: 12.5px !important;
+  font-weight: 400 !important;
+  letter-spacing: .03em;
+  color: var(--v2-muted) !important;
+  padding: 11px 22px !important;
+  border-right: 1px solid var(--v2-border);
+  gap: 0 !important;
+}
+.v2-root .fut-ticker i {
+  display: none;
+}
+.v2-root .fut-ticker b {
+  color: var(--v2-accent);
+  font-weight: 600;
+}
+.v2-root .fut-ticker .down b { color: var(--v2-negative); }
+.v2-root .fut-ticker .event b { color: var(--v2-warning); }
+
+/* Primary buttons: uppercase + tracked, matching the landing page's CTAs. */
+.v2-root .lead-actions button,
+.v2-root .personal-move-action,
+.v2-root .dash-modal-actions button,
+.v2-root .quick-actions a.primary,
+.v2-root .account-chip {
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+
+/* Shared empty/loading/error placeholder (EmptyState.jsx) - one look
+   for "nothing to show here" everywhere it appears in v2. */
+.v2-root .v2-empty-state {
+  display: grid;
+  place-items: center;
+  gap: 10px;
+  min-height: 180px;
+  padding: 24px;
+  border: 1px dashed var(--v2-border);
+  border-radius: var(--v2-radius);
+  background: var(--v2-card);
+  color: var(--v2-muted);
+  text-align: center;
+}
+.v2-root .v2-empty-state.is-compact { min-height: 110px; padding: 16px; }
+.v2-root .v2-empty-state.is-error { border-color: var(--v2-negative); }
+.v2-root .v2-empty-state h2 { margin: 0; font-size: 18px; color: var(--v2-text); }
+.v2-root .v2-empty-state p { margin: 0; max-width: 46ch; line-height: 1.5; }
+.v2-root .v2-empty-state svg { color: var(--v2-dim); }
+.v2-root .v2-empty-state.is-error svg { color: var(--v2-negative); }
+.v2-root .v2-empty-state a,
+.v2-root .v2-empty-state button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+  padding: 9px 14px;
+  border: 1px solid var(--v2-border);
+  border-radius: 2px;
+  background: transparent;
+  color: var(--v2-text);
+  font-weight: 700;
+  font-size: 13px;
+  text-decoration: none;
+  cursor: pointer;
+}
+.v2-root .v2-empty-state a:hover,
+.v2-root .v2-empty-state button:hover { border-color: var(--v2-accent); color: var(--v2-accent); }

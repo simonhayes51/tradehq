@@ -1,0 +1,129 @@
+# Coolify deploys this as one project: one Postgres, one backend API, one
+# frontend, and the auto_sync image running four times with different
+# commands (Coolify supports per-service command overrides on a shared
+# build - you don't need four separate Dockerfiles for this).
+#
+# Every service reads DATABASE_URL. backend/main.py already treats
+# PLAYER_DATABASE_URL / WATCHLIST_DATABASE_URL as optional overrides that
+# default to DATABASE_URL when unset (see main.py:95-97) - so simply not
+# setting those two env vars is what makes this "one database" rather
+# than the three-pool split the Railway deployment used. Nothing in the
+# code had to change for that; it was already the supported path.
+#
+# Table-name overlap between backend's migrations and auto_sync's own
+# schema (scrape_queue, crawler_*, market_events, pipeline_heartbeats,
+# sbc_*) is not a collision - backend's migration comments say these are
+# "for auto_sync" and both sides use CREATE TABLE IF NOT EXISTS. Confirmed
+# by inspection before writing this file; see REVIEW.md.
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: futhub
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: futhub
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U futhub"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://futhub:${POSTGRES_PASSWORD}@postgres:5432/futhub
+      SECRET_KEY: ${SECRET_KEY}
+      JWT_PRIVATE_KEY: ${JWT_PRIVATE_KEY}
+      ENV: production
+      PORT: 8000
+      DISCORD_CLIENT_ID: ${DISCORD_CLIENT_ID}
+      DISCORD_CLIENT_SECRET: ${DISCORD_CLIENT_SECRET}
+      DISCORD_REDIRECT_URI: ${DISCORD_REDIRECT_URI}
+      DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN}
+      DISCORD_SERVER_ID: ${DISCORD_SERVER_ID}
+      DISCORD_PREMIUM_ROLE_ID: ${DISCORD_PREMIUM_ROLE_ID}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET}
+      STRIPE_MONTHLY_PRICE_ID: ${STRIPE_MONTHLY_PRICE_ID}
+      STRIPE_SEASON_PRICE_ID: ${STRIPE_SEASON_PRICE_ID}
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_URL: ${PUBLIC_API_URL}
+        VITE_API_BASE_URL: ${PUBLIC_API_URL}
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "8080:8080"
+
+  # --- auto_sync: one image, four commands -------------------------------
+  # Same rules as the Railway Procfile this replaces (see auto_sync/README
+  # for the full reasoning): futgg_player_worker is a one-shot, safe to
+  # run as a Coolify Cron Job instead of `restart: unless-stopped`, if
+  # Coolify's scheduler is preferred over a sleep loop. futgg_price_worker
+  # MUST stay a long-running single instance - it holds a Postgres
+  # advisory lock and keeps its browser warm between batches; running it
+  # as a cron job makes it fight the lock and re-pay browser cold start
+  # every invocation.
+
+  futgg_player_worker:
+    build:
+      context: ./auto_sync
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://futhub:${POSTGRES_PASSWORD}@postgres:5432/futhub
+    command: ["python", "futgg_player_sync.py"]
+
+  futgg_price_worker:
+    build:
+      context: ./auto_sync
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://futhub:${POSTGRES_PASSWORD}@postgres:5432/futhub
+    command: ["python", "futgg_price_sync.py"]
+
+  futgg_bulk_price_worker:
+    build:
+      context: ./auto_sync
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://futhub:${POSTGRES_PASSWORD}@postgres:5432/futhub
+      FUTGG_BULK_APPLY: "true"
+    command: ["python", "futgg_bulk_price_sync.py"]
+
+  futgg_sales_worker:
+    build:
+      context: ./auto_sync
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://futhub:${POSTGRES_PASSWORD}@postgres:5432/futhub
+    command: ["python", "futgg_sales_sync.py"]
+
+volumes:
+  postgres_data:

@@ -1,0 +1,312 @@
+# app/futbin_client.py
+"""
+On-demand live price fetch from a single futbin.com player page, used as the
+freshest price source (called behind a short TTL cache). This complements
+the auto_sync repo's periodic full-catalog crawl, which keeps
+fut_players.price_num reasonably current but not second-by-second.
+
+futbin.com has no Cloudflare bot protection (confirmed by testing), unlike
+fut.gg, so this is a plain unauthenticated GET + HTML parse - no session,
+proxy, or rendering service required.
+"""
+import re
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional
+from zoneinfo import ZoneInfo
+
+# futbin serves its sale timestamps in UK local time (see _parse_sale_date).
+_FUTBIN_TZ = ZoneInfo("Europe/London")
+
+import aiohttp
+
+from app.db import get_player_pool
+
+HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; SBCSolver/1.5)"}
+REQUEST_TIMEOUT = 15
+
+# futbin's listing rows only ever showed platform-ps-only / platform-pc-only
+# columns (PS and Xbox share one FUT market, so there's no separate xbox
+# column) - confirmed by inspecting real page markup during the crawler work.
+_PLATFORM_CLASS = {"ps": "platform-ps-only", "pc": "platform-pc-only"}
+
+
+def _num(txt: str) -> int:
+    if not txt:
+        return 0
+    t = txt.lower().replace(",", "").strip()
+    if t.endswith("m"):
+        try:
+            return int(float(t[:-1]) * 1_000_000)
+        except Exception:
+            return 0
+    if t.endswith("k"):
+        try:
+            return int(float(t[:-1]) * 1_000)
+        except Exception:
+            return 0
+    m = re.search(r"\d+(\.\d+)?", t)
+    return int(float(m.group(0))) if m else 0
+
+
+def parse_price(html: str, fb_plat: str) -> Optional[int]:
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(html, "html.parser")
+    plat_class = _PLATFORM_CLASS.get(fb_plat, "platform-ps-only")
+
+    # Primary: same price-cell markup confirmed on futbin's listing rows.
+    cell = soup.find(class_=re.compile(rf"\b{plat_class}\b"))
+    if cell:
+        price_div = cell.find("div", class_=re.compile(r"\bprice\b"))
+        if price_div:
+            val = _num(price_div.get_text(strip=True))
+            if val:
+                return val
+
+    # Fallback in case the individual player page uses different markup
+    # than the listing rows.
+    box = (
+        soup.find("div", class_=re.compile(r"price[- ]?box", re.I))
+        or soup.find("div", class_=re.compile(r"price-box-original-player", re.I))
+        or soup
+    )
+    plat_word = "pc" if fb_plat == "pc" else "ps"
+    for tag in box.find_all(string=re.compile(rf"\b{plat_word}\b", re.I)):
+        txt = tag.parent.get_text(" ", strip=True)
+        m = re.search(r"(\d[\d,\.kK]+)", txt)
+        if m:
+            val = _num(m.group(1))
+            if val:
+                return val
+    for d in box.find_all("div", class_=re.compile(r"lowest-price", re.I)):
+        val = _num(d.get_text(" ", strip=True))
+        if val:
+            return val
+
+    return None
+
+
+async def fetch_price_by_url(player_url: str, platform: str) -> Optional[int]:
+    """platform is our normalized ps|xbox|pc; futbin has no separate xbox
+    column so xbox is mapped onto the shared ps/xbox console market."""
+    fb_plat = "pc" if platform == "pc" else "ps"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(player_url, headers=HEADERS, timeout=REQUEST_TIMEOUT) as r:
+                if r.status != 200:
+                    return None
+                html = await r.text()
+    except Exception:
+        return None
+    return parse_price(html, fb_plat)
+
+
+async def get_player_url(card_id: int) -> Optional[str]:
+    pool = await get_player_pool()
+    async with pool.acquire() as conn:
+        return await conn.fetchval(
+            "SELECT player_url FROM fut_players WHERE card_id::text = $1", str(card_id)
+        )
+
+
+async def fetch_price_by_card_id(card_id: int, platform: str) -> Optional[int]:
+    """Convenience wrapper for callers that only have a card_id (e.g.
+    watchlist.py's _fetch_price, which lives outside the player DB pool)."""
+    player_url = await get_player_url(card_id)
+    if not player_url:
+        return None
+    return await fetch_price_by_url(player_url, platform)
+
+
+# --- Sales history --------------------------------------------------------
+# futbin's price chart on /market is a client-rendered Highcharts SVG, not a
+# clean JSON endpoint - not worth reverse-engineering pixel paths for. But
+# the same player has a plain server-rendered "Player Sales History" table
+# at /sales/{futbin_id}/{slug}?platform=ps|pc with real timestamped sales,
+# confirmed against a real page - that's what we use for recent sales,
+# price range, and trend instead.
+#
+# The sales page's slug doesn't match the player page's slug (e.g.
+# "aitana-bonmati" vs "aitana-bonmati-conca" for the same card), so it
+# can't be derived by substring substitution on player_url - confirmed by
+# inspecting a real /market page's "Full History" link, which is the
+# reliable source for the correct path.
+_SALE_DATE_RE = re.compile(r"[A-Za-z]{3} \d{1,2}, \d{1,2}:\d{2} [AP]M")
+
+
+async def _resolve_sales_path(player_url: str) -> Optional[str]:
+    market_url = player_url.rstrip("/") + "/market"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(market_url, headers=HEADERS, timeout=REQUEST_TIMEOUT) as r:
+                if r.status != 200:
+                    return None
+                html = await r.text()
+    except Exception:
+        return None
+
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(html, "html.parser")
+    a = soup.find("a", class_=re.compile(r"\bmarket-grid-lates-sale-link\b"))
+    if not a or not a.get("href"):
+        return None
+    return a["href"].split("?")[0]
+
+
+async def _sales_url(player_url: str, platform: str) -> Optional[str]:
+    fb_plat = "pc" if platform == "pc" else "ps"
+    path = await _resolve_sales_path(player_url)
+    if path:
+        return f"https://www.futbin.com{path}?platform={fb_plat}"
+    # No naive "/player/ -> /sales/" fallback: confirmed live that this
+    # collides with unrelated cards for brand-new cards whose /market page
+    # has no "latest sale" link yet (futbin hasn't populated one there
+    # yet) - the numeric id does NOT reliably mean the same card across
+    # both URL namespaces, contrary to what this fallback used to assume.
+    # Real incident: a 97 Star Performer Mbappé and several new TOTW cards
+    # each recorded real, internally-consistent sales (correct EA tax
+    # math) for a DIFFERENT, unrelated card, because this fallback guessed
+    # a URL instead of confirming one. No sales data is a correct "we
+    # don't know yet" state; a wrong number confidently shown is not.
+    return None
+
+
+def _parse_sale_date(date_text: str, now: Optional[datetime] = None) -> Optional[str]:
+    if not date_text:
+        return None
+    now = now or datetime.now(timezone.utc)
+    try:
+        naive = datetime.strptime(f"{date_text} {now.year}", "%b %d, %I:%M %p %Y")
+    except ValueError:
+        return None
+    # futbin renders sale times in UK local time (BST/GMT), not UTC -
+    # treating them as UTC put every summer sale ~1h in the future
+    # (surfaced live by /api/ops/freshness reporting a negative data age).
+    dt = naive.replace(tzinfo=_FUTBIN_TZ).astimezone(timezone.utc)
+    if dt > now + timedelta(days=1):
+        dt = naive.replace(year=now.year - 1, tzinfo=_FUTBIN_TZ).astimezone(timezone.utc)
+    return dt.isoformat()
+
+
+def parse_sales_history(html: str, limit: int = 20) -> List[Dict[str, Any]]:
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(html, "html.parser")
+    table = soup.find("table", class_="auctions-table")
+    if not table:
+        return []
+    body = table.find("tbody")
+    if not body:
+        return []
+
+    sales: List[Dict[str, Any]] = []
+    for row in body.find_all("tr"):
+        if len(sales) >= limit:
+            break
+        tds = row.find_all("td")
+        if len(tds) < 5:
+            continue
+
+        date_div = tds[0].find("div")
+        icon = date_div.find("i") if date_div else None
+        sold = bool(icon and any("fa-check" in c for c in icon.get("class", [])))
+        if not sold:
+            continue
+
+        date_span = date_div.find("span", class_="sales-date-time") if date_div else None
+        date_text = date_span.get_text(strip=True) if date_span else None
+        m = _SALE_DATE_RE.search(date_text or "")
+        sold_date = _parse_sale_date(m.group(0)) if m else None
+
+        sold_price = _num(tds[2].get_text(strip=True))
+        if not sold_price:
+            continue
+
+        sales.append({"soldDate": sold_date, "soldPrice": sold_price})
+
+    return sales
+
+
+async def fetch_recent_sales(player_url: str, platform: str, limit: int = 20) -> List[Dict[str, Any]]:
+    url = await _sales_url(player_url, platform)
+    if not url:
+        return []
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT) as r:
+                if r.status != 200:
+                    return []
+                html = await r.text()
+    except Exception:
+        return []
+    return parse_sales_history(html, limit=limit)
+
+
+# --- Card image layers -----------------------------------------------------
+# futbin has no server-rendered flat card image - the card seen on the site
+# is assembled client-side from a card-template background PNG and a
+# separate player cutout PNG (their own "download card" button works by
+# rasterizing the live DOM with domtoimage, not by fetching one image).
+# Confirmed against a real player page: the background sits behind an
+# `<img class="playercard-26-bg">` and the cutout is either
+# `playercard-26-special-img` (special/non-base cards) or
+# `playercard-26-base-img` (base gold cards) - both plain <img src=...>.
+def parse_card_layers(html: str) -> Dict[str, Optional[str]]:
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(html, "html.parser")
+    # A player page has many playercard-26 instances beyond the hero card -
+    # similar players, other versions, comment avatars - each with their own
+    # playercard-26-bg/-special-img/-base-img. An unscoped search grabs
+    # whichever comes first in DOM order, which is often one of those, not
+    # the hero (confirmed live: bg happened to match since gold-rarity
+    # templates are identical across cards, but cutout came back as a
+    # completely different player). The hero's wrapper is the only one
+    # marked "playercard-l" (large) - other instances use a smaller variant.
+    # Exact-token string matches, not regex: bs4 already matches a plain
+    # string against individual tokens of a multi-valued class attribute,
+    # which a "\bword\b" regex does NOT reliably narrow to - a hyphen counts
+    # as a word-boundary character, so e.g. r"\bplayercard-26-name\b" also
+    # matches "playercard-26-name-stats-info-wrapper" (confirmed live: that
+    # wrapper matched first, and .get_text() on it concatenated the name
+    # with every stat number/label inside it - "Cristiano Ronaldo94Pac...").
+    hero = soup.find("div", class_="playercard-l")
+    scope = hero or soup
+    bg = scope.find("img", class_="playercard-26-bg")
+    special_cutout = scope.find("img", class_="playercard-26-special-img")
+    cutout = special_cutout or scope.find("img", class_="playercard-26-base-img")
+    # Special and base cards use visibly different-looking cutout assets on
+    # futbin (special ones read as pre-scaled to fill the card frame; base
+    # gold/silver/bronze cutouts are a closer, more generic headshot crop
+    # that renders far too large if stretched to fill the same frame the
+    # same way) - pass which kind matched through so the frontend can size
+    # each differently instead of treating every cutout the same.
+    cutout_type = "special" if special_cutout else ("base" if cutout else None)
+    # futbin's own short display name (e.g. "Cristiano Ronaldo" rather than
+    # the full legal name "Cristiano Ronaldo dos Santos Aveiro") - no
+    # word-position heuristic on the full name is reliable (this exact
+    # player is a counterexample: "Ronaldo" is neither the first nor last
+    # word), so read what futbin itself renders on the card face instead.
+    name_el = scope.find("div", class_="playercard-26-name")
+    return {
+        "bgImageUrl": bg.get("src") if bg else None,
+        "cutoutImageUrl": cutout.get("src") if cutout else None,
+        "cutoutType": cutout_type,
+        "cardName": name_el.get_text(strip=True) if name_el else None,
+    }
+
+
+_EMPTY_LAYERS = {"bgImageUrl": None, "cutoutImageUrl": None, "cutoutType": None, "cardName": None}
+
+
+async def fetch_card_layers(player_url: str) -> Dict[str, Any]:
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(player_url, headers=HEADERS, timeout=REQUEST_TIMEOUT) as r:
+                if r.status != 200:
+                    return dict(_EMPTY_LAYERS)
+                html = await r.text()
+    except Exception:
+        return dict(_EMPTY_LAYERS)
+    return parse_card_layers(html)

@@ -1,0 +1,51 @@
+.opportunities-page .opp-controls { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.opp-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.opp-targets {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+.opp-targets > div {
+  padding: 8px;
+  border: 1px solid #343434;
+  border-radius: 3px;
+  background: #141414;
+}
+.opp-targets span { display: block; margin-bottom: 5px; color: #868686; font-size: 9px; font-weight: 900; letter-spacing: .06em; text-transform: uppercase; }
+.opp-targets b { font-size: 13px; }
+.opp-targets .coin-value { font-size: 13px; font-weight: 800; }
+.opp-reasons {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+}
+.opp-reasons li {
+  position: relative;
+  padding-left: 14px;
+  color: #a2a2a2;
+  font-size: 11px;
+  line-height: 1.4;
+}
+.opp-reasons li::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 6px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--v2-accent, #39ff8a);
+}
+.finder-card-foot .v2-market-freshness { margin-left: 10px; }
+@media (max-width: 1050px) {
+  .opportunities-page .opp-controls { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .opp-grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 700px) {
+  .opportunities-page .opp-controls { grid-template-columns: 1fr; }
+  .opp-targets { grid-template-columns: 1fr 1fr; }
+  .finder-card-foot { flex-wrap: wrap; gap: 8px; }
+}
