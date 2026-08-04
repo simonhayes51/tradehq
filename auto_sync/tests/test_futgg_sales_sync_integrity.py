@@ -552,3 +552,160 @@ async def test_repair_sql_only_resets_incident_window_failures(monkeypatch, dsn)
         assert rows[9005]["next_sales_due_at"] is None        # boundary, inclusive: reset
     finally:
         await conn.close()
+
+
+# ---------------------------------------------------------------------
+# Network diagnostics (Cloudflare investigation instrumentation)
+# ---------------------------------------------------------------------
+
+
+class TestIsCfCookie:
+    def test_known_cloudflare_cookie_names(self):
+        for name in ("__cf_bm", "cf_clearance", "__cflb", "__cfruid", "__cfwaitingroom"):
+            assert mod._is_cf_cookie(name) is True
+
+    def test_cf_prefixed_unknown_cookie_still_flagged(self):
+        assert mod._is_cf_cookie("cf_something_new") is True
+        assert mod._is_cf_cookie("__cf_future_cookie") is True
+
+    def test_unrelated_cookie_not_flagged(self):
+        assert mod._is_cf_cookie("session_id") is False
+        assert mod._is_cf_cookie("next-auth.csrf-token") is False
+
+    def test_case_insensitive(self):
+        assert mod._is_cf_cookie("CF_Clearance") is True
+
+
+class _FakeDiagPage:
+    def __init__(self, webdriver=False, user_agent="FakeUA/1.0"):
+        self._webdriver = webdriver
+        self._ua = user_agent
+        self._listeners: dict[str, list] = {}
+
+    async def evaluate(self, script, *args):
+        if "navigator.webdriver" in script:
+            return self._webdriver
+        if "navigator.userAgent" in script:
+            return self._ua
+        return None
+
+    def on(self, event, cb):
+        self._listeners.setdefault(event, []).append(cb)
+
+    def fire_request(self, request):
+        for cb in list(self._listeners.get("request", [])):
+            cb(request)
+
+    def fire_response(self, response):
+        for cb in list(self._listeners.get("response", [])):
+            cb(response)
+
+
+class _FakeDiagContext:
+    def __init__(self, cookies):
+        self._cookies = cookies
+
+    async def cookies(self):
+        return self._cookies
+
+
+class _FakeDiagRequest:
+    def __init__(self, url, method, headers, resource_type="fetch"):
+        self.url = url
+        self.method = method
+        self._headers = headers
+        self.resource_type = resource_type
+
+    async def all_headers(self):
+        return self._headers
+
+
+class _FakeDiagResponse:
+    def __init__(self, url, status, headers):
+        self.url = url
+        self.status = status
+        self._headers = headers
+
+    async def all_headers(self):
+        return self._headers
+
+
+@run_async
+async def test_capture_context_diagnostics_reports_webdriver_and_cf_cookies():
+    page = _FakeDiagPage(webdriver=False, user_agent="Mozilla/5.0 test")
+    context = _FakeDiagContext([
+        {"name": "cf_clearance", "value": "secret-token-value"},
+        {"name": "session_id", "value": "abc123"},
+    ])
+
+    diag = await mod.capture_context_diagnostics(context, page)
+
+    assert diag["navigator_webdriver"] is False
+    assert diag["runtime_user_agent"] == "Mozilla/5.0 test"
+    assert diag["route_interception_active"] is False
+    assert "page.evaluate" in diag["fetch_execution_context"]
+    assert diag["cloudflare_cookies_present_before_request"] == ["cf_clearance"]
+    assert set(diag["all_cookie_names_in_context"]) == {"cf_clearance", "session_id"}
+    # The cookie VALUE must never appear in the diagnostics dict at all -
+    # only names.
+    assert "secret-token-value" not in str(diag)
+
+
+@run_async
+async def test_network_diagnostics_logs_cf_headers_and_cookie_presence_without_leaking_values(caplog):
+    page = _FakeDiagPage()
+    pending = mod._attach_network_diagnostics(page, label="TESTDIAG")
+
+    request = _FakeDiagRequest(
+        "https://www.fut.gg/api/fut/price-access/sign/",
+        "POST",
+        {
+            "content-type": "application/json",
+            "cookie": "cf_clearance=super-secret-value-should-not-leak; session=xyz",
+            "sec-fetch-mode": "cors",
+            "sec-fetch-site": "same-origin",
+            "user-agent": "Mozilla/5.0 test",
+        },
+    )
+    response = _FakeDiagResponse(
+        "https://www.fut.gg/api/fut/player-prices/26/84131117/?verify=tok",
+        403,
+        {
+            "content-type": "text/html; charset=UTF-8",
+            "cf-ray": "8a1b2c3d4e5f-LHR",
+            "cf-cache-status": "DYNAMIC",
+            "server": "cloudflare",
+        },
+    )
+
+    import logging
+    with caplog.at_level(logging.INFO, logger="futgg_sales_sync"):
+        page.fire_request(request)
+        page.fire_response(response)
+        await asyncio.wait_for(asyncio.gather(*pending, return_exceptions=True), timeout=5)
+
+    text = "\n".join(r.message for r in caplog.records)
+    assert "super-secret-value-should-not-leak" not in text
+    assert "TESTDIAG REQUEST" in text
+    assert "hasCookieHeader=True" in text
+    assert "TESTDIAG RESPONSE" in text
+    assert "status=403" in text
+    assert "'cf-ray': '8a1b2c3d4e5f-LHR'" in text or "cf-ray" in text
+    assert "cloudflare" in text.lower()
+
+
+@run_async
+async def test_network_diagnostics_detects_missing_cookie_header(caplog):
+    page = _FakeDiagPage()
+    pending = mod._attach_network_diagnostics(page, label="TESTDIAG2")
+    request = _FakeDiagRequest(
+        "https://www.fut.gg/api/fut/price-access/sign/", "POST",
+        {"content-type": "application/json"},  # no cookie header at all
+    )
+
+    with caplog.at_level(logging.INFO, logger="futgg_sales_sync"):
+        page.fire_request(request)
+        await asyncio.wait_for(asyncio.gather(*pending, return_exceptions=True), timeout=5)
+
+    text = "\n".join(r.message for r in caplog.records)
+    assert "hasCookieHeader=False" in text

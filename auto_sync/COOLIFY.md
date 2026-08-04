@@ -246,39 +246,46 @@ below for what to read off it) and exits `1`.
 
 ### Diagnosing the 403 (root cause - needs confirming from real logs)
 
-This sandbox has no live network access to fut.gg, so the exact cause
-could not be directly confirmed here - the diagnostic fields above exist
-specifically so the NEXT real failure in Coolify's logs (or a one-card
-diagnostic run) answers it directly instead of guessing. What the code
-review here established and ruled out, and the leading hypothesis:
+Confirmed against real production diagnostics: the 403 body is
+Cloudflare's own `Just a moment...` challenge page, not an application
+response - see
+[`CLOUDFLARE_403_INVESTIGATION.md`](./CLOUDFLARE_403_INVESTIGATION.md)
+for the full evidence-based, side-by-side comparison against PriceSync
+(the one currently-working script that also talks to FUT.GG) and exactly
+what to read off the network-level diagnostics
+(`FUTGG_SALES_DIAGNOSTIC_CARD_ID`'s `NETDIAG REQUEST`/`NETDIAG RESPONSE`
+log lines - full headers, Cloudflare response headers, cookies present
+before/after, `navigator.webdriver`, whether interception is active) to
+confirm or rule out the identified first structural difference. Summary
+of what code review alone established and ruled out:
 
-- **Not a CORS/browser-level block.** `dataRes.status` is being read as a
-  real `403` (not a thrown/opaque response), which only happens for a
-  response the browser actually let through to script - i.e. the request
-  reached FUT.GG's server/edge and it deliberately rejected it. A CORS
-  failure would show up as a caught exception (`error: 'exception:...'`),
-  not `data_403`.
+- **Confirmed Cloudflare challenge, not an application 403** (production
+  diagnostics: the 403 body is `<!DOCTYPE html><title>Just a
+  moment...</title>`, Cloudflare's own interstitial). Not a CORS/browser-
+  level block either - `dataRes.status` reads as a real `403`, which only
+  happens for a response the browser let through to script; a CORS
+  failure would show up as `error: 'exception:...'`, not `data_403`.
 - **Signing itself works** (per the observed logs, `sign_502` was rare -
   1 in 200 - while `data_403` was the overwhelming majority), so this is
   specific to the SECOND request, not a broken sign step.
-- **Leading hypothesis, matching this repo's own established pattern**
-  (FUTBIN's Cloudflare blocking Railway's/a datacentre's network origin
-  while a residential connection worked fine - see `README.md`'s SBC
-  collector history): FUT.GG's data-serving edge may be blocking this
-  Hetzner-hosted Coolify deployment's IP/network origin specifically on
-  the signed data endpoint, while the sign endpoint itself (possibly
-  served by a less-protected path) still succeeds. This is a hypothesis,
-  not a confirmed fact - the new `signedUrlOrigin`/`sameOriginAsPage`
-  fields will show directly whether the signed URL even points at the
-  same origin as the anchor page (a cross-origin CDN target with a
-  stricter WAF would also explain it), and `dataContentType` on a failure
-  will show whether the 403 body is JSON (an application-level rejection)
-  or `text/html` (a WAF/challenge page) - read that off the next real
-  failure or a one-card diagnostic run before assuming which it is.
+- **The first confirmed structural difference from PriceSync** (full
+  side-by-side in `CLOUDFLARE_403_INVESTIGATION.md`): PriceSync never
+  issues a `fetch()` of its own - it navigates to the exact page whose
+  data it wants and passively listens to that page's own organic
+  requests. SalesSync navigates to one unrelated anchor page ONCE and
+  then actively injects its own `fetch()` calls (via `page.evaluate()`)
+  against a different endpoint (the signed price-access flow), for
+  hundreds of *other* cards it never navigates to, repeated continuously
+  for the life of the process. Whether this specific difference is *why*
+  Cloudflare challenges it - versus, say, sustained request volume from
+  one long-lived session, or something about the signed request's
+  cookies/headers themselves - is what the network-level diagnostics
+  below are for; it is not assumed here.
 - Other angles the diagnostic fields also rule in/out directly: token
   expiry (`expiresIn`, compared against how long the sign->fetch gap
-  actually was), and a possible new requirement that the requested eaId
-  match the anchor page's own card (test with
+  actually was), whether the signed URL is cross-origin
+  (`signedUrlOrigin`/`sameOriginAsPage`), and a possible requirement that
+  the requested eaId match the anchor page's own card (test with
   `FUTGG_SALES_DIAGNOSTIC_CARD_ID` set to the SAME card whose
   `source_url` is being used as the anchor - if that succeeds while other
   cards still 403, this is confirmed).
