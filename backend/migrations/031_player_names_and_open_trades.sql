@@ -1,5 +1,15 @@
 -- target: player
+-- requires-table: fut_players
+-- requires-column: fut_players.name, fut_players.nickname, fut_players.first_name, fut_players.last_name
 -- Run this migration against PLAYER_DATABASE_URL only.
+--
+-- name/nickname/first_name/last_name are FUTBIN metadata columns only ever
+-- written by the auto_sync repo's futbin_full_sync.py, not by any
+-- migration in this repo (see migration 011's comment on the same gate).
+-- A database whose fut_players never had that sync run against it skips
+-- this migration cleanly instead of failing partway through the BEGIN/
+-- COMMIT block below, and picks it up automatically once/if those columns
+-- show up.
 BEGIN;
 
 ALTER TABLE fut_players ADD COLUMN IF NOT EXISTS display_name TEXT;

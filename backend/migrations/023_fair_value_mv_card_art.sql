@@ -1,6 +1,11 @@
 -- Migration 023: expose card-art columns through fair_value_mv
 -- target: player
 -- requires-table: fut_players, sales_history, bin_history
+-- requires-column: fut_players.name, fut_players.rating, fut_players.version, fut_players.position, fut_players.image_url
+--
+-- Rebuilds fair_value_mv wholesale (see below), so it needs the same
+-- FUTBIN metadata columns migration 011 does - see 011's own comment on
+-- why those are gated behind requires-column rather than assumed present.
 --
 -- Postgres has no ALTER MATERIALIZED VIEW for the underlying query, only
 -- DROP + CREATE (same reason migration 013 had to rebuild 011/012's

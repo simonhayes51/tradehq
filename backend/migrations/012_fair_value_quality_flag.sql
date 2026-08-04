@@ -1,6 +1,10 @@
 -- Migration 012: add data_quality_suspect to fair_value_mv
 -- target: player
--- requires-table: sales_history, bin_history
+-- requires-table: sales_history, bin_history, fut_players
+-- requires-column: fut_players.name, fut_players.rating, fut_players.version, fut_players.position, fut_players.image_url
+--
+-- Rebuilds fair_value_mv wholesale, so it needs the same FUTBIN metadata
+-- columns migration 011 gates on - see 011's own comment.
 --
 -- Editing 011 in place has no effect on a database where it already ran
 -- (it's recorded in schema_migrations and never re-executes) - and
