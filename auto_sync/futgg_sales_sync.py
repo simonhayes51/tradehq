@@ -659,10 +659,32 @@ async def fetch_via_page_capture(
             return
         pending.append(asyncio.ensure_future(read(response)))
 
+    # The navigation's OWN response (page.goto()'s return value) - captured
+    # separately from the API subresponse above so a failure can be
+    # attributed correctly: if Cloudflare challenges the PAGE navigation
+    # itself (the real FUT.GG app's JS bundle never loads, so it never
+    # makes its own organic price request at all), that is a categorically
+    # different failure from the page loading fine but the API subrequest
+    # being challenged - and from the API subrequest simply never firing
+    # for an unrelated reason (slow hydration, JS error). Without this,
+    # "no response ever captured" (page_capture_timeout) was
+    # indistinguishable from "the page itself was Cloudflare's interstitial
+    # the whole time" - the 2026-08-04 production run needed exactly this
+    # to move the investigation forward.
+    nav_status: int | None = None
+    nav_cf_mitigated: str | None = None
+
     page.on("response", on_response)
     try:
         try:
-            await page.goto(url, wait_until="domcontentloaded", timeout=PAGE_TIMEOUT_MS)
+            nav_response = await page.goto(url, wait_until="domcontentloaded", timeout=PAGE_TIMEOUT_MS)
+            if nav_response is not None:
+                nav_status = nav_response.status
+                try:
+                    nav_headers = await nav_response.all_headers()
+                    nav_cf_mitigated = nav_headers.get("cf-mitigated")
+                except Exception:
+                    pass
         except Exception as exc:
             return {"eaId": card_id, "error": f"navigation_failed:{type(exc).__name__}"}
 
@@ -683,7 +705,12 @@ async def fetch_via_page_capture(
 
     if "payload" not in captured:
         status = captured.get("status")
-        if captured.get("cf_mitigated") == "challenge":
+        if nav_cf_mitigated == "challenge":
+            # The player page navigation itself was Cloudflare's
+            # interstitial - the real app never ran, so the API
+            # subrequest was never going to fire regardless of transport.
+            error = "page_capture_nav_challenge"
+        elif captured.get("cf_mitigated") == "challenge":
             error = "page_capture_challenge"
         elif status == 403:
             error = "page_capture_403"
@@ -694,6 +721,12 @@ async def fetch_via_page_capture(
         else:
             error = f"page_capture_status_{status}"
         result: dict[str, Any] = {"eaId": card_id, "error": error}
+        # Always included, not diagnostic-only: cheap (status/one header,
+        # no secrets), and exactly the field needed to tell a page-level
+        # block apart from an API-level one during normal circuit-breaker
+        # -driven runs, not just one-card diagnostic mode.
+        result["navStatus"] = nav_status
+        result["navCfMitigated"] = nav_cf_mitigated
         if diagnostic:
             result["dataStatus"] = status
             result["cfMitigated"] = captured.get("cf_mitigated")
@@ -889,10 +922,10 @@ def log_failure_sample(card_id: int, result: dict[str, Any], transport: str = "s
     preview = result.get("dataBodyPreview")
     if transport == "page_capture":
         log.warning(
-            "sales fetch failed [page_capture] card=%s error=%s dataStatus=%s "
-            "dataContentType=%r cfMitigated=%s%s",
-            card_id, result.get("error"), result.get("dataStatus"),
-            result.get("dataContentType"), result.get("cfMitigated"),
+            "sales fetch failed [page_capture] card=%s error=%s navStatus=%s "
+            "navCfMitigated=%s dataStatus=%s dataContentType=%r cfMitigated=%s%s",
+            card_id, result.get("error"), result.get("navStatus"), result.get("navCfMitigated"),
+            result.get("dataStatus"), result.get("dataContentType"), result.get("cfMitigated"),
             f" bodyPreview={redact_value(preview)!r}" if preview else "",
         )
         return
@@ -1548,11 +1581,24 @@ async def _run_diagnostic_page_capture(pool: asyncpg.Pool, row, card_id: int) ->
     error = result.get("error")
     if error:
         log_failure_sample(card_id, result, transport="page_capture")
+        # Distinguishes "the player page navigation itself was
+        # Cloudflare's interstitial (the real app never ran)" from "the
+        # page loaded fine but the API subrequest was challenged" from
+        # "neither was challenged but no price request ever fired" -
+        # this is the exact question the 2026-08-04 headed-Chromium
+        # result left open.
+        log.error(
+            "DIAGNOSTIC: card=%d navigation itself: navStatus=%s navCfMitigated=%s "
+            "(this is the /players/... page load, NOT the API call)",
+            card_id, result.get("navStatus"), result.get("navCfMitigated"),
+        )
         log.error(
             "DIAGNOSTIC: card=%d FAILED [page_capture]: error=%s dataStatus=%s "
-            "cfMitigated=%s elapsed=%.2fs (cloudflare_challenged=%s)",
+            "cfMitigated=%s elapsed=%.2fs (cloudflare_challenged=%s) "
+            "(nav_challenged=%s)",
             card_id, error, result.get("dataStatus"), result.get("cfMitigated"), elapsed,
             result.get("cfMitigated") == "challenge" or error == "page_capture_challenge",
+            result.get("navCfMitigated") == "challenge",
         )
         ok = False
     else:

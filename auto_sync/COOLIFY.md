@@ -343,9 +343,32 @@ Exit code `0` on either transport. **On a Cloudflare-blocked run** (e.g.
 `signed_fetch` against a card Cloudflare is currently challenging) the
 same run instead logs a `sales fetch failed [signed_fetch] card=...
 error=data_403 ...` (or, for `page_capture`, `sales fetch failed
-[page_capture] card=... error=page_capture_challenge dataStatus=403
-cfMitigated=challenge ...`) line and a `DIAGNOSTIC: card=... FAILED
-[...]: ... (cloudflare_challenged=True)` summary, and exits `1`.
+[page_capture] card=... error=page_capture_challenge navStatus=200
+navCfMitigated=None dataStatus=403 cfMitigated=challenge ...`) line and a
+`DIAGNOSTIC: card=... FAILED [...]: ... (cloudflare_challenged=True)`
+summary, and exits `1`.
+
+**Reading `navStatus`/`navCfMitigated` vs `dataStatus`/`cfMitigated`**
+(added 2026-08-04, after headed Chromium alone did not clear the
+production 403 - see `CLOUDFLARE_403_INVESTIGATION.md`): `page_capture`
+now reports the player PAGE's own navigation response separately from
+the API subrequest's response, because they can fail independently and
+the distinction changes the diagnosis:
+
+- `navCfMitigated=challenge` (regardless of `dataStatus`) - Cloudflare
+  challenged the page navigation itself (`error=page_capture_nav_challenge`).
+  The real FUT.GG app never loaded, so it never had a chance to make its
+  own organic price request - this points at something upstream of both
+  transports (e.g. the server's IP/network origin), not at
+  headless-vs-headed or which transport is used.
+- `navStatus=200`, `navCfMitigated=None`, `cfMitigated=challenge` - the
+  page loaded fine but the API subrequest specifically was challenged
+  (`error=page_capture_challenge`).
+- `navStatus=200`, `navCfMitigated=None`, `dataStatus=None` - the page
+  loaded fine and was NOT challenged, but no price request was ever
+  captured within `FUTGG_SALES_PAGE_SETTLE_MS`
+  (`error=page_capture_timeout`) - a different problem (slow hydration,
+  JS error) than a Cloudflare block.
 
 ### page_capture throughput (estimated, not live-measured)
 
