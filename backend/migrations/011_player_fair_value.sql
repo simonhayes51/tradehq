@@ -2,6 +2,7 @@
 -- (PLAYER_DATABASE_URL; same as DATABASE_URL on default single-DB deploys).
 -- target: player
 -- requires-table: sales_history, bin_history
+-- requires-column: fut_players.name, fut_players.rating, fut_players.version, fut_players.position, fut_players.image_url
 --
 -- sales_history/bin_history are created by the auto_sync service's own
 -- ensure_tables() on its first run, not by any migration in this repo. If
@@ -10,6 +11,18 @@
 -- exist yet - the requires-table line above makes the runner skip it
 -- cleanly and retry next boot instead of surfacing a raw Postgres
 -- "relation does not exist" error.
+--
+-- Likewise, fut_players.name/rating/version/position/image_url are FUTBIN
+-- metadata columns only ever written by the auto_sync repo's
+-- futbin_full_sync.py (INSERTs/ALTERs fut_players, never CREATEs it - see
+-- migration 017), not by any migration here. A database whose only
+-- fut_players rows come from this repo's own migrations (017's bootstrap
+-- plus whatever card-art/rarity columns 022/025 added) - e.g. a restored
+-- or FUT.GG-only production database that has never had futbin_full_sync
+-- run against it - has fut_players without those columns at all. The
+-- requires-column line above makes the runner skip this migration cleanly
+-- in that case instead of failing on "column p.name does not exist", and
+-- pick it back up automatically once/if that sync ever populates them.
 --
 -- Builds the precomputed fair-value layer over sales_history + bin_history:
 --   fair_value_mv: one row per card with real median sold prices,

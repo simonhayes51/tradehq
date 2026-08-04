@@ -1,6 +1,10 @@
 -- Migration 034: expose generated-card columns through fair_value_mv
 -- target: player
 -- requires-table: fut_players, sales_history, bin_history
+-- requires-column: fut_players.name, fut_players.rating, fut_players.version, fut_players.position, fut_players.image_url
+--
+-- Rebuilds fair_value_mv wholesale, so it needs the same FUTBIN metadata
+-- columns migration 011 gates on - see 011's own comment.
 --
 -- Same DROP + CREATE rebuild pattern as migration 023 (Postgres has no
 -- ALTER MATERIALIZED VIEW for the underlying query) - unchanged except for

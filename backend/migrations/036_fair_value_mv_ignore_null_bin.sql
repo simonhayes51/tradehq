@@ -2,6 +2,10 @@
 -- a real price
 -- target: player
 -- requires-table: fut_players, sales_history, bin_history
+-- requires-column: fut_players.name, fut_players.rating, fut_players.version, fut_players.position, fut_players.image_url
+--
+-- Rebuilds fair_value_mv wholesale, so it needs the same FUTBIN metadata
+-- columns migration 011 gates on - see 011's own comment.
 --
 -- Bug: migration 034's `latest_bin` CTE picks the most recent bin_history
 -- row per (player_id, platform) within 48h with no filter on lowest_bin -

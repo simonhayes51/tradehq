@@ -1,8 +1,19 @@
 -- target: player
+-- requires-table: fut_players
+-- requires-column: fut_players.name, fut_players.nickname
+--
 -- Make the short in-game card name the canonical display name everywhere.
 -- Existing rows often have the correct public name in `nickname` while `name`
 -- contains the player's full legal name. APIs already expose `card_name`, so
 -- populate it once and keep it populated for future imports.
+--
+-- name/nickname are FUTBIN metadata columns only ever written by the
+-- auto_sync repo's futbin_full_sync.py, not by any migration in this repo
+-- (see migration 011's comment on the same gate). A database whose
+-- fut_players never had that sync run against it (e.g. a restored or
+-- FUT.GG-only production database) skips this migration cleanly instead
+-- of failing on "column name does not exist", and picks it up
+-- automatically once/if those columns show up.
 
 UPDATE fut_players
 SET card_name = COALESCE(
