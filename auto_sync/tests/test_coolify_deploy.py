@@ -353,6 +353,31 @@ def test_coolify_doc_documents_sales_integrity_env_vars_and_diagnostic_mode():
     ):
         assert var in sales_section
     assert "repair_salessync_20260804_403_incident.sql" in sales_section
+    assert "CLOUDFLARE_403_INVESTIGATION.md" in sales_section
+
+
+def test_cloudflare_investigation_doc_exists_and_covers_both_scripts():
+    doc = AUTO_SYNC_DIR / "CLOUDFLARE_403_INVESTIGATION.md"
+    assert doc.exists()
+    text = doc.read_text()
+    assert "futgg_bulk_price_sync.py" in text
+    assert "futgg_sales_sync.py" in text
+    assert "Just a moment" in " ".join(text.split())
+    # Must not overclaim a fix - this is a diagnostics/comparison doc.
+    assert "page.evaluate" in text
+    assert "page.route" in text
+
+
+def test_network_diagnostics_helpers_exist_in_sales_sync():
+    text = _read(AUTO_SYNC_DIR / "futgg_sales_sync.py")
+    for name in (
+        "def capture_context_diagnostics(",
+        "def _attach_network_diagnostics(",
+        "navigator.webdriver",
+        "all_headers()",
+        "cf-ray",
+    ):
+        assert name in text
 
 
 def test_repair_sql_file_exists_and_is_not_auto_run():

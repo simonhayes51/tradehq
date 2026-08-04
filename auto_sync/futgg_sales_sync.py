@@ -51,7 +51,7 @@ from typing import Any
 
 import asyncpg
 
-from futgg_instrumentation import StageTimers, redact_value
+from futgg_instrumentation import StageTimers, redact_headers, redact_url, redact_value
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("futgg_sales_sync")
@@ -821,6 +821,123 @@ async def run_forever() -> None:
             await pool.close()
 
 
+# =============================================================================
+# Network diagnostics (evidence-gathering for the Cloudflare 403 investigation)
+# =============================================================================
+#
+# Attached ONLY inside run_diagnostic_card() - never during the normal
+# production loop, which must stay exactly as fast/quiet as it already
+# is. Every field below answers one specific question asked of this
+# investigation; nothing here is a fix, only evidence. Cookie VALUES,
+# header VALUES for sensitive names, and the signed URL's query string
+# are never logged in full - see futgg_instrumentation.redact_headers/
+# redact_url/redact_value, the same redaction already proven for
+# futgg_discover.py's network diagnostics.
+
+_CF_HEADER_NAMES = (
+    "cf-ray", "cf-cache-status", "cf-mitigated", "cf-apo-via",
+    "server", "cf-request-id", "cf-worker", "cf-polished",
+)
+_CF_COOKIE_NAMES = ("__cf_bm", "cf_clearance", "__cflb", "__cfruid", "__cfwaitingroom")
+
+
+def _is_cf_cookie(name: str) -> bool:
+    lowered = name.lower()
+    return lowered in {c.lower() for c in _CF_COOKIE_NAMES} or lowered.startswith("cf_") or lowered.startswith("__cf")
+
+
+async def capture_context_diagnostics(context, page) -> dict[str, Any]:
+    """One-time snapshot of everything about the browser/context that
+    bot-detection could key off, independent of any single request -
+    navigator.webdriver, the actual (not just configured) user agent,
+    context launch options, and which Cloudflare-shaped cookies exist
+    BEFORE any signed request is made."""
+    try:
+        webdriver_flag = await page.evaluate("() => navigator.webdriver")
+    except Exception:
+        webdriver_flag = "<page.evaluate failed>"
+    try:
+        runtime_ua = await page.evaluate("() => navigator.userAgent")
+    except Exception:
+        runtime_ua = "<page.evaluate failed>"
+
+    cookies = await context.cookies()
+    cf_cookies_before = sorted({c["name"] for c in cookies if _is_cf_cookie(c["name"])})
+
+    return {
+        "navigator_webdriver": webdriver_flag,
+        "runtime_user_agent": runtime_ua,
+        "configured_user_agent": USER_AGENT,
+        "configured_locale": "en-GB",
+        "headless": HEADLESS,
+        "launch_args": ["--no-sandbox", "--disable-dev-shm-usage"],
+        # Both currently-deployed workers (this one and
+        # futgg_bulk_price_sync.py) are grep-confirmed to never call
+        # page.route()/context.route() anywhere - no request is ever
+        # intercepted, delayed, or rewritten. (The retired, undeployed
+        # futgg_price_sync.py DOES use context.route() to block images/
+        # fonts for speed - not a factor for either currently-running
+        # worker.)
+        "route_interception_active": False,
+        "fetch_execution_context": "page (Playwright page.evaluate -> CDP Runtime.evaluate), NOT Python/aiohttp",
+        "total_cookies_in_context": len(cookies),
+        "all_cookie_names_in_context": sorted({c["name"] for c in cookies}),
+        "cloudflare_cookies_present_before_request": cf_cookies_before,
+    }
+
+
+def _attach_network_diagnostics(page, label: str = "NETDIAG") -> list[asyncio.Task]:
+    """Logs every request/response the page makes from here on: URL,
+    method, ALL headers as the browser actually sent/received them
+    (request.all_headers()/response.all_headers() - unlike the sync
+    request.headers property, these include browser-computed headers
+    Playwright doesn't expose any other way, e.g. cookie, sec-fetch-*,
+    which is exactly what this investigation needs), Cloudflare-specific
+    response headers pulled out separately for visibility, and whether a
+    Cookie header was actually attached to that specific request. Returns
+    the list of background logging tasks so the caller can await them
+    before the page/browser closes."""
+    pending: list[asyncio.Task] = []
+
+    def on_request(request) -> None:
+        async def _log() -> None:
+            try:
+                headers = await request.all_headers()
+            except Exception:
+                log.exception("%s: failed to read request headers for %s", label, redact_url(request.url))
+                return
+            sec_fetch = {k: v for k, v in headers.items() if k.lower().startswith("sec-fetch-")}
+            log.info(
+                "%s REQUEST method=%s url=%s resourceType=%s "
+                "hasCookieHeader=%s secFetchHeaders=%s headers=%s",
+                label, request.method, redact_url(request.url), request.resource_type,
+                "cookie" in {k.lower() for k in headers}, sec_fetch, redact_headers(headers),
+            )
+        pending.append(asyncio.ensure_future(_log()))
+
+    def on_response(response) -> None:
+        async def _log() -> None:
+            try:
+                headers = await response.all_headers()
+            except Exception:
+                log.exception("%s: failed to read response headers for %s", label, redact_url(response.url))
+                return
+            cf_headers = {
+                k: v for k, v in headers.items()
+                if k.lower() in _CF_HEADER_NAMES
+            }
+            log.info(
+                "%s RESPONSE status=%s url=%s contentType=%r cfHeaders=%s headers=%s",
+                label, response.status, redact_url(response.url),
+                headers.get("content-type"), cf_headers, redact_headers(headers),
+            )
+        pending.append(asyncio.ensure_future(_log()))
+
+    page.on("request", on_request)
+    page.on("response", on_response)
+    return pending
+
+
 async def run_diagnostic_card(card_id: int) -> bool:
     """One-card diagnostic pass (item 9) - test a single known card
     inside Coolify without touching the whole queue:
@@ -890,12 +1007,32 @@ async def run_diagnostic_card(card_id: int) -> bool:
                 await page.goto(anchor, wait_until="domcontentloaded", timeout=TIMEOUT_MS)
                 log.info("DIAGNOSTIC: anchor page loaded: %s", anchor)
 
+                context_diag = await capture_context_diagnostics(context, page)
+                log.info("DIAGNOSTIC: browser/context state: %s", context_diag)
+
+                pending_network_logs = _attach_network_diagnostics(page)
                 results = await page.evaluate(
                     _FETCH_SCRIPT,
                     {
                         "ids": [card_id], "gameYear": GAME_YEAR, "platform": PLATFORM,
                         "diagnostic": True,
                     },
+                )
+                # Let every in-flight request/response logging task
+                # finish before the browser (and the CDP connection they
+                # depend on) closes underneath them.
+                if pending_network_logs:
+                    await asyncio.wait_for(
+                        asyncio.gather(*pending_network_logs, return_exceptions=True), timeout=15
+                    )
+
+                cookies_after = await context.cookies()
+                cf_cookies_after = sorted(
+                    {c["name"] for c in cookies_after if _is_cf_cookie(c["name"])}
+                )
+                log.info(
+                    "DIAGNOSTIC: cloudflare cookies AFTER request=%s (were %s BEFORE)",
+                    cf_cookies_after, context_diag["cloudflare_cookies_present_before_request"],
                 )
             finally:
                 await browser.close()
