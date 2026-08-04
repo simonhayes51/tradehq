@@ -1,5 +1,12 @@
 # FUT Traders Local Test Environment
 
+> **Deploying to Coolify?** See [`COOLIFY.md`](./COOLIFY.md) for the
+> PlayerSync/PriceSync/SBCSync Dockerfile-based setup (dedicated
+> `Dockerfile.player`/`Dockerfile.price`/`Dockerfile.sbc`, Scheduled Task
+> vs continuous service, required env vars). This file is a local
+> dev/manual-testing reference and, in places below, describes an older
+> Railway-based process layout.
+
 ## 1. Create a Local PostgreSQL Database
 ```bash
 docker run --name futtrader-db \
@@ -121,11 +128,15 @@ program" -> `python.exe` with argument `futbin_sbc_sync.py`, "Start in"
 set to this folder, and `DATABASE_URL` set as a system/user environment
 variable (Task Scheduler doesn't read a local `.env` file).
 
-`Dockerfile.sbc`/`docker-entrypoint-sbc.sh` are still in this repo and
-still work correctly (confirmed: Xvfb starts, Chromium launches headed,
-navigation is attempted) in case Railway's IP reputation ever changes or
-you want to try a different host later - the blocker is the network
-origin, not the container setup.
+`docker-entrypoint-sbc.sh` is still in this repo (confirmed working:
+Xvfb starts, Chromium launches headed, navigation is attempted) in case
+this network-origin block ever lifts and the headed-Chromium approach is
+worth revisiting. **`Dockerfile.sbc` itself no longer builds that path** -
+it now builds `easysbc_sbc_sync.py` (section 6b below) on a plain
+`python:3.11-slim` image with no Xvfb/Playwright at all, since that's the
+Coolify-deployed collector (see `COOLIFY.md`). To try the headed-Chromium
+approach again, build directly from `docker-entrypoint-sbc.sh` with a
+Playwright base image rather than via `Dockerfile.sbc`.
 
 ## 6b. SBC collector v2 - EasySBC API (recommended over section 6)
 ```bash
@@ -186,11 +197,12 @@ verify further:
 
 **Do one supervised manual run and read the log/heartbeat output before
 scheduling this as a real Cron Job** - same discipline as every other
-worker in this file. `futbin_sbc_sync.py`/`Dockerfile.sbc`/
-`docker-entrypoint-sbc.sh` are left in the repo for now rather than
-deleted, in case this API also turns out to be rate-limited or blocked at
-scale and the Playwright approach needs revisiting - remove them once
-this one is proven reliable over a few real runs.
+worker in this file. `futbin_sbc_sync.py`/`docker-entrypoint-sbc.sh` are
+left in the repo for now rather than deleted, in case this API also turns
+out to be rate-limited or blocked at scale and the Playwright approach
+needs revisiting - remove them once this one is proven reliable over a
+few real runs. `Dockerfile.sbc` already builds this (easysbc) script, not
+`futbin_sbc_sync.py` - see `COOLIFY.md`.
 
 ## 7. Card art backfill - NOT YET SCHEDULED, READ BEFORE DEPLOYING
 ```bash

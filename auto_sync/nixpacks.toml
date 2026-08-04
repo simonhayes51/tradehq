@@ -1,3 +1,8 @@
+# RAILWAY-ONLY, LEGACY. Coolify deploys auto_sync via the dedicated
+# Dockerfile.player/Dockerfile.price/Dockerfile.sbc instead (see
+# auto_sync/COOLIFY.md) - Nixpacks/this file is not part of that path.
+# Kept for any Railway (Nixpacks) service in this repo that is still live.
+#
 # Needed only because futbin_sbc_sync.py uses Playwright (a real browser),
 # unlike every other collector here (aiohttp is enough for them - see
 # README.md). `playwright` the Python package is already installed by
