@@ -111,6 +111,7 @@ _SNAPSHOT_COLUMNS = """
     name, rating, primary_position, alternate_positions, rarity, squad,
     price_tier, club, league, nation, club_source_id, league_source_id,
     nation_source_id, player_image_url, card_design_image_url,
+    card_image_url, card_image_stored_url, card_image_stored_status,
     club_image_url, league_image_url, nation_image_url,
     pace, shooting, passing, dribbling, defending, physicality, is_active,
     is_tradeable, last_price_status, metadata_warnings, price_updated_at,

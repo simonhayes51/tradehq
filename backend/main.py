@@ -85,6 +85,7 @@ from app.db import get_core_pool
 from app.services.futgg_scanner import refresher_loop as futgg_scanner_refresher_loop
 from app.services.futgg_outcome_grader import refresher_loop as futgg_outcome_grader_refresher_loop
 from app.services.priority_recompute import refresher_loop as priority_recompute_refresher_loop
+from app.services.futgg_card_image_mirror import mirror_loop as futgg_card_image_mirror_loop
 
 
 # ----------------- BOOTSTRAP -----------------
@@ -629,6 +630,20 @@ async def lifespan(app: FastAPI):
     )
     logging.info("✅ Adaptive priority engine started (poll every %ss)", priority_recompute_poll)
 
+    # Re-hosts FUT.GG's own pre-composited card image (futgg_players.
+    # card_image_url) into our own R2 storage - see
+    # app/services/futgg_card_image_mirror.py's module docstring for why
+    # (never depend on FUT.GG's CDN for the app's main card image). Cheap
+    # (one HTTP GET + one R2 PUT per card, no browser), so it polls
+    # frequently with a small batch size rather than needing a separate
+    # bulk backfill run to reach a fully-mirrored catalogue.
+    card_image_mirror_poll = int(os.getenv("FUTGG_CARD_IMAGE_MIRROR_INTERVAL_SECONDS", "60"))
+    card_image_mirror_batch = int(os.getenv("FUTGG_CARD_IMAGE_MIRROR_BATCH_SIZE", "50"))
+    app.state.futgg_card_image_mirror_task = asyncio.create_task(
+        futgg_card_image_mirror_loop(pool, card_image_mirror_poll, card_image_mirror_batch)
+    )
+    logging.info("✅ FUT.GG card image mirror started (poll every %ss, batch %s)", card_image_mirror_poll, card_image_mirror_batch)
+
     # The "social trading features" users-table ALTER/index block that used
     # to run here is now part of migrations/015_consolidate_core_bootstrap.sql
     # (same columns/indexes, applied once via run_on_boot() above).
@@ -650,7 +665,7 @@ async def lifespan(app: FastAPI):
             "ml_feature_pipeline_task", "ml_label_filler_task",
             "futgg_scanner_task", "futgg_outcome_grader_task",
             "held_position_refresher_task", "futgg_market_snapshot_task",
-            "priority_recompute_task",
+            "priority_recompute_task", "futgg_card_image_mirror_task",
         ):
             task = getattr(app.state, task_attr, None)
             if task:

@@ -162,9 +162,19 @@ def _serialize_player(row: Dict[str, Any]) -> Dict[str, Any]:
     )
     # image_url alias: the frontend's card-image rendering (Players/
     # Opportunities/Trade Finder result rows) reads a generic `image_url`
-    # field regardless of source - player_image_url is the FUT.GG-specific
-    # column name (see futgg_players schema).
-    out["image_url"] = out.get("player_image_url")
+    # field regardless of source. Preference order: our own R2-mirrored
+    # copy of FUT.GG's pre-composited full-card image (card_image_stored_url
+    # - see app/services/futgg_card_image_mirror.py) is the main image;
+    # falling back to the raw FUT.GG CDN URL (card_image_url) only for the
+    # brief window between a card first appearing and the mirror loop
+    # catching up to it (default within ~60s); falling back further to
+    # player_image_url (the cutout-only image) for cards scraped before
+    # this field existed, so nothing regresses to a blank image.
+    out["image_url"] = (
+        out.get("card_image_stored_url")
+        or out.get("card_image_url")
+        or out.get("player_image_url")
+    )
     for key in ("price_updated_at", "next_price_due_at", "bin_captured_at",
                 "latest_sale_at", "sales_window_earliest_at",
                 "sales_window_latest_at", "snapshot_computed_at"):

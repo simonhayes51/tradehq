@@ -192,6 +192,41 @@ async def ensure_schema(conn: asyncpg.Connection) -> None:
     await conn.execute(
         "ALTER TABLE futgg_players ADD COLUMN IF NOT EXISTS is_tradeable BOOLEAN"
     )
+    # card_image_url: the single pre-composited full-card image FUT.GG
+    # itself renders (background+cutout+badges baked in) - see
+    # futgg_common.py's "/player-item-card/" branch. The
+    # card_image_stored_* columns track backend's own re-hosted copy of
+    # that image in R2 (backend/app/services/futgg_card_image_mirror.py) -
+    # this worker only ever writes card_image_url; it never uploads
+    # anything or writes the stored_* columns itself, same ownership split
+    # as generated_card_* on fut_players (backend owns the storage
+    # lifecycle, the scraper only owns "here's the source URL").
+    await conn.execute(
+        "ALTER TABLE futgg_players ADD COLUMN IF NOT EXISTS card_image_url TEXT"
+    )
+    await conn.execute(
+        "ALTER TABLE futgg_players ADD COLUMN IF NOT EXISTS card_image_stored_url TEXT"
+    )
+    await conn.execute(
+        "ALTER TABLE futgg_players ADD COLUMN IF NOT EXISTS card_image_stored_key TEXT"
+    )
+    await conn.execute(
+        "ALTER TABLE futgg_players ADD COLUMN IF NOT EXISTS card_image_stored_hash VARCHAR(64)"
+    )
+    await conn.execute(
+        "ALTER TABLE futgg_players ADD COLUMN IF NOT EXISTS card_image_stored_at TIMESTAMPTZ"
+    )
+    await conn.execute(
+        "ALTER TABLE futgg_players ADD COLUMN IF NOT EXISTS card_image_stored_status TEXT"
+    )
+    await conn.execute(
+        "ALTER TABLE futgg_players ADD COLUMN IF NOT EXISTS card_image_stored_error TEXT"
+    )
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS futgg_players_card_image_pending_idx "
+        "ON futgg_players (card_image_stored_status) "
+        "WHERE card_image_url IS NOT NULL AND card_image_stored_status IS DISTINCT FROM 'ready'"
+    )
     await conn.execute(
         "CREATE INDEX IF NOT EXISTS futgg_players_price_due_idx "
         "ON futgg_players (next_price_due_at, price_tier) "
@@ -361,13 +396,13 @@ async def upsert_card(conn: asyncpg.Connection, card: FutggCard) -> None:
             body_type, real_face, shirt_number, age,
             pace, shooting, passing, dribbling, defending, physicality,
             diving, handling, kicking, reflexes, speed, positioning,
-            player_image_url, card_design_image_url, club_image_url, league_image_url,
-            nation_image_url, last_seen_at, metadata_updated_at, next_price_due_at,
-            metadata_warnings
+            player_image_url, card_design_image_url, card_image_url, club_image_url,
+            league_image_url, nation_image_url, last_seen_at, metadata_updated_at,
+            next_price_due_at, metadata_warnings
         ) VALUES (
             $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,
             $19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,
-            $35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,NOW(),NOW(),NOW(),$46
+            $35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,NOW(),NOW(),NOW(),$47
         )
         ON CONFLICT (source_card_id) DO UPDATE SET
             source_player_id = EXCLUDED.source_player_id,
@@ -411,6 +446,24 @@ async def upsert_card(conn: asyncpg.Connection, card: FutggCard) -> None:
             positioning = COALESCE(EXCLUDED.positioning, futgg_players.positioning),
             player_image_url = COALESCE(EXCLUDED.player_image_url, futgg_players.player_image_url),
             card_design_image_url = COALESCE(EXCLUDED.card_design_image_url, futgg_players.card_design_image_url),
+            card_image_url = CASE
+                WHEN EXCLUDED.card_image_url IS DISTINCT FROM futgg_players.card_image_url
+                THEN EXCLUDED.card_image_url
+                ELSE futgg_players.card_image_url
+            END,
+            -- A changed source image (new art, FUT.GG re-hashed the asset)
+            -- must invalidate any previously-mirrored R2 copy so backend's
+            -- mirror pass re-fetches it - otherwise a stale image would
+            -- sit at card_image_stored_status='ready' forever pointing at
+            -- old pixels. COALESCE guards the common case (URL unchanged
+            -- or scrape didn't see an image this pass) from clobbering a
+            -- perfectly good existing mirror.
+            card_image_stored_status = CASE
+                WHEN EXCLUDED.card_image_url IS NOT NULL
+                     AND EXCLUDED.card_image_url IS DISTINCT FROM futgg_players.card_image_url
+                THEN NULL
+                ELSE futgg_players.card_image_stored_status
+            END,
             club_image_url = COALESCE(EXCLUDED.club_image_url, futgg_players.club_image_url),
             league_image_url = COALESCE(EXCLUDED.league_image_url, futgg_players.league_image_url),
             nation_image_url = COALESCE(EXCLUDED.nation_image_url, futgg_players.nation_image_url),
@@ -426,7 +479,8 @@ async def upsert_card(conn: asyncpg.Connection, card: FutggCard) -> None:
         data["body_type"], data["real_face"], data["shirt_number"], data["age"],
         data["pace"], data["shooting"], data["passing"], data["dribbling"], data["defending"], data["physicality"],
         data["diving"], data["handling"], data["kicking"], data["reflexes"], data["speed"], data["positioning"],
-        data["player_image_url"], data["card_design_image_url"], data["club_image_url"], data["league_image_url"], data["nation_image_url"],
+        data["player_image_url"], data["card_design_image_url"], data["card_image_url"],
+        data["club_image_url"], data["league_image_url"], data["nation_image_url"],
         data["parse_warnings"],
     )
 
