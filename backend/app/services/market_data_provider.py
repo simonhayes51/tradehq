@@ -27,12 +27,16 @@ everywhere it's surfaced (see get_recent_sales()).
 from __future__ import annotations
 
 import logging
+import os
 import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence
 
 import asyncpg
+
+from app.services.priority_config import PRIORITY_ENGINE_CONFIG
+from app.services.priority_config import TIERS as PRIORITY_TIERS
 
 log = logging.getLogger("market_data_provider")
 
@@ -48,22 +52,33 @@ REFRESH_ADVISORY_LOCK_KEY = 7741011
 # for fewer).
 MAX_RECENT_SALES = 50
 
-# Expected price-refresh cadence per price_tier - used only for the
-# freshness endpoint's "stale" bucketing (see get_freshness_summary()),
-# not for any scoring math (that lives in futgg_intelligence.py and uses
-# a single confidence-weighted staleness curve, not a per-tier cliff).
-# FLAGGED: documented starting points mirroring the tiers' presumed
-# scrape priority order (special/gold_rare cards move fastest and are
-# scraped most often), not values verified against auto_sync's actual
-# scheduling - revisit once that scheduler's real cadence is known here.
-EXPECTED_PRICE_INTERVAL_MINUTES = {
-    "special": 30,
-    "gold_rare": 60,
-    "gold_common": 180,
-    "silver": 360,
-    "bronze": 720,
-}
-DEFAULT_EXPECTED_PRICE_INTERVAL_MINUTES = 360
+# Expected price-refresh cadence - used only for the freshness endpoint's
+# "stale" bucketing (see get_freshness_summary()), not for any scoring
+# math (that lives in futgg_intelligence.py and uses a single confidence-
+# weighted staleness curve, not a per-tier cliff).
+#
+# CORRECTED: this used to be a per-price_tier dict of guessed intervals
+# (special:30/gold_rare:60/gold_common:180/silver:360/bronze:720 min),
+# explicitly flagged in this module's own history as "not values verified
+# against auto_sync's actual scheduling". That guess is now provably
+# wrong, not just unverified: BIN price is captured for the ENTIRE
+# catalogue in one pass every FUTGG_BULK_INTERVAL_SECONDS by
+# auto_sync/futgg_bulk_price_sync.py (the live PriceSync worker) - there
+# is no per-tier price cadence anymore, so a single threshold (with a
+# safety margin for one missed cycle) is what actually describes current
+# reality. Sales-side staleness (a genuinely per-card, per-tier cadence -
+# see auto_sync/futgg_sales_sync.py's SALES_INTERVALS and
+# card_priority.effective_tier) is reported separately below, not
+# folded into this same number.
+_BULK_PRICE_INTERVAL_SECONDS = int(os.getenv("FUTGG_BULK_INTERVAL_SECONDS", "300"))
+EXPECTED_PRICE_INTERVAL_MINUTES = (_BULK_PRICE_INTERVAL_SECONDS / 60.0) * 2  # one missed cycle of slack
+
+# Sales-refresh cadence per adaptive-priority tier (see
+# app/services/priority_config.py's tier_sales_interval_minutes - same
+# values, imported rather than duplicated). Falls back to the flat
+# rating-band default (NORMAL) for any card card_priority hasn't scored
+# yet, since that's this engine's own tier-derivation default too.
+DEFAULT_SALES_TIER = "NORMAL"
 
 
 def _strip_diacritics(text: str) -> str:
@@ -439,34 +454,58 @@ class FutggMarketDataProvider(MarketDataProvider):
                 FROM futgg_market_snapshot
                 """
             )
+            # Single threshold now (see EXPECTED_PRICE_INTERVAL_MINUTES's
+            # comment) - grouped by price_tier purely for readability in
+            # the response, not because the threshold itself differs by
+            # group anymore.
             stale_rows = await conn.fetch(
                 """
                 SELECT price_tier, count(*) AS stale_count
                 FROM futgg_market_snapshot
                 WHERE is_active AND is_tradeable IS NOT FALSE AND current_bin IS NOT NULL
                   AND bin_captured_at IS NOT NULL
+                  AND EXTRACT(EPOCH FROM (now() - bin_captured_at)) / 60.0 > $1
                 GROUP BY price_tier
-                """
+                """,
+                EXPECTED_PRICE_INTERVAL_MINUTES,
             )
-            # Re-check staleness per-tier in Python since the expected
-            # interval varies by tier and isn't itself a column - cheap,
-            # this table is a handful of price_tier groups, not per-row.
-            stale_detail = {}
-            stale_total = 0
-            for r in stale_rows:
-                tier = r["price_tier"]
-                threshold = EXPECTED_PRICE_INTERVAL_MINUTES.get(tier, DEFAULT_EXPECTED_PRICE_INTERVAL_MINUTES)
-                count = await conn.fetchval(
-                    """
-                    SELECT count(*) FROM futgg_market_snapshot
-                    WHERE is_active AND is_tradeable IS NOT FALSE AND price_tier = $1
-                      AND current_bin IS NOT NULL AND bin_captured_at IS NOT NULL
-                      AND EXTRACT(EPOCH FROM (now() - bin_captured_at)) / 60.0 > $2
-                    """,
-                    tier, threshold,
-                )
-                stale_detail[tier] = int(count)
-                stale_total += int(count)
+            stale_detail = {r["price_tier"]: int(r["stale_count"]) for r in stale_rows}
+            stale_total = sum(stale_detail.values())
+
+            # Sales staleness, genuinely per-tier (unlike price above) -
+            # joined against card_priority (Phase 1 of the adaptive
+            # priority engine, see priority_recompute.py) where available,
+            # falling back to DEFAULT_SALES_TIER for cards not yet scored
+            # by it. futgg_players.last_sales_status_at is the real "when
+            # was sales data for this card last attempted/refreshed"
+            # column (auto_sync/futgg_sales_sync.py writes it) - the
+            # snapshot view has no equivalent, so this reads futgg_players
+            # directly rather than adding the column to the view for one
+            # observability query.
+            sales_stale_detail = {}
+            try:
+                for tier in PRIORITY_TIERS:
+                    threshold = PRIORITY_ENGINE_CONFIG.tier_sales_interval_minutes.get(tier, 240)
+                    count = await conn.fetchval(
+                        """
+                        SELECT count(*)
+                        FROM futgg_players p
+                        LEFT JOIN card_priority cp ON cp.card_id = p.source_card_id
+                        WHERE p.is_active AND p.is_tradeable IS NOT FALSE
+                          AND p.last_sales_status_at IS NOT NULL
+                          AND COALESCE(cp.effective_tier, $1) = $2
+                          AND EXTRACT(EPOCH FROM (now() - p.last_sales_status_at)) / 60.0 > $3
+                        """,
+                        DEFAULT_SALES_TIER, tier, threshold,
+                    )
+                    sales_stale_detail[tier] = int(count)
+            except asyncpg.exceptions.UndefinedTableError:
+                # card_priority (migration 044) or futgg_players.
+                # last_sales_status_at hasn't been created/backfilled on
+                # this database yet - same "degrade, don't 500" tolerance
+                # the rest of this module gives a not-yet-bootstrapped
+                # auto_sync deployment.
+                sales_stale_detail = {}
 
             latest_errors = await conn.fetch(
                 """
@@ -487,6 +526,7 @@ class FutggMarketDataProvider(MarketDataProvider):
             "cards_untradeable": int(totals["untradeable"] or 0),
             "cards_stale": stale_total,
             "stale_by_price_tier": stale_detail,
+            "stale_sales_by_priority_tier": sales_stale_detail,
             "latest_source_errors": [dict(e) for e in latest_errors],
         }
 
