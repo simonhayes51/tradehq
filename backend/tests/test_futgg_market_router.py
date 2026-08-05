@@ -165,6 +165,39 @@ def test_get_player_detail_404_for_unknown_card():
     assert resp.status_code == 404
 
 
+def test_image_url_prefers_r2_mirrored_card_image_over_raw_and_cutout():
+    row = _row(
+        card_image_stored_url="https://cdn.example.com/fc26/futgg-card-images/1/abc.webp",
+        card_image_url="https://game-assets.fut.gg/cdn-cgi/image/.../1.webp",
+        player_image_url="https://game-assets.fut.gg/26/player-item/1.png",
+    )
+    resp = _client([row]).get("/api/v2/players/1")
+    assert resp.status_code == 200
+    assert resp.json()["player"]["image_url"] == "https://cdn.example.com/fc26/futgg-card-images/1/abc.webp"
+
+
+def test_image_url_falls_back_to_raw_futgg_url_when_not_yet_mirrored():
+    row = _row(
+        card_image_stored_url=None,
+        card_image_url="https://game-assets.fut.gg/cdn-cgi/image/.../1.webp",
+        player_image_url="https://game-assets.fut.gg/26/player-item/1.png",
+    )
+    resp = _client([row]).get("/api/v2/players/1")
+    assert resp.status_code == 200
+    assert resp.json()["player"]["image_url"] == "https://game-assets.fut.gg/cdn-cgi/image/.../1.webp"
+
+
+def test_image_url_falls_back_to_cutout_when_no_composited_image_exists():
+    row = _row(
+        card_image_stored_url=None,
+        card_image_url=None,
+        player_image_url="https://game-assets.fut.gg/26/player-item/1.png",
+    )
+    resp = _client([row]).get("/api/v2/players/1")
+    assert resp.status_code == 200
+    assert resp.json()["player"]["image_url"] == "https://game-assets.fut.gg/26/player-item/1.png"
+
+
 def test_sales_endpoint_marks_time_as_approximate():
     resp = _client().get("/api/v2/players/1/sales")
     assert resp.status_code == 200

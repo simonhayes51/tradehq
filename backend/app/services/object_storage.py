@@ -78,8 +78,17 @@ def _validate_upload(key: str, data: bytes) -> None:
         raise ObjectStorageError(f"Refusing to upload to unsafe storage key: {key!r}")
 
 
+async def upload_bytes(key: str, data: bytes, content_type: str) -> str:
+    """Uploads an immutable object of any content type and returns its
+    public URL. Generalizes upload_png() for non-PNG assets (e.g. the
+    FUT.GG-sourced card webp mirrored by
+    app/services/futgg_card_image_mirror.py) without duplicating the
+    validation/upload plumbing."""
+    _validate_upload(key, data)
+    await asyncio.to_thread(_put_object_sync, key, data, content_type)
+    return f"{_public_base_url()}/{key}"
+
+
 async def upload_png(key: str, data: bytes) -> str:
     """Uploads an immutable PNG and returns its public URL."""
-    _validate_upload(key, data)
-    await asyncio.to_thread(_put_object_sync, key, data, "image/png")
-    return f"{_public_base_url()}/{key}"
+    return await upload_bytes(key, data, "image/png")

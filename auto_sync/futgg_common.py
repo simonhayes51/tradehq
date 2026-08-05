@@ -104,6 +104,7 @@ class FutggCard:
 
     player_image_url: str | None = None
     card_design_image_url: str | None = None
+    card_image_url: str | None = None
     club_image_url: str | None = None
     league_image_url: str | None = None
     nation_image_url: str | None = None
@@ -160,6 +161,22 @@ def _image_id(url: str | None, asset_type: str) -> int | None:
         return None
     match = re.search(rf"/{re.escape(asset_type)}/(\d+)[.\-]", url)
     return int(match.group(1)) if match else None
+
+
+# FUT.GG serves the composited player-item-card image through a Cloudflare
+# Image Resizing path (`/cdn-cgi/image/quality=85,format=auto,width=300/...`)
+# - the width in that path is a resize request, not the source image's real
+# size. The listing/search grid asks for a 300px thumbnail; we want a larger
+# source before permanently re-hosting our own copy (see
+# futgg_card_image_mirror.py in backend), so bump it here at parse time
+# rather than storing the 300px URL and hoping every future consumer
+# remembers to upsize it.
+_CDN_WIDTH_RE = re.compile(r"(/cdn-cgi/image/[^/]*?width=)(\d+)")
+CARD_IMAGE_MIRROR_WIDTH = 512
+
+
+def _upsize_card_image(url: str, width: int = CARD_IMAGE_MIRROR_WIDTH) -> str:
+    return _CDN_WIDTH_RE.sub(lambda m: f"{m.group(1)}{width}", url, count=1)
 
 
 def _find_exact(soup: BeautifulSoup, text: str):
@@ -279,7 +296,14 @@ def _parse_card_visual(soup: BeautifulSoup, card: FutggCard) -> None:
     for image in visual.find_all("img", src=True):
         src = urljoin(BASE_URL, image["src"])
         alt = clean_text(image.get("alt")).casefold()
-        if "/player-item/" in src:
+        if "player-item-card/" in src:
+            # The single, pre-composited full-card render (background +
+            # cutout + rating/price badge baked in by FUT.GG itself) - see
+            # backend/app/services/futgg_card_image_mirror.py for how this
+            # gets re-hosted as the app's own main card image rather than
+            # hotlinked directly.
+            card.card_image_url = _upsize_card_image(src)
+        elif "/player-item/" in src:
             card.player_image_url = src
         elif "/rarities-" in src:
             card.card_design_image_url = src
