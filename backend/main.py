@@ -15,7 +15,7 @@ import stripe
 
 from bs4 import BeautifulSoup
 from types import SimpleNamespace
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 from contextlib import asynccontextmanager, suppress
 from typing import Any, Dict, List, Literal, Optional, Tuple, AsyncGenerator
 from dotenv import load_dotenv
@@ -1093,6 +1093,55 @@ app.include_router(
 @app.get("/")
 async def root():
     return {"message": "FUT Dashboard API", "status": "healthy"}
+
+_IMG_PROXY_ALLOWED_HOSTS = {
+    "www.fut.gg", "fut.gg", "cdn.fut.gg",
+    "www.futbin.com", "futbin.com", "cdn.futbin.com",
+}
+
+@app.get("/img")
+async def image_proxy(url: str):
+    """Re-serves card-art images (FUT.GG rarity frames, nation/league/club
+    badges, legacy FUTBIN card art) from our own origin.
+
+    Frontend components (PlayerCardArt.jsx et al) already call this on
+    image load failure - some of these upstream CDNs serve card-frame/
+    badge assets with anti-hotlink rules that reject a browser request with
+    no Referer (referrerPolicy="no-referrer" is set precisely to avoid
+    leaking our own origin), while the same CDN serves plain player photos
+    without that restriction. Fetching server-side with a same-site Referer
+    sidesteps that without ever weakening the browser-side no-referrer
+    policy. `url` is restricted to a fixed CDN allowlist - this is a public,
+    unauthenticated endpoint, so accepting arbitrary hosts would make it an
+    open SSRF proxy.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or parsed.hostname not in _IMG_PROXY_ALLOWED_HOSTS:
+        raise HTTPException(400, "URL host is not on the allowed image CDN list")
+
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
+            async with session.get(
+                url,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (compatible; TradeHQ-ImageProxy/1.0)",
+                    "Referer": f"https://{parsed.hostname}/",
+                },
+            ) as resp:
+                if resp.status != 200:
+                    raise HTTPException(resp.status, "Upstream image fetch failed")
+                content_type = resp.headers.get("Content-Type", "image/png")
+                if not content_type.startswith("image/"):
+                    raise HTTPException(502, "Upstream did not return an image")
+                body = await resp.read()
+    except aiohttp.ClientError as e:
+        raise HTTPException(502, f"Upstream fetch error: {e}")
+
+    return Response(
+        content=body,
+        media_type=content_type,
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
 
 @app.get("/health")
 async def health_check(request: Request):
