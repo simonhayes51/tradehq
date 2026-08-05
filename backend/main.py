@@ -84,6 +84,7 @@ from app.services.market_data_provider import (
 from app.db import get_core_pool
 from app.services.futgg_scanner import refresher_loop as futgg_scanner_refresher_loop
 from app.services.futgg_outcome_grader import refresher_loop as futgg_outcome_grader_refresher_loop
+from app.services.priority_recompute import refresher_loop as priority_recompute_refresher_loop
 
 
 # ----------------- BOOTSTRAP -----------------
@@ -608,6 +609,22 @@ async def lifespan(app: FastAPI):
     )
     logging.info("✅ FUT.GG outcome grader started (poll every %ss)", futgg_grader_poll)
 
+    # Adaptive priority engine, Phase 1 (shadow mode): scores every active
+    # FUT.GG card into card_priority (liquidity/freshness/card-type/user-
+    # interest/volatility/event-relevance components + a derived tier),
+    # including forcing event_component to 1.0 for cards matching an
+    # active SBC's parsed requirements. Deliberately does NOT touch
+    # next_sales_due_at/next_price_due_at or anything auto_sync's live
+    # scrapers read - see priority_recompute.py's module docstring for
+    # why this is additive-only until the scoring is validated in
+    # production. Slow, decoupled cadence (default 15min) so a bug here
+    # can never affect either live scraper's own loop.
+    priority_recompute_poll = int(os.getenv("PRIORITY_RECOMPUTE_INTERVAL_SECONDS", "900"))
+    app.state.priority_recompute_task = asyncio.create_task(
+        priority_recompute_refresher_loop(pool, watchlist_pool, priority_recompute_poll)
+    )
+    logging.info("✅ Adaptive priority engine (shadow mode) started (poll every %ss)", priority_recompute_poll)
+
     # The "social trading features" users-table ALTER/index block that used
     # to run here is now part of migrations/015_consolidate_core_bootstrap.sql
     # (same columns/indexes, applied once via run_on_boot() above).
@@ -629,6 +646,7 @@ async def lifespan(app: FastAPI):
             "ml_feature_pipeline_task", "ml_label_filler_task",
             "futgg_scanner_task", "futgg_outcome_grader_task",
             "held_position_refresher_task", "futgg_market_snapshot_task",
+            "priority_recompute_task",
         ):
             task = getattr(app.state, task_attr, None)
             if task:

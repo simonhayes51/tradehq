@@ -566,7 +566,67 @@ async def market_freshness(
         "cards_untradeable": summary["cards_untradeable"],
         "cards_stale": summary["cards_stale"],
         "stale_by_price_tier": summary["stale_by_price_tier"],
+        "stale_sales_by_priority_tier": summary.get("stale_sales_by_priority_tier", {}),
         "latest_source_errors": summary["latest_source_errors"],
+    }
+
+
+@router.get("/market/priority-metrics")
+async def priority_metrics(
+    provider: FutggMarketDataProvider = ProviderDep,
+) -> Dict[str, Any]:
+    """Observability for the adaptive priority engine (Phase 1, shadow
+    mode - see app/services/priority_recompute.py). Cards-per-tier,
+    promotion/demotion counts over the trailing 24h, and SBC-forced-
+    promotion counts - the metrics the feature's own success criteria
+    asks for ("cards per priority tier", "promotion count", "demotion
+    count"), read directly off card_priority/priority_engine_events
+    rather than a separate metrics stack (this codebase has no
+    Prometheus/`/metrics` endpoint anywhere - reusing this router's
+    existing convention instead of introducing one)."""
+    pool = provider._pool  # same core pool every other method here already uses
+    async with pool.acquire() as conn:
+        try:
+            tier_rows = await conn.fetch(
+                "SELECT tier, count(*) AS card_count, avg(priority_score) AS avg_score "
+                "FROM card_priority GROUP BY tier"
+            )
+            event_rows = await conn.fetch(
+                """
+                SELECT reason, count(*) AS event_count
+                FROM priority_engine_events
+                WHERE occurred_at > now() - interval '24 hours'
+                GROUP BY reason
+                """
+            )
+            forced_count = await conn.fetchval(
+                "SELECT count(*) FROM card_priority WHERE forced_by_event_id IS NOT NULL"
+            )
+            last_computed_at = await conn.fetchval("SELECT max(computed_at) FROM card_priority")
+        except Exception:
+            # card_priority/priority_engine_events (migration 042) not
+            # created yet on this database - report an empty-but-valid
+            # shape rather than 500ing, same tolerance the freshness
+            # endpoint above gives an un-bootstrapped deployment.
+            return {
+                "cards_per_tier": {}, "avg_score_per_tier": {},
+                "promotions_24h": 0, "demotions_24h": 0, "sbc_matches_24h": 0,
+                "cards_forced_by_active_event": 0, "last_computed_at": None,
+            }
+
+    cards_per_tier = {r["tier"]: int(r["card_count"]) for r in tier_rows}
+    avg_score_per_tier = {r["tier"]: float(r["avg_score"]) for r in tier_rows if r["avg_score"] is not None}
+    events_by_reason = {r["reason"]: int(r["event_count"]) for r in event_rows}
+
+    return {
+        "cards_per_tier": cards_per_tier,
+        "avg_score_per_tier": avg_score_per_tier,
+        "promotions_24h": events_by_reason.get("activity_spike", 0),
+        "demotions_24h": events_by_reason.get("inactivity_demote", 0),
+        "sbc_matches_24h": events_by_reason.get("sbc_match", 0),
+        "initial_scores_24h": events_by_reason.get("initial", 0),
+        "cards_forced_by_active_event": int(forced_count or 0),
+        "last_computed_at": last_computed_at.isoformat() if last_computed_at else None,
     }
 
 
