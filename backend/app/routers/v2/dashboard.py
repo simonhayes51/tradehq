@@ -19,16 +19,38 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Request
 
 from app.auth.entitlements import compute_entitlements
 from app.db import get_core_pool, get_player_pool, get_watchlist_db
-from app.services.player_card_ondemand import ensure_cards_requested
+from app.routers.v2.futgg_market import (
+    CANDIDATE_SCAN_LIMIT,
+    CANDIDATE_SCAN_ORDER_BY,
+    _score_and_filter,
+    _sales_for_rows,
+)
+from app.services.futgg_intelligence import CardIntelligence
+from app.services.market_data_provider import FutggMarketDataProvider, PlayerFilters
 from app.services.sbc_demand import compute_sbc_demand
 
 router = APIRouter(tags=["v2-dashboard"])
+
+# CardIntelligence.signal (see futgg_intelligence.py's SIGNALS tuple:
+# strong_buy/buy/watch/hold/sell/avoid/insufficient_data) mapped onto the
+# same BUY/WAIT/SELL/AVOID/INSUFFICIENT_DATA vocabulary
+# recommendation_engine_v2.py's legacy `status` column already used, so
+# _to_recommendation-shaped output stays identical regardless of which
+# engine produced it.
+_SIGNAL_TO_STATUS = {
+    "strong_buy": "BUY", "buy": "BUY",
+    "watch": "WAIT", "hold": "WAIT",
+    "sell": "SELL",
+    "avoid": "AVOID",
+    "insufficient_data": "INSUFFICIENT_DATA",
+}
 
 # Plain, FUT-trader-facing labels rather than stock-market jargon
 # (bullish/bearish/illiquid) - this product's audience trades FUT cards,
@@ -258,6 +280,98 @@ def _to_recommendation(
     }
 
 
+def _futgg_to_recommendation(
+    row: Dict[str, Any],
+    ci: Optional[CardIntelligence],
+    sbc_demand: Optional[Dict[str, Dict[str, int]]] = None,
+) -> Dict[str, Any]:
+    """Adapts a (futgg_market_snapshot row, CardIntelligence) pair - the
+    same inputs app/routers/v2/futgg_market.py's Trade Finder/Opportunities
+    endpoints already score successfully - onto the exact same public
+    contract _to_recommendation() produces, so this endpoint's frontend
+    consumers see an unchanged response shape regardless of which engine
+    is behind it.
+
+    Deliberately NOT a reshape of CardIntelligence's own field names onto
+    the old V1.2 vocabulary where no honest equivalent exists:
+    qualifiedStrategies/heldDecision/purchasePrice/netRoi's conservative-
+    /bullish-/potential- tiers, and the async generated-card-art fields
+    (cardBgImage/cardCutoutImage/generatedCardUrl - FUT.GG serves
+    player_image_url directly, no generation step exists) are all left at
+    their honest empty/None default rather than fabricated. See this
+    router's module docstring precedent (dashboard.py's own top-of-file
+    comment: "Anything that can't be computed honestly ... is simply
+    omitted rather than faked") - same rule applied to a different engine.
+    """
+    has_evaluation = ci is not None
+    signal = ci.signal if ci else None
+    status = _SIGNAL_TO_STATUS.get(signal, "INSUFFICIENT_DATA") if has_evaluation else None
+    confidence_pct = float(ci.confidence_score) * 100 if (ci and ci.confidence_score is not None) else 0.0
+    expected_roi_pct = float(ci.expected_roi) * 100 if (ci and ci.expected_roi is not None) else None
+    reasons_text = "; ".join(ci.signal_reasons) if (ci and ci.signal_reasons) else ""
+    sbc_note = _sbc_demand_note(status, row.get("nation"), row.get("league"), sbc_demand) if has_evaluation else ""
+    evaluated_at = ci.evaluated_at if ci else None
+
+    return {
+        "cardId": row.get("source_card_id"),
+        "player": {
+            "name": row.get("name") or f"Card {row.get('source_card_id')}",
+            "rating": row.get("rating"),
+            "version": row.get("rarity"),
+            "position": row.get("primary_position"),
+            "imageUrl": row.get("player_image_url"),
+            "cardBgImage": None,
+            "cardCutoutImage": None,
+            "cardCutoutType": None,
+            "cardName": None,
+            "generatedCardUrl": row.get("player_image_url"),
+            "generatedCardStatus": "ready" if row.get("player_image_url") else None,
+            "generatedCardFlagged": False,
+            "stats": {
+                "pace": None, "shooting": None, "passing": None,
+                "dribbling": None, "defending": None, "physicality": None,
+            },
+            "nationImage": row.get("nation_image_url"),
+            "leagueImage": row.get("league_image_url"),
+            "clubImage": row.get("club_image_url"),
+        },
+        "status": status,
+        "recommendation": _STATUS_LABEL.get(status, "WAIT") if has_evaluation else None,
+        "confidence": confidence_pct,
+        "expectedRoi": expected_roi_pct,
+        "netRoi": {
+            # Only a single expected-ROI figure exists in this engine (no
+            # conservative/bullish/potential tiers) - "likely" is the
+            # closest honest slot; the others stay None rather than
+            # duplicating or inventing a spread.
+            "conservative": None, "likely": expected_roi_pct, "bullish": None, "potential": None,
+        },
+        "expectedNetRoi": None,
+        "expectedNetRoiSource": "futgg_intelligence" if has_evaluation else None,
+        "entryPrice": int(ci.current_executable_buy) if (ci and ci.current_executable_buy is not None) else None,
+        "breakEvenPrice": int(ci.break_even_price) if (ci and ci.break_even_price is not None) else None,
+        "holdingPeriod": "Unavailable",
+        "risk": (ci.risk_level or "Unknown").title() if has_evaluation else "Unknown",
+        "qualifiedStrategies": [],
+        "failedGateReasons": [],
+        "currentBin": row.get("current_bin"),
+        "fairValue": int(ci.fair_value) if (ci and ci.fair_value is not None) else None,
+        "sales24h": None,
+        "sales7d": row.get("sales_count"),
+        "dataQuality": "GOOD" if row.get("sales_count") else "LIMITED",
+        "updatedAt": evaluated_at.isoformat() if evaluated_at else None,
+        "reasoning": (reasons_text + sbc_note) if has_evaluation else "",
+        "marketDrivers": [],
+        "historicalSimilarEvents": [],
+        "isHeld": False,
+        "heldDecision": None,
+        "heldDecisionReasons": [],
+        "purchasePrice": None,
+        "scores": {},
+        "modelVersion": ci.engine_version if ci else None,
+    }
+
+
 def _decode_rec_row(r) -> Dict[str, Any]:
     d = dict(r)
     for key in (
@@ -333,53 +447,52 @@ async def get_dashboard(request: Request) -> Dict[str, Any]:
     recent_predictions: List[Dict[str, Any]] = []
     preview_locked_count = 0
 
-    async with player_pool.acquire() as conn:
-        buy_rows = await conn.fetch(
-            """
-            SELECT r.*, p.name, p.rating, p.version, p.position, p.image_url,
-                   p.card_bg_image, p.card_cutout_image, p.card_cutout_type, p.card_name,
-                   p.generated_card_url, p.generated_card_status, p.generated_card_flagged,
-                   p.pace, p.shooting, p.passing, p.dribbling, p.defending, p.physicality,
-                   p.nation_image, p.league_image, p.club_image, p.nation, p.league,
-                   fv.current_bin, fv.fair_value_24h, fv.sales_24h, fv.sales_7d, fv.data_quality_suspect
-            FROM recommendations_latest r
-            LEFT JOIN fut_players p ON p.card_id = r.card_id
-            LEFT JOIN fair_value_mv fv ON fv.card_id = r.card_id
-            WHERE r.status = 'BUY'
-            ORDER BY r.confidence DESC NULLS LAST LIMIT 8
-            """
-        )
-        avoid_rows = await conn.fetch(
-            """
-            SELECT r.*, p.name, p.rating, p.version, p.position, p.image_url,
-                   p.card_bg_image, p.card_cutout_image, p.card_cutout_type, p.card_name,
-                   p.generated_card_url, p.generated_card_status, p.generated_card_flagged,
-                   p.pace, p.shooting, p.passing, p.dribbling, p.defending, p.physicality,
-                   p.nation_image, p.league_image, p.club_image,
-                   fv.current_bin, fv.fair_value_24h, fv.sales_24h, fv.sales_7d, fv.data_quality_suspect
-            FROM recommendations_latest r
-            LEFT JOIN fut_players p ON p.card_id = r.card_id
-            LEFT JOIN fair_value_mv fv ON fv.card_id = r.card_id
-            WHERE r.status = 'AVOID'
-            ORDER BY r.computed_at DESC LIMIT 6
-            """
-        )
-        recent_rows = await conn.fetch(
-            """
-            SELECT r.*, p.name, p.rating, p.version, p.position, p.image_url,
-                   p.card_bg_image, p.card_cutout_image, p.card_cutout_type, p.card_name,
-                   p.generated_card_url, p.generated_card_status, p.generated_card_flagged,
-                   p.pace, p.shooting, p.passing, p.dribbling, p.defending, p.physicality,
-                   p.nation_image, p.league_image, p.club_image,
-                   fv.current_bin, fv.fair_value_24h, fv.sales_24h, fv.sales_7d, fv.data_quality_suspect
-            FROM recommendations r
-            LEFT JOIN fut_players p ON p.card_id = r.card_id
-            LEFT JOIN fair_value_mv fv ON fv.card_id = r.card_id
-            ORDER BY r.computed_at DESC LIMIT 8
-            """
-        )
-        all_ids = list({r["card_id"] for r in [*buy_rows, *avoid_rows, *recent_rows]})
-        scores_map = await _scores_by_card(conn, all_ids)
+    # FUT.GG-native candidate scan - the exact same source and scoring
+    # helpers app/routers/v2/futgg_market.py's already-working Trade
+    # Finder/Opportunities endpoints use, not a new/untested path.
+    # Replaces the legacy recommendations_latest/recommendations +
+    # fut_players + fair_value_mv query set: that path depends entirely
+    # on the FUTBIN pipeline this deployment never runs
+    # (ENABLE_LEGACY_FUTBIN unset, see app/services/fair_value.py), so
+    # recommendations_latest/recommendations sit permanently empty here,
+    # and fair_value_mv doesn't exist at all (migration 011 requires
+    # fut_players.name/rating/version/position/image_url, which nothing
+    # in a FUT.GG-only deployment ever populates) - every query below
+    # was unconditionally raising "relation fair_value_mv does not
+    # exist", not just returning empty rows.
+    core_pool_provider = FutggMarketDataProvider(core_pool)
+    candidate_rows = await core_pool_provider.search_players(
+        PlayerFilters(), limit=CANDIDATE_SCAN_LIMIT, offset=0, order_by=CANDIDATE_SCAN_ORDER_BY,
+    )
+    sales_by_card = await _sales_for_rows(core_pool_provider, candidate_rows)
+
+    buy_scored = _score_and_filter(candidate_rows, signals={"strong_buy", "buy"}, sales_by_card=sales_by_card)
+    buy_scored.sort(key=lambda pair: -(pair[1].confidence_score or 0.0))
+
+    avoid_scored = _score_and_filter(candidate_rows, signals={"avoid"}, sales_by_card=sales_by_card)
+    avoid_scored.sort(
+        key=lambda pair: pair[0].get("snapshot_computed_at") or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
+
+    # "Recent" has no direct FUT.GG-native equivalent: the legacy
+    # `recommendations` table was an append-only log of every past
+    # evaluation, whereas this engine evaluates live off the current
+    # snapshot rather than writing a history row per evaluation. The
+    # closest honest analog is "most recently refreshed candidates",
+    # regardless of signal, ordered by when their snapshot was computed.
+    recent_scored = sorted(
+        _score_and_filter(candidate_rows, sales_by_card=sales_by_card),
+        key=lambda pair: pair[0].get("snapshot_computed_at") or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
+
+    # card_scores_latest (_scores_by_card) is keyed by the legacy FUTBIN
+    # card_id space too (see migration 024) - no FUT.GG-native equivalent
+    # exists yet, so `scores` on every card below stays the honest empty
+    # dict {} rather than joining against a table keyed by a different ID
+    # space (see migrations/038's card_source_map comment on why FUT.GG
+    # and FUTBIN card IDs are not reconciled in this codebase yet).
 
     # Aggregate SBC nation/league demand - a new BUY driver, never a hard
     # dependency: a failure here must never break the whole dashboard.
@@ -388,17 +501,14 @@ async def get_dashboard(request: Request) -> Dict[str, Any]:
     except Exception:
         sbc_demand = None
 
-    buys = [_decode_rec_row(r) for r in buy_rows]
-    all_opportunities = [_to_recommendation(d, scores_map.get(d["card_id"]), sbc_demand) for d in buys]
-    all_high_confidence = [
-        _to_recommendation(d, scores_map.get(d["card_id"]), sbc_demand) for d in buys if float(d.get("confidence") or 0) >= 70
-    ]
+    all_opportunities = [_futgg_to_recommendation(row, ci, sbc_demand) for row, ci in buy_scored[:8]]
+    all_high_confidence = [d for d in all_opportunities if (d.get("confidence") or 0) >= 70]
 
     if opportunities_unlocked:
         todays_opportunities = all_opportunities
         high_confidence = all_high_confidence
-        cards_to_avoid = [_to_recommendation(_decode_rec_row(r), scores_map.get(r["card_id"])) for r in avoid_rows]
-        recent_predictions = [_to_recommendation(_decode_rec_row(r), scores_map.get(r["card_id"])) for r in recent_rows]
+        cards_to_avoid = [_futgg_to_recommendation(row, ci, sbc_demand) for row, ci in avoid_scored[:6]]
+        recent_predictions = [_futgg_to_recommendation(row, ci, sbc_demand) for row, ci in recent_scored[:8]]
     else:
         # Free/Pro preview: a real BUY call, not a fabricated example, so
         # the free tier can actually see the product work before paying
@@ -407,63 +517,41 @@ async def get_dashboard(request: Request) -> Dict[str, Any]:
         todays_opportunities = all_opportunities[:FREE_PREVIEW_COUNT]
         preview_locked_count = max(0, len(all_opportunities) - FREE_PREVIEW_COUNT)
 
-    needs_card = [
-        str(r["card_id"]) for r in [*buy_rows, *avoid_rows, *recent_rows]
-        if r["generated_card_status"] != "ready" or r["generated_card_flagged"]
-    ]
-    if needs_card:
-        await ensure_cards_requested(player_pool, list(dict.fromkeys(needs_card)))
+    # No generated-card-art step needed for FUT.GG cards (unlike the
+    # legacy FUTBIN pipeline's async ensure_cards_requested()) -
+    # player_image_url is already served directly by futgg_market_snapshot.
 
-    # --- Biggest movers (ungated - same 3 slots dashboard.py's /stats already computes) ---
-    async with player_pool.acquire() as conn:
-        movers_row = await conn.fetchrow(
-            """
-            SELECT
-                (SELECT row_to_json(m) FROM (
-                    SELECT card_id, name, rating, version, position, volatility_24h AS metric,
-                           image_url, card_bg_image, card_cutout_image, card_cutout_type, card_name,
-                           generated_card_url, generated_card_status, generated_card_flagged
-                    FROM fair_value_mv WHERE volatility_24h IS NOT NULL ORDER BY volatility_24h DESC LIMIT 1
-                ) m) AS largest_mover,
-                (SELECT row_to_json(m) FROM (
-                    SELECT card_id, name, rating, version, position, sales_24h AS metric,
-                           image_url, card_bg_image, card_cutout_image, card_cutout_type, card_name,
-                           generated_card_url, generated_card_status, generated_card_flagged
-                    FROM fair_value_mv WHERE sales_24h IS NOT NULL ORDER BY sales_24h DESC LIMIT 1
-                ) m) AS most_traded,
-                (SELECT row_to_json(m) FROM (
-                    SELECT card_id, name, rating, version, position, sales_per_hour_24h AS metric,
-                           image_url, card_bg_image, card_cutout_image, card_cutout_type, card_name,
-                           generated_card_url, generated_card_status, generated_card_flagged
-                    FROM fair_value_mv WHERE sales_per_hour_24h IS NOT NULL ORDER BY sales_per_hour_24h DESC LIMIT 1
-                ) m) AS highest_liquidity
-            """
-        )
-    mover_cards = []
-    movers_needing_cards: List[str] = []
-    for key in ("largest_mover", "most_traded", "highest_liquidity"):
-        raw = movers_row[key]
-        if not raw:
-            continue
-        m = json.loads(raw) if isinstance(raw, str) else raw
-        if m.get("generated_card_status") != "ready" or m.get("generated_card_flagged"):
-            movers_needing_cards.append(str(m["card_id"]))
-        mover_cards.append(_to_recommendation({
-            "card_id": m["card_id"], "name": m["name"], "rating": m["rating"], "version": m["version"],
-            "position": m.get("position"),
-            "image_url": m["image_url"], "card_bg_image": m.get("card_bg_image"),
-            "card_cutout_image": m.get("card_cutout_image"), "card_cutout_type": m.get("card_cutout_type"),
-            "card_name": m.get("card_name"),
-            "generated_card_url": m.get("generated_card_url"),
-            "generated_card_status": m.get("generated_card_status"),
-            "generated_card_flagged": m.get("generated_card_flagged"),
-            # Movers are a price-activity signal, not an AI verdict - no
-            # "status" key means _to_recommendation()'s has_evaluation
-            # guard renders recommendation=None rather than inventing a
-            # BUY/AVOID call a mover didn't earn.
-        }))
-    if movers_needing_cards:
-        await ensure_cards_requested(player_pool, list(dict.fromkeys(movers_needing_cards)))
+    # --- Biggest movers (ungated) - real fields on futgg_market_snapshot
+    # itself (migrations/038): sales_stddev as the volatility proxy,
+    # sales_count as the most-traded proxy, and sales-per-minute-of-window
+    # (sales_count / sales_window_span_minutes) as a genuine liquidity
+    # proxy distinct from raw sales_count, rather than reusing the same
+    # metric twice under two different labels. ---
+    def _best(rows: List[Dict[str, Any]], key_fn) -> Optional[Dict[str, Any]]:
+        candidates = [(key_fn(r), r) for r in rows if key_fn(r) is not None]
+        if not candidates:
+            return None
+        return max(candidates, key=lambda pair: pair[0])[1]
+
+    mover_pool = [r for r in candidate_rows if r.get("sales_count")]
+    largest_mover_row = _best(mover_pool, lambda r: r.get("sales_stddev"))
+    most_traded_row = _best(mover_pool, lambda r: r.get("sales_count"))
+    highest_liquidity_row = _best(
+        mover_pool,
+        lambda r: (
+            float(r["sales_count"]) / float(r["sales_window_span_minutes"])
+            if r.get("sales_window_span_minutes") else None
+        ),
+    )
+
+    mover_cards = [
+        _futgg_to_recommendation(row, None)
+        for row in (largest_mover_row, most_traded_row, highest_liquidity_row)
+        if row is not None
+    ]
+    # No generated-card-art polling needed here either, same reasoning as
+    # the recommendation lists above (player_image_url is already present
+    # synchronously on every futgg_market_snapshot row).
 
     # --- Watchlist alerts: real query against alerts_log, populated by
     # main.py's own live alert loop (_alerts_poll_loop/_eval_alerts_for_pair

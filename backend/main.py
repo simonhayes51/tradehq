@@ -76,7 +76,12 @@ from app.services.recommendation_engine_v2 import refresher_loop_v2 as recommend
 from app.services.ml_feature_pipeline import refresher_loop as ml_feature_pipeline_refresher_loop
 from app.services.ml_label_filler import refresher_loop as ml_label_filler_refresher_loop
 from app.services.held_position_refresher import refresher_loop as held_position_refresher_loop
-from app.services.market_data_provider import refresher_loop as futgg_market_snapshot_refresher_loop
+from app.services.market_data_provider import (
+    FutggMarketDataProvider,
+    PlayerFilters,
+    refresher_loop as futgg_market_snapshot_refresher_loop,
+)
+from app.db import get_core_pool
 from app.services.futgg_scanner import refresher_loop as futgg_scanner_refresher_loop
 from app.services.futgg_outcome_grader import refresher_loop as futgg_outcome_grader_refresher_loop
 
@@ -2833,80 +2838,47 @@ async def get_data_summary(
 
 @app.get("/api/search-players")
 async def search_players(request: Request, q: str = "", pos: Optional[str] = None):
+    """FUT.GG-native search (app/services/market_data_provider.py), same
+    source app/routers/v2/futgg_market.py's GET /api/v2/players?search=
+    already serves successfully. Previously queried the legacy
+    fut_players table directly - that table is only ever populated by
+    futbin_full_sync.py, which this FUT.GG-only deployment never runs,
+    so name/position/altposition/generated_card_* never existed on it
+    here and every search unconditionally hit the except-block below
+    ("column ... does not exist"), silently returning an empty result
+    with no real players ever found. No generated-card-art step is
+    needed for FUT.GG cards either - player_image_url is already served
+    directly by futgg_market_snapshot (see migrations/038)."""
     q = (q or "").strip()
     p = (pos or "").strip().upper() or None
 
     try:
-        async with request.app.state.player_pool.acquire() as conn:
-            where = []
-            params: list[Any] = []
-
-            if q:
-                where.append("(LOWER(name) LIKE LOWER($1) OR card_id::text LIKE $1)")
-                params.append(f"%{q}%")
-
-            if p:
-                params.append(p)
-                idx = len(params)
-                where.append(
-                    f"""
-                (
-                  UPPER(position) = ${idx}
-                  OR (
-                    COALESCE(altposition, '') <> ''
-                    AND EXISTS (
-                      SELECT 1
-                      FROM regexp_split_to_table(altposition, '[,;/|\\s]+') ap
-                      WHERE UPPER(TRIM(ap)) = ${idx}
-                    )
-                  )
-                )
-                """
-                )
-
-            base_where = " AND ".join(where) if where else "TRUE"
-            sql = f"""
-                SELECT
-                  card_id, name, rating, version, image_url, club, league, nation,
-                  position, altposition, price,
-                  generated_card_url, generated_card_status, generated_card_flagged
-                FROM fut_players
-                WHERE {base_where}
-                ORDER BY
-                  CASE WHEN price IS NULL THEN 1 ELSE 0 END,
-                  rating DESC NULLS LAST,
-                  name ASC
-                LIMIT 50
-            """
-
-            rows = await conn.fetch(sql, *params)
+        pool = await get_core_pool()
+        provider = FutggMarketDataProvider(pool)
+        rows = await provider.search_players(
+            PlayerFilters(search=q or None, position=p, tradeable_only=False),
+            limit=50,
+        )
 
         players = [
             {
-                "card_id": int(r["card_id"]),
-                "name": r["name"],
-                "rating": r["rating"],
-                "version": r["version"],
-                "image_url": r["image_url"],
-                "club": r["club"],
-                "league": r["league"],
-                "nation": r["nation"],
-                "position": r["position"],
-                "altposition": r["altposition"],
-                "price": r["price"],
-                "generated_card_url": r["generated_card_url"],
-                "generated_card_status": r["generated_card_status"],
-                "generated_card_flagged": r["generated_card_flagged"],
+                "card_id": int(r["source_card_id"]),
+                "name": r.get("name"),
+                "rating": r.get("rating"),
+                "version": r.get("rarity"),
+                "image_url": r.get("player_image_url"),
+                "club": r.get("club"),
+                "league": r.get("league"),
+                "nation": r.get("nation"),
+                "position": r.get("primary_position"),
+                "altposition": ",".join(r.get("alternate_positions") or []),
+                "price": r.get("current_bin"),
+                "generated_card_url": r.get("player_image_url"),
+                "generated_card_status": "ready" if r.get("player_image_url") else None,
+                "generated_card_flagged": False,
             }
             for r in rows
         ]
-
-        needs_card = [
-            str(r["card_id"]) for r in rows
-            if r["generated_card_status"] != "ready" or r["generated_card_flagged"]
-        ]
-        if needs_card:
-            await ensure_cards_requested(request.app.state.player_pool, needs_card)
 
         return {"players": players}
     except Exception as e:
