@@ -34,10 +34,20 @@ export default function PlayerCardArt({
   altText,
   widthClass = "w-48",
   compact = false,
+  featured = false,
   showStats = true,
   altPositions,
 }) {
   const [cardAspect, setCardAspect] = useState(0.75);
+
+  // Stable hook classes (independent of the widthClass Tailwind utility)
+  // so page-specific CSS can size this component responsively per
+  // breakpoint - mirrors the .ft-card-img.featured/.compact convention
+  // the plain-<img> generatedCardUrl path already used, which callers
+  // like the dashboard modal and Home hero card rely on to size this
+  // component down at narrow viewports (Tailwind's w-* utilities are
+  // fixed and don't respond to a container's own media queries).
+  const sizeHookClass = featured ? "player-card-art featured" : compact ? "player-card-art compact" : "player-card-art";
 
   const overlayTextClass =
     cutoutType === "base"
@@ -49,7 +59,7 @@ export default function PlayerCardArt({
       : "text-white/90 [text-shadow:0_1px_2px_rgba(0,0,0,0.9)]";
 
   return (
-    <div className={`relative ${widthClass}`} style={{ aspectRatio: cardAspect }}>
+    <div className={`relative ${sizeHookClass} ${widthClass}`} style={{ aspectRatio: cardAspect }}>
       {bgImage ? (
         <>
           <img
