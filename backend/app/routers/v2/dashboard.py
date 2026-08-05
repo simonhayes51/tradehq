@@ -295,13 +295,19 @@ def _futgg_to_recommendation(
     Deliberately NOT a reshape of CardIntelligence's own field names onto
     the old V1.2 vocabulary where no honest equivalent exists:
     qualifiedStrategies/heldDecision/purchasePrice/netRoi's conservative-
-    /bullish-/potential- tiers, and the async generated-card-art fields
-    (cardBgImage/cardCutoutImage/generatedCardUrl - FUT.GG serves
-    player_image_url directly, no generation step exists) are all left at
-    their honest empty/None default rather than fabricated. See this
-    router's module docstring precedent (dashboard.py's own top-of-file
-    comment: "Anything that can't be computed honestly ... is simply
-    omitted rather than faked") - same rule applied to a different engine.
+    /bullish-/potential- tiers stay at their honest empty/None default
+    rather than fabricated. card_design_image_url (the rarity/frame art
+    FUT.GG itself renders behind the cutout - see auto_sync/futgg_common.py's
+    "/rarities-" capture) and the per-stat pace/shooting/passing/dribbling/
+    defending/physicality columns (futgg_market_snapshot as of migration
+    041) ARE real data FUT.GG provides, so those are surfaced onto the same
+    cardBgImage/cardCutoutImage/stats fields PlayerCardArt already knows how
+    to render - no generated-card-art pipeline exists for FUT.GG cards, but
+    the frame art itself doesn't need generating, FUT.GG already serves it.
+    See this router's module docstring precedent (dashboard.py's own
+    top-of-file comment: "Anything that can't be computed honestly ... is
+    simply omitted rather than faked") - same rule applied to a different
+    engine.
     """
     has_evaluation = ci is not None
     signal = ci.signal if ci else None
@@ -311,6 +317,7 @@ def _futgg_to_recommendation(
     reasons_text = "; ".join(ci.signal_reasons) if (ci and ci.signal_reasons) else ""
     sbc_note = _sbc_demand_note(status, row.get("nation"), row.get("league"), sbc_demand) if has_evaluation else ""
     evaluated_at = ci.evaluated_at if ci else None
+    card_bg_image = row.get("card_design_image_url")
 
     return {
         "cardId": row.get("source_card_id"),
@@ -320,16 +327,26 @@ def _futgg_to_recommendation(
             "version": row.get("rarity"),
             "position": row.get("primary_position"),
             "imageUrl": row.get("player_image_url"),
-            "cardBgImage": None,
-            "cardCutoutImage": None,
-            "cardCutoutType": None,
+            "cardBgImage": card_bg_image,
+            "cardCutoutImage": row.get("player_image_url"),
+            # price_tier's "special" bucket is everything outside the plain
+            # gold/silver/bronze common/rare set (see auto_sync/futgg_common
+            # .py::classify_price_tier) - the same base-vs-promo distinction
+            # PlayerCardArt's cutoutType prop expects.
+            "cardCutoutType": "base" if row.get("price_tier") not in (None, "special") else "special",
             "cardName": None,
-            "generatedCardUrl": row.get("player_image_url"),
+            # Only meaningful once card_bg_image exists - otherwise CardImage
+            # falls back to the plain <img> path, same as before.
+            "generatedCardUrl": None if card_bg_image else row.get("player_image_url"),
             "generatedCardStatus": "ready" if row.get("player_image_url") else None,
             "generatedCardFlagged": False,
             "stats": {
-                "pace": None, "shooting": None, "passing": None,
-                "dribbling": None, "defending": None, "physicality": None,
+                "pace": row.get("pace"),
+                "shooting": row.get("shooting"),
+                "passing": row.get("passing"),
+                "dribbling": row.get("dribbling"),
+                "defending": row.get("defending"),
+                "physicality": row.get("physicality"),
             },
             "nationImage": row.get("nation_image_url"),
             "leagueImage": row.get("league_image_url"),
