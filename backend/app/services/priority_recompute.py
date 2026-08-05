@@ -59,7 +59,7 @@ from typing import Dict, List, Optional
 
 import asyncpg
 
-from app.services.priority_config import PRIORITY_ENGINE_CONFIG, PriorityEngineConfig
+from app.services.priority_config import PRIORITY_ENGINE_CONFIG, TIERS, PriorityEngineConfig, tier_rank
 from app.services.priority_engine import PriorityResult, compute_priority
 from app.services.sbc_card_matching import sync_requirement_filters, sync_sbc_triggers
 
@@ -139,13 +139,29 @@ async def _write_watchlist_popularity(core_pool: asyncpg.Pool, popularity: Dict[
 # Milestone 1: classification
 # -----------------------------------------------------------------------
 
-async def _active_triggers_by_card(conn: asyncpg.Connection) -> Dict[int, List[str]]:
+# A trigger is "active" only when BOTH hold: expires_at hasn't passed,
+# AND (for anything with an automated re-confirmation source, i.e.
+# everything except manual_override) it was re-confirmed within the
+# configured grace period. See migration 046's header: expires_at alone
+# isn't a safe-enough bound, since both SBC sync writers can leave a
+# stale ends_at if an SBC silently disappears upstream without either
+# writer proactively marking it ended. manual_override is exempt since
+# there is no automated process to re-confirm it against - an operator
+# set it deliberately and it stays active until its own expires_at (or
+# indefinitely if NULL).
+_ACTIVE_TRIGGER_WHERE = """
+    (expires_at IS NULL OR expires_at > now())
+    AND (
+        trigger_type = 'manual_override'
+        OR last_confirmed_at > now() - ($1 * interval '1 hour')
+    )
+"""
+
+
+async def _active_triggers_by_card(conn: asyncpg.Connection, grace_hours: int) -> Dict[int, List[str]]:
     rows = await conn.fetch(
-        """
-        SELECT card_id, forced_min_tier
-        FROM priority_triggers
-        WHERE expires_at IS NULL OR expires_at > now()
-        """
+        f"SELECT card_id, forced_min_tier FROM priority_triggers WHERE {_ACTIVE_TRIGGER_WHERE}",
+        grace_hours,
     )
     out: Dict[int, List[str]] = {}
     for r in rows:
@@ -160,18 +176,33 @@ async def _previous_priority(conn: asyncpg.Connection) -> Dict[int, asyncpg.Reco
     return {int(r["card_id"]): r for r in rows}
 
 
-async def run_classification_pass(core_pool: asyncpg.Pool, watchlist_pool: asyncpg.Pool) -> int:
-    """One full Milestone 1 classification pass. Returns the number of
-    cards scored. Advisory-locked (same pattern as
-    market_data_provider.refresh_snapshot) so concurrent app instances
-    never race it."""
+async def run_classification_pass(core_pool: asyncpg.Pool, watchlist_pool: asyncpg.Pool) -> Dict:
+    """One full Milestone 1 classification pass. Returns a structured
+    summary dict (cards_processed/cards_failed/tier counts/promotion-
+    demotion-trigger counts/ran) - see refresher_loop for how this feeds
+    the one-line-per-run summary log and pipeline_heartbeats write.
+    Advisory-locked (same pattern as market_data_provider.refresh_
+    snapshot) so concurrent app instances never race it - `ran: False`
+    means another instance already held the lock this cycle, not a
+    failure."""
     async with core_pool.acquire() as lock_conn:
         got = await lock_conn.fetchval("SELECT pg_try_advisory_lock($1)", RECOMPUTE_ADVISORY_LOCK_KEY)
         if not got:
-            return 0
+            return {"ran": False}
         try:
-            await sync_requirement_filters(core_pool)
-            await sync_sbc_triggers(core_pool)
+            # Isolated from the rest of this pass: a bad upstream data
+            # shape, a transient DB hiccup, or any other SBC-subsystem
+            # failure must degrade to "no SBC trigger updates this pass"
+            # (existing triggers are untouched either way, see migration
+            # 046's grace-period design - a single missed pass never
+            # erases a still-valid trigger) rather than aborting baseline/
+            # effective tier classification for every other card in the
+            # catalogue.
+            try:
+                await sync_requirement_filters(core_pool)
+                await sync_sbc_triggers(core_pool)
+            except Exception:
+                log.error("SBC requirement/trigger sync failed this pass; card classification continues", exc_info=True)
 
             watcher_counts = await _watchlist_popularity_by_card(
                 watchlist_pool, PRIORITY_ENGINE_CONFIG.watchlist_popularity_window_days
@@ -182,19 +213,34 @@ async def run_classification_pass(core_pool: asyncpg.Pool, watchlist_pool: async
 
             async with core_pool.acquire() as conn:
                 snapshot_rows = await conn.fetch(_SNAPSHOT_QUERY)
-                triggers_by_card = await _active_triggers_by_card(conn)
+                triggers_by_card = await _active_triggers_by_card(conn, PRIORITY_ENGINE_CONFIG.trigger_confirmation_grace_hours)
                 previous = await _previous_priority(conn)
 
                 priority_args = []
                 event_args = []
+                cards_failed = 0
+                baseline_counts: Dict[str, int] = {t: 0 for t in TIERS}
+                effective_counts: Dict[str, int] = {t: 0 for t in TIERS}
+                promotions = demotions = trigger_activations = trigger_expirations = 0
                 for row in snapshot_rows:
                     card_id = int(row["source_card_id"])
-                    result: PriorityResult = compute_priority(
-                        dict(row),
-                        watcher_count=watcher_counts.get(card_id, 0),
-                        historical_opportunity_rate=None,
-                        active_trigger_tiers=triggers_by_card.get(card_id, []),
-                    )
+                    try:
+                        result: PriorityResult = compute_priority(
+                            dict(row),
+                            watcher_count=watcher_counts.get(card_id, 0),
+                            historical_opportunity_rate=None,
+                            active_trigger_tiers=triggers_by_card.get(card_id, []),
+                        )
+                    except Exception:
+                        # One malformed snapshot row must never abort the
+                        # whole pass - log which card and keep going, so a
+                        # single bad row degrades to "this card wasn't
+                        # reclassified this pass" rather than "nothing was".
+                        cards_failed += 1
+                        log.warning("compute_priority failed for card_id=%s", card_id, exc_info=True)
+                        continue
+                    baseline_counts[result.baseline_tier] = baseline_counts.get(result.baseline_tier, 0) + 1
+                    effective_counts[result.effective_tier] = effective_counts.get(result.effective_tier, 0) + 1
                     prev = previous.get(card_id)
                     prev_baseline = prev["baseline_tier"] if prev else None
                     prev_effective = prev["effective_tier"] if prev else None
@@ -227,6 +273,17 @@ async def run_classification_pass(core_pool: asyncpg.Pool, watchlist_pool: async
                             reason = "trigger_expired"
                         else:
                             reason = "baseline_change"
+
+                        if reason == "trigger_activated":
+                            trigger_activations += 1
+                        elif reason == "trigger_expired":
+                            trigger_expirations += 1
+                        if prev_effective is not None and prev_effective != result.effective_tier:
+                            if tier_rank(result.effective_tier) < tier_rank(prev_effective):
+                                promotions += 1
+                            else:
+                                demotions += 1
+
                         event_args.append((
                             card_id, prev_baseline, result.baseline_tier, prev_effective, result.effective_tier,
                             reason, result.reason_codes,
@@ -297,7 +354,18 @@ async def run_classification_pass(core_pool: asyncpg.Pool, watchlist_pool: async
                     )
                     log.info("priority_recompute: %d tier changes this pass", len(event_args))
 
-            return len(priority_args)
+            return {
+                "cards_processed": len(priority_args),
+                "cards_failed": cards_failed,
+                "baseline_tier_counts": baseline_counts,
+                "effective_tier_counts": effective_counts,
+                "promotions": promotions,
+                "demotions": demotions,
+                "trigger_activations": trigger_activations,
+                "trigger_expirations": trigger_expirations,
+                "audit_events_written": len(event_args),
+                "ran": True,
+            }
         finally:
             await lock_conn.execute("SELECT pg_advisory_unlock($1)", RECOMPUTE_ADVISORY_LOCK_KEY)
 
@@ -342,7 +410,7 @@ def is_eligible_for_conservative_demotion(
     return True
 
 
-_CONSERVATIVE_DEMOTION_CANDIDATES_QUERY = """
+_CONSERVATIVE_DEMOTION_CANDIDATES_QUERY = f"""
     SELECT p.source_card_id, p.first_seen_at, p.next_sales_due_at, p.last_sales_status_at,
            cp.card_type_component, COALESCE(ms.sales_count, 0) AS sales_count,
            COALESCE(wp.watcher_count, 0) AS watcher_count
@@ -356,7 +424,7 @@ _CONSERVATIVE_DEMOTION_CANDIDATES_QUERY = """
       AND p.last_sales_status_at IS NOT NULL
       AND NOT EXISTS (
           SELECT 1 FROM priority_triggers t
-          WHERE t.card_id = p.source_card_id AND (t.expires_at IS NULL OR t.expires_at > now())
+          WHERE t.card_id = p.source_card_id AND {_ACTIVE_TRIGGER_WHERE}
       )
 """
 
@@ -384,19 +452,27 @@ _CONSERVATIVE_DEMOTION_UPDATE_SQL = """
 """
 
 
-async def run_conservative_demotion_pass(core_pool: asyncpg.Pool) -> int:
-    """Milestone 1.5. No-op (returns 0 immediately) unless
-    PRIORITY_ENGINE_ALLOW_CONSERVATIVE_DEMOTION is set. Logs every
-    affected card to priority_engine_events regardless."""
+async def run_conservative_demotion_pass(core_pool: asyncpg.Pool) -> Dict:
+    """Milestone 1.5. No-op unless PRIORITY_ENGINE_ALLOW_CONSERVATIVE_
+    DEMOTION is set. Logs every affected card to priority_engine_events
+    regardless. Returns a structured summary dict - see refresher_loop.
+    pull_forwards is always 0: this milestone only ever pushes
+    next_sales_due_at later (see _CONSERVATIVE_DEMOTION_UPDATE_SQL's own
+    header comment) - the field exists in the summary shape so a later
+    milestone that DOES pull forward can report into the same shape
+    without a schema change to whatever reads these summaries."""
     config = PRIORITY_ENGINE_CONFIG
     if not config.allow_conservative_demotion:
-        return 0
+        return {"ran": True, "enabled": False, "eligible_count": 0, "delayed": 0, "no_ops": 0, "pull_forwards": 0, "audit_events_written": 0}
 
     as_of = datetime.now(timezone.utc)
     async with core_pool.acquire() as conn:
-        candidates = await conn.fetch(_CONSERVATIVE_DEMOTION_CANDIDATES_QUERY)
+        candidates = await conn.fetch(
+            _CONSERVATIVE_DEMOTION_CANDIDATES_QUERY, config.trigger_confirmation_grace_hours
+        )
         eligible_ids = []
         event_args = []
+        no_ops = 0
         env_flags = _env_flags_snapshot()
         for row in candidates:
             eligible = is_eligible_for_conservative_demotion(
@@ -416,6 +492,7 @@ async def run_conservative_demotion_pass(core_pool: asyncpg.Pool) -> int:
             eligible_ids.append(card_id)
             new_due_at = row["last_sales_status_at"] + timedelta(minutes=config.conservative_demotion_max_interval_minutes)
             if new_due_at <= row["next_sales_due_at"]:
+                no_ops += 1
                 continue  # already extended at least this far - no-op, don't log a no-op event
             event_args.append((
                 card_id, "DORMANT", "DORMANT", "DORMANT", "DORMANT",
@@ -423,10 +500,9 @@ async def run_conservative_demotion_pass(core_pool: asyncpg.Pool) -> int:
                 None, row["next_sales_due_at"], new_due_at, env_flags, config.version,
             ))
 
-        if not eligible_ids:
-            return 0
-
-        await conn.execute(_CONSERVATIVE_DEMOTION_UPDATE_SQL, eligible_ids, config.conservative_demotion_max_interval_minutes)
+        eligible_count = len(eligible_ids)
+        if eligible_ids:
+            await conn.execute(_CONSERVATIVE_DEMOTION_UPDATE_SQL, eligible_ids, config.conservative_demotion_max_interval_minutes)
 
         if event_args:
             await conn.executemany(
@@ -444,28 +520,76 @@ async def run_conservative_demotion_pass(core_pool: asyncpg.Pool) -> int:
             )
             log.info("priority_recompute: conservative demotion pushed next_sales_due_at for %d cards", len(event_args))
 
-    return len(event_args)
+    return {
+        "ran": True, "enabled": True,
+        "eligible_count": eligible_count,
+        "delayed": len(event_args),
+        "no_ops": no_ops,
+        "pull_forwards": 0,
+        "audit_events_written": len(event_args),
+    }
 
 
 # -----------------------------------------------------------------------
 # Loop
 # -----------------------------------------------------------------------
 
+async def _write_run_heartbeat(core_pool: asyncpg.Pool, summary: Dict) -> None:
+    """Upserts a pipeline_heartbeats row (same table/PK convention every
+    other worker in this codebase already uses - see auto_sync/
+    monitoring.py's heartbeat() and market_data_provider.py's freshness
+    endpoint, which reads this same table for other workers) so the last
+    run's summary is durably queryable - this is what
+    /api/v2/market/priority-metrics reads for "last successful
+    recomputation"/"duration"/"cards processed"/"cards failed", not a
+    separate metrics table. Best-effort: a failure here must never break
+    the loop itself."""
+    try:
+        async with core_pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO pipeline_heartbeats (worker, last_run_at, ok, detail)
+                VALUES ('priority_recompute', now(), $1, $2)
+                ON CONFLICT (worker) DO UPDATE
+                    SET last_run_at = now(), ok = EXCLUDED.ok, detail = EXCLUDED.detail
+                """,
+                summary.get("cards_failed", 0) == 0,
+                json.dumps(summary, default=str),
+            )
+    except Exception:
+        log.warning("failed to write priority_recompute heartbeat", exc_info=True)
+
+
 async def refresher_loop(core_pool: asyncpg.Pool, watchlist_pool: asyncpg.Pool, poll_seconds: int = 900) -> None:
     """Runs every poll_seconds (default 15min - independent of, and
     much less frequent than, any live scraper's own loop). Never lets
     an iteration's failure kill the loop - same tolerance
     market_data_provider.refresher_loop already established for "auto_
-    sync hasn't bootstrapped yet"."""
+    sync hasn't bootstrapped yet".
+
+    Emits exactly ONE structured summary log line per completed run
+    (never one line per card - individual card detail lives in the
+    audit rows/debug-level logging inside the two pass functions) and
+    writes the same summary to pipeline_heartbeats for API observability
+    (see _write_run_heartbeat)."""
     await asyncio.sleep(30)
     while True:
+        started = datetime.now(timezone.utc)
         try:
-            scored = await run_classification_pass(core_pool, watchlist_pool)
-            if scored:
-                log.info("priority_recompute: classified %d cards", scored)
-            demoted = await run_conservative_demotion_pass(core_pool)
-            if demoted:
-                log.info("priority_recompute: conservative demotion touched %d cards", demoted)
+            classification = await run_classification_pass(core_pool, watchlist_pool)
+            demotion = await run_conservative_demotion_pass(core_pool)
+            duration_seconds = (datetime.now(timezone.utc) - started).total_seconds()
+            summary = {
+                "engine_version": PRIORITY_ENGINE_CONFIG.version,
+                "duration_seconds": round(duration_seconds, 2),
+                "conservative_demotion_enabled": PRIORITY_ENGINE_CONFIG.allow_conservative_demotion,
+                "classification": classification,
+                "conservative_demotion": demotion,
+                "cards_processed": classification.get("cards_processed", 0),
+                "cards_failed": classification.get("cards_failed", 0),
+            }
+            log.info("priority_recompute run summary: %s", json.dumps(summary, default=str))
+            await _write_run_heartbeat(core_pool, summary)
         except asyncpg.exceptions.UndefinedTableError:
             pass
         except Exception as e:

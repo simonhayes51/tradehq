@@ -24,6 +24,7 @@ on top of this router rather than inside the provider/intelligence layers.
 """
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -33,6 +34,7 @@ import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.db import get_core_pool
+from app.routers.admin import require_admin
 from app.services.futgg_intelligence import (
     DEFAULT_MAX_ACCEPTABLE_PRICE_AGE_MINUTES,
     MAX_ACCEPTABLE_PRICE_AGE_MINUTES_BY_TIER,
@@ -44,6 +46,11 @@ from app.services.market_data_provider import (
     MAX_RECENT_SALES,
     FutggMarketDataProvider,
     PlayerFilters,
+)
+from app.services.priority_config import PRIORITY_ENGINE_CONFIG
+from app.services.priority_recompute import (
+    _CONSERVATIVE_DEMOTION_CANDIDATES_QUERY,
+    is_eligible_for_conservative_demotion,
 )
 
 router = APIRouter(tags=["v2-futgg-market"])
@@ -574,8 +581,15 @@ async def market_freshness(
 @router.get("/market/priority-metrics")
 async def priority_metrics(
     provider: FutggMarketDataProvider = ProviderDep,
+    admin=Depends(require_admin),
 ) -> Dict[str, Any]:
-    """Observability for the adaptive priority engine (Milestone 1
+    """Admin-only (production-readiness review: this was shipped public
+    alongside every other endpoint in this router, which is fine for
+    player-facing market data but wrong for internal scraper-operations
+    detail - gated the same way app/routers/admin.py's own endpoints
+    are, via require_admin, rather than inventing a new auth pattern).
+
+    Observability for the adaptive priority engine (Milestone 1
     classification + Milestone 1.5 conservative demotion - see
     app/services/priority_recompute.py). baseline vs effective tier
     counts (they can differ - a card whose effective tier is only
@@ -614,6 +628,92 @@ async def priority_metrics(
                 """
             )
             last_computed_at = await conn.fetchval("SELECT max(computed_at) FROM card_priority")
+
+            # Conservative-demotion eligible count + projected request
+            # reduction - reuses the same predicate/query
+            # run_conservative_demotion_pass() itself uses, but read-only:
+            # this reports "how many cards WOULD be affected right now"
+            # regardless of whether PRIORITY_ENGINE_ALLOW_CONSERVATIVE_
+            # DEMOTION is actually on, so the projection is visible before
+            # anyone flips the flag.
+            demotion_config = PRIORITY_ENGINE_CONFIG
+            candidates = await conn.fetch(
+                _CONSERVATIVE_DEMOTION_CANDIDATES_QUERY, demotion_config.trigger_confirmation_grace_hours
+            )
+            as_of = datetime.now(timezone.utc)
+            eligible_rows = [
+                row for row in candidates
+                if is_eligible_for_conservative_demotion(
+                    card_type_component=row["card_type_component"] or 0.0,
+                    sales_count=int(row["sales_count"]),
+                    watcher_count=int(row["watcher_count"]),
+                    has_active_trigger=False,  # already excluded by the candidates query's NOT EXISTS
+                    first_seen_at=row["first_seen_at"],
+                    next_sales_due_at=row["next_sales_due_at"],
+                    last_sales_status_at=row["last_sales_status_at"],
+                    as_of=as_of,
+                    config=demotion_config,
+                )
+            ]
+            conservative_demotion_eligible_count = len(eligible_rows)
+            # Requests/day before = each eligible card's current interval
+            # (from its live next_sales_due_at - last_sales_status_at gap);
+            # after = the conservative-demotion ceiling. Both estimates,
+            # labelled as such - see priority_validation_report.py's
+            # identical formula for the full report-grade version.
+            current_intervals_min = [
+                (row["next_sales_due_at"] - row["last_sales_status_at"]).total_seconds() / 60.0
+                for row in eligible_rows
+                if row["next_sales_due_at"] and row["last_sales_status_at"]
+                and (row["next_sales_due_at"] - row["last_sales_status_at"]).total_seconds() > 0
+            ]
+            requests_per_day_before_est = sum(1440.0 / m for m in current_intervals_min)
+            requests_per_day_after_est = (
+                conservative_demotion_eligible_count * 1440.0 / demotion_config.conservative_demotion_max_interval_minutes
+                if conservative_demotion_eligible_count else 0.0
+            )
+
+            # Scheduling health: overdue cards by tier, oldest sales data
+            # by tier, discovery-ceiling violations.
+            overdue_rows = await conn.fetch(
+                """
+                SELECT cp.effective_tier AS tier, count(*) AS overdue_count
+                FROM futgg_players p
+                JOIN card_priority cp ON cp.card_id = p.source_card_id
+                WHERE p.is_active AND p.next_sales_due_at IS NOT NULL
+                  AND p.next_sales_due_at < now()
+                GROUP BY cp.effective_tier
+                """
+            )
+            oldest_sales_rows = await conn.fetch(
+                """
+                SELECT cp.effective_tier AS tier, min(p.last_sales_status_at) AS oldest
+                FROM futgg_players p
+                JOIN card_priority cp ON cp.card_id = p.source_card_id
+                WHERE p.is_active AND p.last_sales_status_at IS NOT NULL
+                GROUP BY cp.effective_tier
+                """
+            )
+            # "Discovery ceiling violated" = a DORMANT-tier card whose
+            # next_sales_due_at has drifted further out than the
+            # conservative-demotion ceiling permits even accounting for
+            # the anchor (last_sales_status_at + ceiling) - i.e. it is
+            # starved beyond what this milestone's own hard cap allows.
+            # Should always be 0; a nonzero count is a real bug signal.
+            discovery_ceiling_violations = await conn.fetchval(
+                """
+                SELECT count(*) FROM futgg_players p
+                JOIN card_priority cp ON cp.card_id = p.source_card_id
+                WHERE p.is_active AND cp.effective_tier = 'DORMANT'
+                  AND p.next_sales_due_at IS NOT NULL AND p.last_sales_status_at IS NOT NULL
+                  AND p.next_sales_due_at > p.last_sales_status_at + ($1 * interval '1 minute')
+                """,
+                demotion_config.conservative_demotion_max_interval_minutes,
+            )
+
+            heartbeat_row = await conn.fetchrow(
+                "SELECT last_run_at, ok, detail FROM pipeline_heartbeats WHERE worker = 'priority_recompute'"
+            )
         except Exception:
             # card_priority/priority_triggers/priority_engine_events
             # (migration 044) not created yet on this database - report
@@ -624,6 +724,14 @@ async def priority_metrics(
                 "cards_per_baseline_tier": {}, "cards_per_effective_tier": {}, "avg_score_per_baseline_tier": {},
                 "classifications_24h": 0, "trigger_activations_24h": 0, "trigger_expirations_24h": 0,
                 "conservative_demotions_24h": 0, "active_triggers_by_type": {}, "last_computed_at": None,
+                "conservative_demotion_eligible_count": 0,
+                "projected_requests_per_day_before_estimate": 0.0,
+                "projected_requests_per_day_after_estimate": 0.0,
+                "projected_request_reduction_pct_estimate": None,
+                "overdue_cards_by_tier": {}, "oldest_sales_data_by_tier": {},
+                "discovery_ceiling_violations": 0,
+                "last_recompute_run": None,
+                "engine_version": PRIORITY_ENGINE_CONFIG.version,
             }
 
     cards_per_baseline_tier = {r["tier"]: int(r["card_count"]) for r in baseline_rows}
@@ -631,6 +739,30 @@ async def priority_metrics(
     avg_score_per_baseline_tier = {r["tier"]: float(r["avg_score"]) for r in baseline_rows if r["avg_score"] is not None}
     events_by_reason = {r["reason"]: int(r["event_count"]) for r in event_rows}
     active_triggers_by_type = {r["trigger_type"]: int(r["trigger_count"]) for r in active_trigger_rows}
+    overdue_cards_by_tier = {r["tier"]: int(r["overdue_count"]) for r in overdue_rows}
+    oldest_sales_data_by_tier = {r["tier"]: r["oldest"].isoformat() for r in oldest_sales_rows if r["oldest"]}
+
+    reduction_pct = None
+    if requests_per_day_before_est > 0:
+        reduction_pct = round(
+            100.0 * (requests_per_day_before_est - requests_per_day_after_est) / requests_per_day_before_est, 1
+        )
+
+    last_recompute_run = None
+    if heartbeat_row is not None:
+        detail_raw = heartbeat_row["detail"]
+        try:
+            detail = json.loads(detail_raw) if isinstance(detail_raw, str) else (detail_raw or {})
+        except (ValueError, TypeError):
+            detail = {}
+        last_recompute_run = {
+            "last_run_at": heartbeat_row["last_run_at"].isoformat() if heartbeat_row["last_run_at"] else None,
+            "ok": bool(heartbeat_row["ok"]),
+            "duration_seconds": detail.get("duration_seconds"),
+            "cards_processed": detail.get("cards_processed"),
+            "cards_failed": detail.get("cards_failed"),
+            "engine_version": detail.get("engine_version"),
+        }
 
     return {
         "cards_per_baseline_tier": cards_per_baseline_tier,
@@ -642,6 +774,15 @@ async def priority_metrics(
         "conservative_demotions_24h": events_by_reason.get("conservative_demotion", 0),
         "active_triggers_by_type": active_triggers_by_type,
         "last_computed_at": last_computed_at.isoformat() if last_computed_at else None,
+        "conservative_demotion_eligible_count": conservative_demotion_eligible_count,
+        "projected_requests_per_day_before_estimate": round(requests_per_day_before_est, 1),
+        "projected_requests_per_day_after_estimate": round(requests_per_day_after_est, 1),
+        "projected_request_reduction_pct_estimate": reduction_pct,
+        "overdue_cards_by_tier": overdue_cards_by_tier,
+        "oldest_sales_data_by_tier": oldest_sales_data_by_tier,
+        "discovery_ceiling_violations": int(discovery_ceiling_violations or 0),
+        "last_recompute_run": last_recompute_run,
+        "engine_version": PRIORITY_ENGINE_CONFIG.version,
     }
 
 

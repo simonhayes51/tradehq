@@ -96,6 +96,18 @@ class PriorityEngineConfig:
     # least this - see priority_triggers/get_active_sbc_matched_card_ids.
     event_match_floor_tier: str = field(default_factory=lambda: os.getenv("PRIORITY_EVENT_MATCH_FLOOR_TIER", "HIGH"))
 
+    # A trigger is only "active" if it was re-confirmed within this many
+    # hours (see migration 046's header for the full "why" - both SBC
+    # writers can leave ends_at stale if an SBC silently disappears
+    # upstream, so expires_at alone isn't a safe-enough bound). Must be
+    # comfortably longer than the 15min recompute cadence so a single
+    # missed/failed sync pass doesn't false-expire a still-valid trigger,
+    # but bounded so a genuinely-vanished SBC's promotion doesn't linger
+    # indefinitely. manual_override triggers are exempt (see
+    # priority_recompute.py's active-trigger query) - there is no
+    # automated source to re-confirm them against.
+    trigger_confirmation_grace_hours: int = field(default_factory=lambda: _env_int("PRIORITY_TRIGGER_CONFIRMATION_GRACE_HOURS", 72))
+
     # Card-type component lookup - a card's rarity string maps to a
     # [0,1] baseline "this kind of card tends to matter" score.
     card_type_scores: Dict[str, float] = field(default_factory=lambda: {
@@ -111,7 +123,13 @@ class PriorityEngineConfig:
     # be true (see priority_recompute.py::is_eligible_for_conservative_
     # demotion) before next_sales_due_at is ever pushed later.
     allow_conservative_demotion: bool = field(default_factory=lambda: _env_bool("PRIORITY_ENGINE_ALLOW_CONSERVATIVE_DEMOTION", False))
-    conservative_demotion_max_card_type_score: float = field(default_factory=lambda: _env_float("PRIORITY_CONSERVATIVE_DEMOTION_MAX_CARD_TYPE_SCORE", 0.2))
+    # BUG FIX (production-readiness review): the milestone's own spec is
+    # "plain bronze or silver" cards are eligible - card_type_scores has
+    # silver_rare at 0.25, but the old default here (0.2) excluded it,
+    # silently narrowing eligibility to bronze + silver_common/silver
+    # only. 0.3 includes every bronze/silver bucket (max 0.25) while
+    # still excluding gold_common (0.35) and above.
+    conservative_demotion_max_card_type_score: float = field(default_factory=lambda: _env_float("PRIORITY_CONSERVATIVE_DEMOTION_MAX_CARD_TYPE_SCORE", 0.3))
     conservative_demotion_watcher_max: int = field(default_factory=lambda: _env_int("PRIORITY_CONSERVATIVE_DEMOTION_WATCHER_MAX", 1))
     conservative_demotion_min_card_age_days: int = field(default_factory=lambda: _env_int("PRIORITY_CONSERVATIVE_DEMOTION_MIN_CARD_AGE_DAYS", 14))
     # A genuinely eligible card here (bronze/silver, no sales, no
