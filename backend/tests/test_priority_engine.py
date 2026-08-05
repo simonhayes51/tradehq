@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Any, Dict
 
 from app.services.priority_config import PriorityEngineConfig
@@ -133,3 +134,34 @@ def test_historical_opportunity_rate_feeds_opportunity_component_directly():
 def test_result_card_id_matches_snapshot_row():
     result = compute_priority(_row(source_card_id=999), as_of=AS_OF)
     assert result.card_id == 999
+
+
+def test_decimal_typed_snapshot_columns_do_not_raise():
+    # Regression test: futgg_market_snapshot's sales_window_span_minutes
+    # (EXTRACT(...)/60.0) and sales_dispersion_ratio (an explicit
+    # ::numeric-cast ROUND) are both typed numeric by Postgres - not
+    # double precision - because mixing a float8 EXTRACT() result with a
+    # plain numeric literal like 60.0 promotes the whole expression to
+    # numeric. asyncpg returns numeric columns as decimal.Decimal, and
+    # Python raises TypeError mixing Decimal with float without an
+    # explicit cast. This broke run_classification_pass() in production
+    # for every card whose snapshot row came from the real materialized
+    # view (61% of one real catalogue's cards failed classification in a
+    # single pass) - the local dev/test fixtures had used plain floats,
+    # which never exposed it. See futgg_intelligence.py's evaluate_card(),
+    # which already normalises this exact shape for the same reason.
+    row = _row(
+        sales_window_span_minutes=Decimal("600.0"),
+        sales_dispersion_ratio=Decimal("0.1500"),
+    )
+    result = compute_priority(row, as_of=AS_OF)
+    assert isinstance(result.liquidity_component, float)
+    assert isinstance(result.volatility_component, float)
+
+    # Decimal inputs must produce the identical result as float inputs -
+    # not just "no crash".
+    float_row = _row(sales_window_span_minutes=600.0, sales_dispersion_ratio=0.15)
+    float_result = compute_priority(float_row, as_of=AS_OF)
+    assert result.liquidity_component == float_result.liquidity_component
+    assert result.volatility_component == float_result.volatility_component
+    assert result.baseline_tier == float_result.baseline_tier
