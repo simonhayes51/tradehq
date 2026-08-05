@@ -1094,10 +1094,14 @@ app.include_router(
 async def root():
     return {"message": "FUT Dashboard API", "status": "healthy"}
 
-_IMG_PROXY_ALLOWED_HOSTS = {
-    "www.fut.gg", "fut.gg", "cdn.fut.gg",
-    "www.futbin.com", "futbin.com", "cdn.futbin.com",
-}
+_IMG_PROXY_ALLOWED_HOST_SUFFIXES = (".fut.gg", ".futbin.com")
+_IMG_PROXY_ALLOWED_HOSTS = {"fut.gg", "futbin.com"}
+
+
+def _img_proxy_host_allowed(hostname: Optional[str]) -> bool:
+    if not hostname:
+        return False
+    return hostname in _IMG_PROXY_ALLOWED_HOSTS or hostname.endswith(_IMG_PROXY_ALLOWED_HOST_SUFFIXES)
 
 @app.get("/img")
 async def image_proxy(url: str):
@@ -1116,7 +1120,7 @@ async def image_proxy(url: str):
     open SSRF proxy.
     """
     parsed = urlparse(url)
-    if parsed.scheme != "https" or parsed.hostname not in _IMG_PROXY_ALLOWED_HOSTS:
+    if parsed.scheme != "https" or not _img_proxy_host_allowed(parsed.hostname):
         raise HTTPException(400, "URL host is not on the allowed image CDN list")
 
     try:
