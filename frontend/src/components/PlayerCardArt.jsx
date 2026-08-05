@@ -94,7 +94,16 @@ export default function PlayerCardArt({
             className={
               cutoutType === "base"
                 ? "absolute left-1/2 top-[12%] -translate-x-1/2 w-[62%] h-[62%] object-contain"
-                : "absolute inset-0 w-full h-full object-contain"
+                // Full-bleed cutouts are meant to fill the whole card, same
+                // as a real FUT card - object-contain letterboxes whenever
+                // the photo's own aspect ratio doesn't exactly match the
+                // frame's, and since not every FUT.GG cutout PNG is fully
+                // transparent outside the subject, that letterbox gap can
+                // render as a solid colour bar instead of blending into the
+                // bgImage layer beneath it. object-cover crops to fill
+                // instead of padding, which is both the visually-correct
+                // full-bleed treatment and immune to this.
+                : "absolute inset-0 w-full h-full object-cover"
             }
             referrerPolicy="no-referrer"
             onError={imageErrorFallback(cutoutImage)}
