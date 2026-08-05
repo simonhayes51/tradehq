@@ -65,6 +65,35 @@ def test_totw_and_tots_and_icon_and_hero_rarity_keywords():
     assert parse_requirement_text("Min. 1 Hero Player").rarity == "hero"
 
 
+def test_or_condition_and_slash_alternatives_are_flagged_ambiguous():
+    # "Any TOTW/TOTS/FOF" only actually extracts "totw" (see the test
+    # above) - silently treating that as the whole requirement would be
+    # WRONG (a TOTS or FOF card also satisfies this line), so it must be
+    # flagged ambiguous even though a rarity value was extracted.
+    parsed = parse_requirement_text("Min. 1 Players Any TOTW/TOTS/FOF")
+    assert parsed.ambiguous is True
+
+    parsed_or = parse_requirement_text(
+        "Min. 1 Brazil or Argentina Player", known_nations=["Brazil", "Argentina"],
+    )
+    assert parsed_or.ambiguous is True
+
+
+def test_multiple_known_nation_mentions_are_ambiguous():
+    parsed = parse_requirement_text(
+        "Min. 1 Brazil Player and Min. 1 England Player",
+        known_nations=KNOWN_NATIONS,
+    )
+    assert parsed.ambiguous is True
+
+
+def test_single_unambiguous_requirement_is_not_flagged():
+    parsed = parse_requirement_text(
+        "Min. 11 Saudi Arabia Silver Players", known_nations=KNOWN_NATIONS,
+    )
+    assert parsed.ambiguous is False
+
+
 def test_club_requirement_matches_multi_word_club_with_hyphen():
     parsed = parse_requirement_text(
         "Min. 1 Paris Saint-Germain Player", known_clubs=KNOWN_CLUBS,

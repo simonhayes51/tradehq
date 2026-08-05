@@ -67,9 +67,9 @@ MAX_RECENT_SALES = 50
 # is no per-tier price cadence anymore, so a single threshold (with a
 # safety margin for one missed cycle) is what actually describes current
 # reality. Sales-side staleness (a genuinely per-card, per-tier cadence -
-# see auto_sync/futgg_sales_sync.py's SALES_INTERVALS and, once Phase 3
-# of the adaptive priority engine lands, card_priority.tier) is reported
-# separately below, not folded into this same number.
+# see auto_sync/futgg_sales_sync.py's SALES_INTERVALS and
+# card_priority.effective_tier) is reported separately below, not
+# folded into this same number.
 _BULK_PRICE_INTERVAL_SECONDS = int(os.getenv("FUTGG_BULK_INTERVAL_SECONDS", "300"))
 EXPECTED_PRICE_INTERVAL_MINUTES = (_BULK_PRICE_INTERVAL_SECONDS / 60.0) * 2  # one missed cycle of slack
 
@@ -493,14 +493,14 @@ class FutggMarketDataProvider(MarketDataProvider):
                         LEFT JOIN card_priority cp ON cp.card_id = p.source_card_id
                         WHERE p.is_active AND p.is_tradeable IS NOT FALSE
                           AND p.last_sales_status_at IS NOT NULL
-                          AND COALESCE(cp.tier, $1) = $2
+                          AND COALESCE(cp.effective_tier, $1) = $2
                           AND EXTRACT(EPOCH FROM (now() - p.last_sales_status_at)) / 60.0 > $3
                         """,
                         DEFAULT_SALES_TIER, tier, threshold,
                     )
                     sales_stale_detail[tier] = int(count)
             except asyncpg.exceptions.UndefinedTableError:
-                # card_priority (migration 042) or futgg_players.
+                # card_priority (migration 044) or futgg_players.
                 # last_sales_status_at hasn't been created/backfilled on
                 # this database yet - same "degrade, don't 500" tolerance
                 # the rest of this module gives a not-yet-bootstrapped

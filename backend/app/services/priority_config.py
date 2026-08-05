@@ -3,14 +3,18 @@
 Tunables for the adaptive scrape-priority engine (priority_engine.py),
 following the same pattern futgg_config.py already established for the
 valuation engine: every weight/threshold lives in one place, is
-env-var-overridable, and is versioned so a scoring run can be attributed
-to a specific configuration later.
+env-var-overridable, and is versioned so a classification run can be
+attributed to a specific configuration later.
 
-PHASE 1 NOTE: TIER_*_INTERVAL_MIN below are not yet consulted by any
-live scraper - see priority_recompute.py's module docstring for the
-phased rollout this belongs to. They exist now so the tier system and
-its intended cadence are defined in one place from the start, rather
-than bolted on when scheduling wiring actually happens.
+v2 (see migration 044's header for the full "why"): baseline_tier is now
+assigned by an explicit rule table (see priority_engine.py), not a
+weighted-score cutoff - the thresholds below (`rule_*`) are the
+knobs that table consults. `importance_score` is still computed from
+weighted components for observability, but no longer decides the tier
+by itself, and critically no longer includes any freshness/staleness
+term at all - that was migration 042's bug (a DORMANT card aging
+exactly as designed would climb back toward promotion on its own
+growing staleness).
 """
 from __future__ import annotations
 
@@ -18,9 +22,20 @@ import os
 from dataclasses import dataclass, field
 from typing import Dict
 
-PRIORITY_ENGINE_VERSION = "priority-1.0"
+PRIORITY_ENGINE_VERSION = "priority-2.0"
 
 TIERS = ("CRITICAL", "HIGH", "NORMAL", "LOW", "DORMANT")
+
+
+def tier_rank(tier: str) -> int:
+    """Lower rank = higher priority (CRITICAL=0 .. DORMANT=4). Used to
+    compare/merge tiers (e.g. effective_tier = the LOWER rank of
+    baseline_tier and an active trigger's forced_min_tier)."""
+    return TIERS.index(tier) if tier in TIERS else len(TIERS)
+
+
+def higher_tier(a: str, b: str) -> str:
+    return a if tier_rank(a) <= tier_rank(b) else b
 
 
 def _env_float(name: str, default: float) -> float:
@@ -43,39 +58,46 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
 @dataclass(frozen=True)
 class PriorityEngineConfig:
     version: str = PRIORITY_ENGINE_VERSION
 
-    # Component weights - must sum to ~1.0 for priority_score to land in
-    # [0,1], but this isn't enforced structurally since a deliberate
-    # experiment might want to over/under-weight while tuning.
-    weight_liquidity: float = field(default_factory=lambda: _env_float("PRIORITY_WEIGHT_LIQUIDITY", 0.28))
-    weight_freshness: float = field(default_factory=lambda: _env_float("PRIORITY_WEIGHT_FRESHNESS", 0.16))
-    weight_card_type: float = field(default_factory=lambda: _env_float("PRIORITY_WEIGHT_CARD_TYPE", 0.14))
-    weight_opportunity: float = field(default_factory=lambda: _env_float("PRIORITY_WEIGHT_OPPORTUNITY", 0.12))
-    weight_user_interest: float = field(default_factory=lambda: _env_float("PRIORITY_WEIGHT_USER_INTEREST", 0.14))
-    weight_volatility: float = field(default_factory=lambda: _env_float("PRIORITY_WEIGHT_VOLATILITY", 0.08))
-    weight_event: float = field(default_factory=lambda: _env_float("PRIORITY_WEIGHT_EVENT", 0.08))
+    # ---- importance_score component weights (observability only - do
+    # NOT decide baseline_tier, see priority_engine.py's rule table for
+    # what actually does). No freshness component exists at all.
+    weight_liquidity: float = field(default_factory=lambda: _env_float("PRIORITY_WEIGHT_LIQUIDITY", 0.32))
+    weight_card_type: float = field(default_factory=lambda: _env_float("PRIORITY_WEIGHT_CARD_TYPE", 0.16))
+    weight_opportunity: float = field(default_factory=lambda: _env_float("PRIORITY_WEIGHT_OPPORTUNITY", 0.14))
+    weight_user_interest: float = field(default_factory=lambda: _env_float("PRIORITY_WEIGHT_USER_INTEREST", 0.16))
+    weight_volatility: float = field(default_factory=lambda: _env_float("PRIORITY_WEIGHT_VOLATILITY", 0.12))
+    weight_event: float = field(default_factory=lambda: _env_float("PRIORITY_WEIGHT_EVENT", 0.10))
 
-    # Tier cutoffs on the final blended [0,1] score, checked highest-first.
-    tier_critical_min: float = field(default_factory=lambda: _env_float("PRIORITY_TIER_CRITICAL_MIN", 0.85))
-    tier_high_min: float = field(default_factory=lambda: _env_float("PRIORITY_TIER_HIGH_MIN", 0.60))
-    tier_normal_min: float = field(default_factory=lambda: _env_float("PRIORITY_TIER_NORMAL_MIN", 0.30))
-    tier_low_min: float = field(default_factory=lambda: _env_float("PRIORITY_TIER_LOW_MIN", 0.10))
-    # Below tier_low_min -> DORMANT.
+    # ---- Rule-table thresholds (priority_engine.py's classify_baseline_
+    # tier() consults these directly - the tier comes from the first
+    # matching rule, not from importance_score crossing a cutoff).
+    rule_critical_liquidity_min: float = field(default_factory=lambda: _env_float("PRIORITY_RULE_CRITICAL_LIQUIDITY_MIN", 0.75))
+    rule_critical_volatility_min: float = field(default_factory=lambda: _env_float("PRIORITY_RULE_CRITICAL_VOLATILITY_MIN", 0.6))
+    rule_critical_opportunity_min: float = field(default_factory=lambda: _env_float("PRIORITY_RULE_CRITICAL_OPPORTUNITY_MIN", 0.6))
+    rule_high_liquidity_min: float = field(default_factory=lambda: _env_float("PRIORITY_RULE_HIGH_LIQUIDITY_MIN", 0.45))
+    rule_high_card_type_min: float = field(default_factory=lambda: _env_float("PRIORITY_RULE_HIGH_CARD_TYPE_MIN", 0.85))
+    rule_normal_liquidity_min: float = field(default_factory=lambda: _env_float("PRIORITY_RULE_NORMAL_LIQUIDITY_MIN", 0.15))
+    rule_normal_min_sales_count: int = field(default_factory=lambda: _env_int("PRIORITY_RULE_NORMAL_MIN_SALES_COUNT", 3))
+    rule_low_min_sales_count: int = field(default_factory=lambda: _env_int("PRIORITY_RULE_LOW_MIN_SALES_COUNT", 1))
+    # Below all of the above -> DORMANT.
 
-    # An active SBC/event match floor-clamps a card to at least this
-    # tier, regardless of its blended score - see priority_engine.py's
-    # compute_priority() for where this is applied. Kept as its own
-    # setting (not just "give event_component a huge weight") because a
-    # weighted blend can never GUARANTEE promotion the way a floor can -
-    # the spec asks for immediate promotion, not "probably soon".
+    # An active SBC/event trigger floor-clamps effective_tier to at
+    # least this - see priority_triggers/get_active_sbc_matched_card_ids.
     event_match_floor_tier: str = field(default_factory=lambda: os.getenv("PRIORITY_EVENT_MATCH_FLOOR_TIER", "HIGH"))
 
-    # Card-type component lookup - a card's rarity string (or price_tier
-    # fallback) maps to a [0,1] baseline "this kind of card tends to
-    # matter" score, independent of its own current liquidity.
+    # Card-type component lookup - a card's rarity string maps to a
+    # [0,1] baseline "this kind of card tends to matter" score.
     card_type_scores: Dict[str, float] = field(default_factory=lambda: {
         "icon": 1.0, "hero": 0.95, "totw": 0.9, "tots": 1.0,
         "fut birthday": 0.85, "special": 0.75,
@@ -83,17 +105,33 @@ class PriorityEngineConfig:
         "silver_rare": 0.25, "silver_common": 0.15, "silver": 0.15,
         "bronze_rare": 0.1, "bronze_common": 0.05, "bronze": 0.05,
     })
-    default_card_type_score: float = 0.4  # unrecognised rarity string - assume mid-liquidity gold-ish
+    default_card_type_score: float = 0.4
 
-    # 48h with no promotion-worthy activity is the spec's own stated
-    # demotion trigger.
-    inactivity_demote_hours: int = field(default_factory=lambda: _env_int("PRIORITY_INACTIVITY_DEMOTE_HOURS", 48))
+    # ---- Milestone 1.5: conservative cost-control demotion. All must
+    # be true (see priority_recompute.py::is_eligible_for_conservative_
+    # demotion) before next_sales_due_at is ever pushed later.
+    allow_conservative_demotion: bool = field(default_factory=lambda: _env_bool("PRIORITY_ENGINE_ALLOW_CONSERVATIVE_DEMOTION", False))
+    conservative_demotion_max_card_type_score: float = field(default_factory=lambda: _env_float("PRIORITY_CONSERVATIVE_DEMOTION_MAX_CARD_TYPE_SCORE", 0.2))
+    conservative_demotion_watcher_max: int = field(default_factory=lambda: _env_int("PRIORITY_CONSERVATIVE_DEMOTION_WATCHER_MAX", 1))
+    conservative_demotion_min_card_age_days: int = field(default_factory=lambda: _env_int("PRIORITY_CONSERVATIVE_DEMOTION_MIN_CARD_AGE_DAYS", 14))
+    # A genuinely eligible card here (bronze/silver, no sales, no
+    # interest, no active trigger) is almost always rated <75, which
+    # already sits on auto_sync/futgg_sales_sync.py's own flat
+    # FUTGG_SALES_UNDER_75_INTERVAL_MIN band (default 2880min/48h) -
+    # the write in priority_recompute.py only ever pushes LATER
+    # (GREATEST), so a ceiling below that existing floor would be a
+    # silent no-op for exactly the population this milestone targets.
+    # 4320min/72h is a deliberately modest first step past that
+    # existing floor, not the full DORMANT interval a later, more
+    # mature milestone might eventually use ("start with conservative
+    # maximum intervals" per the review) - short enough to reconsider
+    # quickly, long enough to show a real, measurable request-volume
+    # reduction for confirmed-inactive tail cards.
+    conservative_demotion_max_interval_minutes: int = field(default_factory=lambda: _env_int("PRIORITY_CONSERVATIVE_DEMOTION_MAX_INTERVAL_MIN", 4320))
 
-    # Refresh cadence per tier, for the sales worker specifically (the
-    # expensive per-card Playwright/signed-fetch path) - see
-    # auto_sync/futgg_sales_sync.py's SALES_INTERVALS for the existing
-    # flat rating-band equivalent this is designed to eventually sit
-    # alongside/replace. Not yet consulted anywhere (Phase 1).
+    # Sales-refresh cadence per tier - used by get_freshness_summary()'s
+    # observability reporting today; not yet consulted by any live
+    # scheduling write (that's Milestone 3).
     tier_sales_interval_minutes: Dict[str, int] = field(default_factory=lambda: {
         "CRITICAL": _env_int("TIER_CRITICAL_SALES_INTERVAL_MIN", 15),
         "HIGH": _env_int("TIER_HIGH_SALES_INTERVAL_MIN", 60),
@@ -101,6 +139,14 @@ class PriorityEngineConfig:
         "LOW": _env_int("TIER_LOW_SALES_INTERVAL_MIN", 1440),
         "DORMANT": _env_int("TIER_DORMANT_SALES_INTERVAL_MIN", 4320),
     })
+
+    # Recent-window (not lifetime) watchlist popularity, per the review's
+    # "recent-window counts rather than lifetime totals" - the live
+    # `watchlist` table has no expiry of its own (a row exists exactly as
+    # long as the user is actively watching), so this bounds "recent" by
+    # when the watch was added rather than an activity timestamp that
+    # doesn't exist on that table.
+    watchlist_popularity_window_days: int = field(default_factory=lambda: _env_int("PRIORITY_WATCHLIST_WINDOW_DAYS", 90))
 
 
 PRIORITY_ENGINE_CONFIG = PriorityEngineConfig()

@@ -1,36 +1,40 @@
 # app/services/sbc_card_matching.py
 """
 Resolves "which cards does this active SBC need" from the structured
-filters sbc_requirement_parser.py produces, and keeps
-sbc_requirement_filters in sync with sbc_challenges as new SBCs appear.
+filters sbc_requirement_parser.py produces, and writes priority_triggers
+rows so that relevance persists for the SBC's own lifetime (tied to
+market_events.ends_at) rather than being re-derived as a same-pass score
+override every recompute cycle - see migration 044's header for why
+triggers are now their own table with activation/expiry instead.
 
-Two responsibilities, both read/write the same core-DB pool (see
-migration 043's header - single-DB deployment, so a plain SQL join
-across market_events/sbc_challenges and futgg_players/
-futgg_market_snapshot works without any cross-database plumbing):
+Two responsibilities, both against the core-DB pool (single-DB
+deployment - see migration 045's header):
 
   1. sync_requirement_filters() - parses any sbc_challenges row that
      doesn't have filter rows yet, using nation/league/club values that
-     already exist in futgg_players (so a parsed filter can only ever
-     reference a value real cards actually have).
+     already exist in futgg_players, and records market_events.source/
+     external_id alongside each parsed row for traceability.
 
-  2. get_active_sbc_matched_card_ids() - for every currently-active SBC
-     (market_events.kind='sbc' AND not yet ended), resolves matching
-     card_ids via sbc_requirement_filters. This is what
-     priority_recompute.py calls to force event_component=1.0 on
-     matching cards - see that module for how the override is applied.
+  2. sync_sbc_triggers() - for every currently-active SBC, resolves
+     matching card_ids via sbc_requirement_filters (parsed AND NOT
+     ambiguous rows only - an ambiguous or unparsed requirement line
+     never triggers automatic promotion, see sbc_requirement_parser.py's
+     module docstring) and ensures a priority_triggers row exists for
+     each, with expires_at = the event's own ends_at. Idempotent: reuses
+     an existing still-active trigger row for the same (card_id,
+     source_event_id) rather than inserting duplicates every pass.
 
 Both are read-then-write batch operations meant to run once per
-priority_recompute.py pass, not per-request - a live API endpoint should
-never call sync_requirement_filters() directly.
+priority_recompute.py pass, not per-request.
 """
 from __future__ import annotations
 
 import logging
-from typing import Dict, Iterable, List, Set
+from typing import List
 
 import asyncpg
 
+from app.services.priority_config import PRIORITY_ENGINE_CONFIG
 from app.services.sbc_requirement_parser import parse_requirement_text
 
 log = logging.getLogger(__name__)
@@ -50,22 +54,20 @@ async def _known_reference_values(conn: asyncpg.Connection) -> tuple[List[str], 
 
 
 async def sync_requirement_filters(pool: asyncpg.Pool) -> int:
-    """Parses every sbc_challenges row that has no sbc_requirement_filters
-    rows yet. Returns the number of challenges processed. Idempotent per
-    challenge (re-parses only challenges with zero existing filter rows,
-    so this is safe to call every recompute pass without re-doing work
-    for SBCs that were already parsed - see the DELETE-then-INSERT below
-    for why a challenge is only ever fully re-parsed, never partially
-    patched)."""
+    """Parses every sbc_challenges row (belonging to a currently-active
+    event) that has no sbc_requirement_filters rows yet. Returns the
+    number of challenges processed. Idempotent per challenge - only
+    challenges with zero existing filter rows are (re)parsed."""
     async with pool.acquire() as conn:
         known_nations, known_leagues, known_clubs = await _known_reference_values(conn)
 
         rows = await conn.fetch(
             """
-            SELECT c.id AS challenge_id, c.requirements
+            SELECT c.id AS challenge_id, c.requirements, e.source, e.external_id
             FROM sbc_challenges c
             JOIN market_events e ON e.id = c.event_id
             WHERE (e.ends_at IS NULL OR e.ends_at > now())
+              AND e.source IN ('futbin', 'easysbc')
               AND NOT EXISTS (
                   SELECT 1 FROM sbc_requirement_filters f WHERE f.challenge_id = c.id
               )
@@ -84,40 +86,42 @@ async def sync_requirement_filters(pool: asyncpg.Pool) -> int:
                     continue
                 parsed = parse_requirement_text(raw_text, known_nations, known_leagues, known_clubs)
                 insert_args.append((
-                    row["challenge_id"], parsed.nation, parsed.league, parsed.club,
-                    parsed.rarity, parsed.rating_min, parsed.rating_max,
-                    parsed.min_count, parsed.parsed, raw_text,
+                    row["challenge_id"], row["source"], row["external_id"],
+                    parsed.nation, parsed.league, parsed.club, parsed.rarity,
+                    parsed.rating_min, parsed.rating_max, parsed.min_count,
+                    parsed.parsed, parsed.ambiguous, raw_text,
                 ))
 
         if insert_args:
             await conn.executemany(
                 """
-                INSERT INTO sbc_requirement_filters
-                    (challenge_id, nation, league, club, rarity, rating_min, rating_max, min_count, parsed, raw_text)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                INSERT INTO sbc_requirement_filters (
+                    challenge_id, source, source_challenge_external_id,
+                    nation, league, club, rarity, rating_min, rating_max,
+                    min_count, parsed, ambiguous, raw_text
+                )
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
                 """,
                 insert_args,
             )
-        log.info("sbc_requirement_filters: parsed %d challenges, %d requirement rows", len(rows), len(insert_args))
+        log.info(
+            "sbc_requirement_filters: parsed %d challenges, %d requirement rows (%d ambiguous)",
+            len(rows), len(insert_args), sum(1 for a in insert_args if a[11]),
+        )
         return len(rows)
 
 
-async def get_active_sbc_matched_card_ids(pool: asyncpg.Pool) -> Dict[int, int]:
-    """Returns {card_id: event_id} for every card matching at least one
-    parsed requirement filter of a currently-active SBC. Only `parsed`
-    filter rows are used - unparsed requirement lines never match
-    anything (see sbc_requirement_parser.py's module docstring on why
-    that's a deliberate choice, not a gap).
-
-    event_id (not challenge_id) is returned since that's what
-    card_priority.forced_by_event_id references - a card matching any
-    challenge within an active event is enough to promote it, the
-    specific challenge isn't meaningful downstream."""
+async def sync_sbc_triggers(pool: asyncpg.Pool) -> int:
+    """Ensures an active priority_triggers row exists for every card
+    matching a currently-active, unambiguous, parsed SBC requirement.
+    Returns the number of trigger rows created this pass (existing
+    still-active triggers for the same card+event are left untouched,
+    not duplicated)."""
+    floor_tier = PRIORITY_ENGINE_CONFIG.event_match_floor_tier
     async with pool.acquire() as conn:
-        rows = await conn.fetch(
+        matches = await conn.fetch(
             """
-            SELECT DISTINCT ON (p.source_card_id)
-                p.source_card_id AS card_id, c.event_id
+            SELECT DISTINCT p.source_card_id AS card_id, c.event_id, e.ends_at, e.title
             FROM sbc_requirement_filters f
             JOIN sbc_challenges c ON c.id = f.challenge_id
             JOIN market_events e ON e.id = c.event_id
@@ -128,10 +132,36 @@ async def get_active_sbc_matched_card_ids(pool: asyncpg.Pool) -> Dict[int, int]:
                 (f.rarity IS NULL OR p.rarity ILIKE '%' || f.rarity || '%') AND
                 (f.rating_min IS NULL OR p.rating >= f.rating_min) AND
                 (f.rating_max IS NULL OR p.rating <= f.rating_max)
-            WHERE f.parsed
+            WHERE f.parsed AND NOT f.ambiguous
               AND (e.ends_at IS NULL OR e.ends_at > now())
               AND p.is_active
-            ORDER BY p.source_card_id, e.ends_at DESC NULLS LAST
             """
         )
-    return {r["card_id"]: r["event_id"] for r in rows}
+        if not matches:
+            return 0
+
+        created = 0
+        for row in matches:
+            existing = await conn.fetchval(
+                """
+                SELECT 1 FROM priority_triggers
+                WHERE card_id = $1 AND source_event_id = $2 AND trigger_type = 'sbc_match'
+                  AND (expires_at IS NULL OR expires_at > now())
+                """,
+                row["card_id"], row["event_id"],
+            )
+            if existing:
+                continue
+            await conn.execute(
+                """
+                INSERT INTO priority_triggers
+                    (card_id, trigger_type, trigger_reason, forced_min_tier, source_event_id, expires_at)
+                VALUES ($1, 'sbc_match', $2, $3, $4, $5)
+                """,
+                row["card_id"], f"Matches active SBC: {row['title']}", floor_tier,
+                row["event_id"], row["ends_at"],
+            )
+            created += 1
+        if created:
+            log.info("sbc triggers: created %d new sbc_match trigger rows", created)
+        return created

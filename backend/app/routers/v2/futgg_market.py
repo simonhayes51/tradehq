@@ -575,21 +575,27 @@ async def market_freshness(
 async def priority_metrics(
     provider: FutggMarketDataProvider = ProviderDep,
 ) -> Dict[str, Any]:
-    """Observability for the adaptive priority engine (Phase 1, shadow
-    mode - see app/services/priority_recompute.py). Cards-per-tier,
-    promotion/demotion counts over the trailing 24h, and SBC-forced-
-    promotion counts - the metrics the feature's own success criteria
-    asks for ("cards per priority tier", "promotion count", "demotion
-    count"), read directly off card_priority/priority_engine_events
+    """Observability for the adaptive priority engine (Milestone 1
+    classification + Milestone 1.5 conservative demotion - see
+    app/services/priority_recompute.py). baseline vs effective tier
+    counts (they can differ - a card whose effective tier is only
+    elevated because of an active trigger is worth seeing separately
+    from one that's baseline-CRITICAL), active trigger counts by type,
+    and the last 24h's classification/trigger/demotion events - read
+    directly off card_priority/priority_triggers/priority_engine_events
     rather than a separate metrics stack (this codebase has no
     Prometheus/`/metrics` endpoint anywhere - reusing this router's
     existing convention instead of introducing one)."""
     pool = provider._pool  # same core pool every other method here already uses
     async with pool.acquire() as conn:
         try:
-            tier_rows = await conn.fetch(
-                "SELECT tier, count(*) AS card_count, avg(priority_score) AS avg_score "
-                "FROM card_priority GROUP BY tier"
+            baseline_rows = await conn.fetch(
+                "SELECT baseline_tier AS tier, count(*) AS card_count, avg(importance_score) AS avg_score "
+                "FROM card_priority GROUP BY baseline_tier"
+            )
+            effective_rows = await conn.fetch(
+                "SELECT effective_tier AS tier, count(*) AS card_count "
+                "FROM card_priority GROUP BY effective_tier"
             )
             event_rows = await conn.fetch(
                 """
@@ -599,33 +605,42 @@ async def priority_metrics(
                 GROUP BY reason
                 """
             )
-            forced_count = await conn.fetchval(
-                "SELECT count(*) FROM card_priority WHERE forced_by_event_id IS NOT NULL"
+            active_trigger_rows = await conn.fetch(
+                """
+                SELECT trigger_type, count(*) AS trigger_count
+                FROM priority_triggers
+                WHERE expires_at IS NULL OR expires_at > now()
+                GROUP BY trigger_type
+                """
             )
             last_computed_at = await conn.fetchval("SELECT max(computed_at) FROM card_priority")
         except Exception:
-            # card_priority/priority_engine_events (migration 042) not
-            # created yet on this database - report an empty-but-valid
-            # shape rather than 500ing, same tolerance the freshness
-            # endpoint above gives an un-bootstrapped deployment.
+            # card_priority/priority_triggers/priority_engine_events
+            # (migration 044) not created yet on this database - report
+            # an empty-but-valid shape rather than 500ing, same
+            # tolerance the freshness endpoint above gives an
+            # un-bootstrapped deployment.
             return {
-                "cards_per_tier": {}, "avg_score_per_tier": {},
-                "promotions_24h": 0, "demotions_24h": 0, "sbc_matches_24h": 0,
-                "cards_forced_by_active_event": 0, "last_computed_at": None,
+                "cards_per_baseline_tier": {}, "cards_per_effective_tier": {}, "avg_score_per_baseline_tier": {},
+                "classifications_24h": 0, "trigger_activations_24h": 0, "trigger_expirations_24h": 0,
+                "conservative_demotions_24h": 0, "active_triggers_by_type": {}, "last_computed_at": None,
             }
 
-    cards_per_tier = {r["tier"]: int(r["card_count"]) for r in tier_rows}
-    avg_score_per_tier = {r["tier"]: float(r["avg_score"]) for r in tier_rows if r["avg_score"] is not None}
+    cards_per_baseline_tier = {r["tier"]: int(r["card_count"]) for r in baseline_rows}
+    cards_per_effective_tier = {r["tier"]: int(r["card_count"]) for r in effective_rows}
+    avg_score_per_baseline_tier = {r["tier"]: float(r["avg_score"]) for r in baseline_rows if r["avg_score"] is not None}
     events_by_reason = {r["reason"]: int(r["event_count"]) for r in event_rows}
+    active_triggers_by_type = {r["trigger_type"]: int(r["trigger_count"]) for r in active_trigger_rows}
 
     return {
-        "cards_per_tier": cards_per_tier,
-        "avg_score_per_tier": avg_score_per_tier,
-        "promotions_24h": events_by_reason.get("activity_spike", 0),
-        "demotions_24h": events_by_reason.get("inactivity_demote", 0),
-        "sbc_matches_24h": events_by_reason.get("sbc_match", 0),
-        "initial_scores_24h": events_by_reason.get("initial", 0),
-        "cards_forced_by_active_event": int(forced_count or 0),
+        "cards_per_baseline_tier": cards_per_baseline_tier,
+        "cards_per_effective_tier": cards_per_effective_tier,
+        "avg_score_per_baseline_tier": avg_score_per_baseline_tier,
+        "classifications_24h": events_by_reason.get("initial", 0) + events_by_reason.get("baseline_change", 0),
+        "trigger_activations_24h": events_by_reason.get("trigger_activated", 0),
+        "trigger_expirations_24h": events_by_reason.get("trigger_expired", 0),
+        "conservative_demotions_24h": events_by_reason.get("conservative_demotion", 0),
+        "active_triggers_by_type": active_triggers_by_type,
         "last_computed_at": last_computed_at.isoformat() if last_computed_at else None,
     }
 

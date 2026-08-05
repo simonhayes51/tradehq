@@ -609,21 +609,25 @@ async def lifespan(app: FastAPI):
     )
     logging.info("✅ FUT.GG outcome grader started (poll every %ss)", futgg_grader_poll)
 
-    # Adaptive priority engine, Phase 1 (shadow mode): scores every active
-    # FUT.GG card into card_priority (liquidity/freshness/card-type/user-
-    # interest/volatility/event-relevance components + a derived tier),
-    # including forcing event_component to 1.0 for cards matching an
-    # active SBC's parsed requirements. Deliberately does NOT touch
-    # next_sales_due_at/next_price_due_at or anything auto_sync's live
-    # scrapers read - see priority_recompute.py's module docstring for
-    # why this is additive-only until the scoring is validated in
-    # production. Slow, decoupled cadence (default 15min) so a bug here
-    # can never affect either live scraper's own loop.
+    # Adaptive priority engine. Milestone 1 (always on): rule-classifies
+    # every active FUT.GG card into card_priority (baseline_tier - what
+    # the card IS, liquidity/card-type/opportunity/interest/volatility/
+    # event, with NO freshness/staleness input at all - and effective_
+    # tier, baseline merged with any active priority_triggers row, e.g.
+    # an SBC match). Purely additive - never touches next_sales_due_at/
+    # next_price_due_at. Milestone 1.5 (off by default, behind
+    # PRIORITY_ENGINE_ALLOW_CONSERVATIVE_DEMOTION): pushes
+    # next_sales_due_at LATER, never earlier, for a strictly-eligible
+    # subset of confirmed-inactive tail cards - see priority_recompute.py's
+    # module docstring for the full eligibility list and why it's
+    # anchored to last_sales_status_at rather than now(). Slow, decoupled
+    # cadence (default 15min) so a bug here can never affect either live
+    # scraper's own loop.
     priority_recompute_poll = int(os.getenv("PRIORITY_RECOMPUTE_INTERVAL_SECONDS", "900"))
     app.state.priority_recompute_task = asyncio.create_task(
         priority_recompute_refresher_loop(pool, watchlist_pool, priority_recompute_poll)
     )
-    logging.info("✅ Adaptive priority engine (shadow mode) started (poll every %ss)", priority_recompute_poll)
+    logging.info("✅ Adaptive priority engine started (poll every %ss)", priority_recompute_poll)
 
     # The "social trading features" users-table ALTER/index block that used
     # to run here is now part of migrations/015_consolidate_core_bootstrap.sql
