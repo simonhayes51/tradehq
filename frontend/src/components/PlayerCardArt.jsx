@@ -49,14 +49,19 @@ export default function PlayerCardArt({
   // fixed and don't respond to a container's own media queries).
   const sizeHookClass = featured ? "player-card-art featured" : compact ? "player-card-art compact" : "player-card-art";
 
+  // A single white-fill + black-outline treatment reads on any card
+  // background, dark or light - cutoutType-based black/white text (the
+  // previous approach) assumed "base" always means a light/gold backdrop
+  // and "special" always means a dark/vivid one, which holds for FUTBIN's
+  // own card set but not FUT.GG's: Icon and other light-templated cards
+  // get classified "special" (see dashboard.py's price_tier heuristic)
+  // and white text on their white/cream background was reading as a
+  // near-invisible embossed ghost. The outline (four 1px offsets, not
+  // just a blur) guarantees contrast either way.
   const overlayTextClass =
-    cutoutType === "base"
-      ? "text-black [text-shadow:0_1px_2px_rgba(255,255,255,0.85)]"
-      : "text-white [text-shadow:0_1px_3px_rgba(0,0,0,0.9)]";
+    "text-white [text-shadow:-1px_-1px_0_#000,1px_-1px_0_#000,-1px_1px_0_#000,1px_1px_0_#000,0_2px_6px_rgba(0,0,0,.55)]";
   const overlayTextMutedClass =
-    cutoutType === "base"
-      ? "text-black/80 [text-shadow:0_1px_2px_rgba(255,255,255,0.85)]"
-      : "text-white/90 [text-shadow:0_1px_2px_rgba(0,0,0,0.9)]";
+    "text-white/90 [text-shadow:-1px_-1px_0_#000,1px_-1px_0_#000,-1px_1px_0_#000,1px_1px_0_#000,0_2px_4px_rgba(0,0,0,.5)]";
 
   return (
     <div className={`relative ${sizeHookClass} ${widthClass}`} style={{ aspectRatio: cardAspect }}>
@@ -121,13 +126,13 @@ export default function PlayerCardArt({
                     </div>
                     <div className="flex items-center justify-center gap-1">
                       {nationImage && (
-                        <img src={nationImage} alt="" className="w-3 h-3 object-contain" referrerPolicy="no-referrer" />
+                        <img src={nationImage} alt="" className="w-3 h-3 object-contain" referrerPolicy="no-referrer" onError={imageErrorFallback(nationImage)} />
                       )}
                       {leagueImage && (
-                        <img src={leagueImage} alt="" className="w-3 h-3 object-contain" referrerPolicy="no-referrer" />
+                        <img src={leagueImage} alt="" className="w-3 h-3 object-contain" referrerPolicy="no-referrer" onError={imageErrorFallback(leagueImage)} />
                       )}
                       {clubImage && (
-                        <img src={clubImage} alt="" className="w-3 h-3 object-contain" referrerPolicy="no-referrer" />
+                        <img src={clubImage} alt="" className="w-3 h-3 object-contain" referrerPolicy="no-referrer" onError={imageErrorFallback(clubImage)} />
                       )}
                     </div>
                   </>
