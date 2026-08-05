@@ -162,15 +162,27 @@ def compute_priority(
     as_of = as_of or datetime.now(timezone.utc)
     card_id = int(snapshot_row["source_card_id"])
 
-    sales_count = int(snapshot_row.get("sales_count") or 0)
+    # Postgres numerics arrive from asyncpg as Decimal; normalise once
+    # here rather than at each arithmetic site (mixing Decimal with a
+    # float literal raises TypeError) - same fix futgg_intelligence.py's
+    # evaluate_card() already applies to this exact snapshot shape.
+    # sales_window_span_minutes/sales_dispersion_ratio come out of
+    # futgg_market_snapshot's own computed columns (migration 041's
+    # EXTRACT(...)/60.0 and ::numeric-cast ROUND respectively), both of
+    # which Postgres types as numeric, not double precision.
     span_minutes = snapshot_row.get("sales_window_span_minutes")
+    span_minutes = float(span_minutes) if span_minutes is not None else None
+    dispersion_ratio = snapshot_row.get("sales_dispersion_ratio")
+    dispersion_ratio = float(dispersion_ratio) if dispersion_ratio is not None else None
+
+    sales_count = int(snapshot_row.get("sales_count") or 0)
     liquidity = _compute_liquidity_score(sales_count, span_minutes)
     liquidity_component = liquidity if liquidity is not None else 0.0
 
     card_type_component = _card_type_component(snapshot_row.get("rarity"), config)
     opportunity_component = _clamp(historical_opportunity_rate) if historical_opportunity_rate is not None else 0.0
     user_interest_component = _saturating_score(watcher_count, user_interest_reference)
-    volatility_component = _volatility_component(snapshot_row.get("sales_dispersion_ratio"), volatility_reference_ratio)
+    volatility_component = _volatility_component(dispersion_ratio, volatility_reference_ratio)
     event_component = 1.0 if active_trigger_tiers else 0.0
 
     importance_score = _clamp(
