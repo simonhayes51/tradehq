@@ -689,10 +689,25 @@ async def get_entitlements_debug(request: Request):
 
 ALLOWED_ORIGINS = [
     "https://app.futhub.co.uk",
+    "https://app.eafc.live",
     "http://localhost:5173",
     "http://127.0.0.1:5173",
 ]
-ALLOWED_ORIGIN_REGEX = r"^https://.*\.futhub\.co\.uk$"
+# Domain migration (futhub.co.uk -> eafc.live, see FRONTEND_ORIGIN/
+# FRONTEND_URL/COOKIE_DOMAIN already being set to eafc.live in production):
+# the frontend actually deployed at app.eafc.live was getting every
+# response silently dropped by the browser's own CORS enforcement - the
+# backend logs showed clean 200 OKs (the request WAS answered), but this
+# regex/list only ever matched *.futhub.co.uk, so the browser never
+# handed the response to the page's JS at all. That surfaces client-side
+# as a network error with no response object (axios/fetch report
+# `status: undefined` for a CORS block, indistinguishable from "route
+# doesn't exist" without checking this file) - not a 404, not a 500,
+# just silence, which is exactly why every affected endpoint here looked
+# "not deployed" despite working perfectly on the server side. Both
+# domains are kept (not swapped) since futhub.co.uk isn't confirmed
+# fully retired.
+ALLOWED_ORIGIN_REGEX = r"^https://.*\.(futhub\.co\.uk|eafc\.live)$"
 
 
 def _is_allowed_origin(origin: str | None) -> bool:
