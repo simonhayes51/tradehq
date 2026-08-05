@@ -121,13 +121,13 @@ export default function PlayerCardArt({
                     </div>
                     <div className="flex items-center justify-center gap-1">
                       {nationImage && (
-                        <img src={nationImage} alt="" className="w-3 h-3 object-contain" referrerPolicy="no-referrer" />
+                        <img src={nationImage} alt="" className="w-3 h-3 object-contain" referrerPolicy="no-referrer" onError={imageErrorFallback(nationImage)} />
                       )}
                       {leagueImage && (
-                        <img src={leagueImage} alt="" className="w-3 h-3 object-contain" referrerPolicy="no-referrer" />
+                        <img src={leagueImage} alt="" className="w-3 h-3 object-contain" referrerPolicy="no-referrer" onError={imageErrorFallback(leagueImage)} />
                       )}
                       {clubImage && (
-                        <img src={clubImage} alt="" className="w-3 h-3 object-contain" referrerPolicy="no-referrer" />
+                        <img src={clubImage} alt="" className="w-3 h-3 object-contain" referrerPolicy="no-referrer" onError={imageErrorFallback(clubImage)} />
                       )}
                     </div>
                   </>
