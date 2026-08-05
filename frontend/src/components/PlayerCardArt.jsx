@@ -49,19 +49,29 @@ export default function PlayerCardArt({
   // fixed and don't respond to a container's own media queries).
   const sizeHookClass = featured ? "player-card-art featured" : compact ? "player-card-art compact" : "player-card-art";
 
-  // A single white-fill + black-outline treatment reads on any card
-  // background, dark or light - cutoutType-based black/white text (the
-  // previous approach) assumed "base" always means a light/gold backdrop
-  // and "special" always means a dark/vivid one, which holds for FUTBIN's
-  // own card set but not FUT.GG's: Icon and other light-templated cards
-  // get classified "special" (see dashboard.py's price_tier heuristic)
-  // and white text on their white/cream background was reading as a
-  // near-invisible embossed ghost. The outline (four 1px offsets, not
-  // just a blur) guarantees contrast either way.
+  // A white fill with a soft black glow (blurred, not a hard offset
+  // outline) reads on any card background, dark or light -
+  // cutoutType-based black/white text (the previous approach) assumed
+  // "base" always means a light/gold backdrop and "special" always means
+  // a dark/vivid one, which holds for FUTBIN's own card set but not
+  // FUT.GG's: Icon and other light-templated cards get classified
+  // "special" (see dashboard.py's price_tier heuristic) and white text on
+  // their white/cream background was reading as a near-invisible
+  // embossed ghost. A first attempt at this used a hard 4-direction 1px
+  // offset outline instead of blur - technically legible, but it reads as
+  // a chunky sticker outline at normal size and, worse, at the compact
+  // list-card 9px rating digit the 1px offsets are ~20% of the glyph's
+  // own stroke width, making digits look doubled/smeared rather than
+  // outlined. Blur radius scales with font size implicitly (glyphs are
+  // bigger, but so is the visual weight of the same blur relative to
+  // them), so one shadow recipe works at both sizes without a doubling
+  // artifact.
   const overlayTextClass =
-    "text-white [text-shadow:-1px_-1px_0_#000,1px_-1px_0_#000,-1px_1px_0_#000,1px_1px_0_#000,0_2px_6px_rgba(0,0,0,.55)]";
+    "text-white [text-shadow:0_0_3px_rgba(0,0,0,.95),0_0_3px_rgba(0,0,0,.95),0_1px_2px_rgba(0,0,0,.85)]";
   const overlayTextMutedClass =
-    "text-white/90 [text-shadow:-1px_-1px_0_#000,1px_-1px_0_#000,-1px_1px_0_#000,1px_1px_0_#000,0_2px_4px_rgba(0,0,0,.5)]";
+    "text-white/90 [text-shadow:0_0_2.5px_rgba(0,0,0,.95),0_0_2.5px_rgba(0,0,0,.95),0_1px_1px_rgba(0,0,0,.8)]";
+  const overlayTextCompactClass =
+    "text-white [text-shadow:0_0_1.5px_rgba(0,0,0,.95),0_0_1.5px_rgba(0,0,0,.95),0_1px_1px_rgba(0,0,0,.85)]";
 
   return (
     <div className={`relative ${sizeHookClass} ${widthClass}`} style={{ aspectRatio: cardAspect }}>
@@ -92,7 +102,7 @@ export default function PlayerCardArt({
 
           {compact ? (
             <div className="absolute top-[10%] left-1/2 -translate-x-1/2 leading-none">
-              <span className={`text-[9px] font-extrabold ${overlayTextClass}`}>{rating}</span>
+              <span className={`text-[9px] font-extrabold ${overlayTextCompactClass}`}>{rating}</span>
             </div>
           ) : (
             <>
