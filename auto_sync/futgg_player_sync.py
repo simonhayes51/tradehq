@@ -54,7 +54,10 @@ import asyncpg
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from playwright.async_api import async_playwright
 
-from futgg_common import BASE_URL, CARD_URL_RE, CircuitBreaker, FutggCard, classify_price_tier, parse_futgg_card
+from futgg_common import (
+    BASE_URL, CARD_URL_RE, CircuitBreaker, FutggCard, upsize_card_image,
+    classify_price_tier, parse_futgg_card,
+)
 from monitoring import alert, heartbeat
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -265,33 +268,67 @@ async def dismiss_cookie_banner(page) -> None:
             pass
 
 
-async def _read_card_hrefs(page) -> set[str]:
-    """The set of canonical card URLs currently visible on the page."""
-    hrefs = await page.locator("a[href]").evaluate_all(
-        "nodes => nodes.map(node => node.getAttribute('href'))"
+async def _read_card_hrefs(page) -> dict[str, str | None]:
+    """The canonical card URLs currently visible on the page, mapped to
+    each card's composited full-card image src if present (the single
+    background+cutout+badges render FUT.GG itself composites - see
+    futgg_common.py's "player-item-card/" branch). This listing grid is
+    the ONLY place that image can be captured from: a live production
+    backfill reached 100% coverage on the per-card detail page's own
+    cutout/background fields while the composited image stayed at 0%
+    coverage, confirming FUT.GG does not render it on the individual
+    card page at all, only here."""
+    pairs = await page.locator("a[href]").evaluate_all(
+        """
+        nodes => nodes.map(node => ({
+            href: node.getAttribute('href'),
+            image: node.querySelector('img[src]')?.src || null,
+        }))
+        """
     )
-    matched: set[str] = set()
-    for href in hrefs:
+    matched: dict[str, str | None] = {}
+    for pair in pairs:
+        href = pair.get("href")
         if not href:
             continue
         absolute = urljoin(BASE_URL, href)
         parsed = urlparse(absolute)
-        if CARD_URL_RE.match(parsed.path):
-            matched.add(urljoin(BASE_URL, parsed.path))
+        if not CARD_URL_RE.match(parsed.path):
+            continue
+        canonical = urljoin(BASE_URL, parsed.path)
+        image = pair.get("image")
+        if image and "player-item-card/" in image:
+            # This listing grid serves a 300px thumbnail (see
+            # _upsize_card_image's own docstring) - bump it to a real
+            # source resolution before it's ever stored/mirrored, same as
+            # futgg_common.py's own (now-dead-in-practice, since this
+            # image never actually appears on the per-card detail page)
+            # capture branch intended.
+            image = upsize_card_image(image)
+        else:
+            image = None
+        if canonical not in matched or (matched[canonical] is None and image):
+            matched[canonical] = image
     return matched
 
 
-async def collect_listing_urls(page) -> list[str]:
+async def collect_listing_urls(page) -> dict[str, str | None]:
     """Discovers card URLs via real pagination (?page=1, ?page=2, ...) -
     no window.scrollTo() or scroll-settle waits anywhere. Each page is a
     direct navigation; MAX_PAGES caps how many pages are visited (small
     for a daily run, large for FULL_SCAN - see module docstring), and
     IDLE_ROUNDS consecutive pages with zero new cards stops early
     regardless of the cap, since that's the real signal pagination has
-    run past the end of the catalogue."""
-    seen: dict[str, None] = {}
+    run past the end of the catalogue.
+
+    Returns card URL -> composited card image URL (or None if that
+    card's tile had none) - see _read_card_hrefs' docstring for why this
+    listing crawl is the only place that image can be captured. Callers
+    that only need the URLs can still iterate/len() this like the old
+    list return - dict keys behave identically for that."""
+    seen: dict[str, str | None] = {}
     idle_pages = 0
-    previous_page_hrefs: set[str] = set()
+    previous_page_hrefs: dict[str, str | None] = {}
 
     for page_number in range(1, MAX_PAGES + 1):
         listing_url = f"{BASE_URL}/players/new/?page={page_number}"
@@ -342,8 +379,9 @@ async def collect_listing_urls(page) -> list[str]:
             current_hrefs = await _read_card_hrefs(page)
 
         before = len(seen)
-        for card_url in current_hrefs:
-            seen[card_url] = None
+        for card_url, image_url in current_hrefs.items():
+            if card_url not in seen or (seen[card_url] is None and image_url):
+                seen[card_url] = image_url
         new_this_page = len(seen) - before
         previous_page_hrefs = current_hrefs
 
@@ -365,11 +403,15 @@ async def collect_listing_urls(page) -> list[str]:
         if page_number < MAX_PAGES and PAGE_DELAY:
             await asyncio.sleep(random.uniform(PAGE_DELAY * 0.7, PAGE_DELAY * 1.3))
 
-    urls = list(seen)
-    return urls[:PLAYER_LIMIT] if PLAYER_LIMIT else urls
+    if PLAYER_LIMIT:
+        return dict(list(seen.items())[:PLAYER_LIMIT])
+    return seen
 
 
-async def existing_ids(conn: asyncpg.Connection, urls: list[str]) -> set[int]:
+async def existing_ids(conn: asyncpg.Connection, urls) -> set[int]:
+    """urls: any iterable of card URLs - a plain list, or (as
+    collect_listing_urls now returns) a dict keyed by URL, iterated for
+    its keys exactly the same way."""
     ids = []
     for url in urls:
         match = CARD_URL_RE.match(urlparse(url).path)
@@ -489,7 +531,7 @@ async def _fetch_worker(
     worker_id: int,
     page,
     pool: asyncpg.Pool,
-    queue: "asyncio.Queue[tuple[int, str, bool]]",
+    queue: "asyncio.Queue[tuple[int, str, bool, str | None]]",
     total: int,
     stats: dict[str, int],
     breaker: CircuitBreaker,
@@ -499,7 +541,7 @@ async def _fetch_worker(
             log.warning("worker=%d stopping: circuit breaker tripped (%s)", worker_id, breaker.trip_reason)
             return
         try:
-            index, url, existed = queue.get_nowait()
+            index, url, existed, listing_image_url = queue.get_nowait()
         except asyncio.QueueEmpty:
             return
 
@@ -517,6 +559,14 @@ async def _fetch_worker(
             await page.locator(".fc-card").first.wait_for(state="attached", timeout=15000)
             await page.wait_for_timeout(800)
             card = parse_futgg_card(await page.content(), url)
+            if listing_image_url:
+                # The composited full-card image only exists on the
+                # listing grid tile, never on the card's own detail page
+                # (confirmed live - see collect_listing_urls'/
+                # _read_card_hrefs' docstrings) - parse_futgg_card() can
+                # never set this itself, so apply what the listing crawl
+                # already captured for this URL.
+                card.card_image_url = listing_image_url
             async with pool.acquire() as conn:
                 await upsert_card(conn, card)
             breaker.record_success()
@@ -568,13 +618,13 @@ async def crawl_once() -> None:
         # capped at a few hundred pages regardless), not the bottleneck.
         listing_page = await context.new_page()
 
-        urls = await collect_listing_urls(listing_page)
+        urls = await collect_listing_urls(listing_page)  # card_url -> composited image url (or None)
         stats["discovered"] = len(urls)
         async with pool.acquire() as conn:
             known = await existing_ids(conn, urls)
 
-        targets: list[tuple[str, bool]] = []
-        for url in urls:
+        targets: list[tuple[str, bool, str | None]] = []
+        for url, listing_image_url in urls.items():
             match = CARD_URL_RE.match(urlparse(url).path)
             if not match:
                 continue
@@ -583,16 +633,16 @@ async def crawl_once() -> None:
             if existed and not REFRESH_EXISTING:
                 stats["skipped_existing"] += 1
                 continue
-            targets.append((url, existed))
+            targets.append((url, existed, listing_image_url))
 
         log.info(
             "Discovered=%d known=%d targets=%d refresh_existing=%s concurrency=%d",
             len(urls), len(known), len(targets), REFRESH_EXISTING, PLAYER_CONCURRENCY,
         )
 
-        queue: "asyncio.Queue[tuple[int, str, bool]]" = asyncio.Queue()
-        for index, (url, existed) in enumerate(targets, start=1):
-            queue.put_nowait((index, url, existed))
+        queue: "asyncio.Queue[tuple[int, str, bool, str | None]]" = asyncio.Queue()
+        for index, (url, existed, listing_image_url) in enumerate(targets, start=1):
+            queue.put_nowait((index, url, existed, listing_image_url))
 
         fetch_pages = [await context.new_page() for _ in range(PLAYER_CONCURRENCY)]
         try:

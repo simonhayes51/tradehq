@@ -175,7 +175,7 @@ _CDN_WIDTH_RE = re.compile(r"(/cdn-cgi/image/[^/]*?width=)(\d+)")
 CARD_IMAGE_MIRROR_WIDTH = 512
 
 
-def _upsize_card_image(url: str, width: int = CARD_IMAGE_MIRROR_WIDTH) -> str:
+def upsize_card_image(url: str, width: int = CARD_IMAGE_MIRROR_WIDTH) -> str:
     return _CDN_WIDTH_RE.sub(lambda m: f"{m.group(1)}{width}", url, count=1)
 
 
@@ -293,17 +293,22 @@ def _parse_card_visual(soup: BeautifulSoup, card: FutggCard) -> None:
         positions.remove(card.primary_position)
     card.alternate_positions = positions
 
+    # card.card_image_url (the single pre-composited full-card render -
+    # background + cutout + rating/price badge, see upsize_card_image's
+    # docstring) is deliberately NOT captured here. It was originally
+    # assumed this detail page's own .fc-card would carry the same
+    # "player-item-card/" image the /players/new/ LISTING grid tiles do -
+    # confirmed wrong via a live production backfill that reached 100%
+    # coverage on player_image_url/card_design_image_url below (proving
+    # this loop runs correctly) while card_image_url stayed at 0%
+    # coverage across the whole catalogue. FUT.GG simply doesn't render
+    # that composited image on the individual card page at all - only
+    # futgg_player_sync.py's collect_listing_urls()/_read_card_hrefs()
+    # can capture it, from the listing grid.
     for image in visual.find_all("img", src=True):
         src = urljoin(BASE_URL, image["src"])
         alt = clean_text(image.get("alt")).casefold()
-        if "player-item-card/" in src:
-            # The single, pre-composited full-card render (background +
-            # cutout + rating/price badge baked in by FUT.GG itself) - see
-            # backend/app/services/futgg_card_image_mirror.py for how this
-            # gets re-hosted as the app's own main card image rather than
-            # hotlinked directly.
-            card.card_image_url = _upsize_card_image(src)
-        elif "/player-item/" in src:
+        if "/player-item/" in src:
             card.player_image_url = src
         elif "/rarities-" in src:
             card.card_design_image_url = src

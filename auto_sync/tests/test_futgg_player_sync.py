@@ -63,7 +63,16 @@ class _FakeLocator:
         return None
 
     async def evaluate_all(self, script):
-        return self._hrefs
+        # _read_card_hrefs' real evaluate_all script returns {href, image}
+        # objects, not plain strings - most tests only care about
+        # pagination and pass plain href strings, so auto-wrap those with
+        # image=None here rather than touching every test. Tests that
+        # specifically exercise image capture pass {href, image} dicts
+        # directly and skip the wrapping.
+        return [
+            item if isinstance(item, dict) else {"href": item, "image": None}
+            for item in self._hrefs
+        ]
 
 
 class _FakeListingPage:
@@ -453,7 +462,7 @@ async def test_fetch_worker_pool_processes_every_target_exactly_once(monkeypatch
 
     queue: "asyncio.Queue" = asyncio.Queue()
     for index, url in enumerate(urls, start=1):
-        queue.put_nowait((index, url, False))
+        queue.put_nowait((index, url, False, None))
 
     pages = [_FakeCardPage() for _ in range(3)]
     stats = {"new": 0, "updated": 0, "failed": 0}
@@ -489,7 +498,7 @@ async def test_fetch_worker_circuit_breaker_stops_remaining_work(monkeypatch):
 
     queue: "asyncio.Queue" = asyncio.Queue()
     for index, url in enumerate(urls, start=1):
-        queue.put_nowait((index, url, False))
+        queue.put_nowait((index, url, False, None))
 
     # A single page that returns HTTP 403 for every URL - should trip
     # the breaker well before all 10 targets are attempted.
@@ -503,3 +512,109 @@ async def test_fetch_worker_circuit_breaker_stops_remaining_work(monkeypatch):
     assert stats["failed"] == 3
     # The remaining targets were never dequeued/attempted once tripped.
     assert not queue.empty()
+
+
+# ---------------------------------------------------------------------
+# Composited card image capture - the image only exists on the listing
+# grid tile (see collect_listing_urls'/_read_card_hrefs' docstrings),
+# confirmed live: a full production backfill reached 100% coverage on
+# the detail-page-only cutout/background fields while this stayed at 0%.
+# ---------------------------------------------------------------------
+
+def _card_pair(card_id: int, image: str | None) -> dict:
+    return {"href": _card_href(card_id), "image": image}
+
+
+_COMPOSITED_IMG = (
+    "https://game-assets.fut.gg/cdn-cgi/image/quality=85,format=auto,width=512"
+    "/2026/futgg-player-item-card/26-1001.abc.webp"
+)
+
+
+@run_async
+async def test_collect_listing_urls_captures_composited_image_per_card(monkeypatch):
+    monkeypatch.setattr(mod, "MAX_PAGES", 1)
+    monkeypatch.setattr(mod, "PLAYER_LIMIT", 0)
+    monkeypatch.setattr(mod, "IDLE_ROUNDS", 10)
+    monkeypatch.setattr(mod, "PAGE_DELAY", 0)
+    pages_hrefs = {
+        1: [_card_pair(1, _COMPOSITED_IMG), _card_pair(2, None)],
+    }
+    page = _FakeListingPage(pages_hrefs)
+
+    urls = await mod.collect_listing_urls(page)
+
+    card1_url = mod.urljoin(mod.BASE_URL, _card_href(1))
+    card2_url = mod.urljoin(mod.BASE_URL, _card_href(2))
+    assert urls[card1_url] == _COMPOSITED_IMG
+    assert urls[card2_url] is None
+
+
+@run_async
+async def test_collect_listing_urls_ignores_non_composited_images():
+    # A tile's img isn't the composited player-item-card asset (e.g. a
+    # club/nation badge happened to be the first <img> in the anchor) -
+    # must not be captured as card_image_url.
+    pages_hrefs = {
+        1: [_card_pair(1, "https://game-assets.fut.gg/26/some-other-asset/1.png")],
+    }
+    page = _FakeListingPage(pages_hrefs)
+
+    urls = await mod.collect_listing_urls(page)
+
+    card1_url = mod.urljoin(mod.BASE_URL, _card_href(1))
+    assert urls[card1_url] is None
+
+
+@run_async
+async def test_fetch_worker_applies_listing_image_url_to_the_parsed_card(monkeypatch):
+    url = "https://www.fut.gg/players/1-p/26-1/"
+    card_ids_by_url = {url: 1}
+    harness = _FetchWorkerHarness(monkeypatch, card_ids_by_url)
+    captured_cards = []
+    original_upsert = mod.upsert_card
+
+    async def capturing_upsert(conn, card):
+        captured_cards.append(card)
+        await original_upsert(conn, card)
+
+    monkeypatch.setattr(mod, "upsert_card", capturing_upsert)
+
+    queue: "asyncio.Queue" = asyncio.Queue()
+    queue.put_nowait((1, url, False, _COMPOSITED_IMG))
+
+    page = _FakeCardPage()
+    stats = {"new": 0, "updated": 0, "failed": 0}
+    breaker = mod.CircuitBreaker(threshold=5)
+
+    await mod._fetch_worker(1, page, pool=_FakePool(), queue=queue, total=1, stats=stats, breaker=breaker)
+
+    assert len(captured_cards) == 1
+    assert captured_cards[0].card_image_url == _COMPOSITED_IMG
+
+
+@run_async
+async def test_fetch_worker_leaves_card_image_url_untouched_when_listing_had_none(monkeypatch):
+    url = "https://www.fut.gg/players/1-p/26-1/"
+    card_ids_by_url = {url: 1}
+    harness = _FetchWorkerHarness(monkeypatch, card_ids_by_url)
+    captured_cards = []
+    original_upsert = mod.upsert_card
+
+    async def capturing_upsert(conn, card):
+        captured_cards.append(card)
+        await original_upsert(conn, card)
+
+    monkeypatch.setattr(mod, "upsert_card", capturing_upsert)
+
+    queue: "asyncio.Queue" = asyncio.Queue()
+    queue.put_nowait((1, url, False, None))
+
+    page = _FakeCardPage()
+    stats = {"new": 0, "updated": 0, "failed": 0}
+    breaker = mod.CircuitBreaker(threshold=5)
+
+    await mod._fetch_worker(1, page, pool=_FakePool(), queue=queue, total=1, stats=stats, breaker=breaker)
+
+    assert len(captured_cards) == 1
+    assert captured_cards[0].card_image_url is None
