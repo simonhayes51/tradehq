@@ -29,6 +29,9 @@ def _row(**overrides) -> Dict[str, Any]:
         club_image_url="https://cdn.example/club.png",
         nation="Spain", league="La Liga", current_bin=50000,
         sales_count=42, sales_stddev=1200.0, sales_window_span_minutes=600.0,
+        card_design_image_url=None, price_tier="gold_rare",
+        pace=None, shooting=None, passing=None, dribbling=None,
+        defending=None, physicality=None,
     )
     defaults.update(overrides)
     return defaults
@@ -91,11 +94,42 @@ def test_player_fields_come_from_the_futgg_snapshot_row():
     assert d["player"]["name"] == "Eric Garcia"
     assert d["player"]["rating"] == 91
     assert d["player"]["imageUrl"] == "https://cdn.example/84131117.png"
-    # No generated-card-art pipeline exists for FUT.GG cards (unlike the
-    # legacy FUTBIN async-generation flow) - these must be omitted, not
-    # fabricated, matching this module's own "omit rather than fake" rule.
+    # No generated-card-art pipeline exists for FUT.GG cards, but no
+    # generation is needed either: FUT.GG already serves the frame art
+    # directly via card_design_image_url. With none captured on this row,
+    # cardBgImage stays honestly None rather than fabricated.
     assert d["player"]["cardBgImage"] is None
-    assert d["player"]["cardCutoutImage"] is None
+    assert d["player"]["cardCutoutImage"] == "https://cdn.example/84131117.png"
+
+
+def test_card_frame_art_is_surfaced_when_the_snapshot_row_has_it():
+    d = _futgg_to_recommendation(
+        _row(card_design_image_url="https://cdn.example/rarities-gold-rare.png", price_tier="gold_rare"),
+        _ci(),
+    )
+    assert d["player"]["cardBgImage"] == "https://cdn.example/rarities-gold-rare.png"
+    assert d["player"]["cardCutoutImage"] == "https://cdn.example/84131117.png"
+    # A frame exists, so CardImage should render PlayerCardArt rather than
+    # short-circuiting to the bare <img generatedCardUrl> path.
+    assert d["player"]["generatedCardUrl"] is None
+
+
+def test_cutout_type_is_base_for_plain_gold_rare_and_special_otherwise():
+    base = _futgg_to_recommendation(_row(price_tier="gold_rare"), _ci())
+    assert base["player"]["cardCutoutType"] == "base"
+    promo = _futgg_to_recommendation(_row(price_tier="special"), _ci())
+    assert promo["player"]["cardCutoutType"] == "special"
+
+
+def test_per_stat_ratings_are_surfaced_when_present():
+    d = _futgg_to_recommendation(
+        _row(pace=88, shooting=84, passing=86, dribbling=89, defending=45, physicality=81),
+        _ci(),
+    )
+    assert d["player"]["stats"] == {
+        "pace": 88, "shooting": 84, "passing": 86,
+        "dribbling": 89, "defending": 45, "physicality": 81,
+    }
 
 
 def test_missing_name_falls_back_to_card_id_label():
