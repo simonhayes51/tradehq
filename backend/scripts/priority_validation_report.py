@@ -526,6 +526,143 @@ async def report_scheduling_health(conn: asyncpg.Connection, config) -> Dict[str
 
 
 # =============================================================================
+# 6b. SBC resource-demand summary
+# =============================================================================
+# SBC relevance model revision (production-readiness review). See
+# app/services/sbc_demand_classifier.py's own module docstring for the
+# full "why" - broad requirements (TOTW, rating bands, promo types, ...)
+# are aggregated market-segment signals here, never individual card
+# triggers.
+
+async def report_resource_demand_summary(conn: asyncpg.Connection) -> Dict[str, Any]:
+    rows = await conn.fetch(
+        """
+        SELECT
+            resource_type, resource_value,
+            count(DISTINCT challenge_id) AS contributing_challenges,
+            count(DISTINCT source_event_id) AS contributing_events,
+            sum(required_count) AS total_required_count,
+            min(event_started_at) AS oldest_event_started_at,
+            max(event_started_at) AS newest_event_started_at,
+            min(event_expires_at) AS nearest_expiry,
+            bool_or(repeatable) AS any_repeatable,
+            avg(decayed_weight) AS avg_decayed_weight,
+            sum(required_count * COALESCE(decayed_weight, 0)) AS weighted_active_demand,
+            count(*) FILTER (WHERE last_confirmed_at >= now() - interval '6 hours') AS added_last_6h,
+            count(*) FILTER (WHERE last_confirmed_at >= now() - interval '24 hours') AS added_last_24h,
+            count(*) FILTER (WHERE last_confirmed_at >= now() - interval '72 hours') AS added_last_72h,
+            array_agg(DISTINCT market_status) AS market_statuses
+        FROM sbc_resource_demand
+        WHERE ambiguity_status = 'CONFIRMED'
+          AND (event_expires_at IS NULL OR event_expires_at > now())
+        GROUP BY resource_type, resource_value
+        ORDER BY weighted_active_demand DESC NULLS LAST
+        """
+    )
+    stored_only_ambiguous = await conn.fetchval(
+        "SELECT count(*) FROM sbc_resource_demand WHERE ambiguity_status != 'CONFIRMED'"
+    )
+    return {
+        "active_segments": [
+            {
+                "resource_type": r["resource_type"],
+                "resource_value": r["resource_value"],
+                "contributing_challenges": int(r["contributing_challenges"]),
+                "contributing_events": int(r["contributing_events"]),
+                "total_required_count": int(r["total_required_count"] or 0),
+                "oldest_event_started_at": _iso(r["oldest_event_started_at"]),
+                "newest_event_started_at": _iso(r["newest_event_started_at"]),
+                "nearest_expiry": _iso(r["nearest_expiry"]),
+                "any_repeatable": bool(r["any_repeatable"]),
+                "avg_decayed_weight": round(float(r["avg_decayed_weight"]), 4) if r["avg_decayed_weight"] is not None else None,
+                "weighted_active_demand": round(float(r["weighted_active_demand"]), 4) if r["weighted_active_demand"] is not None else None,
+                "added_last_6h": int(r["added_last_6h"]),
+                "added_last_24h": int(r["added_last_24h"]),
+                "added_last_72h": int(r["added_last_72h"]),
+                "market_statuses": list(r["market_statuses"] or []),
+            }
+            for r in rows
+        ],
+        "stored_but_not_active_ambiguous_or_unparsed_rows": int(stored_only_ambiguous or 0),
+    }
+
+
+# =============================================================================
+# 6c. SBC identity-trigger summary
+# =============================================================================
+# Re-derives the SAME accept/reject decision app/services/sbc_card_
+# matching.py::sync_sbc_identity_triggers() makes, read-only - no writes,
+# same "as-if" preview pattern report_conservative_demotion_projection()
+# already uses. This is what answers "why did/didn't this requirement
+# create individual triggers" for an operator without needing to add a
+# second persisted diagnostics table just to explain a decision the live
+# sync already makes deterministically from the same inputs.
+
+async def report_identity_trigger_summary(conn: asyncpg.Connection, config) -> Dict[str, Any]:
+    from app.services.sbc_card_matching import _ACTIVE_FILTER_ROWS_QUERY, _row_to_parsed_requirement, _eligible_pool_card_ids
+    from app.services.sbc_demand_classifier import evaluate_identity_pool, is_identity_requirement
+
+    as_of = datetime.now(timezone.utc)
+    rows = await conn.fetch(_ACTIVE_FILTER_ROWS_QUERY)
+    results = []
+    for row in rows:
+        req = _row_to_parsed_requirement(row)
+        if row["ambiguous"] or not is_identity_requirement(req):
+            continue
+        pool_ids = await _eligible_pool_card_ids(conn, req)
+        pool_size = len(pool_ids)
+        event_started_at = row["starts_at"] or row["first_seen_at"]
+        already_active = False
+        if pool_size:
+            already_active = bool(await conn.fetchval(
+                """
+                SELECT EXISTS(
+                    SELECT 1 FROM priority_triggers
+                    WHERE card_id = ANY($1::bigint[]) AND source_event_id = $2
+                      AND trigger_type = 'sbc_match'
+                      AND (expires_at IS NULL OR expires_at > now())
+                )
+                """,
+                pool_ids, row["event_id"],
+            ))
+        gate = evaluate_identity_pool(
+            required_count=row["min_count"], pool_size=pool_size,
+            is_new_trigger=not already_active, event_started_at=event_started_at,
+            as_of=as_of, config=config,
+        )
+        event_age_hours = (
+            round((as_of - event_started_at).total_seconds() / 3600.0, 1) if event_started_at else None
+        )
+        results.append({
+            "source_event_id": row["event_id"],
+            "event_title": row["title"],
+            "challenge_id": row["challenge_id"],
+            "raw_text": row["raw_text"],
+            "required_count": row["min_count"],
+            "eligible_pool_size": pool_size,
+            "concentration_ratio": gate.concentration_ratio,
+            "event_age_hours": event_age_hours,
+            "accepted": gate.accepted,
+            "rejection_reason": None if gate.accepted else gate.reason,
+            "triggered_card_count": pool_size if gate.accepted else 0,
+        })
+
+    accepted = [r for r in results if r["accepted"]]
+    rejected = [r for r in results if not r["accepted"]]
+    return {
+        "evaluated_identity_requirements": len(results),
+        "accepted_count": len(accepted),
+        "rejected_count": len(rejected),
+        "rejected_by_reason": {
+            reason: sum(1 for r in rejected if r["rejection_reason"] == reason)
+            for reason in sorted({r["rejection_reason"] for r in rejected})
+        },
+        "total_triggered_cards": sum(r["triggered_card_count"] for r in accepted),
+        "decisions": results,
+    }
+
+
+# =============================================================================
 # 6. Audit health
 # =============================================================================
 
@@ -621,8 +758,10 @@ async def build_report(dsn: str, sample_per_tier: int) -> Dict[str, Any]:
             report["conservative_demotion_projection"] = await report_conservative_demotion_projection(conn, config)
             report["scheduling_health"] = await report_scheduling_health(conn, config)
             report["audit_health"] = await report_audit_health(conn)
+            report["resource_demand_summary"] = await report_resource_demand_summary(conn)
+            report["identity_trigger_summary"] = await report_identity_trigger_summary(conn, config)
         except asyncpg.exceptions.UndefinedTableError as e:
-            report["error"] = f"Required table not found - has migration 044/045/046 run yet? ({e})"
+            report["error"] = f"Required table not found - has migration 044/045/046/048/049 run yet? ({e})"
         return report
     finally:
         await conn.close()
@@ -683,6 +822,30 @@ def _print_human(report: Dict[str, Any]) -> None:
     print(f"Invalid/missing tier: {ah['events_with_invalid_or_missing_tier']}  |  Missing reason codes: {ah['events_missing_reason_codes']}  |  Missing engine version: {ah['events_missing_engine_version']}")
     print(f"Due-time mutation inconsistent with reason (should be 0): {ah['events_with_due_time_mutation_inconsistent_with_reason']}")
     print(f"Top cards by event count: {ah['top_cards_by_event_count'][:5]}")
+
+    rd = report["resource_demand_summary"]
+    print(f"\n--- SBC Resource-Demand Summary ---")
+    print(f"Stored-but-inactive (ambiguous/unparsed) rows: {rd['stored_but_not_active_ambiguous_or_unparsed_rows']}")
+    for seg in rd["active_segments"][:15]:
+        print(
+            f"  {seg['resource_type']:<16} {seg['resource_value']:<20} "
+            f"challenges={seg['contributing_challenges']} events={seg['contributing_events']} "
+            f"required={seg['total_required_count']} weighted_demand={seg['weighted_active_demand']} "
+            f"repeatable={seg['any_repeatable']} new_24h={seg['added_last_24h']}"
+        )
+
+    it = report["identity_trigger_summary"]
+    print(f"\n--- SBC Identity-Trigger Summary ---")
+    print(f"Evaluated: {it['evaluated_identity_requirements']}  |  Accepted: {it['accepted_count']}  |  Rejected: {it['rejected_count']}")
+    print(f"Rejected by reason: {it['rejected_by_reason']}")
+    print(f"Total triggered cards (accepted pools): {it['total_triggered_cards']}")
+    for d in it["decisions"][:15]:
+        status = "ACCEPTED" if d["accepted"] else f"REJECTED ({d['rejection_reason']})"
+        print(
+            f"  [{status}] event={d['event_title']!r} required={d['required_count']} "
+            f"pool={d['eligible_pool_size']} ratio={d['concentration_ratio']} "
+            f"age_h={d['event_age_hours']} raw={d['raw_text']!r}"
+        )
     print()
 
 

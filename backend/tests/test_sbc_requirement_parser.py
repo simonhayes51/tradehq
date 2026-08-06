@@ -51,12 +51,23 @@ def test_rating_range_requirement():
 
 
 def test_team_rating_minimum_easysbc_style_string():
-    # "Team Rating: Min. 89" - a squad-level constraint, not a per-card
-    # nation/league/rarity/rating filter, so this deliberately does NOT
-    # parse into a card-matching filter (there is no single card that
-    # "is" a team rating requirement) - kept unparsed, not guessed.
+    # "Team Rating: Min. 89" (confirmed real EasySBC text) is a
+    # squad-average constraint, not a per-card nation/league/rarity/
+    # rating filter - there is no single card that "is" a team rating
+    # requirement, so it must NEVER populate rating_min/rating_max (that
+    # would fabricate a per-card threshold the source text never made -
+    # a user solves an 88-rated squad with many different individual
+    # ratings, not 11 cards each rated >=88). It's captured in its own
+    # team_rating_min field instead - parsed=True (it IS a real,
+    # confidently-extracted signal) but sbc_card_matching.py must never
+    # use it as a card-matching filter dimension, only as a
+    # MIN_TEAM_RATING resource-demand signal.
     parsed = parse_requirement_text("Team Rating: Min. 89")
-    assert parsed.parsed is False
+    assert parsed.team_rating_min == 89
+    assert parsed.rating_min is None
+    assert parsed.rating_max is None
+    assert parsed.nation is None and parsed.league is None and parsed.club is None
+    assert parsed.parsed is True
 
 
 def test_totw_and_tots_and_icon_and_hero_rarity_keywords():

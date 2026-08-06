@@ -34,7 +34,9 @@ from app.services.priority_recompute import (
     run_classification_pass,
     run_conservative_demotion_pass,
 )
-from app.services.sbc_card_matching import sync_requirement_filters, sync_sbc_triggers
+from app.services.sbc_card_matching import (
+    sync_requirement_filters, sync_sbc_identity_triggers, sync_sbc_resource_demand,
+)
 from scripts.priority_validation_report import build_report
 
 ADMIN_DSN = os.getenv(
@@ -75,7 +77,16 @@ CREATE TABLE market_events (
     source TEXT NOT NULL,
     external_id TEXT NOT NULL,
     title TEXT NOT NULL,
-    ends_at TIMESTAMPTZ
+    starts_at TIMESTAMPTZ,
+    ends_at TIMESTAMPTZ,
+    first_seen_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE sbc_details (
+    event_id BIGINT PRIMARY KEY REFERENCES market_events(id) ON DELETE CASCADE,
+    set_name TEXT,
+    category TEXT,
+    repeatable BOOLEAN NOT NULL DEFAULT FALSE
 );
 
 CREATE TABLE sbc_challenges (
@@ -91,11 +102,33 @@ CREATE TABLE sbc_requirement_filters (
     source TEXT NOT NULL,
     source_challenge_external_id TEXT,
     nation TEXT, league TEXT, club TEXT, rarity TEXT,
-    rating_min INT, rating_max INT, min_count INT NOT NULL DEFAULT 1,
+    rating_min INT, rating_max INT, team_rating_min INT, min_count INT NOT NULL DEFAULT 1,
     parsed BOOLEAN NOT NULL DEFAULT FALSE,
     ambiguous BOOLEAN NOT NULL DEFAULT FALSE,
     raw_text TEXT NOT NULL,
     parsed_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE sbc_resource_demand (
+    id BIGSERIAL PRIMARY KEY,
+    source_event_id BIGINT NOT NULL REFERENCES market_events(id) ON DELETE CASCADE,
+    challenge_id BIGINT NOT NULL REFERENCES sbc_challenges(id) ON DELETE CASCADE,
+    resource_type TEXT NOT NULL,
+    resource_value TEXT NOT NULL,
+    required_count INT NOT NULL DEFAULT 1,
+    event_started_at TIMESTAMPTZ,
+    event_expires_at TIMESTAMPTZ,
+    repeatable BOOLEAN NOT NULL DEFAULT FALSE,
+    last_confirmed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    source_provider TEXT NOT NULL,
+    source_challenge_external_id TEXT,
+    raw_text TEXT NOT NULL,
+    ambiguity_status TEXT NOT NULL DEFAULT 'CONFIRMED',
+    market_status TEXT NOT NULL DEFAULT 'UNCONFIRMED',
+    decayed_weight DOUBLE PRECISION,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (challenge_id, resource_type, resource_value)
 );
 
 CREATE TABLE watchlist_popularity (
@@ -530,7 +563,7 @@ def test_ambiguous_sbc_requirement_produces_no_trigger_matches(dsn):
                 )
                 assert filt["ambiguous"] is True
 
-            created = await sync_sbc_triggers(pool)
+            created = await sync_sbc_identity_triggers(pool)
             assert created == 0
             async with pool.acquire() as conn:
                 count = await conn.fetchval("SELECT count(*) FROM priority_triggers")
@@ -886,7 +919,7 @@ def test_sbc_remains_active_is_reconfirmed_every_pass(dsn):
                 )
 
             await sync_requirement_filters(pool)
-            created = await sync_sbc_triggers(pool)
+            created = await sync_sbc_identity_triggers(pool)
             assert created == 1
             async with pool.acquire() as conn:
                 first_confirmed = await conn.fetchval(
@@ -894,7 +927,7 @@ def test_sbc_remains_active_is_reconfirmed_every_pass(dsn):
                 )
 
             await asyncio.sleep(1.1)  # ensure now() advances measurably between passes
-            created_again = await sync_sbc_triggers(pool)
+            created_again = await sync_sbc_identity_triggers(pool)
             assert created_again == 0  # re-confirmed, not duplicated
             async with pool.acquire() as conn:
                 count = await conn.fetchval("SELECT count(*) FROM priority_triggers WHERE card_id = 1")
@@ -931,7 +964,7 @@ def test_sbc_expires_normally_no_new_trigger_created(dsn):
                     event_id,
                 )
             await sync_requirement_filters(pool)
-            created = await sync_sbc_triggers(pool)
+            created = await sync_sbc_identity_triggers(pool)
             assert created == 0
         finally:
             await pool.close()
@@ -996,7 +1029,7 @@ def test_sbc_requirement_change_replaces_filters_wholesale(dsn):
                 )
             changed = await sync_requirement_filters(pool)
             assert changed == 1
-            await sync_sbc_triggers(pool)
+            await sync_sbc_identity_triggers(pool)
             async with pool.acquire() as conn:
                 triggered_ids = {r["card_id"] for r in await conn.fetch("SELECT card_id FROM priority_triggers")}
             assert triggered_ids == {1}
@@ -1045,7 +1078,7 @@ def test_sbc_parsing_fails_produces_no_match(dsn):
                 filt = await conn.fetchrow("SELECT parsed, ambiguous FROM sbc_requirement_filters")
             assert filt["parsed"] is False
 
-            created = await sync_sbc_triggers(pool)
+            created = await sync_sbc_identity_triggers(pool)
             assert created == 0
         finally:
             await pool.close()
@@ -1076,14 +1109,14 @@ def test_challenge_removed_early_no_longer_matched(dsn):
                     event_id,
                 )
             await sync_requirement_filters(pool)
-            created = await sync_sbc_triggers(pool)
+            created = await sync_sbc_identity_triggers(pool)
             assert created == 1
 
             async with pool.acquire() as conn:
                 # Challenge removed early - upstream took it down before ends_at.
                 await conn.execute("DELETE FROM sbc_challenges WHERE id = $1", challenge_id)
 
-            created_again = await sync_sbc_triggers(pool)
+            created_again = await sync_sbc_identity_triggers(pool)
             assert created_again == 0
             async with pool.acquire() as conn:
                 trig = await conn.fetchrow("SELECT * FROM priority_triggers WHERE card_id = 1")

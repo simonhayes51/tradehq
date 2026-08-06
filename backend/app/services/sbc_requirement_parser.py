@@ -64,12 +64,35 @@ _COUNT_NEAR_PLAYER_RE = re.compile(
     r"(?:min\.?\s*)?(\d+)\s*(?:x\s*)?players?", re.IGNORECASE
 )
 
-# "83 Rated", "Rating: 83", "Min. Rating 83", "83+ Rated", "Rating 83-86"
+# "83 Rated", "Min. Rating 83", "83+ Rated", "Rating 83-86" - the NUMBER
+# comes at or after "rat(ing/ed)" in these. Deliberately does NOT match
+# "Team Rating: Min. 89" (confirmed real EasySBC text, see
+# auto_sync/easysbc_sbc_sync.py's own module docstring) - that phrasing
+# has the number AFTER "Min." with "Rating" earlier in the string, and
+# more importantly means something entirely different: a squad-average
+# constraint across 11 cards, not "this card must be rated 83+". See
+# _TEAM_RATING_RE below, which is deliberately a separate field
+# (team_rating_min) rather than being folded into rating_min/rating_max -
+# conflating the two would fabricate a per-card constraint the source
+# text never actually made (a user solves an 88-rated squad with many
+# different individual ratings, not 11 cards each rated exactly/at-least
+# 88).
 _RATING_RANGE_RE = re.compile(
     r"rat(?:ing|ed)?\D{0,15}?(\d{2,3})\s*(?:-|to)\s*(\d{2,3})", re.IGNORECASE
 )
 _RATING_MIN_RE = re.compile(
     r"(?:min\.?\s*(?:rating)?\D{0,10}?)?(\d{2,3})\s*\+?\s*rat(?:ing|ed)?", re.IGNORECASE
+)
+
+# "Team Rating: Min. 89", "Squad Rating: Min 87", "Min. Squad Rating 88" -
+# the confirmed real EasySBC phrasing (and FUTBIN's near-identical
+# convention) for a whole-squad average requirement, always with
+# "team"/"squad" immediately before "rating". Intentionally narrow (only
+# matches when "team"/"squad" appears) so a genuine per-card rating line
+# ("Min. 1 85+ Rated Player") is never miscategorised as a squad
+# constraint.
+_TEAM_RATING_RE = re.compile(
+    r"(?:team|squad)\s*rating\D{0,15}?(\d{2,3})", re.IGNORECASE
 )
 
 
@@ -92,6 +115,11 @@ class ParsedRequirement:
     rarity: Optional[str] = None
     rating_min: Optional[int] = None
     rating_max: Optional[int] = None
+    # A whole-squad-average constraint (see _TEAM_RATING_RE) - deliberately
+    # NOT a per-card filter dimension. Never used by sbc_card_matching.py
+    # to select individual cards; only ever surfaced as a
+    # MIN_TEAM_RATING resource-demand signal (see sbc_demand_classifier.py).
+    team_rating_min: Optional[int] = None
     min_count: int = 1
     parsed: bool = False
     # True when this line looks like an OR-condition or mentions more
@@ -123,6 +151,15 @@ def _extract_rating_range(text: str) -> tuple[Optional[int], Optional[int]]:
         if 40 <= rating <= 99:  # guards against matching an unrelated 2-3 digit number
             return rating, None
     return None, None
+
+
+def _extract_team_rating(text: str) -> Optional[int]:
+    m = _TEAM_RATING_RE.search(text)
+    if m:
+        rating = int(m.group(1))
+        if 40 <= rating <= 99:
+            return rating
+    return None
 
 
 def _extract_rarity(text: str) -> Optional[str]:
@@ -181,7 +218,12 @@ def parse_requirement_text(
     league_matches = _extract_reference_matches(text, known_leagues)
     club_matches = _extract_reference_matches(text, known_clubs)
     rarity = _extract_rarity(text)
-    rating_min, rating_max = _extract_rating_range(text)
+    # Team-rating checked first: a squad-average line ("Team Rating: Min.
+    # 89") must never also register a (spurious, always-None here per
+    # _RATING_MIN_RE's own non-match) per-card rating_min - the two are
+    # mutually exclusive by construction (see _TEAM_RATING_RE's comment).
+    team_rating_min = _extract_team_rating(text)
+    rating_min, rating_max = (None, None) if team_rating_min is not None else _extract_rating_range(text)
     min_count = _extract_count(text)
 
     nation = nation_matches[0] if nation_matches else None
@@ -195,9 +237,9 @@ def parse_requirement_text(
         or len(club_matches) > 1
     )
 
-    has_constraint = any([nation, league, club, rarity, rating_min is not None])
+    has_constraint = any([nation, league, club, rarity, rating_min is not None, team_rating_min is not None])
     return ParsedRequirement(
         nation=nation, league=league, club=club, rarity=rarity,
-        rating_min=rating_min, rating_max=rating_max, min_count=min_count,
-        parsed=has_constraint, ambiguous=ambiguous,
+        rating_min=rating_min, rating_max=rating_max, team_rating_min=team_rating_min,
+        min_count=min_count, parsed=has_constraint, ambiguous=ambiguous,
     )
