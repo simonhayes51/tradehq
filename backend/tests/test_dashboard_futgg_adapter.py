@@ -114,6 +114,33 @@ def test_card_frame_art_is_surfaced_when_the_snapshot_row_has_it():
     assert d["player"]["generatedCardUrl"] is None
 
 
+def test_composited_card_image_wins_as_generated_card_url_even_with_a_bg_image():
+    # Regression test: when the composited full-card image (background+
+    # cutout+rating+stats already baked in by FUT.GG, mirrored to R2) is
+    # available, it must be used as generatedCardUrl - shown as a plain
+    # <img>, never routed through the cardBgImage/cardCutoutImage
+    # PlayerCardArt compositing path, which draws its own rating/
+    # position/stats text and would double it up. This shipped once as a
+    # real production bug (doubled rating digits on card art).
+    d = _futgg_to_recommendation(
+        _row(
+            card_design_image_url="https://cdn.example/rarities-gold-rare.png",
+            card_image_stored_url="https://cdn.example.com/fc26/futgg-card-images/1/abc.webp",
+        ),
+        _ci(),
+    )
+    assert d["player"]["generatedCardUrl"] == "https://cdn.example.com/fc26/futgg-card-images/1/abc.webp"
+    assert d["player"]["generatedCardStatus"] == "ready"
+
+
+def test_composited_card_image_falls_back_to_raw_futgg_url_when_not_yet_mirrored():
+    d = _futgg_to_recommendation(
+        _row(card_image_stored_url=None, card_image_url="https://game-assets.fut.gg/cdn-cgi/image/.../1.webp"),
+        _ci(),
+    )
+    assert d["player"]["generatedCardUrl"] == "https://game-assets.fut.gg/cdn-cgi/image/.../1.webp"
+
+
 def test_cutout_type_is_base_for_plain_gold_rare_and_special_otherwise():
     base = _futgg_to_recommendation(_row(price_tier="gold_rare"), _ci())
     assert base["player"]["cardCutoutType"] == "base"

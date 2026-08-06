@@ -50,7 +50,7 @@ export default function Market() {
             return (
               <Link to={`/v2/players/${cardId}`} className={`v2-market-row ${verified ? "" : "unverified"}`} key={cardId || index}>
                 <span className="v2-market-rank">{String(index + 1).padStart(2, "0")}</span>
-                <img src={raw.generated_card_url || raw.image_url || raw.image || "/img/card-placeholder.png"} alt="" />
+                <img src={raw.generated_card_url || raw.composited_image_url || raw.image_url || raw.image || "/img/card-placeholder.png"} alt="" />
                 <div><strong>{raw.nickname || raw.card_name || raw.name || "Unknown player"}</strong><small>{raw.rating || "—"} {raw.position || ""} · {raw.version || "Card"}</small></div>
                 <CoinValue value={raw.price_console ?? raw.price_ps ?? raw.price} />
                 {verified ? <b className={up ? "positive" : "negative"}>{up ? <ArrowUpRight size={16} /> : <ArrowDownRight size={16} />}{up ? "+" : ""}{change.toFixed(1)}%</b> : <b className="needs-review"><AlertTriangle size={14}/> Review</b>}

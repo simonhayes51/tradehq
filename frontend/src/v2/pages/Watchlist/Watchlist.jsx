@@ -124,7 +124,7 @@ export default function Watchlist() {
             <article className="v2-watch-card" key={item.id}>
               <div className="v2-watch-top"><Star size={17} fill="currentColor"/><span>WATCHING</span><small>{String(item.platform || "ps").toUpperCase()}</small></div>
               <Link className="v2-watch-identity" to={`/v2/players/${item.card_id}`}>
-                <img src={item.generated_card_url || item.image_url || "/img/card-placeholder.png"} alt="" />
+                <img src={item.generated_card_url || item.composited_image_url || item.image_url || "/img/card-placeholder.png"} alt="" />
                 <div><h2>{item.player_name}</h2><div className="v2-meta-pills"><span>{item.rating || "—"} OVR</span><span>{item.version || "Card"}</span></div></div>
                 <ArrowRight size={18}/>
               </Link>
