@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime
 from typing import Any, Dict, Optional
 
@@ -11,6 +12,7 @@ from app.db import get_core_pool
 from app.services.player_card_ondemand import ensure_cards_requested
 
 router = APIRouter(tags=["v2-recommendations"])
+log = logging.getLogger("v2_recommendations")
 
 _JSONB_COLUMNS = (
     "market_drivers", "similar_events", "qualified_strategies",
@@ -135,8 +137,15 @@ async def track_record(request: Request) -> Dict[str, Any]:
                 "methodology": futgg["methodology"],
             }
     except Exception:
-        # Migration 040 may not have run yet on this database.
-        pass
+        # Falls back to the legacy ml_labels path below - normal and
+        # expected on a database where migration 040 hasn't run yet, but
+        # a silent `pass` here made a real bug (any exception in the
+        # query/aggregation above) indistinguishable from that expected
+        # case, with zero trace in the logs either way. Logged now so a
+        # real failure is diagnosable from a backend log line instead of
+        # requiring a full manual SQL investigation to even confirm
+        # something's actually wrong.
+        log.warning("futgg-backed /track-record failed; falling back to legacy ml_labels path", exc_info=True)
 
     pool = _player_pool(request)
     async with pool.acquire() as conn:
