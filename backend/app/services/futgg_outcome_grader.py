@@ -159,9 +159,18 @@ def grade_recommendation(
         return grade
 
     # ---- 1. Entry: first observation at or below the buy price --------
+    # price > 0 guards against a glitched/bogus 0-coin futgg_bin_history
+    # reading being accepted as a real executable price - a genuine BIN
+    # is never free. Without this, such a row becomes entry_price=0 and
+    # crashes the excursion math below with a ZeroDivisionError, which
+    # (since grade_pending() processes its batch in one loop with no
+    # per-row try/except) aborts the ENTIRE horizon's grading pass at
+    # that row - confirmed live: this silently blocked all further 24h-
+    # horizon grading behind one poisoned row while other horizons kept
+    # progressing normally.
     entry_index: Optional[int] = None
     for index, (price, captured_at) in enumerate(series):
-        if price <= buy_price:
+        if price > 0 and price <= buy_price:
             entry_index = index
             grade.entry_achieved = True
             grade.entry_at = captured_at
@@ -283,36 +292,49 @@ async def grade_pending(pool, *, horizon: str, batch_size: int = 200) -> int:
 
         graded = 0
         for row in rows:
-            observations = await conn.fetch(
-                """
-                SELECT lowest_bin, captured_at
-                FROM futgg_bin_history
-                WHERE source_card_id = $1
-                  AND captured_at > $2
-                  AND captured_at <= $3
-                ORDER BY captured_at
-                """,
-                row["source_card_id"], row["evaluated_at"], row["evaluated_at"] + window,
-            )
-            grade = grade_recommendation(
-                horizon=horizon,
-                evaluated_at=row["evaluated_at"],
-                buy_price=float(row["buy_price"]),
-                sell_target=float(row["recommended_sell_target"]),
-                observations=[(o["lowest_bin"], o["captured_at"]) for o in observations],
-            )
-            await conn.execute(
-                _INSERT_OUTCOME,
-                row["id"], row["source_card_id"], grade.horizon,
-                grade.window_start, grade.window_end, grade.observation_count,
-                grade.entry_achieved, grade.entry_at, grade.entry_price,
-                grade.exit_achieved, grade.exit_at, grade.realised_sell_price,
-                grade.net_profit_after_tax, grade.realised_roi,
-                grade.max_favourable_excursion, grade.max_adverse_excursion,
-                grade.target_hit, grade.downside_hit, grade.minutes_to_target,
-                grade.outcome_status, grade.grader_version,
-            )
-            graded += 1
+            # One bad row (a data quirk grade_recommendation() doesn't
+            # yet defend against) must never abort the rest of the
+            # batch - confirmed live: before this guard, a single
+            # ZeroDivisionError on one row silently blocked grading for
+            # an entire horizon indefinitely, since every subsequent
+            # pass re-selected the same still-ungraded poisoned row
+            # first (ORDER BY s.evaluated_at) and crashed on it again.
+            try:
+                observations = await conn.fetch(
+                    """
+                    SELECT lowest_bin, captured_at
+                    FROM futgg_bin_history
+                    WHERE source_card_id = $1
+                      AND captured_at > $2
+                      AND captured_at <= $3
+                    ORDER BY captured_at
+                    """,
+                    row["source_card_id"], row["evaluated_at"], row["evaluated_at"] + window,
+                )
+                grade = grade_recommendation(
+                    horizon=horizon,
+                    evaluated_at=row["evaluated_at"],
+                    buy_price=float(row["buy_price"]),
+                    sell_target=float(row["recommended_sell_target"]),
+                    observations=[(o["lowest_bin"], o["captured_at"]) for o in observations],
+                )
+                await conn.execute(
+                    _INSERT_OUTCOME,
+                    row["id"], row["source_card_id"], grade.horizon,
+                    grade.window_start, grade.window_end, grade.observation_count,
+                    grade.entry_achieved, grade.entry_at, grade.entry_price,
+                    grade.exit_achieved, grade.exit_at, grade.realised_sell_price,
+                    grade.net_profit_after_tax, grade.realised_roi,
+                    grade.max_favourable_excursion, grade.max_adverse_excursion,
+                    grade.target_hit, grade.downside_hit, grade.minutes_to_target,
+                    grade.outcome_status, grade.grader_version,
+                )
+                graded += 1
+            except Exception:
+                log.warning(
+                    "grading failed for snapshot_id=%s source_card_id=%s horizon=%s - skipping this row",
+                    row["id"], row["source_card_id"], horizon, exc_info=True,
+                )
         return graded
 
 

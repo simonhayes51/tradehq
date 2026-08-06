@@ -113,6 +113,35 @@ class TestEntry:
         # acting on the recommendation would have paid.
         assert grade.entry_price == 89_000
 
+    def test_a_zero_price_observation_is_never_treated_as_a_real_entry(self):
+        # Regression test: a genuine BIN is never free. A glitched/bogus
+        # 0-coin futgg_bin_history reading being accepted as "entry" set
+        # entry_price=0, which crashed the excursion math with a
+        # ZeroDivisionError - and since the batch driver processed rows
+        # in one loop with no per-row isolation, this silently blocked
+        # grading for an entire horizon in production (confirmed live:
+        # the 24h horizon graded 0 rows every pass while 48h/7d kept
+        # progressing normally, because the poisoned row was always
+        # re-selected first on the next pass too).
+        observations = _obs((1, 0), (2, 89_000), (3, 95_000))
+        grade = grade_recommendation(
+            horizon="24h", evaluated_at=T0,
+            buy_price=90_000, sell_target=115_000,
+            observations=observations,
+        )
+        assert grade.entry_price != 0
+        assert grade.entry_price == 89_000
+
+    def test_a_zero_price_only_series_is_no_entry_not_a_crash(self):
+        observations = _obs((1, 0), (2, 0))
+        grade = grade_recommendation(
+            horizon="24h", evaluated_at=T0,
+            buy_price=90_000, sell_target=115_000,
+            observations=observations,
+        )
+        assert grade.entry_achieved is False
+        assert grade.outcome_status == NO_ENTRY
+
 
 class TestOutcomeStatuses:
     def test_clean_round_trip_is_target_hit_with_realised_numbers(self):
