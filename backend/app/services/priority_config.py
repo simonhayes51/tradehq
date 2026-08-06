@@ -108,6 +108,63 @@ class PriorityEngineConfig:
     # automated source to re-confirm them against.
     trigger_confirmation_grace_hours: int = field(default_factory=lambda: _env_int("PRIORITY_TRIGGER_CONFIRMATION_GRACE_HOURS", 72))
 
+    # ---- SBC relevance model: constrained identity-trigger gates -----
+    # (see app/services/sbc_demand_classifier.py). A requirement with a
+    # named nation/league/club dimension only becomes an individual-card
+    # priority_triggers row when its eligible pool is small enough and
+    # the required count is a meaningful fraction of it - "6 Saudi League
+    # silver players from a pool of 40" should trigger those 6-ish cards;
+    # "1 Premier League player from 1,000+ cards" should not trigger any
+    # single one of them. Defaults below are a first-pass estimate, not
+    # validated against a full season of real SBC data - see the
+    # production-readiness review's report for the specific counts they
+    # were checked against.
+    identity_trigger_max_pool_size: int = field(default_factory=lambda: _env_int("SBC_IDENTITY_MAX_POOL_SIZE", 60))
+    identity_trigger_min_concentration_ratio: float = field(default_factory=lambda: _env_float("SBC_IDENTITY_MIN_CONCENTRATION_RATIO", 0.12))
+    # A pool at or below this size is accepted regardless of the
+    # concentration ratio - "3 players from a small club" (pool=4,
+    # ratio=0.75) obviously qualifies, but so should "1 player from a
+    # club with only 5 cards total" (ratio=0.2, below the ratio gate
+    # above) precisely because the pool itself is tiny.
+    identity_trigger_small_pool_override: int = field(default_factory=lambda: _env_int("SBC_IDENTITY_SMALL_POOL_OVERRIDE", 15))
+    # New identity triggers are not created for a requirement whose event
+    # is older than this - an old, likely-decaying SBC promoting a fresh
+    # individual card for the first time is a weaker claim than
+    # re-confirming one it already promoted. Re-confirmation of an
+    # already-active trigger is NOT gated on this (that would fight the
+    # grace-period mechanism migration 046 already provides).
+    identity_trigger_max_event_age_hours_for_new: int = field(default_factory=lambda: _env_int("SBC_IDENTITY_MAX_NEW_EVENT_AGE_HOURS", 240))
+
+    # ---- SBC relevance model: resource-demand time decay -------------
+    # (see app/services/sbc_demand_classifier.py::compute_demand_weight).
+    # Age-band decay, in hours-since-event-start -> weight in [0,1].
+    # "Reviewed against current data" per the task's own instruction:
+    # checked against this review's live shadow data (12 active source
+    # events, oldest ~"a few days", none older than ~2 weeks) - there was
+    # no multi-month-old SBC in the sample to calibrate the tail bands
+    # against, so 3-7d/7d+ are a reasoned extrapolation of the 0-72h
+    # bands' slope, not independently confirmed. Revisit once real data
+    # spans that range.
+    demand_decay_bands_hours: Dict[float, float] = field(default_factory=lambda: {
+        6.0: 1.0,     # 0-6h: full strength
+        24.0: 0.8,    # 6-24h: strong
+        72.0: 0.5,    # 1-3d: moderate
+        168.0: 0.2,   # 3-7d: weak
+    })
+    # Beyond the last band's upper bound (168h/7d here): minimal unless
+    # reinforced (market_status='MARKET_CONFIRMED' - not computed by this
+    # round, see sbc_resource_demand's own header).
+    demand_decay_minimal_weight: float = field(default_factory=lambda: _env_float("SBC_DEMAND_DECAY_MINIMAL_WEIGHT", 0.05))
+    # A permanent/tutorial SBC (event_expires_at NULL or further out than
+    # this many days) never contributes more than the minimal weight
+    # above, regardless of how recently it was first seen - "expires in
+    # 3 years" is not "urgent demand", it's a standing onboarding
+    # objective. Repeatable (non-permanent) SBCs are NOT exempted here -
+    # they still decay on the normal age bands off event_started_at, so
+    # a repeatable upgrade doesn't sit at full strength forever purely
+    # for being repeatable (see the module's own test coverage).
+    demand_permanent_event_expiry_threshold_days: int = field(default_factory=lambda: _env_int("SBC_DEMAND_PERMANENT_EXPIRY_THRESHOLD_DAYS", 180))
+
     # Card-type component lookup - a card's rarity string maps to a
     # [0,1] baseline "this kind of card tends to matter" score.
     card_type_scores: Dict[str, float] = field(default_factory=lambda: {

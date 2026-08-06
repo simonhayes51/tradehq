@@ -37,8 +37,11 @@ SIGNAL SOURCES USED (and two deliberately NOT used yet)
 - The live `watchlist` table (WATCHLIST_DATABASE_URL pool,
   source='futgg' rows), windowed to a recent period, NOT the dead
   watchlist_items table.
-- priority_triggers (sbc_card_matching.sync_sbc_triggers) for
-  event-relevance forcing.
+- priority_triggers (sbc_card_matching.sync_sbc_identity_triggers) for
+  event-relevance forcing on genuinely constrained card pools only -
+  broad SBC resource demand (TOTW, rating bands, promo types, ...) is
+  tracked separately in sbc_resource_demand and never creates individual
+  triggers, see sbc_card_matching.py's module docstring.
 - Ownership/recent-trade signals: NOT computed - the core `trades`
   table has no card_id column, only free-text player/version; reliably
   joining that needs the same FUTGG<->FUTBIN reconciliation migration
@@ -61,7 +64,9 @@ import asyncpg
 
 from app.services.priority_config import PRIORITY_ENGINE_CONFIG, TIERS, PriorityEngineConfig, tier_rank
 from app.services.priority_engine import PriorityResult, compute_priority
-from app.services.sbc_card_matching import sync_requirement_filters, sync_sbc_triggers
+from app.services.sbc_card_matching import (
+    sync_requirement_filters, sync_sbc_identity_triggers, sync_sbc_resource_demand,
+)
 
 log = logging.getLogger("priority_recompute")
 
@@ -200,7 +205,13 @@ async def run_classification_pass(core_pool: asyncpg.Pool, watchlist_pool: async
             # catalogue.
             try:
                 await sync_requirement_filters(core_pool)
-                await sync_sbc_triggers(core_pool)
+                # Resource demand (broad, reusable-segment signals - TOTW,
+                # rating bands, promo types, ...) before identity triggers
+                # (narrow, individual-card promotions) - see
+                # sbc_card_matching.py's module docstring for why these
+                # are now two separate signal types, not one.
+                await sync_sbc_resource_demand(core_pool)
+                await sync_sbc_identity_triggers(core_pool)
             except Exception:
                 log.error("SBC requirement/trigger sync failed this pass; card classification continues", exc_info=True)
 

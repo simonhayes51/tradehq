@@ -1,60 +1,65 @@
 # app/services/sbc_card_matching.py
 """
-Resolves "which cards does this active SBC need" from the structured
-filters sbc_requirement_parser.py produces, and writes priority_triggers
-rows so that relevance persists for the SBC's own lifetime (tied to
-market_events.ends_at) rather than being re-derived as a same-pass score
-override every recompute cycle - see migration 044's header for why
-triggers are now their own table with activation/expiry instead.
+Resolves "what does this active SBC actually mean for the catalogue"
+from the structured filters sbc_requirement_parser.py produces.
 
-Two responsibilities, both against the core-DB pool (single-DB
+Three responsibilities, all against the core-DB pool (single-DB
 deployment - see migration 045's header):
 
   1. sync_requirement_filters() - parses any sbc_challenges row whose
-     requirement text has changed (or is new), using nation/league/club
-     values that already exist in futgg_players, and records
-     market_events.source/external_id alongside each parsed row for
-     traceability. Detects a changed requirement by comparing the
-     current requirements dict's text values against the raw_text
-     values already stored for that challenge - a mismatch means the
-     upstream requirement text changed (or was added/removed) since the
-     last parse, and the old filter rows for that challenge are replaced
-     wholesale rather than patched, so a stale filter can never survive
-     alongside its replacement.
+     requirement text has changed (or is new). Unchanged in shape from
+     the original version; only the field list grew (team_rating_min,
+     migration 048).
 
-  2. sync_sbc_triggers() - for every currently-active SBC, resolves
-     matching card_ids via sbc_requirement_filters (parsed AND NOT
-     ambiguous rows only - an ambiguous or unparsed requirement line
-     never triggers automatic promotion, see sbc_requirement_parser.py's
-     module docstring) and ensures a priority_triggers row exists for
-     each, with expires_at = the event's own ends_at and
-     last_confirmed_at = now(). Idempotent: re-confirms (updates
-     last_confirmed_at) an existing still-active trigger row for the
-     same (card_id, source_event_id) rather than inserting duplicates.
-     last_confirmed_at (migration 046) is what protects against a stale
-     ends_at if the SBC silently disappears upstream without either
-     writer proactively marking it ended - see that migration's header
-     and priority_recompute.py's active-trigger queries, which require
-     BOTH expires_at not passed AND last_confirmed_at within the
-     configured grace period.
+  2. sync_sbc_resource_demand() - SBC relevance model revision
+     (production-readiness review). Every requirement line with no
+     named identity dimension (nation/league/club) - "Min. 1 TOTW
+     Player", "83 Rated Gold Rares", "Team Rating: Min. 89" - describes
+     demand for a broad, reusable market segment, not one card.
+     Classified via app/services/sbc_demand_classifier.py and recorded
+     as sbc_resource_demand rows (migration 049), one per (challenge,
+     resource_type, resource_value), never as individual
+     priority_triggers.
 
-Both are read-then-write batch operations meant to run once per
-priority_recompute.py pass, not per-request. Both are called from
+  3. sync_sbc_identity_triggers() - the ORIGINAL sync_sbc_triggers(),
+     narrowed. Only requirement lines that DO name a nation/league/club
+     (optionally + rarity/rating) are considered for individual-card
+     priority_triggers, and only when app/services/sbc_demand_
+     classifier.py's pool-size/concentration gate accepts the pool -
+     "6 Saudi League silver players from a pool of 40" still triggers
+     those cards; "1 Premier League player from 1,000+ cards" does not
+     trigger any of them. This is the fix for the confirmed root cause:
+     the original version matched every requirement LINE independently
+     (no identity gate, no pool-size gate at all) and unioned the
+     results across every challenge/event - a single bare-rarity line
+     like "Min. 1 TOTW Player" promoted every TOTW card in the whole
+     catalogue, which is how one player's SBC (Fernando Torres) reached
+     1,687 individually-triggered cards.
+
+All three are read-then-write batch operations meant to run once per
+priority_recompute.py pass, not per-request, and are called from
 run_classification_pass() inside their own try/except (see that
-function) so a failure in either (a DB hiccup, an unexpected upstream
-data shape) degrades to "no SBC updates this pass" rather than aborting
-baseline/effective tier classification for every other card.
+function) so a failure in any one degrades to "no SBC updates this
+pass" rather than aborting baseline/effective tier classification for
+every other card.
 """
 from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Dict, List
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
 
 import asyncpg
 
-from app.services.priority_config import PRIORITY_ENGINE_CONFIG
-from app.services.sbc_requirement_parser import parse_requirement_text
+from app.services.priority_config import PRIORITY_ENGINE_CONFIG, PriorityEngineConfig
+from app.services.sbc_demand_classifier import (
+    classify_resource_signal,
+    compute_demand_weight,
+    evaluate_identity_pool,
+    is_identity_requirement,
+)
+from app.services.sbc_requirement_parser import ParsedRequirement, parse_requirement_text
 
 log = logging.getLogger(__name__)
 
@@ -134,8 +139,8 @@ async def sync_requirement_filters(pool: asyncpg.Pool) -> int:
                 insert_args.append((
                     row["challenge_id"], row["source"], row["external_id"],
                     parsed.nation, parsed.league, parsed.club, parsed.rarity,
-                    parsed.rating_min, parsed.rating_max, parsed.min_count,
-                    parsed.parsed, parsed.ambiguous, raw_text,
+                    parsed.rating_min, parsed.rating_max, parsed.team_rating_min,
+                    parsed.min_count, parsed.parsed, parsed.ambiguous, raw_text,
                 ))
 
         if not changed_challenge_ids:
@@ -158,82 +163,210 @@ async def sync_requirement_filters(pool: asyncpg.Pool) -> int:
                 """
                 INSERT INTO sbc_requirement_filters (
                     challenge_id, source, source_challenge_external_id,
-                    nation, league, club, rarity, rating_min, rating_max,
+                    nation, league, club, rarity, rating_min, rating_max, team_rating_min,
                     min_count, parsed, ambiguous, raw_text
                 )
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
                 """,
                 insert_args,
             )
         log.info(
             "sbc_requirement_filters: (re)parsed %d changed challenges, %d requirement rows (%d ambiguous)",
-            len(changed_challenge_ids), len(insert_args), sum(1 for a in insert_args if a[11]),
+            len(changed_challenge_ids), len(insert_args), sum(1 for a in insert_args if a[12]),
         )
         return len(changed_challenge_ids)
 
 
-async def sync_sbc_triggers(pool: asyncpg.Pool) -> int:
-    """Ensures an active priority_triggers row exists for every card
-    matching a currently-active, unambiguous, parsed SBC requirement.
-    Returns the number of trigger rows created this pass (existing
-    still-active triggers for the same card+event are left untouched,
-    not duplicated)."""
-    floor_tier = PRIORITY_ENGINE_CONFIG.event_match_floor_tier
+# Rows shared by both sync_sbc_resource_demand() and
+# sync_sbc_identity_triggers() - active-event, parsed requirement filters
+# joined to their event/challenge context. NOT gated on `ambiguous` here
+# (both callers apply that filter themselves, differently: resource
+# demand stores ambiguous rows with ambiguity_status='AMBIGUOUS' rather
+# than skipping them; identity triggers require NOT ambiguous, unchanged
+# from the original behaviour).
+_ACTIVE_FILTER_ROWS_QUERY = """
+    SELECT f.id AS filter_id, f.challenge_id, f.source AS filter_source,
+           f.source_challenge_external_id, f.nation, f.league, f.club, f.rarity,
+           f.rating_min, f.rating_max, f.team_rating_min, f.min_count,
+           f.ambiguous, f.raw_text,
+           c.event_id, e.title, e.starts_at, e.first_seen_at, e.ends_at,
+           COALESCE(d.repeatable, FALSE) AS repeatable
+    FROM sbc_requirement_filters f
+    JOIN sbc_challenges c ON c.id = f.challenge_id
+    JOIN market_events e ON e.id = c.event_id
+    LEFT JOIN sbc_details d ON d.event_id = e.id
+    WHERE f.parsed
+      AND (e.ends_at IS NULL OR e.ends_at > now())
+"""
+
+
+def _row_to_parsed_requirement(row: asyncpg.Record) -> ParsedRequirement:
+    return ParsedRequirement(
+        nation=row["nation"], league=row["league"], club=row["club"], rarity=row["rarity"],
+        rating_min=row["rating_min"], rating_max=row["rating_max"], team_rating_min=row["team_rating_min"],
+        min_count=row["min_count"], parsed=True, ambiguous=row["ambiguous"],
+    )
+
+
+async def sync_sbc_resource_demand(pool: asyncpg.Pool, *, config: PriorityEngineConfig = PRIORITY_ENGINE_CONFIG) -> int:
+    """Upserts sbc_resource_demand rows for every currently-active,
+    parsed requirement line with no named identity dimension (see
+    sbc_demand_classifier.classify_resource_signal). Returns the number
+    of rows upserted (created or refreshed) this pass."""
+    as_of = datetime.now(timezone.utc)
     async with pool.acquire() as conn:
-        matches = await conn.fetch(
+        rows = await conn.fetch(_ACTIVE_FILTER_ROWS_QUERY)
+        if not rows:
+            return 0
+
+        upsert_args = []
+        for row in rows:
+            req = _row_to_parsed_requirement(row)
+            signal = classify_resource_signal(req)
+            if signal is None:
+                continue  # identity requirement, or no concrete resource dimension
+
+            event_started_at = row["starts_at"] or row["first_seen_at"]
+            weight = compute_demand_weight(
+                event_started_at=event_started_at, event_expires_at=row["ends_at"],
+                as_of=as_of, config=config,
+            )
+            ambiguity_status = "AMBIGUOUS" if row["ambiguous"] else "CONFIRMED"
+            upsert_args.append((
+                row["event_id"], row["challenge_id"], signal.resource_type, signal.resource_value,
+                row["min_count"], event_started_at, row["ends_at"], row["repeatable"],
+                row["filter_source"], row["source_challenge_external_id"], row["raw_text"],
+                ambiguity_status, weight,
+            ))
+
+        if not upsert_args:
+            return 0
+
+        await conn.executemany(
             """
-            SELECT DISTINCT p.source_card_id AS card_id, c.event_id, e.ends_at, e.title
-            FROM sbc_requirement_filters f
-            JOIN sbc_challenges c ON c.id = f.challenge_id
-            JOIN market_events e ON e.id = c.event_id
-            JOIN futgg_players p ON
-                (f.nation IS NULL OR p.nation = f.nation) AND
-                (f.league IS NULL OR p.league = f.league) AND
-                (f.club IS NULL OR p.club = f.club) AND
-                (f.rarity IS NULL OR p.rarity ILIKE '%' || f.rarity || '%') AND
-                (f.rating_min IS NULL OR p.rating >= f.rating_min) AND
-                (f.rating_max IS NULL OR p.rating <= f.rating_max)
-            WHERE f.parsed AND NOT f.ambiguous
-              AND (e.ends_at IS NULL OR e.ends_at > now())
-              AND p.is_active
-            """
+            INSERT INTO sbc_resource_demand (
+                source_event_id, challenge_id, resource_type, resource_value,
+                required_count, event_started_at, event_expires_at, repeatable,
+                source_provider, source_challenge_external_id, raw_text,
+                ambiguity_status, decayed_weight, last_confirmed_at
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,now())
+            ON CONFLICT (challenge_id, resource_type, resource_value) DO UPDATE SET
+                required_count = EXCLUDED.required_count,
+                event_started_at = EXCLUDED.event_started_at,
+                event_expires_at = EXCLUDED.event_expires_at,
+                repeatable = EXCLUDED.repeatable,
+                raw_text = EXCLUDED.raw_text,
+                ambiguity_status = EXCLUDED.ambiguity_status,
+                decayed_weight = EXCLUDED.decayed_weight,
+                last_confirmed_at = now(),
+                updated_at = now()
+            """,
+            upsert_args,
         )
-        if not matches:
+        log.info("sbc_resource_demand: upserted %d resource-demand rows this pass", len(upsert_args))
+        return len(upsert_args)
+
+
+async def _eligible_pool_card_ids(conn: asyncpg.Connection, req: ParsedRequirement) -> List[int]:
+    rows = await conn.fetch(
+        """
+        SELECT source_card_id FROM futgg_players p
+        WHERE (($1::text IS NULL) OR p.nation = $1) AND
+              (($2::text IS NULL) OR p.league = $2) AND
+              (($3::text IS NULL) OR p.club = $3) AND
+              (($4::text IS NULL) OR p.rarity ILIKE '%' || $4 || '%') AND
+              (($5::int IS NULL) OR p.rating >= $5) AND
+              (($6::int IS NULL) OR p.rating <= $6) AND
+              p.is_active
+        """,
+        req.nation, req.league, req.club, req.rarity, req.rating_min, req.rating_max,
+    )
+    return [int(r["source_card_id"]) for r in rows]
+
+
+async def sync_sbc_identity_triggers(pool: asyncpg.Pool, *, config: PriorityEngineConfig = PRIORITY_ENGINE_CONFIG) -> int:
+    """Ensures an active priority_triggers row exists for every card in
+    a sufficiently small/concentrated named-identity pool (nation/
+    league/club, optionally + rarity/rating) belonging to a currently-
+    active, unambiguous, parsed SBC requirement. Returns the number of
+    trigger rows CREATED this pass (re-confirmations of already-active
+    rows are not counted, matching the original function's contract)."""
+    floor_tier = config.event_match_floor_tier
+    as_of = datetime.now(timezone.utc)
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(_ACTIVE_FILTER_ROWS_QUERY)
+        identity_rows = [r for r in rows if not r["ambiguous"] and is_identity_requirement(_row_to_parsed_requirement(r))]
+        if not identity_rows:
             return 0
 
         created = 0
         confirmed = 0
-        for row in matches:
-            # Re-confirm (bump last_confirmed_at) rather than a plain
-            # existence check - this is the write that protects against
-            # a stale ends_at if the SBC silently disappears upstream
-            # later (see migration 046's header): as long as this match
-            # keeps being found here, last_confirmed_at keeps moving
-            # forward, so it never depends on expires_at alone.
-            updated = await conn.fetchval(
-                """
-                UPDATE priority_triggers
-                SET last_confirmed_at = now(),
-                    expires_at = $3  -- picks up any ends_at correction from upstream
-                WHERE card_id = $1 AND source_event_id = $2 AND trigger_type = 'sbc_match'
-                  AND (expires_at IS NULL OR expires_at > now())
-                RETURNING 1
-                """,
-                row["card_id"], row["event_id"], row["ends_at"],
-            )
-            if updated:
-                confirmed += 1
+        for row in identity_rows:
+            req = _row_to_parsed_requirement(row)
+            pool_ids = await _eligible_pool_card_ids(conn, req)
+            pool_size = len(pool_ids)
+            if pool_size == 0:
                 continue
-            await conn.execute(
+
+            already_active = await conn.fetchval(
                 """
-                INSERT INTO priority_triggers
-                    (card_id, trigger_type, trigger_reason, forced_min_tier, source_event_id, expires_at, last_confirmed_at)
-                VALUES ($1, 'sbc_match', $2, $3, $4, $5, now())
+                SELECT EXISTS(
+                    SELECT 1 FROM priority_triggers
+                    WHERE card_id = ANY($1::bigint[]) AND source_event_id = $2
+                      AND trigger_type = 'sbc_match'
+                      AND (expires_at IS NULL OR expires_at > now())
+                )
                 """,
-                row["card_id"], f"Matches active SBC: {row['title']}", floor_tier,
-                row["event_id"], row["ends_at"],
+                pool_ids, row["event_id"],
             )
-            created += 1
+            event_started_at = row["starts_at"] or row["first_seen_at"]
+            gate = evaluate_identity_pool(
+                required_count=row["min_count"], pool_size=pool_size,
+                is_new_trigger=not already_active, event_started_at=event_started_at,
+                as_of=as_of, config=config,
+            )
+            if not gate.accepted:
+                log.info(
+                    "sbc identity trigger REJECTED: challenge_id=%s event_id=%s pool_size=%d "
+                    "required_count=%d reason=%s raw_text=%r",
+                    row["challenge_id"], row["event_id"], pool_size, row["min_count"],
+                    gate.reason, row["raw_text"],
+                )
+                continue
+
+            for card_id in pool_ids:
+                updated = await conn.fetchval(
+                    """
+                    UPDATE priority_triggers
+                    SET last_confirmed_at = now(),
+                        expires_at = $3
+                    WHERE card_id = $1 AND source_event_id = $2 AND trigger_type = 'sbc_match'
+                      AND (expires_at IS NULL OR expires_at > now())
+                    RETURNING 1
+                    """,
+                    card_id, row["event_id"], row["ends_at"],
+                )
+                if updated:
+                    confirmed += 1
+                    continue
+                await conn.execute(
+                    """
+                    INSERT INTO priority_triggers
+                        (card_id, trigger_type, trigger_reason, forced_min_tier, source_event_id, expires_at, last_confirmed_at)
+                    VALUES ($1, 'sbc_match', $2, $3, $4, $5, now())
+                    """,
+                    card_id, f"Matches active SBC: {row['title']}", floor_tier,
+                    row["event_id"], row["ends_at"],
+                )
+                created += 1
+
         if created or confirmed:
-            log.info("sbc triggers: created %d new, re-confirmed %d existing sbc_match trigger rows", created, confirmed)
+            log.info("sbc identity triggers: created %d new, re-confirmed %d existing sbc_match trigger rows", created, confirmed)
         return created
+
+
+__all__ = [
+    "sync_requirement_filters",
+    "sync_sbc_resource_demand",
+    "sync_sbc_identity_triggers",
+]
