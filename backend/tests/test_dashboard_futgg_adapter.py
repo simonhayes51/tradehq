@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict
 
-from app.routers.v2.dashboard import _futgg_to_recommendation
+from app.routers.v2.dashboard import _compute_live_market_regime, _futgg_to_recommendation
 from app.services.futgg_intelligence import CardIntelligence
 
 AS_OF = datetime(2026, 8, 5, 12, 0, tzinfo=timezone.utc)
@@ -131,6 +131,76 @@ def test_composited_card_image_wins_as_generated_card_url_even_with_a_bg_image()
     )
     assert d["player"]["generatedCardUrl"] == "https://cdn.example.com/fc26/futgg-card-images/1/abc.webp"
     assert d["player"]["generatedCardStatus"] == "ready"
+
+
+# --- _compute_live_market_regime ---------------------------------------
+# Regression coverage for the "Strong Market 95%" bug: the old
+# implementation read a single row from `market_states`, a table only
+# ever written by analytics_engine.compute_market_regime() - which only
+# runs behind the disabled-by-default ENABLE_LEGACY_FUTBIN flag - so it
+# never changed. _compute_live_market_regime recomputes the same shape of
+# signal directly off the FUT.GG-native (row, CardIntelligence) pairs
+# already evaluated for the opportunity feeds, so it must vary with them.
+
+
+def test_empty_candidate_pool_reports_unknown_not_a_fabricated_state():
+    result = _compute_live_market_regime([])
+    assert result["label"] == "Unknown"
+    assert result["dataQuality"] == "LIMITED"
+    assert result["confidence"] == 0
+
+
+def test_mostly_falling_trend_reports_bearish():
+    pairs = [
+        (_row(), _ci(signal="watch", trend_state="falling_knife")),
+        (_row(), _ci(signal="watch", trend_state="downtrend")),
+        (_row(), _ci(signal="watch", trend_state="downtrend")),
+        (_row(), _ci(signal="watch", trend_state="sideways")),
+    ]
+    result = _compute_live_market_regime(pairs)
+    assert result["label"] == "Prices Dropping"
+    assert result["dataQuality"] == "GOOD"
+
+
+def test_wide_discount_with_little_falling_reports_bullish():
+    pairs = [
+        (_row(current_bin=45000), _ci(signal="buy", trend_state="sideways", fair_value=Decimal("50000"))),
+        (_row(current_bin=44000), _ci(signal="strong_buy", trend_state="sideways", fair_value=Decimal("50000"))),
+        (_row(current_bin=45000), _ci(signal="watch", trend_state="sideways", fair_value=Decimal("50000"))),
+    ]
+    result = _compute_live_market_regime(pairs)
+    assert result["label"] == "Good Time to Buy"
+
+
+def test_low_average_liquidity_reports_slow_trading():
+    pairs = [
+        (_row(sales_count=1, sales_window_span_minutes=600.0), _ci(signal="hold", trend_state="sideways")),
+        (_row(sales_count=1, sales_window_span_minutes=600.0), _ci(signal="hold", trend_state="sideways")),
+    ]
+    result = _compute_live_market_regime(pairs)
+    assert result["label"] == "Slow Trading"
+
+
+def test_steady_market_is_the_default_when_nothing_stands_out():
+    pairs = [
+        (_row(sales_count=40, sales_window_span_minutes=60.0), _ci(signal="hold", trend_state="sideways")),
+        (_row(sales_count=40, sales_window_span_minutes=60.0), _ci(signal="hold", trend_state="sideways")),
+    ]
+    result = _compute_live_market_regime(pairs)
+    assert result["label"] == "Steady Market"
+
+
+def test_confidence_and_liquid_cards_scale_with_candidate_pool_size():
+    small = _compute_live_market_regime([
+        (_row(sales_count=40, sales_window_span_minutes=60.0), _ci(signal="hold", trend_state="sideways")),
+    ])
+    large = _compute_live_market_regime([
+        (_row(sales_count=40, sales_window_span_minutes=60.0), _ci(signal="hold", trend_state="sideways"))
+        for _ in range(400)
+    ])
+    assert large["confidence"] > small["confidence"]
+    assert large["metrics"]["liquidCards"] == 400
+    assert small["metrics"]["liquidCards"] == 1
 
 
 def test_composited_card_image_falls_back_to_raw_futgg_url_when_not_yet_mirrored():
