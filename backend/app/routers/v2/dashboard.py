@@ -33,6 +33,7 @@ from app.routers.v2.futgg_market import (
     _sales_for_rows,
 )
 from app.services.futgg_intelligence import CardIntelligence
+from app.services.futgg_trend import DOWNTREND, FALLING_KNIFE, INSUFFICIENT_TREND_DATA
 from app.services.market_data_provider import FutggMarketDataProvider, PlayerFilters
 from app.services.sbc_demand import compute_sbc_demand
 
@@ -170,6 +171,79 @@ def _regime_summary(state: str, indicators: Dict[str, Any]) -> str:
     if state == "illiquid":
         return f"Cards are only selling about {avg_liquidity:.2f} times an hour on average - it'll take longer than usual to buy or sell."
     return "Prices and sales are behaving normally across tracked cards right now."
+
+
+def _compute_live_market_regime(scored_pairs: List[Any]) -> Dict[str, Any]:
+    """Live FUT.GG-native replacement for the market_states-based regime.
+
+    market_states is written exclusively by analytics_engine.compute_market_regime(),
+    which only runs when ENABLE_LEGACY_FUTBIN is set (see analytics_engine.py's
+    refresher_loop docstring) - unset in this deployment, so that table holds
+    at most one stale row from whenever the loop last ran (possibly never) and
+    is not updated by anything live. This recomputes the same shape of signal
+    (bearish/bullish/illiquid/normal + confidence + summary) directly off the
+    FUT.GG-native candidate pool already evaluated for the opportunity feeds
+    above, so it reflects the current market on every request instead of being
+    frozen forever.
+    """
+    total = len(scored_pairs)
+    if total == 0:
+        return {
+            "label": "Unknown", "confidence": 0,
+            "summary": "Not enough live market data has been scored yet.",
+            "dataQuality": "LIMITED",
+            "metrics": {"liquidCards": 0, "avgVolatility": 0, "avgValueGap": 0},
+        }
+
+    trend_known = [ci for _, ci in scored_pairs if ci.trend_state != INSUFFICIENT_TREND_DATA]
+    falling_pct = (
+        100.0 * sum(1 for ci in trend_known if ci.trend_state in (FALLING_KNIFE, DOWNTREND)) / len(trend_known)
+        if trend_known else 0.0
+    )
+
+    discounts = []
+    for row, ci in scored_pairs:
+        if ci.signal not in ("strong_buy", "buy") or ci.fair_value is None:
+            continue
+        current_bin = row.get("current_bin")
+        fair_value = float(ci.fair_value)
+        if not current_bin or fair_value <= 0:
+            continue
+        discounts.append(100.0 * (fair_value - float(current_bin)) / fair_value)
+    avg_discount = (sum(discounts) / len(discounts)) if discounts else 0.0
+
+    liquidity_per_hour = []
+    for row, _ in scored_pairs:
+        span = row.get("sales_window_span_minutes")
+        if span:
+            liquidity_per_hour.append(60.0 * float(row.get("sales_count") or 0) / float(span))
+    avg_liquidity = (sum(liquidity_per_hour) / len(liquidity_per_hour)) if liquidity_per_hour else 0.0
+
+    if falling_pct >= 25:
+        state = "bearish"
+    elif avg_discount >= 5 and falling_pct < 10:
+        state = "bullish"
+    elif avg_liquidity < 0.5:
+        state = "illiquid"
+    else:
+        state = "normal"
+
+    confidence = int(max(50, min(95, 50 + min(total, 500) / 10)))
+    indicators = {
+        "total_cards": total, "avg_liquidity": avg_liquidity,
+        "avg_discount_pct": avg_discount, "falling_pct": falling_pct,
+    }
+    return {
+        "label": _STATE_LABEL.get(state, state),
+        "confidence": confidence,
+        "summary": _regime_summary(state, indicators),
+        "dataQuality": "GOOD",
+        "metrics": {
+            "liquidCards": total,
+            "avgVolatility": avg_liquidity,
+            "avgValueGap": avg_discount,
+        },
+    }
 
 
 def _to_recommendation(
@@ -427,36 +501,6 @@ async def get_dashboard(request: Request) -> Dict[str, Any]:
     ent = await compute_entitlements(request)
     opportunities_unlocked = "opportunity_feed" in ent["features"]
 
-    # --- Market regime (ungated, same data as GET /api/v2/market/regime) ---
-    async with core_pool.acquire() as conn:
-        regime_row = await conn.fetchrow(
-            "SELECT state, confidence_score, indicators FROM market_states WHERE platform = 'ps' ORDER BY detected_at DESC LIMIT 1"
-        )
-    if regime_row:
-        indicators = regime_row["indicators"]
-        if isinstance(indicators, str):
-            indicators = json.loads(indicators)
-        indicators = indicators or {}
-        market_regime = {
-            "label": _STATE_LABEL.get(regime_row["state"], regime_row["state"]),
-            "confidence": regime_row["confidence_score"],
-            "summary": _regime_summary(regime_row["state"], indicators),
-            "dataQuality": "GOOD",
-            "metrics": {
-                "liquidCards": indicators.get("total_cards", 0),
-                "avgVolatility": indicators.get("avg_liquidity", 0),
-                "avgValueGap": indicators.get("avg_discount_pct", 0),
-            },
-        }
-    else:
-        market_regime = {
-            "label": "Unknown",
-            "confidence": 0,
-            "summary": "Not enough live market data has been scored yet.",
-            "dataQuality": "LIMITED",
-            "metrics": {"liquidCards": 0, "avgVolatility": 0, "avgValueGap": 0},
-        }
-
     # --- Recommendation feeds (gated, with a free preview) ---
     # Free/Pro users used to get an all-empty feed with nothing to show
     # the AI actually works - the one thing a free tier needs to prove
@@ -510,6 +554,11 @@ async def get_dashboard(request: Request) -> Dict[str, Any]:
         key=lambda pair: pair[0].get("snapshot_computed_at") or datetime.min.replace(tzinfo=timezone.utc),
         reverse=True,
     )
+
+    # --- Market regime (ungated): recomputed live from this same
+    # already-evaluated candidate pool - see _compute_live_market_regime's
+    # docstring for why this replaced a market_states table read. ---
+    market_regime = _compute_live_market_regime(recent_scored)
 
     # card_scores_latest (_scores_by_card) is keyed by the legacy FUTBIN
     # card_id space too (see migration 024) - no FUT.GG-native equivalent
