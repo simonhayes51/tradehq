@@ -117,7 +117,13 @@ function toFutggAnalysisItem(raw, cardId) {
       position: raw.position || raw.primary_position,
       version: raw.rarity || "Card",
       imageUrl: raw.image_url,
-      generatedCardUrl: raw.card_design_image_url ? null : (raw.image_url || raw.player_image_url || null),
+      // composited_image_url (FUT.GG's own pre-composited full-card
+      // image, mirrored to R2) always wins when present - shown as a
+      // plain <img>, never handed to PlayerCardArt's bgImage/cutoutImage
+      // compositing, which draws its own rating/position/stats text on
+      // top and would double it up since this image already has it baked
+      // in. See PlayerCardImage.jsx's own docstring for the same rule.
+      generatedCardUrl: raw.composited_image_url || (raw.card_design_image_url ? null : (raw.image_url || raw.player_image_url || null)),
       cardBgImage: raw.card_design_image_url || null,
       cardCutoutImage: raw.image_url || raw.player_image_url || null,
       cardCutoutType: raw.price_tier && raw.price_tier !== "special" ? "base" : "special",

@@ -146,7 +146,7 @@ export default function TradeFinder() {
           const roi = item.expected_roi != null ? Number(item.expected_roi) * 100 : null;
           return <Link className="finder-card" key={cardId} to={`/v2/players/${cardId}`} state={{ from: "trade-finder" }}>
             <div className="finder-card-top">
-              <img src={item.image_url || "/img/card-placeholder.png"} alt="" />
+              <img src={item.composited_image_url || item.image_url || "/img/card-placeholder.png"} alt="" />
               <div><h2>{item.name || "Unknown player"}</h2><div className="v2-meta-pills"><span>{item.rating ?? "—"} OVR</span><span>{item.position || "—"}</span><span>{item.rarity || "Card"}</span></div><p>{(item.signal_reasons || [])[0] || "Current price and completed sales support this move."}</p></div>
               <span className="finder-confidence">{confidence == null ? "—" : `${confidence}%`}<small>CONFIDENCE</small></span>
             </div>

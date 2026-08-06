@@ -160,21 +160,27 @@ def _serialize_player(row: Dict[str, Any]) -> Dict[str, Any]:
         int((datetime.now(timezone.utc) - bin_captured_at).total_seconds())
         if bin_captured_at is not None else None
     )
-    # image_url alias: the frontend's card-image rendering (Players/
-    # Opportunities/Trade Finder result rows) reads a generic `image_url`
-    # field regardless of source. Preference order: our own R2-mirrored
-    # copy of FUT.GG's pre-composited full-card image (card_image_stored_url
-    # - see app/services/futgg_card_image_mirror.py) is the main image;
-    # falling back to the raw FUT.GG CDN URL (card_image_url) only for the
-    # brief window between a card first appearing and the mirror loop
-    # catching up to it (default within ~60s); falling back further to
-    # player_image_url (the cutout-only image) for cards scraped before
-    # this field existed, so nothing regresses to a blank image.
-    out["image_url"] = (
-        out.get("card_image_stored_url")
-        or out.get("card_image_url")
-        or out.get("player_image_url")
-    )
+    # image_url alias: player_image_url (the cutout-only photo, no frame/
+    # rating/stats baked in) under the frontend's generic name every
+    # existing consumer (Players/Opportunities/Trade Finder result rows,
+    # HomeDashboard's normaliseFutgg, PlayerCardArt's cutoutImage/
+    # fallbackImage props) already assumes this means - do NOT repoint
+    # this at the composited card image below; several of those consumers
+    # draw their own rating/position/stats text on top of whatever this
+    # field points to, which double-renders that text if it's already
+    # baked into the image (this exact regression shipped once already -
+    # see composited_image_url's own comment for the fix).
+    out["image_url"] = out.get("player_image_url")
+    # composited_image_url: the single pre-composited full-card image
+    # (background+cutout+rating+stats already baked in by FUT.GG itself,
+    # mirrored to our own R2 storage - see app/services/
+    # futgg_card_image_mirror.py) - a DELIBERATELY separate field from
+    # image_url above. Only ever meant to be shown as a plain <img> with
+    # no app-drawn overlay on top (PlayerCardImage.jsx's "isReady" path,
+    # HomeDashboard's CardImage() checking player.generatedCardUrl) -
+    # never pass this into a component that also draws its own rating/
+    # stats text (e.g. PlayerCardArt's bgImage/cutoutImage props).
+    out["composited_image_url"] = out.get("card_image_stored_url") or out.get("card_image_url")
     for key in ("price_updated_at", "next_price_due_at", "bin_captured_at",
                 "latest_sale_at", "sales_window_earliest_at",
                 "sales_window_latest_at", "snapshot_computed_at"):

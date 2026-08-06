@@ -318,6 +318,15 @@ def _futgg_to_recommendation(
     sbc_note = _sbc_demand_note(status, row.get("nation"), row.get("league"), sbc_demand) if has_evaluation else ""
     evaluated_at = ci.evaluated_at if ci else None
     card_bg_image = row.get("card_design_image_url")
+    # The single pre-composited full-card image FUT.GG itself renders
+    # (background+cutout+rating+stats baked in), mirrored to our own R2
+    # storage by app/services/futgg_card_image_mirror.py - when present,
+    # this is always preferred as generatedCardUrl (CardImage() renders
+    # it as a plain <img>, no app-drawn overlay) rather than the older
+    # bgImage+cutoutImage-composited-by-PlayerCardArt path below, which
+    # draws its own rating/position/stats text and would double it up if
+    # handed an image that already has that baked in.
+    composited_image = row.get("card_image_stored_url") or row.get("card_image_url")
 
     return {
         "cardId": row.get("source_card_id"),
@@ -335,10 +344,8 @@ def _futgg_to_recommendation(
             # PlayerCardArt's cutoutType prop expects.
             "cardCutoutType": "base" if row.get("price_tier") not in (None, "special") else "special",
             "cardName": None,
-            # Only meaningful once card_bg_image exists - otherwise CardImage
-            # falls back to the plain <img> path, same as before.
-            "generatedCardUrl": None if card_bg_image else row.get("player_image_url"),
-            "generatedCardStatus": "ready" if row.get("player_image_url") else None,
+            "generatedCardUrl": composited_image or (None if card_bg_image else row.get("player_image_url")),
+            "generatedCardStatus": "ready" if (composited_image or row.get("player_image_url")) else None,
             "generatedCardFlagged": False,
             "stats": {
                 "pace": row.get("pace"),

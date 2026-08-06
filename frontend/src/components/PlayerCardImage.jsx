@@ -1,12 +1,24 @@
 // src/components/PlayerCardImage.jsx
 //
-// Single place that decides whether to show the on-demand generated card
-// PNG or the composited PlayerCardArt fallback. A card is only "ready to
-// show as the generated image" when generated_card_status === 'ready' AND
-// generated_card_url is present AND generated_card_flagged is not true -
-// any other combination (null/'generating'/'error', or flagged even with a
-// URL present) shows the existing fallback so we never display a stale or
-// known-wrong generated image.
+// Single place that decides whether to show a fully-rendered card image
+// as a plain <img> or fall back to PlayerCardArt's own bgImage+cutoutImage
+// compositing (which draws its own rating/position/stats text on top -
+// never hand it an image that already has that baked in, see
+// composited_image_url below).
+//
+// Two independent "fully rendered, ready to show as-is" sources, checked
+// in this priority order:
+//   1. generated_card_url/generatedCardUrl - our own bespoke Playwright-
+//      rendered PNG (app/services/player_card_generation.py, fut_players-
+//      backed), gated on generated_card_status === 'ready' and not
+//      generated_card_flagged.
+//   2. composited_image_url/compositedImageUrl - FUT.GG's own pre-
+//      composited full-card image, mirrored to our R2 storage
+//      (app/services/futgg_card_image_mirror.py, futgg_players-backed).
+//      No status/flagged gating - the backend only ever populates this
+//      once mirrored successfully.
+// Only when NEITHER is available does this fall back to PlayerCardArt's
+// bgImage/cutoutImage/fallbackImage compositing.
 //
 // `player` accepts whatever shape callers already have on hand - the
 // snake_case fields the backend sends (card_bg_image, generated_card_url,
@@ -52,14 +64,17 @@ export default function PlayerCardImage({
   const url = pollingEnabled ? polled.generatedCardUrl : initialUrl;
   const flagged = pollingEnabled ? polled.flagged : initialFlagged;
 
-  const isReady = status === "ready" && !!url && !flagged;
+  const generatedReady = status === "ready" && !!url && !flagged;
+  const compositedUrl = pick(p.composited_image_url, p.compositedImageUrl) ?? null;
+  const readyUrl = generatedReady ? url : compositedUrl;
+  const isReady = !!readyUrl;
   const displayName = pick(p.card_name, p.cardName, p.name);
 
   if (isReady) {
     return (
       <img
         className={imgClassName || `${widthClass} h-auto object-contain block`}
-        src={url}
+        src={readyUrl}
         alt={altText || displayName || "Player"}
         referrerPolicy="no-referrer"
       />
