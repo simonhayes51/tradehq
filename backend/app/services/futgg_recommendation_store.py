@@ -27,7 +27,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -256,7 +256,14 @@ async def track_record(
     rather than a number. This is the difference between a track record
     and a marketing claim.
     """
-    interval = f"{int(window_days)} days"
+    # Every query below casts this parameter with an explicit `::interval`,
+    # which makes asyncpg encode it via its interval codec - that codec
+    # requires a real timedelta (it reads .days off the value), not the
+    # "N days" string this used to pass. The string silently blew up in
+    # asyncpg's bind-message encoding on every call, which is what made
+    # every /track-record request fall back to the legacy ml_labels path
+    # regardless of how much real futgg_recommendation_outcomes data existed.
+    interval = timedelta(days=int(window_days))
     async with pool.acquire() as conn:
         head = await conn.fetchrow(_HEADLINE, horizon, interval)
         breakdowns: Dict[str, List[Dict[str, Any]]] = {}
