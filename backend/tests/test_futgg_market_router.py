@@ -81,6 +81,24 @@ class FakeProvider:
             }
         ]
 
+    async def get_sales_series(self, card_id: int, *, days: int, limit: int = 500):
+        # Two prints spanning `days` so the endpoint's covered_seconds is
+        # exercised, and so a wider range genuinely returns a wider span -
+        # the property the chart's range picker depends on and which the
+        # old fixed-window endpoint could not provide.
+        return [
+            {
+                "sold_price": 52000, "ea_tax": 2600, "net_price": 49400,
+                "approximate_sold_at": AS_OF - timedelta(minutes=3),
+                "source_age_text": "3 minutes ago", "source_age_seconds": 180,
+            },
+            {
+                "sold_price": 50000, "ea_tax": 2500, "net_price": 47500,
+                "approximate_sold_at": AS_OF - timedelta(days=days),
+                "source_age_text": f"{days} days ago", "source_age_seconds": days * 86400,
+            },
+        ]
+
     async def get_price_history(self, card_id: int, period=None):
         return [
             {
@@ -343,3 +361,23 @@ class TestTradeFinderNewestSortDoesNotCrash:
 if __name__ == "__main__":
     import sys
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+def test_sales_endpoint_serves_the_requested_window_not_a_fixed_one():
+    """The chart's 24h/7d/14d picker used to be a client-side filter over a
+    single response that was always the newest 50 sales - a few hours on a
+    liquid card - so every range drew the identical picture and the toggle
+    looked dead. Each range is now its own server query over its own
+    window, and the response reports how much history it actually covers
+    so the chart can say "only 6 hours exist" rather than looking broken."""
+    day = _client().get("/api/v2/players/1/sales?days=1").json()
+    fortnight = _client().get("/api/v2/players/1/sales?days=14").json()
+    assert day["requested_days"] == 1
+    assert fortnight["requested_days"] == 14
+    assert fortnight["covered_seconds"] > day["covered_seconds"]
+
+
+def test_sales_endpoint_refuses_a_window_wider_than_the_sales_history_itself():
+    # futgg_market_snapshot's sales window stops at 14 days, so a wider
+    # range would promise data that structurally cannot exist.
+    assert _client().get("/api/v2/players/1/sales?days=30").status_code == 422
