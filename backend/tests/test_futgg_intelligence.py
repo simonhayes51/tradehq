@@ -174,22 +174,43 @@ class TestSeparatedBuyPrices:
         )
 
     def test_bin_above_recommended_max_is_a_watch_not_a_buy(self):
-        # Default fixture: theoretical ceiling 9,800, advised ceiling
-        # 9,400, live BIN 10,000. Previously the ceiling was clamped down
-        # to 10,000 and this presented as a buy. It is not one.
+        # Default fixture: sales trimmed mean 11,000, live BIN 10,000.
+        # Sell target 10,650 (the trimmed mean less sell_target_margin),
+        # theoretical ceiling 9,600, advised ceiling 9,200. Previously the
+        # ceiling was clamped down to 10,000 and this presented as a buy.
+        # It is not one.
         ci = evaluate_card(_snapshot(), as_of=AS_OF)
-        assert ci.theoretical_max_buy == 9800
-        assert ci.recommended_buy_max == 9400
+        assert ci.theoretical_max_buy == 9600
+        assert ci.recommended_buy_max == 9200
         assert ci.current_executable_buy is None
         assert ci.signal == "watch"
         assert ci.status == "watch"
-        assert ci.buy_below == 9400
+        assert ci.buy_below == 9200
         assert reasons_pkg.PRICE_ABOVE_MAX_BUY in ci.reason_codes
+
+    def test_the_buy_ceiling_does_not_move_with_the_live_ask(self):
+        """The maximum you should pay for a card cannot depend on what it
+        currently happens to be listed at - that is the circularity the
+        four-price split exists to remove, and it survived in one
+        direction until the ceiling stopped being derived from fair
+        value. fair_value is 30% BIN, so an ask ABOVE recent sales used to
+        inflate the ceiling: the engine told a user to pay more for a card
+        precisely because it was listed dearer than it sells for. Below
+        sales the same blend is conservative, which is why the asymmetry
+        went unnoticed. Both ends now anchor to the same sales-derived
+        exit."""
+        ceilings = {
+            bin_price: evaluate_card(
+                _snapshot(current_bin=bin_price), as_of=AS_OF
+            ).recommended_buy_max
+            for bin_price in (9000, 10000, 13000)
+        }
+        assert len(set(ceilings.values())) == 1, ceilings
 
     def test_watch_states_an_explicit_trigger_price_in_english(self):
         ci = evaluate_card(_snapshot(), as_of=AS_OF)
         joined = " ".join(ci.signal_reasons)
-        assert "9,400" in joined
+        assert "9,200" in joined
         assert "falls to" in joined
 
 
@@ -578,3 +599,127 @@ class TestImplausibleEdge:
         )
         assert rc.SALES_BIN_DIVERGENCE not in just_above.reason_codes
         assert rc.SALES_BIN_DIVERGENCE in just_below.reason_codes
+
+
+class TestSalesSpreadGate:
+    """Regression cover for the reported "the site prices just don't match,
+    and it's giving poor advice" case, reproduced from the real production
+    row for Willian Pacho UCL RTTF 96 (source_card_id 134473924): 40 sales
+    inside six hours ranging 33,500 to 94,500, with 33,500 and 87,000
+    printing in the SAME hour.
+
+    stddev/median for that sample is 0.199 and passed the 0.45
+    extreme_dispersion_ratio gate comfortably. The interdecile spread is
+    0.484. Nothing looked at it, and the consequence was not a slightly-off
+    number: with no real trend in the series to find, futgg_trend.py's
+    verdict became a function of how many rows it happened to be handed -
+    the same card, same minute, same data gave BUY at n=8, STRONG BUY at
+    n=12, AVOID at n=15, BUY at n=20-30 and AVOID at n=40, while reported
+    confidence climbed from 0.63 to 0.85."""
+
+    #: Real sold prices, newest first, straight off futgg_sales_history.
+    PACHO_SALES = [
+        64000, 61000, 58000, 94500, 65000, 88000, 62500, 62000, 89500, 61000,
+        89000, 59500, 70500, 63000, 75000, 72000, 55000, 68000, 90000, 89500,
+        49500, 87000, 50000, 75000, 82500, 60000, 83500, 85000, 82500, 74000,
+        82500, 55500, 85500, 33500, 82500, 72000, 79000, 60000, 55000, 55000,
+    ]
+
+    def _pacho(self, *, current_bin, sales):
+        srt = sorted(sales)
+        n = len(srt)
+        median = srt[n // 2]
+        p10, p90 = srt[max(0, n // 10)], srt[min(n - 1, (n * 9) // 10)]
+        trimmed = sum(p for p in srt if p10 <= p <= p90) / len(
+            [p for p in srt if p10 <= p <= p90]
+        )
+        return _snapshot(
+            current_bin=current_bin, sales_count=n,
+            sales_median=median, sales_trimmed_mean=trimmed,
+            sales_low=srt[0], sales_high=srt[-1],
+            sales_dispersion_ratio=0.199,
+            sales_interdecile_ratio=round((p90 - p10) / median, 4),
+        )
+
+    def test_a_series_with_no_settled_price_is_declined_at_every_sample_size(self):
+        # The specific failure: the verdict used to oscillate between
+        # STRONG BUY and AVOID purely on how many rows the trend layer saw.
+        # It must now be declined regardless, so there is nothing left to
+        # oscillate.
+        for n in (8, 12, 15, 20, 30, 40):
+            snap = self._pacho(current_bin=58000, sales=self.PACHO_SALES[:n])
+            ci = evaluate_card(snap, as_of=AS_OF)
+            assert ci.signal == "insufficient_data", (n, ci.signal)
+            assert ci.recommended_sell_target is None, n
+            assert rc.EXCESSIVE_DISPERSION in ci.reason_codes, n
+
+    def test_the_stddev_ratio_alone_would_not_have_caught_it(self):
+        # Guards the reason this gate exists at all: if stddev/median ever
+        # starts catching this shape on its own, the interdecile gate has
+        # stopped earning its place. 0.199 is the real measured value.
+        assert 0.199 < ENGINE_CONFIG.extreme_dispersion_ratio
+        assert 0.484 >= ENGINE_CONFIG.extreme_interdecile_ratio
+
+    def test_a_tightly_traded_card_is_not_caught_by_the_gate(self):
+        # The gate must decline broken cards, not ordinary ones.
+        ci = evaluate_card(
+            _snapshot(current_bin=9000, sales_count=40, sales_interdecile_ratio=0.04),
+            as_of=AS_OF,
+        )
+        assert ci.signal != "insufficient_data"
+        assert rc.EXCESSIVE_DISPERSION not in ci.reason_codes
+
+    def test_a_snapshot_predating_migration_050_skips_the_gate(self):
+        # sales_interdecile_ratio is absent from stored rows written before
+        # migration 050 (and from hand-built dicts). Absent must mean "not
+        # tested", never a crash.
+        snap = _snapshot(current_bin=9000)
+        snap.pop("sales_interdecile_ratio", None)
+        assert evaluate_card(snap, as_of=AS_OF).signal != "insufficient_data"
+
+
+class TestBinDetachedAboveSales:
+    def test_an_ask_far_above_recent_sales_is_declined(self):
+        # Pacho again, from the other side: every listing parked at the
+        # card's 100,000 price cap while real sales cleared around 70,600.
+        # This direction was previously ungated entirely, and it is not the
+        # harmless one - fair value is 30% BIN-weighted, so the detached ask
+        # dragged the sell target up and the user listed at a price nothing
+        # was paying.
+        ci = evaluate_card(
+            _snapshot(current_bin=30000, sales_median=11000, sales_trimmed_mean=11000),
+            as_of=AS_OF,
+        )
+        assert ci.signal == "insufficient_data"
+        assert rc.SALES_BIN_DIVERGENCE in ci.reason_codes
+
+    def test_a_modestly_higher_ask_is_still_valued(self):
+        # A card genuinely on the way up prints a high BIN before the sales
+        # window catches up. That is a real signal, not an error.
+        ci = evaluate_card(_snapshot(current_bin=13000), as_of=AS_OF)
+        assert rc.SALES_BIN_DIVERGENCE not in ci.reason_codes
+
+
+class TestSellTargetIsSalesDerived:
+    def test_the_sell_target_does_not_move_with_the_live_ask(self):
+        """Reported as "it said sell for 90, it actually sold at 72". The
+        sell target used to BE fair value, which is 30% live BIN, so the
+        price we told a user to LIST AT moved whenever the cheapest ASK
+        moved - even though what buyers were paying had not changed."""
+        targets = {
+            bin_price: evaluate_card(
+                _snapshot(current_bin=bin_price), as_of=AS_OF
+            ).recommended_sell_target
+            for bin_price in (9000, 10000, 13000)
+        }
+        assert len(set(targets.values())) == 1, targets
+
+    def test_the_sell_target_sits_just_under_the_anomaly_trimmed_average(self):
+        # sales_trimmed_mean is the mean of sales between p10 and p90 - the
+        # average sale price with the silly-low and silly-high anomalies
+        # excluded. Listing AT that average clears only about half the
+        # time, so the advised target sits a margin below it.
+        ci = evaluate_card(_snapshot(sales_trimmed_mean=11000), as_of=AS_OF)
+        expected = Decimal("11000") * (Decimal("1") - Decimal(str(ENGINE_CONFIG.sell_target_margin)))
+        assert ci.recommended_sell_target <= expected
+        assert ci.recommended_sell_target > expected * Decimal("0.98")

@@ -280,6 +280,15 @@ class FutggMarketDataProvider(MarketDataProvider):
                        source_age_text, source_age_seconds
                 FROM futgg_sales_history
                 WHERE source_card_id = $1
+                  -- Same 14-day bound futgg_market_snapshot's bounded_sales
+                  -- CTE applies. This feeds the detail view's trend
+                  -- assessment (futgg_market.py::get_player_detail), so
+                  -- without it the trend gate and the snapshot aggregates it
+                  -- gates could be computed over different windows for the
+                  -- same card. It also bounds the /players/{id}/sales chart,
+                  -- which should not be splicing months-old prints into a
+                  -- picture of today's market either.
+                  AND approximate_sold_at >= now() - interval '14 days'
                 ORDER BY approximate_sold_at DESC
                 LIMIT $2
                 """,
@@ -337,6 +346,13 @@ class FutggMarketDataProvider(MarketDataProvider):
                     SELECT source_card_id, sold_price, approximate_sold_at
                     FROM futgg_sales_history
                     WHERE source_card_id = ids.card_id
+                      -- Same 14-day bound futgg_market_snapshot's
+                      -- bounded_sales CTE applies (migration 038 onward).
+                      -- Without it this series and the snapshot aggregates
+                      -- could describe different periods, so the trend gate
+                      -- and the fair value it gates were computed over
+                      -- different windows for the same card.
+                      AND approximate_sold_at >= now() - interval '14 days'
                     ORDER BY approximate_sold_at DESC
                     LIMIT $2
                 ) s
