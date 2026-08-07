@@ -128,34 +128,58 @@ async def list_watch_items(
     futbin_ids = [int(it["card_id"]) for it in items if it.get("card_id") is not None and it.get("source") != "futgg"]
     futgg_ids = [int(it["card_id"]) for it in items if it.get("card_id") is not None and it.get("source") == "futgg"]
 
-    meta_rows = await pdb.fetch(
-        """
-        SELECT card_id, name, rating, club, nation, version, image_url,
-               card_bg_image, card_cutout_image, card_cutout_type, card_name,
-               generated_card_url, generated_card_status, generated_card_flagged
-        FROM fut_players
-        WHERE card_id = ANY($1::bigint[])
-        """,
-        futbin_ids,
-    )
-    meta_map = {
-        int(m["card_id"]): {
-            "name": m["name"],
-            "rating": m["rating"],
-            "club": m["club"],
-            "nation": m["nation"],
-            "version": m["version"],
-            "image_url": m["image_url"],
-            "card_bg_image": m["card_bg_image"],
-            "card_cutout_image": m["card_cutout_image"],
-            "card_cutout_type": m["card_cutout_type"],
-            "card_name": m["card_name"],
-            "generated_card_url": m["generated_card_url"],
-            "generated_card_status": m["generated_card_status"],
-            "generated_card_flagged": m["generated_card_flagged"],
-        }
-        for m in meta_rows
-    }
+    # Only touch the legacy table when there is actually a legacy row to
+    # enrich, and never let it take the endpoint down.
+    #
+    # This query used to run unconditionally, so a watchlist containing
+    # nothing but FUT.GG cards still had to successfully SELECT fourteen
+    # columns out of fut_players before it could render - a table that in
+    # a FUT.GG-only deployment is empty at best and, where its schema
+    # predates the columns named here, raises outright. The whole endpoint
+    # then 500s and the user is told "your watchlist could not be loaded",
+    # for a list that needed nothing from that table at all. Same failure
+    # shape as the fair_value_mv dependency removed from
+    # app/routers/v2/dashboard.py.
+    #
+    # Card art is an enhancement (see ensure_cards_requested below, which
+    # already takes this stance). Losing legacy metadata must degrade the
+    # row, never the request.
+    meta_map: Dict[int, Dict[str, Any]] = {}
+    if futbin_ids:
+        try:
+            meta_rows = await pdb.fetch(
+                """
+                SELECT card_id, name, rating, club, nation, version, image_url,
+                       card_bg_image, card_cutout_image, card_cutout_type, card_name,
+                       generated_card_url, generated_card_status, generated_card_flagged
+                FROM fut_players
+                WHERE card_id = ANY($1::bigint[])
+                """,
+                futbin_ids,
+            )
+            meta_map = {
+                int(m["card_id"]): {
+                    "name": m["name"],
+                    "rating": m["rating"],
+                    "club": m["club"],
+                    "nation": m["nation"],
+                    "version": m["version"],
+                    "image_url": m["image_url"],
+                    "card_bg_image": m["card_bg_image"],
+                    "card_cutout_image": m["card_cutout_image"],
+                    "card_cutout_type": m["card_cutout_type"],
+                    "card_name": m["card_name"],
+                    "generated_card_url": m["generated_card_url"],
+                    "generated_card_status": m["generated_card_status"],
+                    "generated_card_flagged": m["generated_card_flagged"],
+                }
+                for m in meta_rows
+            }
+        except Exception:
+            log.warning(
+                "legacy fut_players metadata lookup failed for %d watchlist row(s); "
+                "serving them without it", len(futbin_ids), exc_info=True,
+            )
 
     futgg_provider = await _futgg_provider()
     futgg_rows = await futgg_provider.get_players_by_ids(futgg_ids)
@@ -395,15 +419,25 @@ async def refresh_watch_item(
         is_extinct = bool(live.get("isExtinct", False))
         updated_at = live.get("updatedAt")
 
-        meta = await pdb.fetchrow(
-            """
-            SELECT card_id, name, rating, club, nation
-            FROM fut_players
-            WHERE card_id::text = $1
-            """,
-            str(w["card_id"]),
-        )
-        meta_dict = dict(meta) if meta else {}
+        # Same stance as list_watch_items: the legacy table is an
+        # enrichment, and must not be able to fail a refresh whose price
+        # has already been fetched and written.
+        meta_dict = {}
+        try:
+            meta = await pdb.fetchrow(
+                """
+                SELECT card_id, name, rating, club, nation
+                FROM fut_players
+                WHERE card_id::text = $1
+                """,
+                str(w["card_id"]),
+            )
+            meta_dict = dict(meta) if meta else {}
+        except Exception:
+            log.warning(
+                "legacy fut_players lookup failed for watchlist card_id=%s; "
+                "refreshing without it", w["card_id"], exc_info=True,
+            )
 
     await wdb.execute(
         "UPDATE watchlist SET last_price=$1, last_checked=NOW() WHERE id=$2",

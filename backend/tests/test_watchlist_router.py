@@ -236,3 +236,86 @@ def test_refresh_watch_item_futbin_path_unaffected(monkeypatch):
     assert called["futgg"] is False
     assert result["item"]["current_price"] == 6000
     assert result["item"]["source"] == "futbin"
+
+
+class CountingPlayerDB(FakePlayerDB):
+    """Records whether the legacy fut_players table was queried at all."""
+    def __init__(self):
+        self.fetch_calls = 0
+
+    async def fetch(self, query: str, *args):
+        self.fetch_calls += 1
+        return []
+
+
+class BrokenPlayerDB(FakePlayerDB):
+    """Stands in for the legacy table being absent, or predating the
+    columns this router names - the real state of a FUT.GG-only
+    deployment, and what took the whole endpoint down."""
+    async def fetch(self, query: str, *args):
+        raise RuntimeError('relation "fut_players" does not exist')
+
+    async def fetchrow(self, query: str, *args):
+        raise RuntimeError('relation "fut_players" does not exist')
+
+
+def test_a_futgg_only_watchlist_never_queries_the_legacy_table(monkeypatch):
+    # The fut_players SELECT used to run unconditionally, so a watchlist
+    # holding nothing but FUT.GG cards still had to succeed against a
+    # table it needed nothing from.
+    fake_provider = FakeFutggProvider({555: _futgg_row()})
+    monkeypatch.setattr(watchlist_router, "_futgg_provider", lambda: _async_return(fake_provider))
+    wdb = FakeWatchDB(rows=[{
+        "id": 1, "card_id": 555, "player_name": "Haaland", "version": None,
+        "platform": "ps", "started_price": 240000, "started_at": None,
+        "last_price": 200000, "last_checked": None, "notes": None,
+        "source": "futgg",
+    }])
+    pdb = CountingPlayerDB()
+
+    async def run():
+        return await watchlist_router.list_watch_items(FakeRequest(), wdb=wdb, pdb=pdb)
+
+    result = run_async(run)
+    assert result["ok"] is True
+    assert pdb.fetch_calls == 0
+
+
+def test_a_broken_legacy_table_degrades_the_row_not_the_whole_watchlist(monkeypatch):
+    """Reported as "Your watchlist could not be loaded." A legacy-metadata
+    lookup failing must cost that row its card art, not cost the user
+    their entire watchlist."""
+    fake_provider = FakeFutggProvider({555: _futgg_row()})
+    monkeypatch.setattr(watchlist_router, "_futgg_provider", lambda: _async_return(fake_provider))
+    wdb = FakeWatchDB(rows=[
+        {
+            "id": 1, "card_id": 555, "player_name": "Haaland", "version": None,
+            "platform": "ps", "started_price": 240000, "started_at": None,
+            "last_price": 200000, "last_checked": None, "notes": None,
+            "source": "futgg",
+        },
+        {
+            "id": 2, "card_id": 777, "player_name": "Legacy Card", "version": "TOTW",
+            "platform": "ps", "started_price": 10000, "started_at": None,
+            "last_price": 12000, "last_checked": None, "notes": None,
+            "source": "futbin",
+        },
+    ])
+
+    async def run():
+        return await watchlist_router.list_watch_items(FakeRequest(), wdb=wdb, pdb=BrokenPlayerDB())
+
+    result = run_async(run)
+
+    assert result["ok"] is True
+    assert len(result["items"]) == 2
+    # The FUT.GG row is completely unaffected - it never needed the table.
+    futgg_item = next(i for i in result["items"] if i["card_id"] == 555)
+    assert futgg_item["name"] == "Erling Haaland"
+    assert futgg_item["current_price"] == 250000
+    # The legacy row still lists, still shows its stored price, just
+    # without the metadata that could not be loaded.
+    legacy_item = next(i for i in result["items"] if i["card_id"] == 777)
+    assert legacy_item["current_price"] == 12000
+    assert legacy_item["player_name"] == "Legacy Card"
+    assert legacy_item["name"] is None
