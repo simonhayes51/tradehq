@@ -52,6 +52,21 @@ REFRESH_ADVISORY_LOCK_KEY = 7741011
 # for fewer).
 MAX_RECENT_SALES = 50
 
+# The valuation window above is deliberately small - 50 rows is what the
+# engine reasons over, and widening it would change what fair value means.
+# A CHART is a different job: it is showing a human what the market has
+# been doing, and truncating that to the newest 50 prints is why the
+# range picker looked broken. On a liquid card those 50 rows can cover
+# six hours, so "7d" and "24h" rendered the identical six-hour picture and
+# the toggle appeared to do nothing at all.
+MAX_CHART_SALES = 500
+
+# The longest window any chart range may request. futgg_market_snapshot's
+# bounded_sales CTE cuts at 14 days, and get_recent_sales/get_sales_by_ids
+# now match it, so offering a "30d" range promised data that structurally
+# cannot exist.
+MAX_CHART_DAYS = 14
+
 # Expected price-refresh cadence - used only for the freshness endpoint's
 # "stale" bucketing (see get_freshness_summary()), not for any scoring
 # math (that lives in futgg_intelligence.py and uses a single confidence-
@@ -102,6 +117,8 @@ class MarketDataProvider:
     async def get_current_price(self, card_id: int, platform: Optional[str] = None) -> Optional[Dict[str, Any]]: ...
 
     async def get_recent_sales(self, card_id: int, limit: int = MAX_RECENT_SALES) -> List[Dict[str, Any]]: ...
+
+    async def get_sales_series(self, card_id: int, *, days: int, limit: int = MAX_CHART_SALES) -> List[Dict[str, Any]]: ...
 
     async def get_price_history(self, card_id: int, period: Optional[str] = None) -> List[Dict[str, Any]]: ...
 
@@ -293,6 +310,37 @@ class FutggMarketDataProvider(MarketDataProvider):
                 LIMIT $2
                 """,
                 card_id, bounded_limit,
+            )
+        return [dict(r) for r in rows]
+
+    async def get_sales_series(
+        self, card_id: int, *, days: int, limit: int = MAX_CHART_SALES,
+    ) -> List[Dict[str, Any]]:
+        """Sales for CHARTING over an explicit window - deliberately separate
+        from get_recent_sales(), which serves valuation and must keep its
+        exact 50-row window because that is what fair value is defined over.
+
+        The range picker used to be a client-side filter over whatever
+        get_recent_sales() happened to return, which was always the newest
+        50 prints. On a liquid card that is a few hours of data, so every
+        range rendered the same few hours and the picker looked broken.
+        Asking the database for the window the user actually selected is
+        the only thing that makes the toggle mean anything.
+        """
+        bounded_days = max(1, min(int(days), MAX_CHART_DAYS))
+        bounded_limit = max(1, min(int(limit), MAX_CHART_SALES))
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT sold_price, ea_tax, net_price, approximate_sold_at,
+                       source_age_text, source_age_seconds
+                FROM futgg_sales_history
+                WHERE source_card_id = $1
+                  AND approximate_sold_at >= now() - make_interval(days => $2)
+                ORDER BY approximate_sold_at DESC
+                LIMIT $3
+                """,
+                card_id, bounded_days, bounded_limit,
             )
         return [dict(r) for r in rows]
 

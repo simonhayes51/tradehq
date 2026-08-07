@@ -43,6 +43,8 @@ from app.services.futgg_intelligence import (
 )
 from app.services.futgg_snipe_filter import build_snipe_filter
 from app.services.market_data_provider import (
+    MAX_CHART_DAYS,
+    MAX_CHART_SALES,
     MAX_RECENT_SALES,
     FutggMarketDataProvider,
     PlayerFilters,
@@ -407,10 +409,20 @@ async def get_player_prices(
 @router.get("/players/{card_id}/sales")
 async def get_player_sales(
     card_id: int,
-    limit: int = Query(MAX_RECENT_SALES, ge=1, le=MAX_RECENT_SALES),
+    days: int = Query(MAX_CHART_DAYS, ge=1, le=MAX_CHART_DAYS),
+    limit: int = Query(MAX_CHART_SALES, ge=1, le=MAX_CHART_SALES),
     provider: FutggMarketDataProvider = ProviderDep,
 ) -> Dict[str, Any]:
-    rows = await provider.get_recent_sales(card_id, limit=limit)
+    """Sales series for the chart, over an explicit window.
+
+    `days` exists because the frontend range picker previously filtered
+    client-side over whatever this returned, which was always the newest
+    50 prints - a few hours on a liquid card, so every range drew the same
+    few hours and the toggle appeared dead. The window is capped at
+    MAX_CHART_DAYS because futgg_market_snapshot's own sales window stops
+    at 14 days; a longer range would promise data that does not exist.
+    """
+    rows = await provider.get_sales_series(card_id, days=days, limit=limit)
     items = [
         {
             "sold_price": r["sold_price"],
@@ -423,10 +435,21 @@ async def get_player_sales(
         }
         for r in rows
     ]
+    # The chart needs to distinguish "this range is empty" from "this card
+    # only has six hours of history", so it can say so rather than looking
+    # like the picker is broken.
+    span_seconds = None
+    if len(items) > 1:
+        span_seconds = int(
+            (rows[0]["approximate_sold_at"] - rows[-1]["approximate_sold_at"]).total_seconds()
+        )
     return {
         "card_id": card_id,
         "items": items,
         "count": len(items),
+        "requested_days": days,
+        "covered_seconds": span_seconds,
+        "truncated_by_limit": len(items) >= limit,
         "note": "approximate_sold_at is derived from a relative age string (e.g. '4 minutes ago') at scrape time, not an exact EA transaction timestamp.",
     }
 

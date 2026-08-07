@@ -69,11 +69,18 @@ export function useFutggPlayerPrices(cardId) {
 // approximate_sold_at is APPROXIMATE - never render it as an exact
 // timestamp; age_text is the primary display (see MarketFreshness.jsx /
 // FutggMarketSection.jsx for the rendering rule this hook feeds).
-export function useFutggPlayerSales(cardId) {
+// `days` is part of the query key on purpose: the chart's range picker
+// used to filter client-side over a single fixed response (always the
+// newest 50 sales, i.e. a few hours on a liquid card), so every range drew
+// the identical picture and the toggle looked dead. Each range is now its
+// own server query over its own window.
+export function useFutggPlayerSales(cardId, days = 14) {
   return useQuery({
-    queryKey: ["v2", "futgg", "player", cardId, "sales"],
+    queryKey: ["v2", "futgg", "player", cardId, "sales", days],
     queryFn: async ({ signal }) =>
-      (await api.get(`/api/v2/players/${cardId}/sales`, { signal, ...REQUEST_OPTS })).data,
+      (await api.get(`/api/v2/players/${cardId}/sales`, {
+        signal, params: { days }, ...REQUEST_OPTS,
+      })).data,
     enabled: !!cardId,
     retry: false,
     staleTime: 30_000,
