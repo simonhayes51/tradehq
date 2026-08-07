@@ -403,6 +403,11 @@ def evaluate_card(
     span_minutes = float(span_minutes) if span_minutes is not None else None
     dispersion_ratio = snapshot.get("sales_dispersion_ratio")
     dispersion_ratio = float(dispersion_ratio) if dispersion_ratio is not None else None
+    # migration 050. Optional rather than required: a caller constructing a
+    # snapshot dict by hand (tests, the outcome grader replaying a stored
+    # row written before 050) simply skips the gate rather than crashing.
+    interdecile_ratio = snapshot.get("sales_interdecile_ratio")
+    interdecile_ratio = float(interdecile_ratio) if interdecile_ratio is not None else None
 
     price_age_minutes = _price_age_minutes(bin_captured_at, as_of)
     sales_age_minutes = _sales_age_minutes(snapshot.get("latest_sale_at"), as_of)
@@ -446,6 +451,32 @@ def evaluate_card(
             f"Recent sales dispersion ratio {dispersion_ratio:.2f} is extreme "
             f"(>= {cfg.extreme_dispersion_ratio}) - the price is too volatile to anchor a "
             "fair value on right now.",
+        )
+    # The interdecile spread catches a shape stddev/median structurally
+    # cannot: a sales series that is wide with no usable centre at all.
+    # Measured on Willian Pacho UCL RTTF 96 - 40 sales inside six hours
+    # from 33,500 to 94,500, with 33,500 and 87,000 printing in the SAME
+    # hour - stddev/median came to 0.199 and sailed through the gate above
+    # while the interdecile spread was 0.484.
+    #
+    # It is not a cosmetic miss. There is no trend in a series like that
+    # to find, so the trend layer's verdict degenerates into a function of
+    # how many rows it happens to be handed: the same card, same minute,
+    # same data returned BUY at n=8, STRONG BUY at n=12, AVOID at n=15,
+    # BUY at n=20-30 and AVOID at n=40, while reported confidence rose
+    # from 0.63 to 0.85. Every downstream number - fair value, sell
+    # target, expected profit - is quoted to the nearest coin off that
+    # same centre. Refusing to value the card is the only honest outcome.
+    if (
+        interdecile_ratio is not None
+        and interdecile_ratio >= cfg.extreme_interdecile_ratio
+    ):
+        reasons.add(
+            rc.EXCESSIVE_DISPERSION,
+            f"Recent sales are spread {interdecile_ratio * 100:.0f}% of the median from the "
+            f"10th to the 90th percentile (>= {cfg.extreme_interdecile_ratio * 100:.0f}%) - "
+            "this card has no settled price to value it against right now, so any target "
+            "would be guesswork.",
         )
     if current_bin is None:
         reasons.add(rc.NO_LIVE_PRICE, "No live BIN listing found.")
@@ -521,6 +552,24 @@ def evaluate_card(
                 "history no longer describes today's market - most often a "
                 "card that has crashed - so it cannot be valued against it.",
             )
+        # The mirror case, previously ungated entirely. A BIN detached
+        # far ABOVE recent sales is the same evidence that the ask and
+        # the cleared prices describe different markets - typically every
+        # listing parked at the card's price ceiling while real trading
+        # happens well below it (seen live on Pacho: lowest BIN pinned at
+        # the 100,000 cap against sales clearing around 70,600). Left
+        # ungated it is actively harmful rather than merely useless,
+        # because fair value is 30% BIN-weighted, so the detached ask
+        # drags the sell target up and the user lists at a price nothing
+        # is paying.
+        elif bin_to_sales > cfg.max_bin_to_sales_ratio:
+            reasons.add(
+                rc.SALES_BIN_DIVERGENCE,
+                f"The live price ({int(current_bin):,}) is "
+                f"{bin_to_sales * 100:.0f}% of what recent sales suggest "
+                f"({int(sales_estimate):,}). The asking price has detached from what "
+                "the card is actually selling for, so it cannot be valued against it.",
+            )
 
     if len(reasons):
         return _insufficient(
@@ -538,23 +587,58 @@ def evaluate_card(
     bin_weight = Decimal(str(cfg.fair_value_bin_weight))
     fair_value = Decimal(str(sales_estimate)) * sales_weight + Decimal(str(current_bin)) * bin_weight
 
-    recommended_sell_target = tm.round_to_ea_increment(fair_value, direction="down")
+    # The sell target is deliberately NOT fair value.
+    #
+    # Fair value is 30% live-BIN by construction, so using it here made the
+    # price we tell a user to LIST AT move whenever the cheapest ASK moved,
+    # even when what buyers were actually paying had not changed at all. On
+    # Willian Pacho that swung the target between 66,500 and 79,000 purely
+    # on the ask while sales cleared around 70,600 throughout; the reported
+    # symptom was "it said sell for 90, it actually sold at 72".
+    #
+    # An exit price can only honestly come from what the card has actually
+    # been CLEARING at. sales_trimmed_mean is exactly that - the mean of
+    # sales between p10 and p90, i.e. the average sale price with the
+    # silly-low and silly-high anomalies excluded - and the margin puts the
+    # listing just under it, because listing AT the average clears only
+    # about half the time and half is not a target.
+    #
+    # fair_value is still computed and reported - it is the honest answer
+    # to "what is this card worth", and the BIN weight in it is a real
+    # signal - but it is no longer what the entry and exit prices are
+    # derived from. See theoretical_max_buy below for why.
+    sell_anchor = Decimal(str(sales_estimate)) * (
+        Decimal("1") - Decimal(str(cfg.sell_target_margin))
+    )
+    recommended_sell_target = tm.round_to_ea_increment(sell_anchor, direction="down")
 
     # ---- The four prices, each independently meaningful ------------------
     #
     # theoretical_max_buy is trading_math's net_roi() relation solved for
     # entry price: the highest entry that still clears min_net_roi_for_buy
-    # when sold at fair value after EA's tax. Crucially it is NOT clamped
-    # to current_bin - clamping made the number circular (the "maximum you
-    # should pay" became "what it costs"), which is exactly how a card
-    # ended up described as a valid buy purely because its own ask had
-    # been substituted into the calculation.
+    # when sold at RECOMMENDED_SELL_TARGET after EA's tax. Crucially it is
+    # NOT clamped to current_bin - clamping made the number circular (the
+    # "maximum you should pay" became "what it costs"), which is exactly
+    # how a card ended up described as a valid buy purely because its own
+    # ask had been substituted into the calculation.
+    #
+    # It solves against the sell target rather than fair_value, and the two
+    # are no longer the same number. Solving against fair_value while
+    # advising a sales-derived exit would make the pair self-contradictory:
+    # the ceiling would be justified by an exit price we do not actually
+    # advise. Worse, it reintroduced the ask through the back door in the
+    # one direction that matters - fair_value is 30% BIN, so whenever the
+    # ask sits ABOVE recent sales it inflates the ceiling, telling a user
+    # to pay more for a card precisely because it is currently listed
+    # dearer than it sells for. (Below sales the blend is conservative,
+    # which is why the asymmetry went unnoticed.) Anchoring both ends to
+    # the same realistic exit removes that entirely.
     theoretical_max_buy = tm.round_to_ea_increment(
-        fair_value * (Decimal("1") - tm.EA_TAX) / (Decimal("1") + cfg.min_net_roi_for_buy),
+        recommended_sell_target * (Decimal("1") - tm.EA_TAX) / (Decimal("1") + cfg.min_net_roi_for_buy),
         direction="down",
     )
     # The advised ceiling sits below the theoretical one so the trade
-    # still works if fair value proves slightly optimistic.
+    # still works if the sell target proves slightly optimistic.
     recommended_buy_max = tm.round_to_ea_increment(
         theoretical_max_buy * (Decimal("1") - Decimal(str(cfg.conservative_buy_margin))),
         direction="down",

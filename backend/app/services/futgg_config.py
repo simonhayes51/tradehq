@@ -44,7 +44,7 @@ from typing import Any, Dict, Mapping, Optional
 # unchanged snapshot. Format is "futgg-<major>.<minor>"; the outcome
 # grader groups by this exact string, so it must be stable and unique per
 # behavioural configuration.
-ENGINE_VERSION = "futgg-2.1"
+ENGINE_VERSION = "futgg-2.2"
 
 # Bumped independently of ENGINE_VERSION - see module docstring.
 TREND_VERSION = "trend-1.0"
@@ -114,6 +114,24 @@ class EngineConfig:
 
     # ---- Dispersion ---------------------------------------------------
     extreme_dispersion_ratio: float = 0.45
+    # Interdecile spread ((p90 - p10) / median), migration 050. A second,
+    # differently-shaped dispersion test rather than a replacement for the
+    # stddev ratio above: stddev/median is dominated by how far the tails
+    # reach, so a series that is merely WIDE but has no usable centre can
+    # sit well under it. Measured on Willian Pacho UCL RTTF 96: 40 sales in
+    # six hours spanning 33,500-94,500, with 33,500 and 87,000 printing in
+    # the same hour - stddev/median 0.199 (passes 0.45), interdecile 0.484
+    # (fails this).
+    #
+    # This matters far more than a wide error bar on the fair value. With
+    # no real trend in the series to find, futgg_trend.py's verdict became
+    # a function of how many rows it was handed: identical card, minute and
+    # data gave BUY at n=8, STRONG BUY at n=12, AVOID at n=15, BUY at
+    # n=20-30 and AVOID at n=40, with reported confidence climbing 0.63 ->
+    # 0.85 throughout. Declining to value the card is the only honest
+    # outcome; 0.40 sits above the spread of ordinary liquid cards and
+    # below the shape above. Tighten only with graded outcomes in hand.
+    extreme_interdecile_ratio: float = 0.40
 
     # ---- Sales freshness ----------------------------------------------
     # Fair value is 70% sales-derived, so the age of the NEWEST sale is as
@@ -144,6 +162,20 @@ class EngineConfig:
     # which the engine turned into "buy below 500,000" and a claimed
     # 403,500 profit. Tighten only with graded outcomes in hand.
     min_bin_to_sales_ratio: float = 0.5
+    # The mirror image, and until now simply absent: a live BIN far ABOVE
+    # the sales estimate is the same evidence of two different periods, and
+    # went entirely ungated. It is not the harmless direction it looks:
+    # fair value is 30% BIN-weighted, so a BIN detached upward drags the
+    # sell target up with it, and a user lists at a price nothing is
+    # actually clearing at. Seen live on Pacho, whose lowest BIN sat at the
+    # 100,000 price cap (every listing parked there, real sales clearing
+    # around 70,600) - a 1.42 ratio that produced a 79,000 sell target off
+    # a market that was not paying it.
+    #
+    # 2.0 is deliberately permissive for the same reason 0.5 is: a card
+    # legitimately on the way up prints a high BIN before the sales window
+    # catches up, and that is a real signal, not an error.
+    max_bin_to_sales_ratio: float = 2.0
 
     # ---- Confidence gates ---------------------------------------------
     min_confidence_for_buy_signal: float = 0.45
@@ -169,6 +201,30 @@ class EngineConfig:
     # recommendation has room to still work if fair value was slightly
     # optimistic.
     conservative_buy_margin: float = 0.04
+
+    # ---- Sell target --------------------------------------------------
+    # recommended_sell_target used to be fair value itself, which made it
+    # part-derived from the live BIN - so the price we told a user to LIST
+    # AT moved whenever the cheapest ASK moved, even though what buyers
+    # were actually paying had not changed at all. On Pacho that swung the
+    # target between 66,500 and 79,000 purely on the ask, against sales
+    # clearing at ~70,600 the whole time; the reported symptom was "it said
+    # sell for 90, it actually sold at 72".
+    #
+    # The sell target is now derived only from what the card has actually
+    # been CLEARING at - sales_trimmed_mean, the mean of sales between p10
+    # and p90, which is precisely "average sale price with the silly-low
+    # (and silly-high) anomalies excluded" - with this margin taken off so
+    # the listing sits just under that average and therefore actually
+    # sells. Listing exactly at the average clears only about half the
+    # time, which is not a target, it is a coin flip.
+    #
+    # fair_value is deliberately NOT changed: blending the BIN in is a
+    # conservatism on the ENTRY side (it stops a card listed far below its
+    # median being credited the full gap), and it still governs
+    # theoretical_max_buy / recommended_buy_max. Only the exit price stops
+    # depending on the ask.
+    sell_target_margin: float = 0.03
 
     # ---- Trend gating -------------------------------------------------
     # Trend states that block a buy-side signal outright regardless of how
@@ -283,7 +339,9 @@ def _load_engine_config() -> EngineConfig:
         version=os.getenv("FUTGG_ENGINE_VERSION", ENGINE_VERSION),
         min_sales_for_signal=_env_int("FUTGG_MIN_SALES_FOR_SIGNAL", 5),
         extreme_dispersion_ratio=_env_float("FUTGG_EXTREME_DISPERSION_RATIO", 0.45),
+        extreme_interdecile_ratio=_env_float("FUTGG_EXTREME_INTERDECILE_RATIO", 0.40),
         min_bin_to_sales_ratio=_env_float("FUTGG_MIN_BIN_TO_SALES_RATIO", 0.5),
+        max_bin_to_sales_ratio=_env_float("FUTGG_MAX_BIN_TO_SALES_RATIO", 2.0),
         min_confidence_for_buy_signal=_env_float("FUTGG_MIN_CONFIDENCE_FOR_BUY", 0.45),
         min_confidence_for_any_signal=_env_float("FUTGG_MIN_CONFIDENCE_ANY", 0.20),
         min_net_roi_for_buy=_env_decimal("FUTGG_MIN_NET_ROI_FOR_BUY", "0.03"),
@@ -291,6 +349,7 @@ def _load_engine_config() -> EngineConfig:
         fair_value_sales_weight=_env_float("FUTGG_FAIR_VALUE_SALES_WEIGHT", 0.7),
         fair_value_bin_weight=_env_float("FUTGG_FAIR_VALUE_BIN_WEIGHT", 0.3),
         conservative_buy_margin=_env_float("FUTGG_CONSERVATIVE_BUY_MARGIN", 0.04),
+        sell_target_margin=_env_float("FUTGG_SELL_TARGET_MARGIN", 0.03),
         base_expiry_minutes=_env_int("FUTGG_BASE_EXPIRY_MINUTES", 45),
         invalidation_bin_drift_pct=_env_float("FUTGG_INVALIDATION_DRIFT_PCT", 0.05),
     )
