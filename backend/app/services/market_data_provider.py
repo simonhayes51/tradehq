@@ -30,7 +30,7 @@ import logging
 import os
 import unicodedata
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Sequence
 
 import asyncpg
@@ -532,12 +532,19 @@ class FutggMarketDataProvider(MarketDataProvider):
         }
 
 
-def _period_to_interval(period: Optional[str]) -> Optional[str]:
+def _period_to_interval(period: Optional[str]) -> Optional[timedelta]:
+    """Returns a timedelta, not a string: the caller binds this against an
+    explicit `$2::interval` cast, which makes asyncpg encode it with its
+    interval codec - that codec requires a real timedelta (it reads .days
+    off the value), not a "N hours"-style string. See
+    futgg_recommendation_store.py::track_record's identical fix for the
+    same failure mode."""
     if not period:
         return None
     mapping = {
-        "1h": "1 hour", "6h": "6 hours", "24h": "24 hours", "1d": "1 day",
-        "7d": "7 days", "14d": "14 days", "30d": "30 days",
+        "1h": timedelta(hours=1), "6h": timedelta(hours=6),
+        "24h": timedelta(hours=24), "1d": timedelta(days=1),
+        "7d": timedelta(days=7), "14d": timedelta(days=14), "30d": timedelta(days=30),
     }
     return mapping.get(period)
 
