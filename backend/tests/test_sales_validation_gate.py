@@ -23,9 +23,11 @@ from app.services.sales_validation_gate import (
     SKIP_COOLDOWN, SKIP_EVIDENCE_FRESH, SKIP_NOT_ELIGIBLE,
     SKIP_PER_CARD_LIMIT, TRADE_CANDIDATE, USER_POSITION, WATCHLIST_INTEREST,
     BudgetState, CardContext, EligibilityDecision, SalesValidationConfig,
+    DISCOVERY_INCONCLUSIVE, DISCOVERY_NO_USEFUL_DIFFERENCE,
+    DISCOVERY_OPPORTUNITY_MISSED, DISCOVERY_USEFUL_LIQUIDITY,
     apply_budget, bin_first_engine_enabled, classify_card,
-    eligibility_gate_enabled, evaluate_eligibility, request_budget_enabled,
-    validate_against_sales,
+    classify_discovery_result, eligibility_gate_enabled, evaluate_eligibility,
+    request_budget_enabled, select_discovery_sample, validate_against_sales,
 )
 
 AS_OF = datetime(2026, 8, 10, 12, 0, tzinfo=timezone.utc)
@@ -313,3 +315,192 @@ class TestClassification:
         ages = [CONFIG.max_evidence_age_minutes(c)
                 for c in ("active", "warm", "cold", "dormant")]
         assert ages == sorted(ages)
+
+
+class TestDiscoverySampling:
+    """The control sample. Without it BIN-first is self-confirming: it
+    only ever pays to look at cards it already found interesting, so
+    "we missed nothing" is guaranteed by construction rather than
+    measured. This is what makes the false-negative rate observable, and
+    it is therefore a precondition for trusting suppression."""
+
+    def _skipped(self, n, card_class, start=1000):
+        return [
+            EligibilityDecision(
+                card_id=start + i, eligible=False, skip_reason=SKIP_NOT_ELIGIBLE,
+                card_class=card_class,
+            )
+            for i in range(n)
+        ]
+
+    def test_selection_is_bounded_by_the_daily_cap(self):
+        config = SalesValidationConfig(
+            discovery_sample_per_day=20, max_requests_per_day=100000,
+        )
+        sampled = select_discovery_sample(
+            self._skipped(5000, "dormant"), as_of=AS_OF, config=config,
+        )
+        assert 0 < len(sampled) <= 20
+
+    def test_selection_is_reproducible_for_the_same_time_bucket(self):
+        """Deterministic on purpose: 'why was this card sampled?' has to
+        be answerable months later from two integers. True randomness
+        would buy nothing and cost that."""
+        config = SalesValidationConfig(discovery_sample_per_day=25)
+        first = select_discovery_sample(
+            self._skipped(2000, "dormant"), as_of=AS_OF, config=config,
+        )
+        second = select_discovery_sample(
+            self._skipped(2000, "dormant"), as_of=AS_OF, config=config,
+        )
+        assert [d.card_id for d in first] == [d.card_id for d in second]
+
+    def test_selection_rotates_across_days(self):
+        config = SalesValidationConfig(discovery_sample_per_day=40)
+        day1 = select_discovery_sample(
+            self._skipped(3000, "dormant"), as_of=AS_OF, config=config,
+        )
+        day2 = select_discovery_sample(
+            self._skipped(3000, "dormant"),
+            as_of=AS_OF + timedelta(days=1), config=config,
+        )
+        ids1, ids2 = {d.card_id for d in day1}, {d.card_id for d in day2}
+        assert ids1 != ids2
+        # Rotation, not a completely disjoint redraw - overlap is fine,
+        # total identity is not.
+        assert len(ids1 & ids2) < len(ids1)
+
+    def test_all_populations_are_represented_not_just_the_biggest(self):
+        """An unstratified sample of this catalogue would be ~80% dormant
+        low-rated cards and would say nothing about the warm population,
+        where a missed signal actually costs something."""
+        config = SalesValidationConfig(discovery_sample_per_day=60)
+        candidates = (
+            self._skipped(4000, "dormant", start=1000)
+            + self._skipped(800, "cold", start=20000)
+            + self._skipped(200, "warm", start=40000)
+        )
+        sampled = select_discovery_sample(candidates, as_of=AS_OF, config=config)
+        strata = {d.card_class for d in sampled}
+        assert strata == {"dormant", "cold", "warm"}
+
+    def test_every_sampled_card_is_auditable_as_periodic_discovery(self):
+        config = SalesValidationConfig(discovery_sample_per_day=15)
+        sampled = select_discovery_sample(
+            self._skipped(1000, "cold"), as_of=AS_OF, config=config,
+        )
+        assert sampled
+        for d in sampled:
+            assert d.reason == PERIODIC_DISCOVERY
+            assert d.eligible is True
+            assert d.skip_reason is None
+            assert any(n.startswith("discovery_bucket=") for n in d.notes)
+            assert any(n.startswith("discovery_stratum=") for n in d.notes)
+
+    def test_only_skipped_cards_are_ever_promoted(self):
+        # Promoting an already-eligible card is not a control observation
+        # and would double-count it against the budget.
+        already = EligibilityDecision(
+            card_id=999, eligible=True, reason=TRADE_CANDIDATE, card_class="active",
+        )
+        sampled = select_discovery_sample([already], as_of=AS_OF)
+        assert sampled == []
+
+    def test_a_card_skipped_for_cooldown_is_not_treated_as_a_control(self):
+        # It was skipped because we JUST paid for it, not because the gate
+        # judged it uninteresting - sampling it measures nothing.
+        cooling = EligibilityDecision(
+            card_id=998, eligible=False, skip_reason=SKIP_COOLDOWN, card_class="dormant",
+        )
+        assert select_discovery_sample([cooling], as_of=AS_OF) == []
+
+    def test_the_days_budget_is_respected_across_repeated_passes(self):
+        config = SalesValidationConfig(discovery_sample_per_day=30)
+        sampled = select_discovery_sample(
+            self._skipped(2000, "dormant"), as_of=AS_OF, config=config,
+            already_sampled_today=30,
+        )
+        assert sampled == []
+
+    def test_discovery_never_exceeds_its_share_of_the_global_budget(self):
+        # Belt and braces: the count cap AND a share-of-budget cap.
+        config = SalesValidationConfig(
+            discovery_sample_per_day=10000, max_requests_per_day=200,
+            discovery_max_budget_share=0.05,
+        )
+        sampled = select_discovery_sample(
+            self._skipped(5000, "dormant"), as_of=AS_OF, config=config,
+        )
+        assert len(sampled) <= 10   # 5% of 200
+
+    def test_discovery_loses_to_every_real_reason_under_pressure(self):
+        config = SalesValidationConfig(max_requests_per_hour=2, max_requests_per_day=2)
+        discovery = select_discovery_sample(
+            self._skipped(500, "dormant"), as_of=AS_OF,
+            config=SalesValidationConfig(discovery_sample_per_day=50),
+        )
+        real = [
+            EligibilityDecision(
+                card_id=7001, eligible=True, reason=TRADE_CANDIDATE,
+                urgency=REASON_PRIORITY.index(TRADE_CANDIDATE), card_class="active",
+            ),
+            EligibilityDecision(
+                card_id=7002, eligible=True, reason=USER_POSITION,
+                urgency=REASON_PRIORITY.index(USER_POSITION), card_class="active",
+            ),
+        ]
+        admitted = apply_budget(real + discovery, BudgetState(), config=config)
+        assert [d.reason for d in admitted] == [TRADE_CANDIDATE, USER_POSITION]
+        assert all(d.reason != PERIODIC_DISCOVERY for d in admitted)
+
+    def test_discovery_is_dropped_first_when_the_budget_runs_out(self):
+        # 5% of 20 admits exactly one discovery scrape; the hourly cap of
+        # 1 then closes the door on the rest. (A day budget of 1 would
+        # round the 5% share to zero and admit none at all - correct, but
+        # it would not exercise the drop path.)
+        config = SalesValidationConfig(max_requests_per_hour=1, max_requests_per_day=20)
+        discovery = select_discovery_sample(
+            self._skipped(200, "dormant"), as_of=AS_OF,
+            config=SalesValidationConfig(discovery_sample_per_day=20),
+        )
+        assert discovery
+        admitted = apply_budget(list(discovery), BudgetState(), config=config)
+        assert len(admitted) == 1
+        dropped = [d for d in discovery if not d.eligible]
+        assert dropped and all(d.skip_reason == SKIP_BUDGET_EXHAUSTED for d in dropped)
+
+
+class TestDiscoveryResultClassification:
+    """What a control scrape actually taught us. If this keeps returning
+    NO_USEFUL_DIFFERENCE the suppression is safe; a material rate of
+    POTENTIAL_OPPORTUNITY_MISSED means the headline reduction is being
+    bought with lost signal."""
+
+    def test_sales_agreeing_with_the_bin_baseline_taught_us_nothing(self):
+        signal = _signal(current_bin=42000, median_24h=42000.0)
+        assert classify_discovery_result(
+            signal, sales_prices=[41800, 42000, 42200, 41900, 42100, 42000],
+        ) == DISCOVERY_NO_USEFUL_DIFFERENCE
+
+    def test_sales_well_above_the_ask_are_an_opportunity_the_gate_missed(self):
+        # Buyable at 30,000, actually trading at 42,000, and nothing in
+        # the BIN stream flagged it. This is the failure mode that would
+        # invalidate the whole reduction.
+        signal = _signal(current_bin=30000, median_24h=30000.0)
+        assert classify_discovery_result(
+            signal, sales_prices=[42000, 41500, 42500, 42000, 41800, 42200],
+        ) == DISCOVERY_OPPORTUNITY_MISSED
+
+    def test_too_few_sales_is_inconclusive_and_that_is_informative(self):
+        # It says the card has no tradeable market, which is why it was
+        # skipped. Not a miss.
+        signal = _signal(current_bin=42000, median_24h=42000.0)
+        assert classify_discovery_result(
+            signal, sales_prices=[42000, 41000],
+        ) == DISCOVERY_INCONCLUSIVE
+
+    def test_a_card_with_no_bin_baseline_still_yields_liquidity_information(self):
+        signal = _signal(current_bin=None, median_24h=None, market_state="INSUFFICIENT_BIN_HISTORY")
+        assert classify_discovery_result(
+            signal, sales_prices=[9000, 9200, 8800, 9100, 9000, 9050],
+        ) == DISCOVERY_USEFUL_LIQUIDITY
