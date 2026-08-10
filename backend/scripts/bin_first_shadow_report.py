@@ -44,9 +44,10 @@ from app.services.bin_market_signal import (
     POSSIBLE_UNDERCUT, compute_bin_market_signal,
 )
 from app.services.sales_validation_gate import (
-    BIN_SPIKE_VALIDATION, BIN_UNDERCUT_VALIDATION, SALES_VALIDATION_CONFIG,
-    BudgetState, CardContext, apply_budget, evaluate_eligibility,
-    validate_against_sales,
+    BIN_SPIKE_VALIDATION, BIN_UNDERCUT_VALIDATION, PERIODIC_DISCOVERY,
+    SALES_VALIDATION_CONFIG, BudgetState, CardContext, apply_budget,
+    classify_discovery_result, discovery_date_bucket, evaluate_eligibility,
+    select_discovery_sample, validate_against_sales,
 )
 
 load_dotenv()
@@ -88,9 +89,17 @@ def _band(rating: Optional[int]) -> str:
     return "under_75"
 
 
+#: sales_first_read_at / sales_consecutive_failures are added by
+#: futgg_sales_sync.ensure_schema (the retry-loop fix), not by a backend
+#: migration - so on a database whose SalesSync worker has not yet
+#: redeployed they simply do not exist. Selected conditionally rather than
+#: unconditionally so this read-only report still runs on that database
+#: and reports the retry-loop numbers from the old encoding instead of
+#: failing outright.
 _CARDS_QUERY = """
     SELECT p.source_card_id, p.rating, p.is_active, p.is_tradeable,
            p.first_seen_at, p.next_sales_due_at, p.last_sales_status,
+           {retry_columns}
            s.latest_sale_at, coalesce(s.sales_count_14d, 0) AS sales_count_14d
     FROM futgg_players p
     LEFT JOIN LATERAL (
@@ -137,6 +146,16 @@ _WATCHERS_QUERY = """
     SELECT card_id, count(DISTINCT user_id) AS watchers
     FROM watchlist WHERE source = 'futgg' GROUP BY card_id
 """
+
+
+async def _has_retry_columns(conn) -> bool:
+    return bool(await conn.fetchval(
+        """
+        SELECT count(*) = 2 FROM information_schema.columns
+        WHERE table_name = 'futgg_players'
+          AND column_name IN ('sales_first_read_at', 'sales_consecutive_failures')
+        """
+    ))
 
 
 async def _bin_history_health(conn) -> Dict[str, Any]:
@@ -196,7 +215,19 @@ async def build_report(pool, *, bin_hours: int, max_obs: int) -> Dict[str, Any]:
 
     async with pool.acquire() as conn:
         storage = await _bin_history_health(conn)
-        cards = await conn.fetch(_CARDS_QUERY)
+        has_retry_columns = await _has_retry_columns(conn)
+        if not has_retry_columns:
+            log.warning(
+                "futgg_players lacks sales_first_read_at/sales_consecutive_failures - "
+                "SalesSync has not redeployed with the retry-loop fix yet. Falling back "
+                "to the old next_sales_due_at encoding for never-read counts."
+            )
+        cards = await conn.fetch(_CARDS_QUERY.format(
+            retry_columns=(
+                "p.sales_first_read_at, p.sales_consecutive_failures,"
+                if has_retry_columns else ""
+            )
+        ))
         try:
             watcher_rows = await conn.fetch(_WATCHERS_QUERY)
             watchers = {int(r["card_id"]): int(r["watchers"]) for r in watcher_rows}
@@ -217,7 +248,30 @@ async def build_report(pool, *, bin_hours: int, max_obs: int) -> Dict[str, Any]:
         interval = max(1, SALES_INTERVALS_MIN[band])
         legacy_per_day += count * (1440.0 / interval)
 
-    never_read = [c for c in cards if c["next_sales_due_at"] is None]
+    now_ = as_of
+    due_now, overdue_1h = 0, 0
+    for c in cards:
+        due = c["next_sales_due_at"]
+        if due is None:
+            due_now += 1
+            continue
+        if due.tzinfo is None:
+            due = due.replace(tzinfo=timezone.utc)
+        if due <= now_:
+            due_now += 1
+            if (now_ - due) > timedelta(hours=1):
+                overdue_1h += 1
+
+    # "Never read" is now sales_first_read_at IS NULL (see
+    # futgg_sales_sync.py's retry-loop fix); fall back to the old
+    # next_sales_due_at encoding on a database the fix has not reached.
+    def _never_read(c) -> bool:
+        try:
+            return c["sales_first_read_at"] is None
+        except (KeyError, TypeError):
+            return c["next_sales_due_at"] is None
+
+    never_read = [c for c in cards if _never_read(c)]
     # A never-read card that keeps FAILING is never given a due date (see
     # process_batch's was_never_read branch), so it returns to the front of
     # select_due()'s queue on every single cycle. That is an unbounded
@@ -226,6 +280,18 @@ async def build_report(pool, *, bin_hours: int, max_obs: int) -> Dict[str, Any]:
         c for c in never_read
         if (c["last_sales_status"] or "").startswith("error")
     ]
+    # Retry waste attributable specifically to the never-read loop, on the
+    # OLD behaviour: those cards had no due-at, so select_due() returned
+    # them every cycle. One cycle is CYCLE_SLEEP plus however long a batch
+    # of SELECT_LIMIT cards takes; the conservative floor below assumes
+    # they simply filled the queue once per cycle.
+    cycle_seconds = _env_int("FUTGG_SALES_CYCLE_SLEEP", 5) + 60
+    cycles_per_day = 86400.0 / max(1, cycle_seconds)
+    select_limit = _env_int("FUTGG_SALES_SELECT_LIMIT", 200)
+    never_read_retry_waste_per_day = min(
+        len(failing_never_read) * cycles_per_day,
+        select_limit * cycles_per_day,
+    )
 
     # ---- BIN-first replay ----------------------------------------------
     bin_obs: Dict[int, List] = defaultdict(list)
@@ -285,8 +351,45 @@ async def build_report(pool, *, bin_hours: int, max_obs: int) -> Dict[str, Any]:
         else:
             skip_counts[decision.skip_reason or "UNKNOWN"] += 1
 
+    # ---- Discovery / control sample -------------------------------------
+    # Promotes a small stratified slice of otherwise-SKIPPED cards. Without
+    # it the whole exercise is self-confirming: BIN-first would only ever
+    # pay to look at cards BIN-first already liked, so "we missed nothing"
+    # would be true by construction rather than measured.
+    all_decisions = [d for d, _ in decisions]
+    discovery = select_discovery_sample(all_decisions, as_of=as_of)
+    signal_by_card = {d.card_id: sig for d, sig in decisions}
+
+    discovery_findings: Counter = Counter()
+    discovery_by_class: Counter = Counter()
+    discovery_by_band: Counter = Counter()
+    rating_by_card = {int(c["source_card_id"]): c["rating"] for c in cards}
+    for decision in discovery:
+        discovery_by_class[decision.card_class] += 1
+        discovery_by_band[_band(rating_by_card.get(decision.card_id))] += 1
+        finding = classify_discovery_result(
+            signal_by_card[decision.card_id],
+            sales_prices=sales_by_card.get(decision.card_id, []),
+        )
+        discovery_findings[finding] += 1
+
+    # What the control sample says BIN-first would have MISSED: cards the
+    # gate skipped whose real sales sit materially above the live ask.
+    # Measured on the sampled slice only, then scaled - and the scaling is
+    # reported as an estimate, not a count.
+    missed_in_sample = discovery_findings.get("POTENTIAL_OPPORTUNITY_MISSED", 0)
+    sampled_total = max(1, len(discovery))
+    skipped_population = sum(
+        1 for d in all_decisions
+        if not d.eligible and d.card_class in ("dormant", "cold", "warm")
+    )
+    estimated_missed_population = (
+        round(skipped_population * missed_in_sample / sampled_total, 1)
+        if discovery else None
+    )
+
     # ---- Budget ---------------------------------------------------------
-    admitted = apply_budget([d for d, _ in decisions], BudgetState())
+    admitted = apply_budget(all_decisions, BudgetState())
     post_budget_reasons = Counter(d.reason for d in admitted)
 
     # One BIN-first pass admits this many. The gate re-runs each bulk
@@ -376,12 +479,55 @@ async def build_report(pool, *, bin_hours: int, max_obs: int) -> Dict[str, Any]:
                 "max_per_card_per_day": max_per_card,
             },
         },
+        "workload": {
+            "cards_due_now": due_now,
+            "cards_overdue_by_1h_plus": overdue_1h,
+            "never_read_retry_waste_per_day_estimate": round(never_read_retry_waste_per_day, 0),
+            "retry_waste_note": (
+                "Pre-fix estimate. Those cards had no next_sales_due_at, so select_due() "
+                "returned them every cycle regardless of any interval. Now bounded by "
+                "futgg_sales_sync.failure_backoff_minutes()."
+            ),
+            "retry_columns_present": has_retry_columns,
+        },
+        "discovery": {
+            "date_bucket": discovery_date_bucket(as_of),
+            "sampled_per_day": len(discovery),
+            "by_card_class": dict(discovery_by_class),
+            "by_rating_band": dict(discovery_by_band),
+            "pct_of_daily_budget": (
+                round(100.0 * len(discovery) / SALES_VALIDATION_CONFIG.max_requests_per_day, 2)
+                if SALES_VALIDATION_CONFIG.max_requests_per_day else 0.0
+            ),
+            "findings": dict(discovery_findings),
+            "skipped_population": skipped_population,
+            "estimated_missed_opportunities_in_skipped_population": estimated_missed_population,
+        },
         "headline": {
             "current_requests_per_day": round(legacy_per_day, 1),
             "projected_requests_per_day": round(binfirst_per_day, 1),
             "reduction_pct": reduction_pct,
             "meets_90pct_target": reduction_pct >= 90.0,
             "meets_95pct_stretch": reduction_pct >= 95.0,
+            "page_captures_avoided_per_day": round(legacy_per_day - binfirst_per_day, 0),
+            "pct_catalogue_with_no_routine_salessync": (
+                round(100.0 * sum(
+                    1 for d in all_decisions if d.card_class in ("dormant", "cold")
+                ) / len(cards), 1) if cards else 0.0
+            ),
+            "proportional_monthly_cost_estimate": {
+                "observed_baseline_usd_per_month": 115.0,
+                "projected_usd_per_month": (
+                    round(115.0 * binfirst_per_day / legacy_per_day, 2)
+                    if legacy_per_day > 0 else None
+                ),
+                "note": (
+                    "Proportional scaling of the reported ~$80/3-week run rate by request "
+                    "volume ONLY. Not a hosting bill: it assumes cost is linear in sales "
+                    "requests and ignores the always-on bulk worker, the database and any "
+                    "fixed platform charge, so treat the real saving as smaller."
+                ),
+            },
         },
         "bin_anomaly_confirmation": dict(confirmations),
         "examples": examples,
@@ -426,6 +572,23 @@ def _print_human(report: Dict[str, Any]) -> None:
     for reason, n in sorted(f["skip_reasons"].items(), key=lambda kv: -kv[1])[:6]:
         print(f"    {reason:<30} {n:>6,}")
 
+    w, d = report["workload"], report["discovery"]
+    print(f"\nWORKLOAD")
+    print(f"  due now:                    {w['cards_due_now']:,}")
+    print(f"  overdue >1h:                {w['cards_overdue_by_1h_plus']:,}")
+    print(f"  never-read retry waste/day: {w['never_read_retry_waste_per_day_estimate']:,.0f} (pre-fix estimate)")
+    print(f"  retry columns present:      {w['retry_columns_present']}")
+
+    print(f"\nDISCOVERY / CONTROL SAMPLE (bucket {d['date_bucket']})")
+    print(f"  sampled:                    {d['sampled_per_day']:,}  "
+          f"({d['pct_of_daily_budget']}% of daily budget)")
+    print(f"  by class: {d['by_card_class']}")
+    print(f"  by band:  {d['by_rating_band']}")
+    for finding, n in sorted(d["findings"].items(), key=lambda kv: -kv[1]):
+        print(f"    {finding:<34} {n:>6,}")
+    print(f"  skipped population:         {d['skipped_population']:,}")
+    print(f"  est. missed opportunities:  {d['estimated_missed_opportunities_in_skipped_population']}")
+
     print(f"\nBIN ANOMALY CONFIRMATION (against real sales)")
     for outcome, n in sorted(report["bin_anomaly_confirmation"].items(), key=lambda kv: -kv[1]):
         print(f"  {outcome:<34} {n:>6,}")
@@ -445,6 +608,12 @@ def _print_human(report: Dict[str, Any]) -> None:
     print(f"REDUCTION:              {h['reduction_pct']}%")
     print(f"  >= 90% target:  {'YES' if h['meets_90pct_target'] else 'NO'}")
     print(f"  >= 95% stretch: {'YES' if h['meets_95pct_stretch'] else 'NO'}")
+    print(f"Chromium navigations avoided/day: {h['page_captures_avoided_per_day']:,.0f}")
+    print(f"Catalogue with no routine SalesSync: {h['pct_catalogue_with_no_routine_salessync']}%")
+    c = h["proportional_monthly_cost_estimate"]
+    print(f"Proportional monthly estimate: ${c['observed_baseline_usd_per_month']:.0f} -> "
+          f"${c['projected_usd_per_month']}")
+    print(f"  {c['note']}")
     print("=" * 78)
 
 

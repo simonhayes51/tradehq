@@ -137,7 +137,8 @@ async def _fetch_player(conn_dsn: str, card_id: int) -> dict:
     conn = await asyncpg.connect(conn_dsn)
     try:
         row = await conn.fetchrow(
-            "SELECT source_card_id, next_sales_due_at, last_sales_status FROM futgg_players "
+            "SELECT source_card_id, next_sales_due_at, last_sales_status, "
+            "sales_first_read_at, sales_consecutive_failures FROM futgg_players "
             "WHERE source_card_id = $1",
             card_id,
         )
@@ -240,18 +241,28 @@ async def test_failed_fetch_never_advances_a_never_read_card(monkeypatch, dsn, e
         await pool.close()
 
     after = await _fetch_player(dsn, 2001)
-    # THE production bug: this must stay exactly NULL, not
-    # "NOW() + 5 minutes" - a real timestamp here silently converts
-    # "never read" into "read (but failed)".
-    assert after["next_sales_due_at"] is None
-    assert after["last_sales_status"] is None
+    # THE production bug: a failure must never convert "never read" into
+    # "read (but failed)". That invariant is unchanged - it just no longer
+    # lives in next_sales_due_at.
+    #
+    # It used to be expressed as "next_sales_due_at stays NULL", which
+    # made one column mean both "never read" and "due right now", and THAT
+    # is what produced the retry loop: the card came back on every single
+    # cycle forever. The never-read fact now lives in sales_first_read_at,
+    # which a failure still cannot touch, while next_sales_due_at carries
+    # a real bounded retry time.
+    assert after["sales_first_read_at"] is None
+    assert after["next_sales_due_at"] is not None
+    assert after["sales_consecutive_failures"] == 1
+    assert after["last_sales_status"] == f"error:{error}"
 
 
 @run_async
 async def test_never_read_count_does_not_fall_after_a_fully_failed_cycle(monkeypatch, dsn):
     """The exact production symptom, reproduced: a whole batch of
     never-read cards, all fetches fail (data_403) - the never_read
-    coverage count (next_sales_due_at IS NULL) must be unchanged after."""
+    coverage count must be unchanged after - now measured on
+    sales_first_read_at, the column that actually records read history."""
     monkeypatch.setattr(mod, "APPLY", True)
     cards = [_row(3000 + i, next_sales_due_at=None) for i in range(10)]
     await _seed_players(dsn, cards)
@@ -259,7 +270,7 @@ async def test_never_read_count_does_not_fall_after_a_fully_failed_cycle(monkeyp
     try:
         conn = await pool.acquire()
         before = await conn.fetchval(
-            "SELECT count(*) FROM futgg_players WHERE next_sales_due_at IS NULL"
+            "SELECT count(*) FROM futgg_players WHERE sales_first_read_at IS NULL"
         )
         await pool.release(conn)
         assert before == 10
@@ -269,7 +280,7 @@ async def test_never_read_count_does_not_fall_after_a_fully_failed_cycle(monkeyp
 
         conn = await pool.acquire()
         after = await conn.fetchval(
-            "SELECT count(*) FROM futgg_players WHERE next_sales_due_at IS NULL"
+            "SELECT count(*) FROM futgg_players WHERE sales_first_read_at IS NULL"
         )
         await pool.release(conn)
         assert after == 10  # unchanged - not 0, matching the reported bug
@@ -958,7 +969,12 @@ async def test_page_capture_failure_never_advances_a_never_read_card(monkeypatch
             [page], pool, rows, stats, mod.StageTimers(),
         )
         after = await _fetch_player(dsn, 84131117)
-        assert after["next_sales_due_at"] is None
+        # A Cloudflare challenge must not count as a read. Read history
+        # stays NULL; the card gets a bounded retry rather than being left
+        # permanently due, which under the old encoding meant it was
+        # re-challenged on every cycle indefinitely.
+        assert after["sales_first_read_at"] is None
+        assert after["next_sales_due_at"] is not None
         assert stats["failed"] == 1
         assert stats["ok"] == 0
     finally:
@@ -1003,7 +1019,10 @@ async def test_page_capture_missing_source_url_counts_as_failure(monkeypatch, ds
         stats = _Stats()
         await mod.process_batch_page_capture([page], pool, rows, stats, mod.StageTimers())
         after = await _fetch_player(dsn, 84131117)
-        assert after["next_sales_due_at"] is None
+        # Read history untouched; a bounded retry scheduled rather than
+        # the card being left permanently due (the retry-loop fix).
+        assert after["sales_first_read_at"] is None
+        assert after["next_sales_due_at"] is not None
         assert stats["failed"] == 1
         assert page.goto_calls == []
     finally:

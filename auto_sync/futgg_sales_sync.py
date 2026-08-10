@@ -159,6 +159,69 @@ DIAGNOSTIC_CARD_ID = (os.getenv("FUTGG_SALES_DIAGNOSTIC_CARD_ID") or "").strip()
 #: (which must stay NULL/never_read on failure - see process_batch).
 FAILURE_RETRY_BACKOFF_MINUTES = env_int("FUTGG_SALES_FAILURE_RETRY_BACKOFF_MINUTES", 2, minimum=1)
 
+#: Escalating retry backoff, indexed by CONSECUTIVE failure count.
+#:
+#: THE BUG THIS FIXES. Until now a never-read card that failed was given
+#: no next_sales_due_at at all - deliberately, so it stayed NULL and kept
+#: its place at the front of select_due()'s backfill ordering. The
+#: unnoticed consequence is that "stays at the front of the queue" and
+#: "is due right now" were the same condition, so a card that fails
+#: permanently (delisted, extinct, untradeable-but-still-flagged, a bad
+#: source_url) was re-selected on EVERY cycle, forever. At CYCLE_SLEEP=5s
+#: that is a hot loop of full Chromium page navigations costing real money
+#: and returning nothing, and it is invisible in any interval arithmetic
+#: because the card has no interval.
+#:
+#: Fixed by separating the two concepts that were conflated:
+#:   * "has never been successfully read" is now futgg_players
+#:     .sales_first_read_at IS NULL - a fact about history, which a failed
+#:     attempt does not change, so backfill preference survives;
+#:   * "may be attempted again now" stays next_sales_due_at, which every
+#:     failure now sets, so nothing can retry unboundedly.
+#:
+#: The first step is FAILURE_RETRY_BACKOFF_MINUTES so the existing,
+#: deliberate "retry a transient failure soon" behaviour is preserved
+#: exactly for the common case (see that constant's own note). Only
+#: REPEATED failure escalates, which is the case that was pathological.
+#: The ladder is capped, so a permanently-broken card settles at one
+#: cheap attempt per FUTGG_SALES_FAILURE_BACKOFF_MAX_MIN rather than
+#: thousands per day, and a success resets it to zero so a card that
+#: recovers is not punished for an outage.
+def _parse_backoff_ladder(raw: str) -> list[int]:
+    steps: list[int] = []
+    for part in (raw or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            value = int(part)
+        except ValueError:
+            continue
+        if value > 0:
+            steps.append(value)
+    return steps
+
+
+FAILURE_BACKOFF_LADDER = _parse_backoff_ladder(
+    os.getenv("FUTGG_SALES_FAILURE_BACKOFF_LADDER_MIN", "")
+) or [FAILURE_RETRY_BACKOFF_MINUTES, 15, 30, 60, 180, 720]
+FAILURE_BACKOFF_MAX_MINUTES = env_int(
+    "FUTGG_SALES_FAILURE_BACKOFF_MAX_MIN", 1440, minimum=1
+)
+
+
+def failure_backoff_minutes(consecutive_failures: int) -> int:
+    """Minutes to wait before retrying after `consecutive_failures`.
+
+    Pure and deterministic - the whole point is that "why is this card due
+    then?" is answerable from a single integer. `consecutive_failures` is
+    the count INCLUDING the failure just recorded, so 1 is the first.
+    """
+    if consecutive_failures < 1:
+        consecutive_failures = 1
+    index = min(consecutive_failures, len(FAILURE_BACKOFF_LADDER)) - 1
+    return min(FAILURE_BACKOFF_LADDER[index], FAILURE_BACKOFF_MAX_MINUTES)
+
 #: Circuit breaker: if a cycle's running failure ratio reaches this once at
 #: least CIRCUIT_BREAKER_MIN_SAMPLE cards have been attempted, stop
 #: selecting/marking more cards for the rest of the cycle and sleep
@@ -753,6 +816,23 @@ async def fetch_via_page_capture(
     }
 
 
+def _row_value(row, key: str, default=None):
+    """Tolerant column read.
+
+    asyncpg.Record raises KeyError for an absent column rather than
+    returning None, and process_batch can legitimately see a row selected
+    before ensure_schema added these columns (a worker mid-deploy against
+    a database the new schema has not reached yet). Treating that as
+    "no value" keeps the failure path working instead of turning a schema
+    lag into a crash loop on the very worker this change exists to calm.
+    """
+    try:
+        value = row[key]
+    except (KeyError, TypeError, IndexError):
+        return default
+    return default if value is None else value
+
+
 async def select_due(conn: asyncpg.Connection) -> list[asyncpg.Record]:
     """Pick the next cards to read.
 
@@ -768,17 +848,30 @@ async def select_due(conn: asyncpg.Connection) -> list[asyncpg.Record]:
     Backfill-first guarantees every card gets covered once, after which
     NULLs are exhausted and the ordering settles into normal
     band-priority maintenance.
+
+    Backfill preference now keys on sales_first_read_at, NOT on
+    next_sales_due_at being NULL. Those used to be the same test, which
+    meant a never-read card that failed - and so was left with a NULL
+    due-at on purpose, to keep its place - was also, unavoidably, due
+    again immediately. It came straight back to the front of this query
+    on the very next cycle, and a card that could never succeed did that
+    forever. Splitting the two keeps the intent (unread cards outrank
+    routine maintenance) while letting a failure carry a real retry time,
+    so the preference is over cards that are DUE, not a licence to retry
+    without limit.
     """
     return await conn.fetch(
         """
-        SELECT source_card_id, rating, next_sales_due_at, source_url
+        SELECT source_card_id, rating, next_sales_due_at, source_url,
+               sales_first_read_at, sales_consecutive_failures
         FROM futgg_players
         WHERE is_active
           AND is_tradeable IS DISTINCT FROM FALSE
           AND (next_sales_due_at IS NULL OR next_sales_due_at <= NOW())
         ORDER BY
-            -- never-read cards first (backfill), best cards within that
-            (next_sales_due_at IS NOT NULL),
+            -- never-SUCCESSFULLY-read cards first (backfill), best cards
+            -- within that. A failed attempt does not forfeit this.
+            (sales_first_read_at IS NOT NULL),
             CASE WHEN rating >= 85 THEN 0
                  WHEN rating >= 80 THEN 1
                  WHEN rating >= 75 THEN 2
@@ -804,7 +897,16 @@ async def report_coverage(conn: asyncpg.Connection) -> None:
             count(*) AS total,
             count(*) FILTER (WHERE s.n > 0) AS any_sales,
             count(*) FILTER (WHERE s.n >= 5) AS enough_sales,
-            count(*) FILTER (WHERE p.next_sales_due_at IS NULL) AS never_read
+            -- Keyed on read history, not on due-at: a never-read card now
+            -- carries a retry time like any other, so the old
+            -- next_sales_due_at IS NULL test would under-count it to zero
+            -- and hide exactly the population this metric exists to watch.
+            count(*) FILTER (WHERE p.sales_first_read_at IS NULL) AS never_read,
+            count(*) FILTER (
+                WHERE p.sales_first_read_at IS NULL
+                  AND p.sales_consecutive_failures > 0
+            ) AS never_read_and_failing,
+            count(*) FILTER (WHERE p.sales_consecutive_failures >= 5) AS chronic_failures
         FROM futgg_players p
         LEFT JOIN LATERAL (
             SELECT count(*) AS n FROM futgg_sales_history h
@@ -824,6 +926,16 @@ async def report_coverage(conn: asyncpg.Connection) -> None:
         row["enough_sales"], total, 100.0 * row["enough_sales"] / total,
         row["never_read"],
     )
+    # Surfaced separately because this is the population that used to
+    # generate unbounded retries: before the backoff fix each of these was
+    # re-attempted every cycle rather than on any schedule at all.
+    if row["never_read_and_failing"] or row["chronic_failures"]:
+        log.info(
+            "sales retry health: %d never-read cards are failing | %d cards have "
+            ">=5 consecutive failures (now capped at one attempt per %d min)",
+            row["never_read_and_failing"], row["chronic_failures"],
+            min(FAILURE_BACKOFF_LADDER[-1], FAILURE_BACKOFF_MAX_MINUTES),
+        )
 
 
 async def ensure_schema(conn: asyncpg.Connection) -> None:
@@ -881,9 +993,50 @@ async def ensure_schema(conn: asyncpg.Connection) -> None:
     await conn.execute(
         "ALTER TABLE futgg_players ADD COLUMN IF NOT EXISTS last_sales_status_at TIMESTAMPTZ"
     )
+
+    # "Never read" used to be expressed as next_sales_due_at IS NULL,
+    # which forced one column to mean two different things - "we have
+    # never got data for this card" AND "this card is due right now" -
+    # and that conflation is exactly the retry loop (see
+    # failure_backoff_minutes). These two columns separate them.
+    #
+    # sales_first_read_at is set once, on the first genuinely successful
+    # read, and never cleared. A failure cannot change it, so backfill
+    # preference in select_due() survives any number of failed attempts
+    # while next_sales_due_at is free to carry a real retry time.
+    await conn.execute(
+        "ALTER TABLE futgg_players ADD COLUMN IF NOT EXISTS sales_first_read_at TIMESTAMPTZ"
+    )
+    await conn.execute(
+        "ALTER TABLE futgg_players ADD COLUMN IF NOT EXISTS "
+        "sales_consecutive_failures INTEGER NOT NULL DEFAULT 0"
+    )
+
+    # Backfill for databases written by the previous logic. Under it, a
+    # non-NULL next_sales_due_at could ONLY have been written by a card
+    # that had been read at least once (the failure branch explicitly
+    # skipped never-read cards), so it is a sound witness of "has been
+    # read". last_sales_status_at is the closest real timestamp we hold;
+    # now() is the honest fallback when even that is absent. Runs once -
+    # the WHERE clause makes it a no-op on every subsequent boot.
+    await conn.execute(
+        """
+        UPDATE futgg_players
+        SET sales_first_read_at = COALESCE(last_sales_status_at, now())
+        WHERE sales_first_read_at IS NULL AND next_sales_due_at IS NOT NULL
+        """
+    )
+
     await conn.execute(
         "CREATE INDEX IF NOT EXISTS futgg_players_sales_due_idx "
         "ON futgg_players (next_sales_due_at) "
+        "WHERE is_active AND is_tradeable IS DISTINCT FROM FALSE"
+    )
+    # select_due() now orders on this first; without an index the
+    # backfill-preference sort degrades to a full scan every cycle.
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS futgg_players_sales_first_read_idx "
+        "ON futgg_players (sales_first_read_at) "
         "WHERE is_active AND is_tradeable IS DISTINCT FROM FALSE"
     )
 
@@ -990,8 +1143,11 @@ async def apply_batch_results(
         # True only for a card that has NEVER had a successful (or even
         # attempted) read before this batch - see select_due()'s
         # never-read-first ordering and report_coverage()'s never_read
-        # count, both keyed off next_sales_due_at IS NULL.
-        was_never_read = row is not None and row["next_sales_due_at"] is None
+        # count, both keyed off sales_first_read_at IS NULL.
+        was_never_read = (
+            row is not None and _row_value(row, "sales_first_read_at") is None
+        )
+        prior_failures = int(_row_value(row, "sales_consecutive_failures") or 0)
         error = result.get("error")
 
         if error:
@@ -1008,24 +1164,37 @@ async def apply_batch_results(
             # DATA-INTEGRITY FIX (item 4): a failed fetch of ANY kind
             # (data_403, sign_502, challenge_required, network errors,
             # malformed payloads, ...) must never count as a successful
-            # read. A never-read card (next_sales_due_at IS NULL) must
-            # stay exactly that - NULL - so it stays first in the
-            # backfill queue and the never_read coverage count doesn't
-            # fall on a cycle that wrote zero real sales. This is the fix
-            # for the production bug: every failed card used to get
+            # read. A never-read card must stay never-read so it keeps
+            # its place at the front of the backfill queue and the
+            # never_read coverage count doesn't fall on a cycle that wrote
+            # zero real sales. This was the fix for an earlier production
+            # bug: every failed card used to get
             # `next_sales_due_at = NOW() + 5 minutes` regardless of
             # success, which silently converted "never read" into "read
             # (but failed)" - 200 cards/cycle, exactly matching the
             # observed never_read drop.
             #
-            # An already-read card whose refresh attempt failed instead
-            # gets a short, clearly-distinct retry backoff
-            # (FAILURE_RETRY_BACKOFF_MINUTES, always far shorter than any
-            # real sales_interval_minutes() tier) so it's retried soon
-            # without masquerading as completed coverage - last_sales_status
-            # is tagged "error:..." rather than "success" either way.
-            if not was_never_read:
-                updates.append((card_id, FAILURE_RETRY_BACKOFF_MINUTES, f"error:{error}"))
+            # ...and it still does not: sales_first_read_at is only ever
+            # written by a SUCCESS below, so a failure cannot convert
+            # "never read" into "read (but failed)" and cannot cost a card
+            # its backfill priority.
+            #
+            # What HAS changed is that every failure - never-read included
+            # - now carries a real retry time. Leaving never-read failures
+            # with a NULL due-at was what produced the hot loop: NULL meant
+            # both "keep your place in the queue" and "due right now", so a
+            # card that could never succeed was re-attempted every cycle
+            # indefinitely. The backoff escalates with the consecutive
+            # failure count and is capped, so a permanently-broken card
+            # settles at one cheap attempt per cap rather than thousands
+            # per day, while a transient failure still retries almost as
+            # quickly as before (ladder step 1 is
+            # FAILURE_RETRY_BACKOFF_MINUTES).
+            failures = prior_failures + 1
+            updates.append((
+                card_id, failure_backoff_minutes(failures), f"error:{error}",
+                False, failures,
+            ))
             continue
 
         sale_rows = build_sale_rows(card_id, result.get("completedAuctions") or [], captured_at)
@@ -1036,7 +1205,10 @@ async def apply_batch_results(
         # returned any sales this time - zero completedAuctions for a
         # well-formed response is a real observation ("checked, nothing
         # new"), not a failure (item 4).
-        updates.append((card_id, sales_interval_minutes(rating), "success"))
+        # A success stamps sales_first_read_at (once - COALESCE below keeps
+        # the original) and clears the consecutive-failure count, so a card
+        # that recovers after an outage is not left on a punitive backoff.
+        updates.append((card_id, sales_interval_minutes(rating), "success", True, 0))
 
     if throttle is not None:
         throttle.record(len(rows), throttled)
@@ -1057,16 +1229,24 @@ async def apply_batch_results(
                     # instead of one per sale. The old scraper issued up
                     # to 50 sequential inserts per card.
                     await conn.executemany(_INSERT, to_insert)
-                for card_id, minutes, status in updates:
+                for card_id, minutes, status, succeeded, failures in updates:
                     await conn.execute(
                         """
                         UPDATE futgg_players
                         SET next_sales_due_at = NOW() + ($2 * INTERVAL '1 minute'),
                             last_sales_status = $3,
-                            last_sales_status_at = NOW()
+                            last_sales_status_at = NOW(),
+                            -- COALESCE: first success wins and is never
+                            -- overwritten, so this stays a true "first
+                            -- read" timestamp rather than a "last read".
+                            sales_first_read_at = CASE
+                                WHEN $4 THEN COALESCE(sales_first_read_at, NOW())
+                                ELSE sales_first_read_at
+                            END,
+                            sales_consecutive_failures = $5
                         WHERE source_card_id = $1
                         """,
-                        card_id, minutes, status,
+                        card_id, minutes, status, succeeded, failures,
                     )
 
 
@@ -1645,7 +1825,8 @@ async def run_diagnostic_card(card_id: int) -> bool:
             await ensure_schema(conn)
             row = await conn.fetchrow(
                 """
-                SELECT source_card_id, rating, name, next_sales_due_at, source_url
+                SELECT source_card_id, rating, name, next_sales_due_at, source_url,
+                       sales_first_read_at, sales_consecutive_failures
                 FROM futgg_players WHERE source_card_id = $1
                 """,
                 card_id,
@@ -1665,10 +1846,16 @@ async def run_diagnostic_card(card_id: int) -> bool:
             )
             return False
 
+        # never_read reads sales_first_read_at, not the due-at: a failing
+        # never-read card now carries a retry time like any other, so the
+        # old due-at test would report never_read=False for exactly the
+        # cards a diagnostic is most often run against.
         log.info(
-            "DIAGNOSTIC: card=%d name=%r rating=%s next_sales_due_at=%s (never_read=%s) source_url=%s",
+            "DIAGNOSTIC: card=%d name=%r rating=%s next_sales_due_at=%s (never_read=%s "
+            "consecutive_failures=%s) source_url=%s",
             card_id, row["name"], row["rating"], row["next_sales_due_at"],
-            row["next_sales_due_at"] is None, row["source_url"],
+            _row_value(row, "sales_first_read_at") is None,
+            _row_value(row, "sales_consecutive_failures", 0), row["source_url"],
         )
 
         anchor = anchor or "https://www.fut.gg/players/1114-roberto-baggio/26-1114/"

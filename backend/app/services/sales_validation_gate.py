@@ -536,6 +536,186 @@ def apply_budget(
 
 
 # =============================================================================
+# Discovery / control sample
+# =============================================================================
+#
+# Without this the system is self-confirming: BIN-first only ever pays to
+# look at cards BIN-first already found interesting, so every validation
+# confirms its own selection rule and "we found nothing we missed" is
+# guaranteed by construction rather than by evidence. The control sample
+# is the only thing that can measure the false-negative rate, and it is
+# therefore a precondition for trusting any suppression, not an extra.
+#
+# Deterministic, not random. A stable hash of (card_id, date bucket) makes
+# a day's sample exactly reproducible - "why was this card sampled?" is
+# answerable months later from two integers - while the bucket rotates the
+# membership daily so the same cards are not measured forever. True
+# randomness would buy nothing here and cost the ability to debug it.
+
+DISCOVERY_STRATA = ("dormant", "cold", "warm")
+
+
+def discovery_date_bucket(as_of: datetime) -> str:
+    """The rotation key. Daily: long enough that a card's sample result is
+    stable across a day's passes, short enough that membership turns over
+    quickly relative to how fast this market moves."""
+    return as_of.strftime("%Y-%m-%d")
+
+
+def _discovery_hash(card_id: int, bucket: str) -> int:
+    import hashlib
+    digest = hashlib.sha256(f"{card_id}:{bucket}".encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "big")
+
+
+def is_discovery_sampled(
+    card_id: int, *, bucket: str, stratum_quota: int, stratum_size: int,
+) -> bool:
+    """Stable per-card membership test.
+
+    Uniform because SHA-256's output is uniform over the space, so
+    thresholding it selects an unbiased ~quota/size share of the stratum
+    without needing to sort or materialise the whole population - which
+    matters when the stratum is 8,000 dormant cards evaluated per pass.
+    """
+    if stratum_quota <= 0 or stratum_size <= 0:
+        return False
+    if stratum_quota >= stratum_size:
+        return True
+    threshold = (1 << 64) * stratum_quota // stratum_size
+    return _discovery_hash(card_id, bucket) < threshold
+
+
+def select_discovery_sample(
+    candidates: Sequence["EligibilityDecision"],
+    *,
+    as_of: Optional[datetime] = None,
+    config: SalesValidationConfig = SALES_VALIDATION_CONFIG,
+    already_sampled_today: int = 0,
+) -> List["EligibilityDecision"]:
+    """Promote a small, stratified, bounded slice of otherwise-skipped
+    cards to PERIODIC_DISCOVERY.
+
+    Stratified across dormant/cold/warm so the sample cannot collapse onto
+    whichever population happens to be largest - an unstratified sample of
+    this catalogue would be ~80% dormant low-rated cards and would tell us
+    nothing about the warm population where a missed signal actually
+    costs something.
+
+    Only ever considers cards the gate SKIPPED. Promoting an
+    already-eligible card would not be a control observation at all, and
+    would double-count it in the budget.
+    """
+    as_of = as_of or datetime.now(timezone.utc)
+    bucket = discovery_date_bucket(as_of)
+
+    daily_cap = min(
+        config.discovery_sample_per_day,
+        int(config.max_requests_per_day * config.discovery_max_budget_share),
+    )
+    remaining = max(0, daily_cap - already_sampled_today)
+    if remaining <= 0:
+        return []
+
+    skipped = [
+        d for d in candidates
+        if not d.eligible and d.skip_reason == SKIP_NOT_ELIGIBLE
+        and d.card_class in DISCOVERY_STRATA
+    ]
+    if not skipped:
+        return []
+
+    by_stratum: Dict[str, List["EligibilityDecision"]] = {s: [] for s in DISCOVERY_STRATA}
+    for decision in skipped:
+        by_stratum[decision.card_class].append(decision)
+
+    # Equal quota per non-empty stratum rather than proportional: the
+    # point is to detect misses in each population, and a proportional
+    # split would give the small-but-valuable warm stratum almost no
+    # observations.
+    active_strata = [s for s in DISCOVERY_STRATA if by_stratum[s]]
+    if not active_strata:
+        return []
+    per_stratum = max(1, remaining // len(active_strata))
+
+    sampled: List["EligibilityDecision"] = []
+    for stratum in active_strata:
+        population = by_stratum[stratum]
+        quota = min(per_stratum, len(population), remaining - len(sampled))
+        if quota <= 0:
+            continue
+        for decision in population:
+            if len(sampled) >= remaining:
+                break
+            if is_discovery_sampled(
+                decision.card_id, bucket=bucket,
+                stratum_quota=quota, stratum_size=len(population),
+            ):
+                decision.eligible = True
+                decision.reason = PERIODIC_DISCOVERY
+                decision.skip_reason = None
+                decision.urgency = _REASON_RANK[PERIODIC_DISCOVERY]
+                decision.notes.append(f"discovery_bucket={bucket}")
+                decision.notes.append(f"discovery_stratum={stratum}")
+                sampled.append(decision)
+
+    return sampled
+
+
+# ---- What a discovery scrape actually told us ------------------------------
+DISCOVERY_NO_USEFUL_DIFFERENCE = "NO_USEFUL_DIFFERENCE"
+DISCOVERY_MATERIALLY_DIFFERENT_SALES = "MATERIALLY_DIFFERENT_SALES_LEVEL"
+DISCOVERY_LATENT_BIN_ANOMALY = "LATENT_BIN_ANOMALY_MISSED"
+DISCOVERY_USEFUL_LIQUIDITY = "USEFUL_LIQUIDITY_INFORMATION"
+DISCOVERY_OPPORTUNITY_MISSED = "POTENTIAL_OPPORTUNITY_MISSED"
+DISCOVERY_INCONCLUSIVE = "INCONCLUSIVE"
+
+#: A sales level this far from the BIN baseline is a real disagreement
+#: rather than ordinary spread.
+_DISCOVERY_MATERIAL_GAP = 0.10
+
+
+def classify_discovery_result(
+    signal: BinMarketSignal,
+    *,
+    sales_prices: Sequence[float],
+    min_sales: int = 5,
+) -> str:
+    """Did paying for this otherwise-ineligible card teach us anything?
+
+    This is the false-negative measurement. If it keeps returning
+    NO_USEFUL_DIFFERENCE the suppression is safe; if it returns
+    POTENTIAL_OPPORTUNITY_MISSED at any material rate, the gate is too
+    tight and the headline reduction is being bought with lost signal.
+    """
+    import statistics as _stats
+
+    usable = [float(p) for p in sales_prices if p and float(p) > 0]
+    if len(usable) < min_sales:
+        # Genuinely informative: it says this card has no tradeable
+        # market, which is why it was skipped. Not a miss.
+        return DISCOVERY_INCONCLUSIVE
+
+    baseline = signal.baseline
+    current = float(signal.current_bin or 0)
+    if not baseline or baseline <= 0 or current <= 0:
+        return DISCOVERY_USEFUL_LIQUIDITY
+
+    sales_median = float(_stats.median(usable))
+    gap = abs(sales_median - baseline) / baseline
+    if gap < _DISCOVERY_MATERIAL_GAP:
+        return DISCOVERY_NO_USEFUL_DIFFERENCE
+
+    # Sales sit materially above the current ask: the card was buyable
+    # below what it actually trades at, and the gate did not notice.
+    if sales_median > current * (1 + _DISCOVERY_MATERIAL_GAP):
+        return DISCOVERY_OPPORTUNITY_MISSED
+    if signal.market_state == INSUFFICIENT_BIN_HISTORY:
+        return DISCOVERY_LATENT_BIN_ANOMALY
+    return DISCOVERY_MATERIALLY_DIFFERENT_SALES
+
+
+# =============================================================================
 # Validation outcome (spec item 13)
 # =============================================================================
 @dataclass
