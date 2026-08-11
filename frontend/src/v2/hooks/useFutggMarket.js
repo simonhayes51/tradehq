@@ -67,8 +67,11 @@ export function useFutggPlayerPrices(cardId) {
 
 // GET /api/v2/players/{card_id}/sales - recent completed sales.
 // approximate_sold_at is APPROXIMATE - never render it as an exact
-// timestamp; age_text is the primary display (see MarketFreshness.jsx /
-// FutggMarketSection.jsx for the rendering rule this hook feeds).
+// timestamp. But it IS the field to derive a displayed age from: age_text
+// is the relative string FUT.GG showed at SCRAPE time and is frozen the
+// moment it is stored, so rendering it verbatim makes a four-day-old sale
+// claim it happened two minutes ago. See FutggMarketSection.jsx's header
+// for the production case this rule was written from.
 // `days` is part of the query key on purpose: the chart's range picker
 // used to filter client-side over a single fixed response (always the
 // newest 50 sales, i.e. a few hours on a liquid card), so every range drew
