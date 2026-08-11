@@ -138,6 +138,57 @@ HYDRATION_WAIT_MS = env_int("FUTGG_BULK_HYDRATION_WAIT_MS", 6000, minimum=1000)
 #: would overwrite good prices with nothing.
 MIN_COVERAGE_PCT = float(os.getenv("FUTGG_BULK_MIN_COVERAGE_PCT", "50"))
 
+# ---------------------------------------------------------------------
+# Write volume control
+# ---------------------------------------------------------------------
+#: Measured in production (2026-08-11): futgg_bin_history held 14.8M rows
+#: / 1.94 GB, growing ~2.1M rows/day, and 91.9% of those writes recorded
+#: the SAME price as the previous observation for that card. Nine tenths
+#: of the table is "nothing happened".
+#:
+#: That is not merely wasteful storage. The same log showed Postgres in
+#: distress under it - a 269-second checkpoint, vacuum repeatedly unable
+#: to lock futgg_market_snapshot, and SalesSync's own db_write p95 at 57
+#: SECONDS against a 235ms median while its actual network fetching took
+#: 4 seconds per cycle. The database, not FUT.GG, was the bottleneck.
+#:
+#: Recording only actual changes fixes that, but cannot be done naively:
+#: app/services/bin_market_signal.py counts observations per window
+#: (min_observations_for_signal, min_observations_for_anomaly) and
+#: measures price_persistence as a fraction of recent observations. Under
+#: pure change-only recording a perfectly stable card would have ONE
+#: observation in 24h and be reported as INSUFFICIENT_BIN_HISTORY -
+#: breaking the signal for exactly the cards whose price is most settled.
+#:
+#: So: write on change, plus a heartbeat so a quiet card still accrues
+#: observations. 15 minutes keeps ~4 observations in the 1h window the
+#: persistence measure prefers, while cutting total writes by roughly
+#: two thirds.
+CHANGE_ONLY_WRITES = env_bool("FUTGG_BULK_CHANGE_ONLY_WRITES", True)
+HEARTBEAT_MINUTES = env_int("FUTGG_BULK_HEARTBEAT_MINUTES", 15, minimum=1)
+
+#: Delete observations older than this. 0 disables pruning.
+#:
+#: bin_market_signal reads at most a 7-day window, so 14 days is already
+#: double what anything consumes. Without a bound the table simply grows
+#: forever, and futgg_market_snapshot's latest_bin CTE does a DISTINCT ON
+#: over ALL of it every refresh - so an unbounded table makes every
+#: snapshot refresh progressively slower for no benefit whatsoever.
+BIN_HISTORY_RETENTION_DAYS = env_int("FUTGG_BIN_HISTORY_RETENTION_DAYS", 14, minimum=0)
+#: Rows per DELETE. Pruning in chunks keeps each statement short so it
+#: never becomes the long lock-holder this change exists to eliminate.
+PRUNE_BATCH_ROWS = env_int("FUTGG_BIN_HISTORY_PRUNE_BATCH", 50_000, minimum=1000)
+#: Prune every Nth cycle rather than every cycle - the table only needs
+#: trimming at the edges, and doing it constantly is its own load.
+PRUNE_EVERY_N_CYCLES = env_int("FUTGG_BIN_HISTORY_PRUNE_EVERY_N_CYCLES", 12, minimum=1)
+
+#: card_id -> (last_written_bin, last_written_at). Seeded once at startup
+#: from the database, then maintained in memory: consulting the database
+#: for "what did we last write" on every cycle would reintroduce the
+#: expensive whole-table scan this is trying to avoid.
+_last_written: dict[int, tuple[int, datetime]] = {}
+_last_written_seeded = False
+
 #: A stable, operator-maintained "known good" FUT.GG player URL to fall
 #: back to when the normal PLAYER_URL stops yielding the feed - e.g.
 #: https://www.fut.gg/players/245037-eric-garcia/26-84131117/, confirmed
@@ -171,6 +222,121 @@ USER_AGENT = (
 
 INDEX_MARKER = "player-prices-index"
 DYN_MARKER = f"player-prices-{PLATFORM}-dyn"
+
+
+async def seed_last_written(pool) -> int:
+    """One-off: load the most recent observation per card.
+
+    Deliberately once per process, at startup. This is the same
+    DISTINCT ON shape futgg_market_snapshot uses and it is not cheap on a
+    large table - running it every cycle to decide what to skip would
+    cost more than the writes it saves.
+    """
+    global _last_written_seeded
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT DISTINCT ON (source_card_id)
+                   source_card_id, lowest_bin, captured_at
+            FROM futgg_bin_history
+            WHERE captured_at >= now() - make_interval(days => 2)
+            ORDER BY source_card_id, captured_at DESC
+            """
+        )
+    for row in rows:
+        _last_written[int(row["source_card_id"])] = (
+            int(row["lowest_bin"]), row["captured_at"],
+        )
+    _last_written_seeded = True
+    return len(rows)
+
+
+def select_rows_to_write(
+    candidates: list[tuple[int, int]], now: datetime,
+) -> tuple[list[tuple[int, int, datetime]], int, int]:
+    """Filter (card_id, price) pairs down to what actually needs writing.
+
+    Returns (records, changed, heartbeat) so the caller can report how
+    much was skipped and why. A card is written when its price differs
+    from what we last wrote, or when its last write is older than the
+    heartbeat - the latter keeping observation counts and persistence
+    meaningful for cards whose price simply is not moving.
+    """
+    if not CHANGE_ONLY_WRITES:
+        return [(cid, price, now) for cid, price in candidates], len(candidates), 0
+
+    records: list[tuple[int, int, datetime]] = []
+    changed = heartbeat = 0
+    for card_id, price in candidates:
+        previous = _last_written.get(card_id)
+        if previous is None:
+            records.append((card_id, price, now))
+            changed += 1
+        elif previous[0] != price:
+            records.append((card_id, price, now))
+            changed += 1
+        elif previous[1] <= now - timedelta(minutes=_heartbeat_minutes_for(card_id)):
+            records.append((card_id, price, now))
+            heartbeat += 1
+        else:
+            continue
+        _last_written[card_id] = (price, now)
+    return records, changed, heartbeat
+
+
+def _heartbeat_minutes_for(card_id: int) -> int:
+    """Per-card heartbeat interval, deterministically spread.
+
+    A single shared interval makes every quiet card fall due on the same
+    cycle, so the writes we just removed come back as one ~10,000-row
+    spike every HEARTBEAT_MINUTES - the same burst, merely less often,
+    and worse for lock contention than a steady trickle. Offsetting each
+    card by a stable function of its id spreads those heartbeats evenly
+    across the window instead.
+
+    Deterministic rather than random so a card's write schedule is
+    reproducible, and so a worker restart does not re-align everything.
+    """
+    return HEARTBEAT_MINUTES + (card_id % max(1, HEARTBEAT_MINUTES))
+
+
+async def prune_bin_history(pool) -> int:
+    """Delete observations past the retention window, in bounded chunks.
+
+    Chunked because a single unbounded DELETE over millions of rows is
+    exactly the kind of long-running lock-holder that produced the
+    57-second write stalls this change is meant to remove.
+    """
+    if BIN_HISTORY_RETENTION_DAYS <= 0:
+        return 0
+    deleted_total = 0
+    #: Bound the number of chunks per pass too. A first run against a
+    #: badly-overgrown table could otherwise delete millions of rows in
+    #: one cycle and starve everything else; the backlog simply clears
+    #: over the next few passes instead.
+    max_chunks = 20
+    async with pool.acquire() as conn:
+        for _ in range(max_chunks):
+            status = await conn.execute(
+                """
+                DELETE FROM futgg_bin_history
+                WHERE id IN (
+                    SELECT id FROM futgg_bin_history
+                    WHERE captured_at < now() - make_interval(days => $1)
+                    LIMIT $2
+                )
+                """,
+                BIN_HISTORY_RETENTION_DAYS, PRUNE_BATCH_ROWS,
+            )
+            # asyncpg returns the command tag, e.g. "DELETE 50000".
+            try:
+                deleted = int(status.split()[-1])
+            except (ValueError, IndexError, AttributeError):
+                break
+            deleted_total += deleted
+            if deleted < PRUNE_BATCH_ROWS:
+                break
+    return deleted_total
 
 
 def decode_ids(index: dict[str, Any]) -> list[int]:
@@ -502,11 +668,16 @@ async def ingest_once(
 
     # ---- Write --------------------------------------------------------
     now = datetime.now(timezone.utc)
-    records = [
-        (int(r["source_card_id"]), int(by_id[int(r["source_card_id"])]), now)
+    candidates = [
+        (int(r["source_card_id"]), int(by_id[int(r["source_card_id"])]))
         for r in matched
         if by_id.get(int(r["source_card_id"]))
     ]
+    # Skip observations that record nothing new. See CHANGE_ONLY_WRITES -
+    # 91.9% of writes to this table were repeats of the previous price,
+    # and the resulting volume was measurably starving the database.
+    records, changed_count, heartbeat_count = select_rows_to_write(candidates, now)
+    skipped = len(candidates) - len(records)
 
     # Cards the feed matched but priced at zero: it has told us they have
     # no active market right now. That is an OBSERVATION, and until now it
@@ -573,8 +744,9 @@ async def ingest_once(
                         no_market_ids, now,
                     )
     log.info(
-        "WROTE %d prices in one COPY; %d matched cards have no active market",
-        len(records), len(no_market_ids),
+        "WROTE %d prices in one COPY (%d changed, %d heartbeat, %d unchanged and "
+        "skipped); %d matched cards have no active market",
+        len(records), changed_count, heartbeat_count, skipped, len(no_market_ids),
     )
     return {
         "ok": True, "coverage_pct": coverage_pct, "applied": True,
@@ -641,6 +813,23 @@ async def run_forever() -> None:
     shutdown_event = asyncio.Event()
     _install_shutdown_handlers(shutdown_event)
 
+    if CHANGE_ONLY_WRITES:
+        seeded = await seed_last_written(pool)
+        log.info(
+            "change-only writes ON: seeded last-known price for %d card(s); "
+            "heartbeat every %d min (a card with an unchanged price is written "
+            "at most that often)", seeded, HEARTBEAT_MINUTES,
+        )
+    else:
+        log.info("change-only writes OFF - every observation will be written")
+    if BIN_HISTORY_RETENTION_DAYS:
+        log.info(
+            "bin_history retention: %d days, pruned every %d cycles in batches of %d",
+            BIN_HISTORY_RETENTION_DAYS, PRUNE_EVERY_N_CYCLES, PRUNE_BATCH_ROWS,
+        )
+
+    cycle_number = 0
+
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(
             headless=HEADLESS, args=["--no-sandbox", "--disable-dev-shm-usage"]
@@ -651,11 +840,28 @@ async def run_forever() -> None:
             while not shutdown_event.is_set():
                 timers = StageTimers()
                 started = time.perf_counter()
+                cycle_number += 1
                 result: dict[str, Any] = {}
                 try:
                     result = await ingest_once(pool, page, timers, shutdown_event=shutdown_event)
                 except Exception:
                     log.exception("ingest failed")
+
+                # Pruning is best-effort and must never take the ingest
+                # down with it: a failed DELETE means the table stays a bit
+                # too big, which is survivable, whereas a crashed worker
+                # means no prices at all.
+                if BIN_HISTORY_RETENTION_DAYS and cycle_number % PRUNE_EVERY_N_CYCLES == 0:
+                    try:
+                        with timers.track("prune"):
+                            pruned = await prune_bin_history(pool)
+                        if pruned:
+                            log.info(
+                                "pruned %d bin_history row(s) older than %d days",
+                                pruned, BIN_HISTORY_RETENTION_DAYS,
+                            )
+                    except Exception:
+                        log.warning("bin_history prune failed", exc_info=True)
                 log.info("cycle took %.1fs", time.perf_counter() - started)
                 for line in timers.format_lines():
                     log.info(line)
