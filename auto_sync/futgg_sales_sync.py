@@ -1113,6 +1113,31 @@ def is_blocking_signal(error: str) -> bool:
     return any(marker in error for marker in _BLOCKING_ERROR_MARKERS)
 
 
+#: How many CONSECUTIVE cycles signed_fetch may trip the breaker on
+#: throttle-shaped failures (429/5xx) before we fall back to page_capture
+#: anyway.
+#:
+#: Refusing to switch on a 429 is right for a burst - the remedy is to
+#: back off, and switching would multiply cost per card for a problem
+#: caused by sending too many requests. But refusing FOREVER is worse than
+#: the disease: if signed_fetch is persistently rate-limited, never
+#: falling back means the worker simply returns no sales data at all,
+#: indefinitely. Sales are the anchor for every recommendation the engine
+#: makes, so "cheap and blank" is not a better outcome than "expensive and
+#: working".
+#:
+#: So: back off first, fall back only if backing off did not fix it.
+#: Blocking-shaped failures (403/challenge) still switch immediately -
+#: backing off cannot fix a wall.
+SIGNED_THROTTLE_CYCLES_BEFORE_FALLBACK = env_int(
+    "FUTGG_SALES_SIGNED_THROTTLE_CYCLES_BEFORE_FALLBACK", 3, minimum=1
+)
+
+#: Consecutive breaker trips on signed_fetch caused by throttling rather
+#: than blocking. Reset by any successful cycle.
+_consecutive_signed_throttle_trips = 0
+
+
 #: Cap on how many individual failures get a full diagnostic log line per
 #: batch - a 403-everything cycle can fail all 200 cards, and logging
 #: each one in full would be pure noise. stats["errors"] already carries
@@ -1363,6 +1388,58 @@ def _mostly_challenge_failures(stats: dict[str, Any]) -> bool:
     return (blocking / total_failed) >= 0.5
 
 
+def should_fall_back_to_page_capture(stats: dict[str, Any]) -> tuple[bool, str]:
+    """Decide, after the breaker has tripped on signed_fetch, whether to
+    switch transport. Returns (switch, reason).
+
+    Two distinct situations, deliberately handled differently:
+
+      * A wall (403 / bot challenge) - switch immediately. No amount of
+        backing off gets past a refusal, and page_capture is the whole
+        reason that fallback exists.
+
+      * Throttling (429 / 5xx) - do NOT switch on the first trip. The
+        remedy for "too many requests" is fewer requests, and switching
+        would raise the cost per card roughly tenfold in response to a
+        signal caused by volume. AdaptiveThrottle is already backing off.
+        But if it keeps tripping across
+        SIGNED_THROTTLE_CYCLES_BEFORE_FALLBACK consecutive cycles, backing
+        off has not worked, and continuing to fail cheaply just means no
+        sales data at all - so fall back and keep the pipeline alive.
+    """
+    global _consecutive_signed_throttle_trips
+
+    if _mostly_challenge_failures(stats):
+        _consecutive_signed_throttle_trips = 0
+        failed = stats["failed"]
+        total = stats["ok"] + stats["failed"]
+        return True, (
+            f"circuit breaker tripped on signed_fetch ({failed}/{total} failed, "
+            "predominantly blocking-shaped: 403/challenge)"
+        )
+
+    _consecutive_signed_throttle_trips += 1
+    if _consecutive_signed_throttle_trips >= SIGNED_THROTTLE_CYCLES_BEFORE_FALLBACK:
+        trips = _consecutive_signed_throttle_trips
+        _consecutive_signed_throttle_trips = 0
+        return True, (
+            f"signed_fetch throttled (not blocked) for {trips} consecutive cycles "
+            "despite backoff - falling back to page_capture so sales data keeps "
+            "flowing, at higher cost per card"
+        )
+    return False, (
+        f"signed_fetch throttled (not blocked) - backing off rather than switching "
+        f"transport (trip {_consecutive_signed_throttle_trips} of "
+        f"{SIGNED_THROTTLE_CYCLES_BEFORE_FALLBACK} before fallback)"
+    )
+
+
+def note_signed_fetch_recovered() -> None:
+    """A clean cycle means the backoff worked - forget the trip streak."""
+    global _consecutive_signed_throttle_trips
+    _consecutive_signed_throttle_trips = 0
+
+
 async def _reprobe_signed_fetch(
     signed_page, pool: asyncpg.Pool, sample: list
 ) -> None:
@@ -1572,12 +1649,12 @@ async def run_forever() -> None:
                                 CIRCUIT_BREAKER_THRESHOLD * 100, offset, len(due),
                                 CIRCUIT_BREAKER_BACKOFF_SECONDS,
                             )
-                            if TRANSPORT_MODE == "auto" and _mostly_challenge_failures(stats):
-                                switch_to_page_capture(
-                                    f"circuit breaker tripped on signed_fetch "
-                                    f"({stats['failed']}/{stats['ok'] + stats['failed']} "
-                                    f"failed, predominantly Cloudflare-challenge-shaped)"
-                                )
+                            if TRANSPORT_MODE == "auto":
+                                switch, why = should_fall_back_to_page_capture(stats)
+                                if switch:
+                                    switch_to_page_capture(why)
+                                else:
+                                    log.warning("staying on signed_fetch: %s", why)
                             break
 
                         if throttle.delay:
@@ -1622,6 +1699,14 @@ async def run_forever() -> None:
                 )
                 for line in timers.format_lines():
                     log.info(line)
+
+                # A cycle that completed without tripping means the backoff
+                # did its job, so the throttle-trip streak must not carry
+                # over. Without this reset, three unlucky cycles spread
+                # across hours of otherwise-healthy running would
+                # eventually force the expensive fallback for no reason.
+                if not breaker_tripped:
+                    note_signed_fetch_recovered()
 
                 if shutdown_event.is_set():
                     break

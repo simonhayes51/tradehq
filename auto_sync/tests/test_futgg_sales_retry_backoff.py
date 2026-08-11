@@ -261,6 +261,9 @@ class TestRateLimitDoesNotForceTheExpensiveTransport:
     page_capture.
     """
 
+    def setup_method(self):
+        sales._consecutive_signed_throttle_trips = 0
+
     def test_a_429_storm_does_not_trigger_a_transport_switch(self):
         stats = {"failed": 50, "ok": 0, "errors": {"data_429": 50}}
         assert sales._mostly_challenge_failures(stats) is False
@@ -299,3 +302,65 @@ class TestRateLimitDoesNotForceTheExpensiveTransport:
         assert sales._THROTTLE_ERROR_MARKERS == (
             "429", "403", "sign_5", "data_5", "challenge",
         )
+
+
+class TestThrottledTransportFallsBackEventually:
+    """Backing off is the right first answer to a 429. Backing off
+    FOREVER is not.
+
+    Sales are the anchor for every recommendation the engine makes, so a
+    worker that stays cheap by returning no data at all is not a better
+    outcome than one that costs more per card and works. The rule is:
+    back off first, fall back only if backing off did not fix it.
+    """
+
+    def setup_method(self):
+        sales._consecutive_signed_throttle_trips = 0
+
+    def _throttled(self):
+        return {"failed": 50, "ok": 0, "errors": {"data_429": 50}}
+
+    def _blocked(self):
+        return {"failed": 50, "ok": 0, "errors": {"data_403": 50}}
+
+    def test_a_wall_switches_immediately_without_waiting(self):
+        # No amount of backing off gets past a refusal.
+        switch, why = sales.should_fall_back_to_page_capture(self._blocked())
+        assert switch is True
+        assert "blocking-shaped" in why
+
+    def test_a_single_throttled_cycle_does_not_switch(self):
+        switch, why = sales.should_fall_back_to_page_capture(self._throttled())
+        assert switch is False
+        assert "backing off rather than switching" in why
+
+    def test_persistent_throttling_eventually_switches(self):
+        results = [
+            sales.should_fall_back_to_page_capture(self._throttled())[0]
+            for _ in range(sales.SIGNED_THROTTLE_CYCLES_BEFORE_FALLBACK)
+        ]
+        assert results[:-1] == [False] * (len(results) - 1)
+        assert results[-1] is True
+
+    def test_a_healthy_cycle_clears_the_streak(self):
+        """Three unlucky cycles spread across hours of healthy running
+        must not silently accumulate into a forced expensive fallback."""
+        sales.should_fall_back_to_page_capture(self._throttled())
+        sales.should_fall_back_to_page_capture(self._throttled())
+        sales.note_signed_fetch_recovered()
+        switch, _ = sales.should_fall_back_to_page_capture(self._throttled())
+        assert switch is False
+
+    def test_a_wall_after_throttling_still_switches_at_once(self):
+        sales.should_fall_back_to_page_capture(self._throttled())
+        switch, why = sales.should_fall_back_to_page_capture(self._blocked())
+        assert switch is True
+        assert "blocking-shaped" in why
+
+    def test_the_fallback_threshold_is_configurable(self):
+        assert sales.SIGNED_THROTTLE_CYCLES_BEFORE_FALLBACK >= 1
+
+    def test_the_streak_is_reset_after_a_forced_fallback(self):
+        for _ in range(sales.SIGNED_THROTTLE_CYCLES_BEFORE_FALLBACK):
+            sales.should_fall_back_to_page_capture(self._throttled())
+        assert sales._consecutive_signed_throttle_trips == 0
