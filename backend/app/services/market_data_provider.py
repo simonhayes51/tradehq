@@ -193,9 +193,18 @@ def _apply_common_filters(
         where.append(f"current_bin IS NOT NULL AND current_bin >= ${len(args)}")
     if f.max_price_age_minutes is not None:
         args.append(f.max_price_age_minutes)
+        # coalesce(bin_checked_at, bin_captured_at) is the SQL twin of
+        # futgg_intelligence._price_observed_at, and for the same reason:
+        # since change-only writes shipped, bin_captured_at means "the
+        # price last moved", not "we last checked". Filtering on it hides
+        # every card whose price is simply stable. Migration 052 adds
+        # bin_checked_at to the view; a database old enough to lack it is
+        # one where migration 050 (identical requires-column list) never
+        # applied either, so the view is not at this shape at all.
         where.append(
-            f"bin_captured_at IS NOT NULL AND "
-            f"EXTRACT(EPOCH FROM (now() - bin_captured_at)) / 60.0 <= ${len(args)}"
+            f"coalesce(bin_checked_at, bin_captured_at) IS NOT NULL AND "
+            f"EXTRACT(EPOCH FROM (now() - coalesce(bin_checked_at, bin_captured_at))) "
+            f"/ 60.0 <= ${len(args)}"
         )
     if f.search:
         term = f"%{f.search.strip()}%"
@@ -528,8 +537,10 @@ class FutggMarketDataProvider(MarketDataProvider):
                 SELECT price_tier, count(*) AS stale_count
                 FROM futgg_market_snapshot
                 WHERE is_active AND is_tradeable IS NOT FALSE AND current_bin IS NOT NULL
-                  AND bin_captured_at IS NOT NULL
-                  AND EXTRACT(EPOCH FROM (now() - bin_captured_at)) / 60.0 > $1
+                  AND coalesce(bin_checked_at, bin_captured_at) IS NOT NULL
+                  AND EXTRACT(
+                          EPOCH FROM (now() - coalesce(bin_checked_at, bin_captured_at))
+                      ) / 60.0 > $1
                 GROUP BY price_tier
                 """,
                 EXPECTED_PRICE_INTERVAL_MINUTES,
@@ -642,6 +653,13 @@ async def refresher_loop(pool: asyncpg.Pool, poll_seconds: int = 120) -> None:
 
     await asyncio.sleep(15)
     last_watermark: Optional[datetime] = None
+    # A refresh this loop declines to perform used to be completely
+    # silent: `did` False (another holder of the advisory lock) logged
+    # nothing, and a watermark that never moves logged nothing either.
+    # Both present downstream as a snapshot frozen in time, which reads
+    # like a quiet market rather than a stalled pipeline. Count the
+    # consecutive skips and say so.
+    consecutive_skips = 0
     while True:
         try:
             async with pool.acquire() as conn:
@@ -652,7 +670,29 @@ async def refresher_loop(pool: asyncpg.Pool, poll_seconds: int = 120) -> None:
                 did = await refresh_snapshot(pool)
                 if did:
                     log.info("futgg_market_snapshot refreshed (watermark=%s)", watermark)
+                    consecutive_skips = 0
+                else:
+                    consecutive_skips += 1
+                    # Every time would be noise at a 120s poll; never
+                    # would reproduce the outage this comment exists for.
+                    if consecutive_skips in (1, 5) or consecutive_skips % 25 == 0:
+                        log.warning(
+                            "futgg_market_snapshot refresh skipped %d time(s) in a row - "
+                            "advisory lock %s is held elsewhere. The snapshot is not "
+                            "advancing and every consumer of it is reading stale rows.",
+                            consecutive_skips, REFRESH_ADVISORY_LOCK_KEY,
+                        )
                 last_watermark = watermark
+            else:
+                consecutive_skips += 1
+                if consecutive_skips in (5,) or consecutive_skips % 25 == 0:
+                    log.warning(
+                        "futgg_market_snapshot watermark has not moved for %d poll(s) "
+                        "(watermark=%s) - no refresh performed. Either the price/player "
+                        "sync workers are not writing, or this backend is pointed at a "
+                        "different database than they are.",
+                        consecutive_skips, watermark,
+                    )
         except asyncpg.exceptions.UndefinedTableError:
             # futgg_players doesn't exist yet on this database (auto_sync
             # hasn't bootstrapped it) - same "wait, don't crash" tolerance

@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections import Counter
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
@@ -57,6 +58,21 @@ class ScanMetrics:
     pool_coverage_pct: Optional[float] = None
     recommendations_written: int = 0
     segments: List[SegmentMetrics] = field(default_factory=list)
+    # Why the cards that produced nothing produced nothing. A pass that
+    # writes zero recommendations is not self-explaining otherwise, and
+    # the difference between "no edges in the market today" and "a gate
+    # is misconfigured and rejecting the entire catalogue" is the whole
+    # question. Production spent hours logging
+    # `evaluated=1344 ... recommendations=0` with no way to tell which,
+    # and answering it took a forensic pass over raw logs; these counts
+    # answer it in one line.
+    blocking_reason_counts: Dict[str, int] = field(default_factory=dict)
+    # Age of the materialized view the whole pass reads from. The
+    # refresher (market_data_provider.refresher_loop) is watermark-gated
+    # and silent when it declines to refresh, so a stalled snapshot
+    # presents as a scan that keeps evaluating the same frozen rows and
+    # looks, from here, exactly like a quiet market.
+    snapshot_age_minutes: Optional[float] = None
 
     def as_dict(self) -> Dict[str, Any]:
         return {
@@ -66,6 +82,8 @@ class ScanMetrics:
             "total_player_pool": self.total_player_pool,
             "pool_coverage_pct": self.pool_coverage_pct,
             "recommendations_written": self.recommendations_written,
+            "blocking_reason_counts": dict(self.blocking_reason_counts),
+            "snapshot_age_minutes": self.snapshot_age_minutes,
             "segments": [s.as_dict() for s in self.segments],
         }
 
@@ -102,6 +120,7 @@ async def run_scan(provider, pool, *, persist: bool = True) -> ScanMetrics:
 
     as_of = datetime.now(timezone.utc)
     to_persist: List[Tuple[Dict[str, Any], Any]] = []
+    blocked_by: Counter = Counter()
 
     for card_id, row in unique_rows.items():
         segment_name = seen[card_id]
@@ -120,6 +139,14 @@ async def run_scan(provider, pool, *, persist: bool = True) -> ScanMetrics:
         elif ci.signal == "watch":
             sm.watch_signals += 1
             to_persist.append((row, ci))
+        else:
+            # Nothing actionable. Record what stopped it. blocking_codes
+            # is the subset of reason codes that actually gated the
+            # result, so this counts causes rather than commentary; a
+            # card blocked by several gates contributes to each, which is
+            # what you want when deciding which gate to look at first.
+            for code in (ci.blocking_codes or ["no_blocking_code"]):
+                blocked_by[code] += 1
         if ci.trend_state in ("falling_knife", "downtrend") and ci.signal == "avoid":
             sm.blocked_by_trend += 1
 
@@ -128,6 +155,7 @@ async def run_scan(provider, pool, *, persist: bool = True) -> ScanMetrics:
 
     metrics.unique_cards_evaluated = len(unique_rows)
     metrics.segments = list(segment_metrics.values())
+    metrics.blocking_reason_counts = dict(blocked_by.most_common())
 
     try:
         async with pool.acquire() as conn:
@@ -135,6 +163,15 @@ async def run_scan(provider, pool, *, persist: bool = True) -> ScanMetrics:
                 "SELECT count(*) FROM futgg_players WHERE is_active AND is_tradeable IS DISTINCT FROM FALSE"
             )
         metrics.total_player_pool = int(total or 0)
+        async with pool.acquire() as conn:
+            snapshot_age = await conn.fetchval(
+                """
+                SELECT EXTRACT(EPOCH FROM (now() - max(snapshot_computed_at))) / 60.0
+                FROM futgg_market_snapshot
+                """
+            )
+        if snapshot_age is not None:
+            metrics.snapshot_age_minutes = round(float(snapshot_age), 1)
         if metrics.total_player_pool:
             metrics.pool_coverage_pct = round(
                 100.0 * metrics.unique_cards_evaluated / metrics.total_player_pool, 2
@@ -235,12 +272,22 @@ async def refresher_loop(pool, poll_seconds: int = 600) -> None:
         try:
             metrics = await run_scan(provider, pool)
             log.info(
-                "futgg scan: evaluated=%d coverage=%s%% recommendations=%d in %.1fs",
+                "futgg scan: evaluated=%d coverage=%s%% recommendations=%d "
+                "snapshot_age=%smin in %.1fs",
                 metrics.unique_cards_evaluated,
                 metrics.pool_coverage_pct,
                 metrics.recommendations_written,
+                metrics.snapshot_age_minutes,
                 metrics.duration_seconds,
             )
+            # Only when the pass found nothing: the interesting case, and
+            # the one that used to be unexplainable from the logs alone.
+            if not metrics.recommendations_written and metrics.blocking_reason_counts:
+                top = list(metrics.blocking_reason_counts.items())[:6]
+                log.info(
+                    "futgg scan: no recommendations - top blocking reasons: %s",
+                    ", ".join(f"{code}={n}" for code, n in top),
+                )
         except Exception:
             log.warning("futgg scan pass failed", exc_info=True)
         await asyncio.sleep(poll_seconds)

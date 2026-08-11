@@ -70,7 +70,7 @@ import math
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from app.services import trading_math as tm
 from app.services import futgg_reasons as rc
@@ -193,6 +193,35 @@ def _price_age_minutes(bin_captured_at: Optional[datetime], as_of: datetime) -> 
     if bin_captured_at.tzinfo is None:
         bin_captured_at = bin_captured_at.replace(tzinfo=timezone.utc)
     return max(0, int((as_of - bin_captured_at).total_seconds() // 60))
+
+
+def _price_observed_at(snapshot: Mapping[str, Any]) -> Optional[datetime]:
+    """When the feed last CONFIRMED this card's price.
+
+    Not the same thing as when the price last changed, and the difference
+    is what the freshness gate cares about. futgg_bulk_price_sync.py only
+    writes a futgg_bin_history row when a price actually moves (or when a
+    per-card heartbeat falls due), so bin_captured_at - max(captured_at)
+    for the card - drifts away from "we checked" for any card whose price
+    is simply stable. Under the heartbeat schedule alone that drift
+    reaches FUTGG_BULK_HEARTBEAT_MINUTES + (card_id % that), up to 29
+    minutes at the default, against a 20-minute limit for special-tier
+    cards.
+
+    Reading the wrong clock cost real recommendations: production logged
+    `futgg scan: evaluated=1344 ... recommendations=0` identically for
+    hours, every card rejected as STALE_MARKET while the bulk feed was
+    confirming those same prices every six minutes.
+
+    bin_checked_at (migration 052) is that confirmation timestamp.
+    Falling back to bin_captured_at keeps a database that has not yet run
+    052 - or a card that has not been through a bulk cycle since it did -
+    behaving exactly as it does today, rather than reading as unpriced.
+    """
+    checked = snapshot.get("bin_checked_at")
+    if checked is not None:
+        return checked
+    return snapshot.get("bin_captured_at")
 
 
 def _sales_age_minutes(latest_sale_at: Optional[datetime], as_of: datetime) -> Optional[int]:
@@ -391,7 +420,10 @@ def evaluate_card(
         )
 
     current_bin = snapshot.get("current_bin")
-    bin_captured_at = snapshot.get("bin_captured_at")
+    # "when the feed last confirmed this price", not "when it last moved".
+    # See _price_observed_at - these stopped being the same event when
+    # change-only writes shipped in futgg_bulk_price_sync.py.
+    bin_captured_at = _price_observed_at(snapshot)
     sales_count = int(snapshot.get("sales_count") or 0)
     sales_median = snapshot.get("sales_median")
     sales_trimmed_mean = snapshot.get("sales_trimmed_mean")
