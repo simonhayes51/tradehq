@@ -205,3 +205,44 @@ class TestSchemaAndAudit:
         assert sales._row_value({}, "sales_first_read_at") is None
         assert sales._row_value({"sales_consecutive_failures": None}, "sales_consecutive_failures", 0) == 0
         assert sales._row_value({"sales_consecutive_failures": 3}, "sales_consecutive_failures", 0) == 3
+
+
+class TestBoundedRun:
+    """Cost control by wall clock, not by request count.
+
+    Reducing how many cards this worker reads does not by itself reduce
+    what it costs: the bill is for a container running a headed Chromium
+    24 hours a day, and an idle container costs the same as a busy one.
+    The compute bill only falls when the process exits and the container
+    stops - which is what these bounds allow.
+    """
+
+    def test_continuous_running_is_still_the_default(self):
+        # Absolutely must not change behaviour for anyone who has not
+        # opted in - a surprise exit on a service with a restart policy is
+        # a restart loop, which costs MORE than running continuously.
+        assert sales.MAX_RUNTIME_MINUTES == 0
+        assert sales.MAX_CYCLES == 0
+
+    def test_the_bound_is_checked_before_a_cycle_not_during_one(self):
+        """A cycle already in flight must finish. Tearing off mid-batch
+        would leave cards marked due again and waste the next run's whole
+        budget repeating them."""
+        source = Path(sales.__file__).read_text()
+        loop = source.split("while not shutdown_event.is_set():")[1].split("timers = StageTimers()")[0]
+        assert "MAX_RUNTIME_MINUTES" in loop
+        assert "MAX_CYCLES" in loop
+        assert "break" in loop
+
+    def test_a_bounded_run_exits_when_the_queue_empties(self):
+        # Idling with a browser open costs exactly as much as working, so
+        # "caught up" must mean "stop", not "wait".
+        source = Path(sales.__file__).read_text()
+        empty_branch = source.split("if not due:")[1].split("continue")[0]
+        assert "if MAX_RUNTIME_MINUTES or MAX_CYCLES:" in empty_branch
+        assert "exiting cleanly" in empty_branch
+
+    def test_an_unbounded_run_still_idles_rather_than_exiting(self):
+        source = Path(sales.__file__).read_text()
+        empty_branch = source.split("if not due:")[1].split("continue")[0]
+        assert "sleep_or_shutdown(IDLE_SLEEP, shutdown_event)" in empty_branch

@@ -141,6 +141,30 @@ IDLE_SLEEP = env_float("FUTGG_SALES_IDLE_SLEEP", 30.0, minimum=5.0)
 #: How many cards to pull per selection pass.
 SELECT_LIMIT = env_int("FUTGG_SALES_SELECT_LIMIT", 200, minimum=1)
 
+#: Bounded run: exit cleanly after this many minutes. 0 = run forever
+#: (the existing, unchanged default).
+#:
+#: WHY THIS EXISTS. Reducing how many cards this worker reads does not by
+#: itself reduce what it costs, because the bill is for a container
+#: running a headed Chromium 24 hours a day - an idle container costs the
+#: same as a busy one. The only way the compute bill actually falls is for
+#: the process to finish and exit, so the container stops.
+#:
+#: With this set, SalesSync can be deployed the way PlayerSync and SBCSync
+#: already are: a Coolify Scheduled Task that starts on a cron trigger,
+#: works through whatever is due, and exits. Running four 45-minute passes
+#: a day is ~3 hours of compute instead of 24.
+#:
+#: MUST be paired with the Scheduled Task resource type. A normal service
+#: with a restart policy turns a clean exit into a restart loop, which is
+#: the exact footgun COOLIFY.md documents - it would relaunch a browser
+#: every few seconds and cost far MORE than running continuously.
+MAX_RUNTIME_MINUTES = env_int("FUTGG_SALES_MAX_RUNTIME_MINUTES", 0, minimum=0)
+
+#: Alternative bound: exit after this many completed cycles. 0 = unlimited.
+#: Useful when you would rather cap work than wall-clock time.
+MAX_CYCLES = env_int("FUTGG_SALES_MAX_CYCLES", 0, minimum=0)
+
 #: Write to the database. Default on - matches futgg_bulk_price_sync.py's
 #: FUTGG_BULK_APPLY convention. Set to false for a dry run (e.g. alongside
 #: FUTGG_SALES_DIAGNOSTIC_CARD_ID) where nothing should be written.
@@ -1380,9 +1404,14 @@ async def run_forever() -> None:
 
     log.info(
         "%s starting: transport=%s platform=%s batch=%d page_concurrency=%d "
-        "select_limit=%d intervals=%s",
+        "select_limit=%d intervals=%s run_mode=%s",
         SCRIPT_VERSION, TRANSPORT_MODE, PLATFORM, BATCH_SIZE, PAGE_CONCURRENCY,
         SELECT_LIMIT, SALES_INTERVALS,
+        (
+            f"bounded({MAX_RUNTIME_MINUTES}min)" if MAX_RUNTIME_MINUTES
+            else f"bounded({MAX_CYCLES} cycles)" if MAX_CYCLES
+            else "continuous"
+        ),
     )
 
     shutdown_event = asyncio.Event()
@@ -1423,7 +1452,32 @@ async def run_forever() -> None:
 
             throttle = AdaptiveThrottle(BATCH_SIZE, BATCH_DELAY)
 
+            run_started_at = time.monotonic()
+            cycles_done = 0
+
             while not shutdown_event.is_set():
+                # Bounded-run check, at the TOP of the loop so a cycle
+                # already in flight always finishes rather than being torn
+                # off mid-batch (a half-written batch would leave cards
+                # marked due-again and waste the next run's budget on
+                # repeating them).
+                if MAX_RUNTIME_MINUTES and (
+                    (time.monotonic() - run_started_at) >= MAX_RUNTIME_MINUTES * 60
+                ):
+                    log.info(
+                        "bounded run complete: %d minute limit reached after %d cycle(s) "
+                        "- exiting cleanly (FUTGG_SALES_MAX_RUNTIME_MINUTES)",
+                        MAX_RUNTIME_MINUTES, cycles_done,
+                    )
+                    break
+                if MAX_CYCLES and cycles_done >= MAX_CYCLES:
+                    log.info(
+                        "bounded run complete: %d cycle(s) done - exiting cleanly "
+                        "(FUTGG_SALES_MAX_CYCLES)", cycles_done,
+                    )
+                    break
+                cycles_done += 1
+
                 timers = StageTimers()
                 stats = {"ok": 0, "failed": 0, "sales_seen": 0, "batch_errors": 0}
                 started = time.perf_counter()
@@ -1432,6 +1486,17 @@ async def run_forever() -> None:
                     due = await select_due(conn)
                     await report_coverage(conn)
                 if not due:
+                    # In a bounded run, an empty queue means the work is
+                    # finished - exit now rather than idling. Idling is not
+                    # free here: the whole point of a bounded run is that
+                    # the container stops, and sitting in IDLE_SLEEP with a
+                    # browser open costs exactly as much as working.
+                    if MAX_RUNTIME_MINUTES or MAX_CYCLES:
+                        log.info(
+                            "bounded run: nothing due after %d cycle(s) - caught up, "
+                            "exiting cleanly", cycles_done,
+                        )
+                        break
                     if await sleep_or_shutdown(IDLE_SLEEP, shutdown_event):
                         break
                     continue
