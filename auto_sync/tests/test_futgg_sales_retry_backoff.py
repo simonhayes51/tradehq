@@ -364,3 +364,48 @@ class TestThrottledTransportFallsBackEventually:
         for _ in range(sales.SIGNED_THROTTLE_CYCLES_BEFORE_FALLBACK):
             sales.should_fall_back_to_page_capture(self._throttled())
         assert sales._consecutive_signed_throttle_trips == 0
+
+
+class TestFallbackSurvivesBoundedRuns:
+    """The consecutive-trip counter lives in process memory. Under
+    FUTGG_SALES_MAX_RUNTIME_MINUTES the process exits every run, so a
+    streak spanning runs can never accumulate - without a within-cycle
+    escape hatch the fallback would never fire at all, and a persistently
+    throttled worker would return no sales data indefinitely."""
+
+    def setup_method(self):
+        sales._consecutive_signed_throttle_trips = 0
+
+    def _throttled(self):
+        return {"failed": 50, "ok": 0, "errors": {"data_429": 50}}
+
+    def _saturated_throttle(self):
+        t = sales.AdaptiveThrottle(8, 0.5)
+        t.batch_size = t.min_batch
+        t.delay = t.max_delay
+        return t
+
+    def _fresh_throttle(self):
+        return sales.AdaptiveThrottle(8, 0.5)
+
+    def test_a_saturated_throttle_falls_back_on_the_very_first_trip(self):
+        switch, why = sales.should_fall_back_to_page_capture(
+            self._throttled(), self._saturated_throttle(),
+        )
+        assert switch is True
+        assert "already at its floor" in why
+
+    def test_a_throttle_with_headroom_still_backs_off_first(self):
+        switch, _ = sales.should_fall_back_to_page_capture(
+            self._throttled(), self._fresh_throttle(),
+        )
+        assert switch is False
+
+    def test_the_decision_still_works_with_no_throttle_supplied(self):
+        switch, _ = sales.should_fall_back_to_page_capture(self._throttled(), None)
+        assert switch is False
+
+    def test_saturation_is_measured_against_the_throttles_own_limits(self):
+        assert sales._throttle_is_saturated(self._saturated_throttle()) is True
+        assert sales._throttle_is_saturated(self._fresh_throttle()) is False
+        assert sales._throttle_is_saturated(None) is False
