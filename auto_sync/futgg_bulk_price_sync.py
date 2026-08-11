@@ -677,6 +677,7 @@ async def ingest_once(
     # 91.9% of writes to this table were repeats of the previous price,
     # and the resulting volume was measurably starving the database.
     records, changed_count, heartbeat_count = select_rows_to_write(candidates, now)
+    written_ids = {r[0] for r in records}
     skipped = len(candidates) - len(records)
 
     # Cards the feed matched but priced at zero: it has told us they have
@@ -712,15 +713,42 @@ async def ingest_once(
                     records=records,
                     columns=["source_card_id", "lowest_bin", "captured_at"],
                 )
+                # price_checked_at covers EVERY card the feed priced this
+                # cycle, including the ones whose price was unchanged and
+                # therefore got no bin_history row. That distinction is the
+                # entire point of the column: with change-only writes,
+                # bin_captured_at means "the price last moved", which for a
+                # stable card drifts arbitrarily far from "we checked".
+                # The engine's freshness gate needs the latter, and reading
+                # the former is what produced hours of
+                # `evaluated=1344 recommendations=0` in production - a
+                # special-tier card is rejected past 20 minutes, while a
+                # quiet card's bin_captured_at can legitimately be 29
+                # minutes old under the heartbeat schedule alone.
+                #
+                # last_price_status stays on `records` only. It describes
+                # how we obtained the price we hold, and skipping a write
+                # obtained nothing new to describe.
                 await conn.execute(
                     """
                     UPDATE futgg_players p
                     SET price_updated_at = $2,
+                        price_checked_at = $2,
                         last_price_status = 'bulk_feed'
                     WHERE p.source_card_id = ANY($1::bigint[])
                     """,
                     [r[0] for r in records], now,
                 )
+                skipped_ids = [cid for cid, _ in candidates if cid not in written_ids]
+                if skipped_ids:
+                    await conn.execute(
+                        """
+                        UPDATE futgg_players p
+                        SET price_checked_at = $2
+                        WHERE p.source_card_id = ANY($1::bigint[])
+                        """,
+                        skipped_ids, now,
+                    )
                 if no_market_ids:
                     # Deliberately NOT writing a bin_history row here.
                     # lowest_bin is INTEGER NOT NULL, and inventing a 0
@@ -731,9 +759,16 @@ async def ingest_once(
                     # the snapshot learns to suppress it (see below).
                     #
                     # price_updated_at is safe to bump: the engine's
-                    # price-age gate reads bin_captured_at, not this
+                    # price-age gate reads bin_checked_at, not this
                     # column, so a no-market card cannot be made to look
                     # freshly priced by it.
+                    #
+                    # price_checked_at is deliberately NOT bumped here,
+                    # for exactly that reason - it is the column the gate
+                    # now reads, and "the feed says this card has no
+                    # active listings" is not a confirmation of the price
+                    # we still hold. Leaving it alone lets such a card
+                    # age out of the gate on its own, which is correct.
                     await conn.execute(
                         """
                         UPDATE futgg_players p
