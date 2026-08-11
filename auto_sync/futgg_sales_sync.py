@@ -1388,7 +1388,29 @@ def _mostly_challenge_failures(stats: dict[str, Any]) -> bool:
     return (blocking / total_failed) >= 0.5
 
 
-def should_fall_back_to_page_capture(stats: dict[str, Any]) -> tuple[bool, str]:
+def _throttle_is_saturated(throttle: "AdaptiveThrottle | None") -> bool:
+    """Has backing off already been taken as far as it goes?
+
+    If the batch is at its floor and the delay at (or near) its ceiling
+    and requests are STILL being refused, then "slow down" has been tried
+    to exhaustion and is not the answer. Checking this makes the fallback
+    decision self-contained within a single cycle, which matters because
+    the consecutive-trip counter below lives in process memory: under
+    FUTGG_SALES_MAX_RUNTIME_MINUTES the process exits every run, so a
+    streak spanning runs can never accumulate and the fallback would
+    otherwise never fire at all.
+    """
+    if throttle is None:
+        return False
+    return (
+        throttle.batch_size <= throttle.min_batch
+        and throttle.delay >= throttle.max_delay * 0.9
+    )
+
+
+def should_fall_back_to_page_capture(
+    stats: dict[str, Any], throttle: "AdaptiveThrottle | None" = None,
+) -> tuple[bool, str]:
     """Decide, after the breaker has tripped on signed_fetch, whether to
     switch transport. Returns (switch, reason).
 
@@ -1419,6 +1441,13 @@ def should_fall_back_to_page_capture(stats: dict[str, Any]) -> tuple[bool, str]:
         )
 
     _consecutive_signed_throttle_trips += 1
+    if _throttle_is_saturated(throttle):
+        _consecutive_signed_throttle_trips = 0
+        return True, (
+            "signed_fetch still refused with the throttle already at its floor "
+            f"({throttle.describe()}) - backing off further cannot help, falling "
+            "back to page_capture so sales data keeps flowing"
+        )
     if _consecutive_signed_throttle_trips >= SIGNED_THROTTLE_CYCLES_BEFORE_FALLBACK:
         trips = _consecutive_signed_throttle_trips
         _consecutive_signed_throttle_trips = 0
@@ -1650,7 +1679,7 @@ async def run_forever() -> None:
                                 CIRCUIT_BREAKER_BACKOFF_SECONDS,
                             )
                             if TRANSPORT_MODE == "auto":
-                                switch, why = should_fall_back_to_page_capture(stats)
+                                switch, why = should_fall_back_to_page_capture(stats, throttle)
                                 if switch:
                                     switch_to_page_capture(why)
                                 else:
