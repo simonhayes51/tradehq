@@ -246,3 +246,56 @@ class TestBoundedRun:
         source = Path(sales.__file__).read_text()
         empty_branch = source.split("if not due:")[1].split("continue")[0]
         assert "sleep_or_shutdown(IDLE_SLEEP, shutdown_event)" in empty_branch
+
+
+class TestRateLimitDoesNotForceTheExpensiveTransport:
+    """A 429 means "slow down". A 403/challenge means "not this way".
+
+    Conflating them was expensive: every throttle marker authorised the
+    auto-mode transport switch, so a burst of rate limiting flipped the
+    worker from signed_fetch (~25 KB JSON per card) onto page_capture (a
+    full ~275 KB page navigation with JS rendering and a 4s settle, per
+    card). Roughly 10x the cost per card, chosen automatically, in
+    response to a signal that specifically means requests are too
+    frequent - and sticky, because a failed reprobe parks it back on
+    page_capture.
+    """
+
+    def test_a_429_storm_does_not_trigger_a_transport_switch(self):
+        stats = {"failed": 50, "ok": 0, "errors": {"data_429": 50}}
+        assert sales._mostly_challenge_failures(stats) is False
+
+    def test_a_403_wall_still_triggers_a_transport_switch(self):
+        # The case the switch was actually designed for must still work.
+        stats = {"failed": 50, "ok": 0, "errors": {"data_403": 50}}
+        assert sales._mostly_challenge_failures(stats) is True
+
+    def test_a_bot_challenge_still_triggers_a_transport_switch(self):
+        stats = {"failed": 30, "ok": 0, "errors": {"challenge_required": 30}}
+        assert sales._mostly_challenge_failures(stats) is True
+
+    def test_upstream_5xx_does_not_trigger_a_transport_switch(self):
+        # An upstream hiccup says nothing about which transport to use.
+        stats = {"failed": 40, "ok": 0, "errors": {"sign_502": 20, "data_503": 20}}
+        assert sales._mostly_challenge_failures(stats) is False
+
+    def test_a_mixed_cycle_switches_only_on_a_blocking_majority(self):
+        mostly_rate_limited = {"failed": 10, "ok": 0,
+                               "errors": {"data_429": 8, "data_403": 2}}
+        mostly_blocked = {"failed": 10, "ok": 0,
+                          "errors": {"data_429": 2, "data_403": 8}}
+        assert sales._mostly_challenge_failures(mostly_rate_limited) is False
+        assert sales._mostly_challenge_failures(mostly_blocked) is True
+
+    def test_a_429_still_drives_the_throttle_to_back_off(self):
+        """The fix must not stop us reacting to rate limiting - it only
+        stops us reacting with the wrong remedy."""
+        assert sales.is_throttle_signal("data_429") is True
+        assert sales.is_blocking_signal("data_429") is False
+
+    def test_the_throttle_marker_list_is_unchanged(self):
+        # AdaptiveThrottle's inputs are untouched; only what the circuit
+        # breaker DOES afterwards changed.
+        assert sales._THROTTLE_ERROR_MARKERS == (
+            "429", "403", "sign_5", "data_5", "challenge",
+        )

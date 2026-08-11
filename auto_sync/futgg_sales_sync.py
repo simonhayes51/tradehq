@@ -1081,6 +1081,38 @@ def is_throttle_signal(error: str) -> bool:
     return any(marker in error for marker in _THROTTLE_ERROR_MARKERS)
 
 
+#: Errors that mean this TRANSPORT is being refused, as opposed to errors
+#: that merely mean we are going too fast.
+#:
+#: The distinction is load-bearing and its absence was expensive. Every
+#: throttle marker above used to also authorise the auto-mode transport
+#: switch, so a burst of HTTP 429s - which is FUT.GG saying "slow down",
+#: nothing to do with which transport we use - tripped the breaker and
+#: flipped the worker from signed_fetch to page_capture. That trade is
+#: catastrophic for cost: signed_fetch is a ~25 KB JSON fetch, while
+#: page_capture is a full ~275 KB page navigation with JS rendering and a
+#: 4-second settle for EVERY card. Roughly a tenfold cost increase, chosen
+#: automatically, in response to a signal that specifically means
+#: "requests are too frequent".
+#:
+#: Worse, it is sticky: after switching, signed_fetch is only reprobed
+#: every SIGNED_REPROBE_MINUTES, and a failed reprobe parks it on
+#: page_capture again. A single overload burst could therefore leave the
+#: worker on the expensive transport indefinitely.
+#:
+#: A 429 is answered by backing off, which AdaptiveThrottle already does
+#: (it still reacts to the full marker list above - that behaviour is
+#: unchanged). Only an outright refusal of this transport - a 403 wall or
+#: a bot challenge - is evidence that a DIFFERENT transport is needed. 5xx
+#: is excluded too: an upstream hiccup says nothing about transport.
+_BLOCKING_ERROR_MARKERS = ("403", "challenge")
+
+
+def is_blocking_signal(error: str) -> bool:
+    """True only for errors meaning this transport is being refused."""
+    return any(marker in error for marker in _BLOCKING_ERROR_MARKERS)
+
+
 #: Cap on how many individual failures get a full diagnostic log line per
 #: batch - a 403-everything cycle can fail all 200 cards, and logging
 #: each one in full would be pure noise. stats["errors"] already carries
@@ -1313,15 +1345,22 @@ async def process_batch_page_capture(
 
 
 def _mostly_challenge_failures(stats: dict[str, Any]) -> bool:
-    """Whether a cycle's failures look like Cloudflare pushing back
-    (challenge/403/5xx) rather than an unrelated application bug -
-    switching transport only makes sense for the former (item 4)."""
+    """Whether a cycle's failures mean this TRANSPORT is being refused
+    (403 wall / bot challenge), rather than merely that we are sending
+    requests too quickly.
+
+    Only the former justifies switching transport. This used to count
+    every throttle signal - including HTTP 429 - which meant a burst of
+    rate limiting flipped the worker onto page_capture, a transport an
+    order of magnitude more expensive per card, in response to a signal
+    that means "slow down". See _BLOCKING_ERROR_MARKERS.
+    """
     errors = stats.get("errors", {})
     total_failed = stats["failed"]
     if total_failed == 0:
         return False
-    challenge_like = sum(count for err, count in errors.items() if is_throttle_signal(err))
-    return (challenge_like / total_failed) >= 0.5
+    blocking = sum(count for err, count in errors.items() if is_blocking_signal(err))
+    return (blocking / total_failed) >= 0.5
 
 
 async def _reprobe_signed_fetch(
