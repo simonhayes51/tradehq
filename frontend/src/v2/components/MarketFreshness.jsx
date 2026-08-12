@@ -14,7 +14,12 @@ import "./market-freshness.css";
 
 export const STALE_THRESHOLD_SECONDS = 6 * 60 * 60; // 6h flat default, see header note
 
-function formatAge(seconds) {
+// Exported so callers that hold a timestamp rather than an age can render
+// the same wording. Sale rows in particular MUST derive their age from
+// approximate_sold_at at render time - see FutggMarketSection's
+// "Recent sales" table for why reusing the scraper's own age string is
+// wrong.
+export function formatAge(seconds) {
   if (seconds == null || !Number.isFinite(Number(seconds))) return null;
   const s = Math.max(0, Math.round(Number(seconds)));
   if (s < 60) return "moments ago";

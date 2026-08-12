@@ -10,21 +10,65 @@
 // with no FUT.GG-side row yet still gets its existing analysis modal
 // untouched, and this section just shows its own honest empty state.
 //
-// approximate_sold_at is APPROXIMATE - age_text is the primary display
-// for each sale row; approximate_sold_at is only ever shown as a
-// secondary/title-attribute detail, explicitly labeled "approximate".
+// approximate_sold_at is APPROXIMATE, but it is nonetheless the only
+// field here that carries an absolute time, and the "Recent sales" table
+// below MUST render from it.
+//
+// This file used to say the opposite - that age_text was the primary
+// display - and that was wrong in a way that actively lied to the user.
+// age_text ("2 minutes ago") is the relative string FUT.GG rendered at
+// SCRAPE time; auto_sync/futgg_common.py stores it verbatim alongside
+// approximate_sold_at = captured_at - age_seconds. The string is frozen
+// the moment it is written, so a row scraped four days ago still reads
+// "2 minutes ago" forever.
+//
+// Seen in production on card 218342893: this table showed eleven sales
+// from "2 minutes ago" to "25 minutes ago" while the analysis panel on
+// the same page correctly reported the newest completed sale as 92 hours
+// old and the 24h chart correctly drew nothing. All three were reading
+// the same rows; only this table was reading the frozen label.
+//
+// age_text is kept as a title-attribute detail (it is what the source
+// actually said) but never as the displayed age.
 import { useState } from "react";
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip } from "recharts";
 import { ShieldCheck, Star } from "lucide-react";
 import SectionCard from "../../../components/SectionCard";
 import CoinValue from "../../../components/CoinValue";
-import MarketFreshness from "../../../components/MarketFreshness";
+import MarketFreshness, { formatAge } from "../../../components/MarketFreshness";
 import { addWatch } from "../../../../api/watchlist";
 import {
   useFutggPlayer,
   useFutggPlayerPrices,
   useFutggPlayerSales,
 } from "../../../hooks/useFutggMarket";
+
+// Enough rows to read the recent shape of the market without turning the
+// page into a scroll trap. The chart already covers depth.
+export const RECENT_SALES_ROWS = 25;
+
+// Age as of NOW, from the only absolute field on the row. Never age_text -
+// see this file's header. Falls back to the frozen string only when there
+// is no timestamp at all, and says so, rather than presenting a stale
+// relative label as if it were current.
+export function saleAgeLabel(sale) {
+  if (sale.approximate_sold_at) {
+    const soldAt = new Date(sale.approximate_sold_at).getTime();
+    if (Number.isFinite(soldAt)) {
+      return formatAge((Date.now() - soldAt) / 1000);
+    }
+  }
+  return sale.age_text ? `${sale.age_text} (at scrape time)` : "approximate time unavailable";
+}
+
+export function saleTitle(sale) {
+  const parts = [];
+  if (sale.approximate_sold_at) {
+    parts.push(`Approximate: ${new Date(sale.approximate_sold_at).toLocaleString()}`);
+  }
+  if (sale.age_text) parts.push(`FUT.GG said "${sale.age_text}" when this sale was scraped`);
+  return parts.length ? parts.join(" · ") : undefined;
+}
 
 export default function FutggMarketSection({ cardId }) {
   const playerQuery = useFutggPlayer(cardId);
@@ -88,7 +132,12 @@ export default function FutggMarketSection({ cardId }) {
     bin: p.lowest_bin,
   }));
 
-  const sales = Array.isArray(salesQuery.data) ? salesQuery.data : salesQuery.data?.items || [];
+  const allSales = Array.isArray(salesQuery.data) ? salesQuery.data : salesQuery.data?.items || [];
+  // The endpoint serves up to MAX_CHART_SALES (500) rows because the chart
+  // needs them. A table does not: past a couple of dozen rows it is an
+  // unreadable wall that pushes the rest of the page off-screen, and every
+  // row beyond the first few tells the user nothing new.
+  const sales = allSales.slice(0, RECENT_SALES_ROWS);
 
   return (
     <div className="grid grid-cols-1 gap-4">
@@ -180,14 +229,19 @@ export default function FutggMarketSection({ cardId }) {
                     <td className="py-1.5"><CoinValue value={sale.sold_price} /></td>
                     <td
                       className="py-1.5 text-[var(--v2-muted)]"
-                      title={sale.approximate_sold_at ? `Approximate: ${new Date(sale.approximate_sold_at).toLocaleString()}` : undefined}
+                      title={saleTitle(sale)}
                     >
-                      {sale.age_text || (sale.approximate_sold_at ? "approximate time unavailable" : "—")}
+                      {saleAgeLabel(sale)}
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
+            {allSales.length > sales.length ? (
+              <p className="pt-2 text-[11px] text-[var(--v2-muted)]">
+                Showing the {sales.length} most recent of {allSales.length} completed sales.
+              </p>
+            ) : null}
           </div>
         )}
       </SectionCard>
