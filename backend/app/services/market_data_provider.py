@@ -160,6 +160,108 @@ _SNAPSHOT_COLUMNS = """
 # either. test_snapshot_columns_cover_engine_reads() in
 # test_futgg_price_freshness_clock.py now asserts the two agree.
 
+#: Columns that a database may legitimately not have yet, because the
+#: migration adding them can be SKIPPED rather than applied - every
+#: futgg_market_snapshot migration declares `requires-column` guards and
+#: defers when auto_sync has not yet created the columns it reads (see
+#: 050's header). Naming a missing column in a SELECT is not a degraded
+#: read, it is an UndefinedColumnError on EVERY provider query: the
+#: players list, opportunities, trade finder and dashboard all 500 at
+#: once. That is strictly worse than the stale-data problem adding these
+#: columns was meant to solve, and migration 050 explicitly promised the
+#: opposite ("a database still on 047's view shape keeps working exactly
+#: as it did"). Adding them to the list above silently broke that promise.
+#:
+#: The engine already treats each of these as "gate not applicable" when
+#: absent, so dropping them from the SELECT degrades exactly as intended.
+_OPTIONAL_SNAPSHOT_COLUMNS = frozenset({
+    "bin_checked_at",           # migration 052
+    "sales_p10",                # migration 050
+    "sales_p90",                # migration 050
+    "sales_interdecile_ratio",  # migration 050
+})
+
+#: Resolved once per process against the live view. None until first use.
+_snapshot_columns_sql: Optional[str] = None
+#: Whether the live view actually has bin_checked_at. Set by
+#: resolve_snapshot_columns; None means "not yet resolved".
+_snapshot_has_checked_at: Optional[bool] = None
+
+
+def price_age_sql(column_prefix: str = "") -> str:
+    """SQL for "how old is our price for this card", tolerant of a view
+    that predates migration 052.
+
+    Mirrors futgg_intelligence._price_observed_at: prefer when the feed
+    last CONFIRMED the price, fall back to when it last CHANGED. Naming
+    bin_checked_at unconditionally would raise UndefinedColumnError on a
+    database where 052 has not run, taking out every query that filters
+    or reports on price age.
+    """
+    captured = f"{column_prefix}bin_captured_at"
+    if _snapshot_has_checked_at is False:
+        return captured
+    return f"coalesce({column_prefix}bin_checked_at, {captured})"
+
+
+async def resolve_snapshot_columns(conn: asyncpg.Connection) -> str:
+    """The SELECT list, narrowed to columns this database actually has.
+
+    Cached per process: the view's shape only changes when a migration
+    runs, and a migration means a redeploy.
+    """
+    global _snapshot_columns_sql
+    if _snapshot_columns_sql is not None:
+        return _snapshot_columns_sql
+
+    wanted = [c.strip() for c in _SNAPSHOT_COLUMNS.replace("\n", " ").split(",")]
+    wanted = [c for c in wanted if c]
+    present = {
+        r["attname"]
+        for r in await conn.fetch(
+            """
+            SELECT a.attname FROM pg_attribute a
+            JOIN pg_class c ON c.oid = a.attrelid
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE c.relname = 'futgg_market_snapshot'
+              AND n.nspname = current_schema()
+              AND a.attnum > 0 AND NOT a.attisdropped
+            """
+        )
+    }
+    if not present:
+        # The view does not exist yet (fresh database, auto_sync has not
+        # bootstrapped). Leave the list alone and let the caller's own
+        # error handling report a missing relation, which is the honest
+        # error - not a silently truncated column list.
+        _snapshot_columns_sql = _SNAPSHOT_COLUMNS
+        return _snapshot_columns_sql
+
+    missing = [c for c in wanted if c not in present]
+    required_missing = [c for c in missing if c not in _OPTIONAL_SNAPSHOT_COLUMNS]
+    if required_missing:
+        # Not survivable by dropping columns - the view is a shape this
+        # code does not understand. Say so loudly; the query below will
+        # raise and that is correct.
+        log.error(
+            "futgg_market_snapshot is missing required column(s) %s - the market "
+            "layer cannot read it. Has a migration failed part-way?",
+            ", ".join(required_missing),
+        )
+    elif missing:
+        log.warning(
+            "futgg_market_snapshot lacks optional column(s) %s - the features they "
+            "drive are disabled until the migration that adds them runs. "
+            "bin_checked_at absent means the price-freshness gate falls back to "
+            "'when the price last changed', which rejects cards whose price is "
+            "merely stable.",
+            ", ".join(missing),
+        )
+    global _snapshot_has_checked_at
+    _snapshot_has_checked_at = "bin_checked_at" in present
+    _snapshot_columns_sql = ", ".join(c for c in wanted if c in present) or _SNAPSHOT_COLUMNS
+    return _snapshot_columns_sql
+
 
 @dataclass(frozen=True)
 class PlayerFilters:
@@ -221,10 +323,10 @@ def _apply_common_filters(
         # bin_checked_at to the view; a database old enough to lack it is
         # one where migration 050 (identical requires-column list) never
         # applied either, so the view is not at this shape at all.
+        age = price_age_sql()
         where.append(
-            f"coalesce(bin_checked_at, bin_captured_at) IS NOT NULL AND "
-            f"EXTRACT(EPOCH FROM (now() - coalesce(bin_checked_at, bin_captured_at))) "
-            f"/ 60.0 <= ${len(args)}"
+            f"{age} IS NOT NULL AND "
+            f"EXTRACT(EPOCH FROM (now() - {age})) / 60.0 <= ${len(args)}"
         )
     if f.search:
         term = f"%{f.search.strip()}%"
@@ -248,7 +350,8 @@ class FutggMarketDataProvider(MarketDataProvider):
     async def get_player(self, card_id: int) -> Optional[Dict[str, Any]]:
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
-                f"SELECT {_SNAPSHOT_COLUMNS} FROM futgg_market_snapshot WHERE source_card_id = $1",
+                f"SELECT {await resolve_snapshot_columns(conn)} FROM futgg_market_snapshot "
+                f"WHERE source_card_id = $1",
                 card_id,
             )
         return dict(row) if row else None
@@ -262,7 +365,8 @@ class FutggMarketDataProvider(MarketDataProvider):
             return {}
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
-                f"SELECT {_SNAPSHOT_COLUMNS} FROM futgg_market_snapshot WHERE source_card_id = ANY($1::bigint[])",
+                f"SELECT {await resolve_snapshot_columns(conn)} FROM futgg_market_snapshot "
+                f"WHERE source_card_id = ANY($1::bigint[])",
                 list(card_ids),
             )
         return {int(row["source_card_id"]): dict(row) for row in rows}
@@ -460,11 +564,12 @@ class FutggMarketDataProvider(MarketDataProvider):
 
         out: Dict[str, List[Dict[str, Any]]] = {}
         async with self._pool.acquire() as conn:
+            columns = await resolve_snapshot_columns(conn)
             for segment in SEGMENTS:
                 # segment.where/order_by are static strings from a
                 # module-level whitelist - never user input.
                 sql = f"""
-                    SELECT {_SNAPSHOT_COLUMNS}
+                    SELECT {columns}
                     FROM futgg_market_snapshot
                     WHERE is_tradeable IS DISTINCT FROM FALSE
                       AND ({segment.where})
@@ -494,14 +599,14 @@ class FutggMarketDataProvider(MarketDataProvider):
         where_clause = f"WHERE {' AND '.join(where)}" if where else ""
         args.append(limit)
         args.append(offset)
-        sql = f"""
-            SELECT {_SNAPSHOT_COLUMNS}
-            FROM futgg_market_snapshot
-            {where_clause}
-            ORDER BY {order_by}
-            LIMIT ${len(args) - 1} OFFSET ${len(args)}
-        """
         async with self._pool.acquire() as conn:
+            sql = f"""
+                SELECT {await resolve_snapshot_columns(conn)}
+                FROM futgg_market_snapshot
+                {where_clause}
+                ORDER BY {order_by}
+                LIMIT ${len(args) - 1} OFFSET ${len(args)}
+            """
             rows = await conn.fetch(sql, *args)
 
         results = [dict(r) for r in rows]
@@ -552,15 +657,17 @@ class FutggMarketDataProvider(MarketDataProvider):
             # comment) - grouped by price_tier purely for readability in
             # the response, not because the threshold itself differs by
             # group anymore.
+            # Resolve first: price_age_sql() only knows whether
+            # bin_checked_at exists once the view has been inspected.
+            await resolve_snapshot_columns(conn)
+            age = price_age_sql()
             stale_rows = await conn.fetch(
-                """
+                f"""
                 SELECT price_tier, count(*) AS stale_count
                 FROM futgg_market_snapshot
                 WHERE is_active AND is_tradeable IS NOT FALSE AND current_bin IS NOT NULL
-                  AND coalesce(bin_checked_at, bin_captured_at) IS NOT NULL
-                  AND EXTRACT(
-                          EPOCH FROM (now() - coalesce(bin_checked_at, bin_captured_at))
-                      ) / 60.0 > $1
+                  AND {age} IS NOT NULL
+                  AND EXTRACT(EPOCH FROM (now() - {age})) / 60.0 > $1
                 GROUP BY price_tier
                 """,
                 EXPECTED_PRICE_INTERVAL_MINUTES,
