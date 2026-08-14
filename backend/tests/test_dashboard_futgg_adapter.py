@@ -141,6 +141,21 @@ def test_composited_card_image_wins_as_generated_card_url_even_with_a_bg_image()
 # never changed. _compute_live_market_regime recomputes the same shape of
 # signal directly off the FUT.GG-native (row, CardIntelligence) pairs
 # already evaluated for the opportunity feeds, so it must vary with them.
+#
+# The pools below are scaled with _pool() rather than written out as two
+# or three literal cards. That is not cosmetic: the function now refuses
+# to characterise a market from a handful of cards at all (see
+# MIN_VALUED_CARDS_FOR_REGIME and test_dashboard_market_regime.py), and a
+# three-card fixture was only ever a convenience of test-writing - it
+# described a situation the dashboard should never render a verdict from.
+# Scaling keeps each test's proportions, and therefore what it checks,
+# exactly as they were.
+
+
+def _pool(patterns, copies=12):
+    """Repeat a list of (row, intel) patterns into a realistically-sized
+    candidate pool, preserving their proportions."""
+    return [pattern for _ in range(copies) for pattern in patterns]
 
 
 def test_empty_candidate_pool_reports_unknown_not_a_fabricated_state():
@@ -151,56 +166,67 @@ def test_empty_candidate_pool_reports_unknown_not_a_fabricated_state():
 
 
 def test_mostly_falling_trend_reports_bearish():
-    pairs = [
+    pairs = _pool([
         (_row(), _ci(signal="watch", trend_state="falling_knife")),
         (_row(), _ci(signal="watch", trend_state="downtrend")),
         (_row(), _ci(signal="watch", trend_state="downtrend")),
         (_row(), _ci(signal="watch", trend_state="sideways")),
-    ]
+    ])
     result = _compute_live_market_regime(pairs)
     assert result["label"] == "Prices Dropping"
     assert result["dataQuality"] == "GOOD"
 
 
 def test_wide_discount_with_little_falling_reports_bullish():
-    pairs = [
+    pairs = _pool([
         (_row(current_bin=45000), _ci(signal="buy", trend_state="sideways", fair_value=Decimal("50000"))),
         (_row(current_bin=44000), _ci(signal="strong_buy", trend_state="sideways", fair_value=Decimal("50000"))),
         (_row(current_bin=45000), _ci(signal="watch", trend_state="sideways", fair_value=Decimal("50000"))),
-    ]
+    ])
     result = _compute_live_market_regime(pairs)
     assert result["label"] == "Good Time to Buy"
 
 
 def test_low_average_liquidity_reports_slow_trading():
-    pairs = [
+    pairs = _pool([
         (_row(sales_count=1, sales_window_span_minutes=600.0), _ci(signal="hold", trend_state="sideways")),
         (_row(sales_count=1, sales_window_span_minutes=600.0), _ci(signal="hold", trend_state="sideways")),
-    ]
+    ])
     result = _compute_live_market_regime(pairs)
     assert result["label"] == "Slow Trading"
 
 
 def test_steady_market_is_the_default_when_nothing_stands_out():
-    pairs = [
+    pairs = _pool([
         (_row(sales_count=40, sales_window_span_minutes=60.0), _ci(signal="hold", trend_state="sideways")),
         (_row(sales_count=40, sales_window_span_minutes=60.0), _ci(signal="hold", trend_state="sideways")),
-    ]
+    ])
     result = _compute_live_market_regime(pairs)
     assert result["label"] == "Steady Market"
 
 
-def test_confidence_and_liquid_cards_scale_with_candidate_pool_size():
-    small = _compute_live_market_regime([
-        (_row(sales_count=40, sales_window_span_minutes=60.0), _ci(signal="hold", trend_state="sideways")),
-    ])
-    large = _compute_live_market_regime([
-        (_row(sales_count=40, sales_window_span_minutes=60.0), _ci(signal="hold", trend_state="sideways"))
-        for _ in range(400)
-    ])
+def test_confidence_scales_with_evidence_not_merely_with_pool_size():
+    """This test previously asserted that confidence rose with the
+    CANDIDATE COUNT, which is exactly the defect that put "STRONG MARKET
+    95/100" next to "BUY SIGNALS 0" on the live dashboard: a big scan of
+    cards nothing could be said about scored the same as a well-evidenced
+    market. Pool size still bounds confidence, but only alongside the
+    share of that pool actually valued."""
+    valued_row = (_row(sales_count=40, sales_window_span_minutes=60.0),
+                  _ci(signal="hold", trend_state="sideways"))
+    unvalued_row = (_row(sales_count=0, sales_window_span_minutes=None),
+                    _ci(signal="insufficient_data", trend_state="sideways"))
+
+    small = _compute_live_market_regime([valued_row] * 40)
+    large = _compute_live_market_regime([valued_row] * 400)
     assert large["confidence"] > small["confidence"]
     assert large["metrics"]["liquidCards"] == 400
-    assert small["metrics"]["liquidCards"] == 1
+
+    # Same pool size as `large`, same 400 cards looked at - but three
+    # quarters of them could not be valued. Confidence must fall.
+    diluted = _compute_live_market_regime([valued_row] * 100 + [unvalued_row] * 300)
+    assert diluted["metrics"]["liquidCards"] == 400
+    assert diluted["confidence"] < large["confidence"]
 
 
 def test_composited_card_image_falls_back_to_raw_futgg_url_when_not_yet_mirrored():

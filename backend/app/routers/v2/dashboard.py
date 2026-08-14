@@ -58,6 +58,19 @@ _SIGNAL_TO_STATUS = {
 # not stocks, and isn't assumed to know those terms.
 _STATE_LABEL = {"bullish": "Good Time to Buy", "bearish": "Prices Dropping", "illiquid": "Slow Trading", "normal": "Steady Market"}
 
+# Below either of these, _compute_live_market_regime declines to
+# characterise the market at all. Every metric it computes degrades
+# silently to 0.0 when the underlying evidence is missing, and 0% of
+# cards falling is indistinguishable from 0% of cards known - so without
+# a floor on real evidence the function reports a calm, healthy market
+# precisely when it knows least. Seen live: 1,344 cards scored, none
+# valued, reported as a 95/100 market beside a zero buy-signal count.
+MIN_VALUED_CARDS_FOR_REGIME = 20
+MIN_EVIDENCE_PCT_FOR_REGIME = 5.0
+# Sample size at which the count itself stops limiting confidence. Beyond
+# this, only the share of cards actually valued moves the number.
+REGIME_FULL_SAMPLE_CARDS = 300
+
 # Recommendation Engine V1.2 (recommendation_engine_v2.py) writes a real
 # status enum - BUY/WAIT/SELL/AVOID/INSUFFICIENT_DATA - straight onto
 # `status`. This is now the source of truth; the legacy lowercase
@@ -195,6 +208,32 @@ def _compute_live_market_regime(scored_pairs: List[Any]) -> Dict[str, Any]:
             "metrics": {"liquidCards": 0, "avgVolatility": 0, "avgValueGap": 0},
         }
 
+    # How many of those cards the engine could actually VALUE, as opposed
+    # to merely look at. This is the distinction the first version of this
+    # function missed entirely, and it is the whole ballgame: every metric
+    # below degrades silently to 0.0 when the evidence is absent rather
+    # than reporting that it is absent. No cards falling gives
+    # falling_pct 0.0; no buy signals gives avg_discount 0.0. Feed those
+    # into the classifier and a market we know nothing about scores
+    # identically to a calm, healthy one.
+    valued = [ci for _, ci in scored_pairs if ci.signal != "insufficient_data"]
+    evidence_pct = 100.0 * len(valued) / total
+
+    if len(valued) < MIN_VALUED_CARDS_FOR_REGIME or evidence_pct < MIN_EVIDENCE_PCT_FOR_REGIME:
+        # Observed live: 1,344 cards scored, 0 valued, and this function
+        # reported "Steady Market" at 95/100 next to a "Buy signals: 0"
+        # tile. Saying nothing is the only honest output here.
+        return {
+            "label": "Unknown", "confidence": 0,
+            "summary": (
+                f"Only {len(valued)} of {total} tracked cards have enough fresh price "
+                "and sales data to value right now, so there is nothing solid to say "
+                "about the market yet."
+            ),
+            "dataQuality": "LIMITED",
+            "metrics": {"liquidCards": total, "avgVolatility": 0, "avgValueGap": 0},
+        }
+
     trend_known = [ci for _, ci in scored_pairs if ci.trend_state != INSUFFICIENT_TREND_DATA]
     falling_pct = (
         100.0 * sum(1 for ci in trend_known if ci.trend_state in (FALLING_KNIFE, DOWNTREND)) / len(trend_known)
@@ -228,16 +267,37 @@ def _compute_live_market_regime(scored_pairs: List[Any]) -> Dict[str, Any]:
     else:
         state = "normal"
 
-    confidence = int(max(50, min(95, 50 + min(total, 500) / 10)))
+    # Confidence in the VERDICT, not a count of how much we looked at.
+    #
+    # This was `max(50, min(95, 50 + min(total, 500) / 10))` - purely a
+    # function of candidate-pool size, with a 50 floor. It therefore
+    # returned 95 whenever the scanner produced 450+ candidates, whether
+    # or not a single one of them could be valued, and could never go
+    # below 50 no matter how little was known. That is how the dashboard
+    # came to read "STRONG MARKET 95/100" beside "BUY SIGNALS 0".
+    #
+    # Two independent things have to be true before a verdict deserves
+    # confidence, so they multiply rather than average - neither can
+    # compensate for the other being near zero:
+    #   * a big enough sample to generalise from at all, and
+    #   * enough of that sample actually valued rather than declined.
+    # No floor: not knowing is a real answer. Capped below 100 because a
+    # market read is never certain.
+    sample_term = min(1.0, total / REGIME_FULL_SAMPLE_CARDS)
+    evidence_term = len(valued) / total
+    confidence = int(round(min(95.0, 100.0 * sample_term * evidence_term)))
     indicators = {
         "total_cards": total, "avg_liquidity": avg_liquidity,
         "avg_discount_pct": avg_discount, "falling_pct": falling_pct,
+        "valued_cards": len(valued), "evidence_pct": evidence_pct,
     }
     return {
         "label": _STATE_LABEL.get(state, state),
         "confidence": confidence,
         "summary": _regime_summary(state, indicators),
-        "dataQuality": "GOOD",
+        # Reflects the evidence behind the verdict rather than being a
+        # constant that said GOOD even when nothing could be valued.
+        "dataQuality": "GOOD" if evidence_pct >= 40 else "LIMITED",
         "metrics": {
             "liquidCards": total,
             "avgVolatility": avg_liquidity,
