@@ -962,15 +962,173 @@ async def report_coverage(conn: asyncpg.Connection) -> None:
         )
 
 
+#: How long a DDL statement in ensure_schema() may wait for its lock
+#: before giving up. Deliberately short. See ensure_schema's docstring:
+#: the alternative is inheriting the pool's 120s command_timeout, which
+#: is long enough to kill the worker outright and short enough to leave
+#: an ACCESS EXCLUSIVE request queued on futgg_players for two minutes,
+#: blocking every writer behind it while it waits.
+SCHEMA_LOCK_TIMEOUT_MS = env_int("FUTGG_SALES_SCHEMA_LOCK_TIMEOUT_MS", 5000, minimum=250)
+
+
+async def _existing_columns(conn: asyncpg.Connection, table: str) -> set[str]:
+    """Column names on `table`, or an empty set if it does not exist.
+
+    Reads pg_attribute rather than information_schema: no locks, no
+    permission-dependent view filtering, one index scan.
+    """
+    rows = await conn.fetch(
+        """
+        SELECT a.attname
+        FROM pg_attribute a
+        JOIN pg_class c ON c.oid = a.attrelid
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE c.relname = $1 AND n.nspname = current_schema()
+          AND a.attnum > 0 AND NOT a.attisdropped
+        """,
+        table,
+    )
+    return {r["attname"] for r in rows}
+
+
+async def _existing_indexes(conn: asyncpg.Connection) -> set[str]:
+    rows = await conn.fetch(
+        "SELECT indexname FROM pg_indexes WHERE schemaname = current_schema()"
+    )
+    return {r["indexname"] for r in rows}
+
+
+async def _apply_schema_changes(
+    conn: asyncpg.Connection, needed: list[tuple[str, str]],
+) -> None:
+    """Run the DDL that introspection found genuinely missing.
+
+    Under a short lock_timeout, because the alternative is what killed
+    the worker in production: an ACCESS EXCLUSIVE request on
+    futgg_players sitting in the lock queue for the pool's full 120s
+    command_timeout, blocking every writer behind it the entire time and
+    then raising anyway.
+
+    A lock failure is NOT automatically fatal. Whether it matters depends
+    on why the statement was queued, and the catalogue can answer that:
+    if the object exists after all - a concurrent deploy applied it, or
+    the introspection raced - the worker has everything it needs and
+    carries on. Only a genuinely absent object aborts startup, which is
+    the case that always deserved to.
+    """
+    if not needed:
+        log.info("schema: already current, no DDL required")
+        return
+
+    log.info(
+        "schema: %d change(s) required: %s",
+        len(needed), ", ".join(label for label, _ in needed),
+    )
+    blocked: list[str] = []
+    try:
+        await conn.execute(f"SET lock_timeout = {SCHEMA_LOCK_TIMEOUT_MS}")
+        for label, sql in needed:
+            try:
+                await conn.execute(sql)
+                log.info("schema: applied %s", label)
+            except (asyncpg.exceptions.LockNotAvailableError, asyncio.TimeoutError):
+                # futgg_players is written continuously by the bulk price
+                # sync; losing a race for its lock is ordinary, not an
+                # error, and says nothing about whether the object exists.
+                log.warning(
+                    "schema: could not acquire a lock for %s within %dms - "
+                    "will verify whether it is actually needed",
+                    label, SCHEMA_LOCK_TIMEOUT_MS,
+                )
+                blocked.append(label)
+    finally:
+        # RESET, not a second SET: the pool hands this connection on to
+        # the rest of the worker, whose statements must not inherit a
+        # 5-second lock timeout.
+        await conn.execute("RESET lock_timeout")
+
+    if not blocked:
+        return
+
+    columns = await _existing_columns(conn, "futgg_players")
+    columns |= {f"futgg_sales_history.{c}" for c in await _existing_columns(conn, "futgg_sales_history")}
+    indexes = await _existing_indexes(conn)
+    still_missing = []
+    for label in blocked:
+        name = label.rsplit(".", 1)[-1]
+        if name in columns or name in indexes:
+            continue
+        if label == "futgg_sales_history table" and await _existing_columns(conn, "futgg_sales_history"):
+            continue
+        still_missing.append(label)
+
+    if still_missing:
+        raise RuntimeError(
+            "schema changes are required but their locks could not be acquired: "
+            + ", ".join(still_missing)
+            + ". futgg_players is likely under sustained write load - retry when "
+            "the bulk price sync is between cycles."
+        )
+    log.info(
+        "schema: %d blocked statement(s) turned out to be unnecessary - "
+        "the objects already exist", len(blocked),
+    )
+
+
 async def ensure_schema(conn: asyncpg.Connection) -> None:
+    """Bring the schema up to what this worker needs - doing nothing at
+    all when it already is.
+
+    WHY THE INTROSPECTION
+    --------------------
+    Every statement below is written IF NOT EXISTS, which makes them
+    idempotent in EFFECT but not in COST. `ALTER TABLE ... ADD COLUMN IF
+    NOT EXISTS` still takes an ACCESS EXCLUSIVE lock on the table to
+    discover there is nothing to do, and futgg_players is the single
+    busiest table in the system: futgg_bulk_price_sync.py holds row locks
+    on it for the 62-66 seconds its write stage takes, every cycle.
+
+    That collision is not theoretical. Production, 2026-08-14 15:05:22:
+
+        File "/app/futgg_sales_sync.py", line 1003, in ensure_schema
+          await conn.execute(
+        TimeoutError
+
+    Line 1003 was `ADD COLUMN IF NOT EXISTS next_sales_due_at` - a column
+    that had existed for weeks. It waited out the pool's whole 120s
+    command_timeout for a lock it did not need, then killed the worker on
+    startup. And because this worker runs bounded (see
+    MAX_RUNTIME_MINUTES) and is restarted, it re-ran this DDL every 45
+    minutes forever, each time queuing an ACCESS EXCLUSIVE request that
+    blocks every writer behind it for as long as it waits.
+
+    So: look first, and only take a lock when there is real work. On a
+    steady deployment this function now performs two catalogue reads and
+    no DDL whatsoever.
+
+    WHY IT NO LONGER DIES ON A LOCK
+    -------------------------------
+    A blocked lock and a missing column are completely different
+    situations, and inheriting command_timeout conflated them. DDL now
+    runs under a short lock_timeout, and a failure is re-checked against
+    the catalogue: if the schema turns out to be correct anyway - someone
+    else applied it, or it was always there - the worker continues.
+    It aborts only when something it genuinely needs is genuinely absent.
+    """
+    needed: list[tuple[str, str]] = []
+
+    sales_columns = await _existing_columns(conn, "futgg_sales_history")
+    player_columns = await _existing_columns(conn, "futgg_players")
+    indexes = await _existing_indexes(conn)
+
     # futgg_sales_history is owned by futgg_price_sync.ensure_schema, and
     # this worker is meant to REPLACE that one - so on any database where
     # price sync has been retired (or never ran) the table this worker
     # writes to would not exist. Own it here too; CREATE TABLE IF NOT
     # EXISTS keeps the two definitions safely idempotent while both
     # workers coexist during the changeover.
-    await conn.execute(
-        """
+    if not sales_columns:
+        needed.append(("futgg_sales_history table", """
         CREATE TABLE IF NOT EXISTS futgg_sales_history (
             id BIGSERIAL PRIMARY KEY,
             source_card_id BIGINT NOT NULL
@@ -987,25 +1145,30 @@ async def ensure_schema(conn: asyncpg.Connection) -> None:
             source_fingerprint TEXT NOT NULL UNIQUE,
             captured_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
-        """
-    )
+        """))
     # Both the snapshot view and the coverage query filter sales by card
     # and recency; without this they degrade to sequential scans once the
     # table passes a few million rows.
-    await conn.execute(
-        "CREATE INDEX IF NOT EXISTS futgg_sales_history_card_sold_idx "
-        "ON futgg_sales_history (source_card_id, approximate_sold_at DESC)"
-    )
+    if "futgg_sales_history_card_sold_idx" not in indexes:
+        needed.append((
+            "futgg_sales_history_card_sold_idx",
+            "CREATE INDEX IF NOT EXISTS futgg_sales_history_card_sold_idx "
+            "ON futgg_sales_history (source_card_id, approximate_sold_at DESC)",
+        ))
 
     # Sales get their own due-at column: the price cadence is now driven
     # by the bulk feed and is far shorter, so sharing next_price_due_at
     # would make the two workers fight over the same schedule.
-    await conn.execute(
-        "ALTER TABLE futgg_players ADD COLUMN IF NOT EXISTS next_sales_due_at TIMESTAMPTZ"
-    )
-    await conn.execute(
-        "ALTER TABLE futgg_players ADD COLUMN IF NOT EXISTS last_sales_status TEXT"
-    )
+    if "next_sales_due_at" not in player_columns:
+        needed.append((
+            "futgg_players.next_sales_due_at",
+            "ALTER TABLE futgg_players ADD COLUMN IF NOT EXISTS next_sales_due_at TIMESTAMPTZ",
+        ))
+    if "last_sales_status" not in player_columns:
+        needed.append((
+            "futgg_players.last_sales_status",
+            "ALTER TABLE futgg_players ADD COLUMN IF NOT EXISTS last_sales_status TEXT",
+        ))
     # Added for incident recovery: without a timestamp of when
     # last_sales_status was actually written, a repair after a bad
     # deploy (like the 2026-08-04 data_403 incident - see COOLIFY.md's
@@ -1014,9 +1177,11 @@ async def ensure_schema(conn: asyncpg.Connection) -> None:
     # next_sales_due_at, which only works for as long as the backoff
     # constant that wrote it stays unchanged and no later write has
     # touched the row since. This column makes any future repair exact.
-    await conn.execute(
-        "ALTER TABLE futgg_players ADD COLUMN IF NOT EXISTS last_sales_status_at TIMESTAMPTZ"
-    )
+    if "last_sales_status_at" not in player_columns:
+        needed.append((
+            "futgg_players.last_sales_status_at",
+            "ALTER TABLE futgg_players ADD COLUMN IF NOT EXISTS last_sales_status_at TIMESTAMPTZ",
+        ))
 
     # "Never read" used to be expressed as next_sales_due_at IS NULL,
     # which forced one column to mean two different things - "we have
@@ -1028,41 +1193,67 @@ async def ensure_schema(conn: asyncpg.Connection) -> None:
     # read, and never cleared. A failure cannot change it, so backfill
     # preference in select_due() survives any number of failed attempts
     # while next_sales_due_at is free to carry a real retry time.
-    await conn.execute(
-        "ALTER TABLE futgg_players ADD COLUMN IF NOT EXISTS sales_first_read_at TIMESTAMPTZ"
-    )
-    await conn.execute(
-        "ALTER TABLE futgg_players ADD COLUMN IF NOT EXISTS "
-        "sales_consecutive_failures INTEGER NOT NULL DEFAULT 0"
-    )
+    if "sales_first_read_at" not in player_columns:
+        needed.append((
+            "futgg_players.sales_first_read_at",
+            "ALTER TABLE futgg_players ADD COLUMN IF NOT EXISTS sales_first_read_at TIMESTAMPTZ",
+        ))
+    if "sales_consecutive_failures" not in player_columns:
+        needed.append((
+            "futgg_players.sales_consecutive_failures",
+            "ALTER TABLE futgg_players ADD COLUMN IF NOT EXISTS "
+            "sales_consecutive_failures INTEGER NOT NULL DEFAULT 0",
+        ))
+
+    if "futgg_players_sales_due_idx" not in indexes:
+        needed.append((
+            "futgg_players_sales_due_idx",
+            "CREATE INDEX IF NOT EXISTS futgg_players_sales_due_idx "
+            "ON futgg_players (next_sales_due_at) "
+            "WHERE is_active AND is_tradeable IS DISTINCT FROM FALSE",
+        ))
+    # select_due() now orders on this first; without an index the
+    # backfill-preference sort degrades to a full scan every cycle.
+    if "futgg_players_sales_first_read_idx" not in indexes:
+        needed.append((
+            "futgg_players_sales_first_read_idx",
+            "CREATE INDEX IF NOT EXISTS futgg_players_sales_first_read_idx "
+            "ON futgg_players (sales_first_read_at) "
+            "WHERE is_active AND is_tradeable IS DISTINCT FROM FALSE",
+        ))
+    await _apply_schema_changes(conn, needed)
 
     # Backfill for databases written by the previous logic. Under it, a
     # non-NULL next_sales_due_at could ONLY have been written by a card
     # that had been read at least once (the failure branch explicitly
     # skipped never-read cards), so it is a sound witness of "has been
     # read". last_sales_status_at is the closest real timestamp we hold;
-    # now() is the honest fallback when even that is absent. Runs once -
-    # the WHERE clause makes it a no-op on every subsequent boot.
-    await conn.execute(
-        """
-        UPDATE futgg_players
-        SET sales_first_read_at = COALESCE(last_sales_status_at, now())
-        WHERE sales_first_read_at IS NULL AND next_sales_due_at IS NOT NULL
-        """
-    )
-
-    await conn.execute(
-        "CREATE INDEX IF NOT EXISTS futgg_players_sales_due_idx "
-        "ON futgg_players (next_sales_due_at) "
-        "WHERE is_active AND is_tradeable IS DISTINCT FROM FALSE"
-    )
-    # select_due() now orders on this first; without an index the
-    # backfill-preference sort degrades to a full scan every cycle.
-    await conn.execute(
-        "CREATE INDEX IF NOT EXISTS futgg_players_sales_first_read_idx "
-        "ON futgg_players (sales_first_read_at) "
-        "WHERE is_active AND is_tradeable IS DISTINCT FROM FALSE"
-    )
+    # now() is the honest fallback when even that is absent.
+    #
+    # Guarded by an EXISTS probe rather than run blind. The WHERE clause
+    # already made it a no-op after the first boot, but a no-op UPDATE
+    # still scans futgg_players and still contends with the bulk price
+    # sync's 62-second write window - on every restart, i.e. every 45
+    # minutes. The probe answers the same question with an index lookup
+    # that stops at the first matching row.
+    if "sales_first_read_at" in player_columns or needed:
+        has_backfill = await conn.fetchval(
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM futgg_players
+                WHERE sales_first_read_at IS NULL AND next_sales_due_at IS NOT NULL
+            )
+            """
+        )
+        if has_backfill:
+            updated = await conn.execute(
+                """
+                UPDATE futgg_players
+                SET sales_first_read_at = COALESCE(last_sales_status_at, now())
+                WHERE sales_first_read_at IS NULL AND next_sales_due_at IS NOT NULL
+                """
+            )
+            log.info("schema: backfilled sales_first_read_at (%s)", updated)
 
 
 #: Throttle-worthy error markers - anything that looks like FUT.GG
