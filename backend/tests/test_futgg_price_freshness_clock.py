@@ -30,6 +30,7 @@ the preference order, the fallback, and the actual gate outcome.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -169,3 +170,46 @@ class TestTheGateOutcome:
             sales=_sales(),
         )
         assert "stale_market" not in (ci.blocking_codes or [])
+
+
+class TestTheColumnListActuallyReachesTheEngine:
+    """The plumbing between the view and the engine, which is where both
+    of the last two engine fixes were quietly lost.
+
+    market_data_provider selects an explicit `_SNAPSHOT_COLUMNS` list
+    rather than `*`. Every path that feeds evaluate_card() - the segmented
+    scanner, the player list, the single-card lookup - goes through it. A
+    column missing from that list does not raise: asyncpg simply returns a
+    row without the key, `snapshot.get(...)` returns None, and whatever
+    that column drives silently stops existing.
+
+    It has happened twice. sales_interdecile_ratio (migration 050) meant
+    the dispersion gate built for the Pacho case never fired in the
+    scanner. bin_checked_at (migration 052) meant the price-freshness fix
+    above was inert in production - every stable card kept failing
+    STALE_MARKET, and the dashboard kept reporting zero trades through a
+    deploy that was meant to fix precisely that.
+
+    Neither was caught, because the engine tests construct snapshot dicts
+    by hand and the live smoke-tests used SELECT * - so the layer that
+    actually decides which columns arrive was exercised by neither.
+    """
+
+    def test_every_column_the_engine_reads_is_selected(self):
+        import re
+
+        from app.services import market_data_provider as mdp
+
+        engine_src = (
+            Path(mdp.__file__).parent / "futgg_intelligence.py"
+        ).read_text()
+        reads = set(re.findall(r'snapshot\.get\(\s*["\']([a-z0-9_]+)["\']', engine_src))
+        assert reads, "no snapshot.get() calls found - has the engine been restructured?"
+
+        selected = set(re.findall(r"[a-z0-9_]+", mdp._SNAPSHOT_COLUMNS))
+        missing = sorted(reads - selected)
+        assert not missing, (
+            "futgg_intelligence reads these snapshot keys, but "
+            "_SNAPSHOT_COLUMNS does not select them, so the engine will "
+            f"silently see None for each: {missing}"
+        )

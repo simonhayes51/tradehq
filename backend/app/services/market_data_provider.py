@@ -133,12 +133,32 @@ _SNAPSHOT_COLUMNS = """
     pace, shooting, passing, dribbling, defending, physicality, is_active,
     is_tradeable, last_price_status, metadata_warnings, price_updated_at,
     next_price_due_at, current_bin, price_range_low, price_range_high,
-    bin_source_age_text, bin_captured_at, sales_count, sales_median,
-    sales_trimmed_mean, sales_low, sales_high, sales_stddev,
-    latest_sale_price, latest_sale_at, sales_window_earliest_at,
-    sales_window_latest_at, sales_window_span_minutes,
-    sales_dispersion_ratio, snapshot_computed_at
+    bin_source_age_text, bin_captured_at, bin_checked_at, sales_count,
+    sales_median, sales_trimmed_mean, sales_low, sales_high, sales_stddev,
+    sales_p10, sales_p90, latest_sale_price, latest_sale_at,
+    sales_window_earliest_at, sales_window_latest_at,
+    sales_window_span_minutes, sales_dispersion_ratio,
+    sales_interdecile_ratio, snapshot_computed_at
 """
+# Every key futgg_intelligence.evaluate_card() reads off a snapshot row
+# must appear above, or the engine silently sees None and skips whatever
+# that column drives - no error, no log, just a gate that quietly stops
+# existing. This list has now dropped a new column twice:
+#
+#   * sales_interdecile_ratio (migration 050) - the dispersion gate built
+#     for the Pacho case never fired through the scanner or the player
+#     list at all, because those paths select this list rather than *.
+#   * bin_checked_at (migration 052) - the price-freshness fix was inert
+#     for the same reason: _price_observed_at found no key, fell back to
+#     bin_captured_at, and every stable card kept failing STALE_MARKET.
+#     Production stayed at "0 trades available" through a deploy that was
+#     supposed to fix exactly that.
+#
+# Both slipped through because the unit tests construct snapshot dicts by
+# hand and the live smoke-tests used SELECT * - so the one layer that
+# actually decides which columns reach the engine was never exercised by
+# either. test_snapshot_columns_cover_engine_reads() in
+# test_futgg_price_freshness_clock.py now asserts the two agree.
 
 
 @dataclass(frozen=True)
