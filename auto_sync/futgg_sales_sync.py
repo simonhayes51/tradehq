@@ -328,6 +328,82 @@ SALES_INTERVALS = {
     "under_75": env_int("FUTGG_SALES_UNDER_75_INTERVAL_MIN", 2880, minimum=60),
 }
 
+#: Mirror of backend futgg_config.EngineConfig.reject_sales_older_than_minutes.
+#: Past this age the engine refuses to value a card at all - the sales
+#: sample no longer describes today's market, so any target derived from
+#: it would be guesswork.
+#:
+#: Duplicated rather than imported: this worker deploys separately from
+#: the backend and cannot import app.services. test_sales_cadence_vs_gate.py
+#: asserts the two stay equal, so drift fails CI rather than silently
+#: reintroducing the contradiction below.
+ENGINE_REJECT_SALES_OLDER_THAN_MINUTES = env_int(
+    "FUTGG_REJECT_SALES_OLDER_THAN_MIN", 4320, minimum=60,
+)
+
+
+def cadence_gate_conflicts(
+    intervals: dict[str, int] | None = None,
+    reject_after_minutes: int | None = None,
+) -> list[tuple[str, int, int]]:
+    """Rating bands whose refresh interval exceeds what the engine accepts.
+
+    A band scheduled to be re-read less often than the engine's sales-age
+    limit is not merely slow - it is structurally incapable of ever
+    producing a valuation. Its sales age past the limit before the next
+    scrape is even due, so every card in it is rejected as STALE_SALES
+    forever, no matter how healthy this worker is.
+
+    That is not hypothetical. Production ran:
+
+        intervals={'85_plus': 1440, '80_84': 2880,
+                   '75_79': 5760, 'under_75': 40320}
+
+    against a 4320-minute (72h) engine limit. The two lower bands - 96
+    hours and 28 days - could never be valued. Nothing said so: the
+    dashboard simply showed no trades, and the cards were rejected one at
+    a time with a reason nobody was aggregating.
+
+    The two numbers are set in different places for different reasons -
+    the intervals by cost control, the limit by advice quality - so
+    neither side can see the contradiction it creates. Hence this check.
+
+    Returns (band, interval_minutes, limit_minutes) for each conflict.
+    """
+    intervals = SALES_INTERVALS if intervals is None else intervals
+    limit = (
+        ENGINE_REJECT_SALES_OLDER_THAN_MINUTES
+        if reject_after_minutes is None else reject_after_minutes
+    )
+    return [
+        (band, minutes, limit)
+        for band, minutes in intervals.items()
+        if minutes >= limit
+    ]
+
+
+def log_cadence_gate_conflicts() -> None:
+    conflicts = cadence_gate_conflicts()
+    if not conflicts:
+        return
+    log.warning(
+        "CADENCE EXCEEDS THE ENGINE'S SALES-AGE LIMIT for %d band(s): %s. "
+        "Cards in these bands are scheduled to be re-read less often than "
+        "the engine will accept sales for (%d min), so their sales age out "
+        "before the next scrape is due and they can NEVER produce a "
+        "recommendation - however well this worker runs. Either shorten "
+        "the interval(s) below %d, or raise "
+        "FUTGG_REJECT_SALES_OLDER_THAN_MIN (and the backend's "
+        "reject_sales_older_than_minutes) to match, accepting older sales "
+        "as evidence.",
+        len(conflicts),
+        ", ".join(
+            f"{band}={minutes}min" for band, minutes, _ in conflicts
+        ),
+        ENGINE_REJECT_SALES_OLDER_THAN_MINUTES,
+        ENGINE_REJECT_SALES_OLDER_THAN_MINUTES,
+    )
+
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -1749,6 +1825,11 @@ async def run_forever() -> None:
             else "continuous"
         ),
     )
+    # Immediately after the intervals are printed, so the warning sits
+    # next to the numbers it is about. A band scraped less often than the
+    # engine accepts sales for can never produce a recommendation, and
+    # nothing else in the system is positioned to notice.
+    log_cadence_gate_conflicts()
 
     shutdown_event = asyncio.Event()
     _install_shutdown_handlers(shutdown_event)
