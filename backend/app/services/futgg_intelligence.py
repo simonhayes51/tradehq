@@ -152,6 +152,16 @@ class CardIntelligence:
     # would actually pay, never against an unshown intermediate) --------
     expected_profit_after_tax: Optional[Decimal] = None
     expected_roi: Optional[Decimal] = None
+    # The entry price the two figures above are computed against - the
+    # live ask on a buy, the trigger price on a watch (see
+    # entry_for_expectation below). Exposed because a profit figure is
+    # meaningless without the entry it assumes, and presenting it beside
+    # a DIFFERENT price is actively misleading: seen live on a Granit
+    # Xhaka showing "BUY BELOW 85,000" above "EXPECTED PROFIT +25,650",
+    # where the 25,650 was computed against the 66,500 live ask. At the
+    # 85,000 actually advertised the profit is 7,150 - overstated 3.6x,
+    # and the 66,500 the figure depended on appeared nowhere on screen.
+    expected_profit_basis: Optional[Decimal] = None
 
     # ---- Evidence -----------------------------------------------------
     liquidity_score: Optional[float] = None
@@ -687,6 +697,7 @@ def evaluate_card(
     entry_for_expectation = current_bin_dec if is_executable else recommended_buy_max
     expected_profit_after_tax = tm.net_profit(recommended_sell_target, entry_for_expectation)
     expected_roi = tm.net_roi(recommended_sell_target, entry_for_expectation)
+    expected_profit_basis = entry_for_expectation
 
     # ---- Evidence reasons (informational) --------------------------------
     if sales_median and sales_median > 0:
@@ -824,6 +835,7 @@ def evaluate_card(
         recommended_sell_target=recommended_sell_target,
         buy_below=buy_below,
         expected_profit_after_tax=expected_profit_after_tax,
+        expected_profit_basis=expected_profit_basis,
         expected_roi=expected_roi,
         liquidity_score=liquidity,
         confidence_score=confidence,

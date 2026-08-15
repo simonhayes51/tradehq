@@ -126,6 +126,13 @@ def _serialize_intelligence(ci: CardIntelligence) -> Dict[str, Any]:
         "recommended_sell_target": _int_or_none(ci.recommended_sell_target),
         "buy_below": _int_or_none(ci.buy_below),
         "expected_profit_after_tax": _float_or_none(ci.expected_profit_after_tax),
+        # The entry price the profit and ROI above assume - the live ask
+        # on a buy, the trigger price on a watch. Callers must render the
+        # profit beside THIS number, never beside recommended_buy_max: on
+        # a buy they differ, and pairing them overstated profit 3.6x on a
+        # live Xhaka ("BUY BELOW 85,000" above "+25,650", where 25,650
+        # assumed the 66,500 ask and 85,000 really returns 7,150).
+        "expected_profit_basis": _int_or_none(ci.expected_profit_basis),
         "expected_roi": _float_or_none(ci.expected_roi),
         "liquidity_score": ci.liquidity_score,
         "confidence_score": ci.confidence_score,

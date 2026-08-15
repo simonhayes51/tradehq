@@ -157,7 +157,21 @@ export default function TradeFinder() {
                   engine v2 exists to prevent. No ceiling means we could
                   not value the card, and CoinValue already renders null
                   as an em dash. */}
-              <div className="entry"><span>BUY BELOW</span><CoinValue value={item.recommended_buy_max}/></div>
+              {/* The number beside EXPECTED PROFIT must be the one that
+                  profit was computed against - expected_profit_basis, the
+                  live ask on a buy - not the advised ceiling. Showing the
+                  ceiling here overstated profit 3.6x on a live Xhaka.
+                  The ceiling is still shown, as a separate limit. */}
+              <div className="entry">
+                <span>{item.expected_profit_basis != null && item.recommended_buy_max != null
+                       && item.expected_profit_basis !== item.recommended_buy_max
+                       ? "BUY NOW" : "BUY BELOW"}</span>
+                <CoinValue value={item.expected_profit_basis ?? item.recommended_buy_max}/>
+                {item.expected_profit_basis != null && item.recommended_buy_max != null
+                 && item.expected_profit_basis !== item.recommended_buy_max
+                  ? <small>pay up to <CoinValue value={item.recommended_buy_max}/></small>
+                  : null}
+              </div>
               <ArrowRight size={18}/>
               <div className="profit"><span>EXPECTED PROFIT</span><CoinValue value={item.expected_profit_after_tax} signed/><small>{roi == null ? "—" : `${roi > 0 ? "+" : ""}${roi.toFixed(1)}%`} after tax</small></div>
             </div>
