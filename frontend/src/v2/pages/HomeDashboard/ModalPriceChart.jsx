@@ -68,7 +68,13 @@ export default function ModalPriceChart({ cardId, entryPrice, targetPrice, fairV
     if (!isFutgg || points.length < 2) return null;
     const requestedMs = config.days * 24 * 3600 * 1000;
     if (spanMs >= requestedMs * 0.5) return null;
-    return `Only ${humaniseSpan(spanMs)} of completed sales exist for this card.`;
+    // "exist for this card" was a claim about the market. What we
+    // actually know is how much WE hold: sales are captured in bursts
+    // whenever the sales worker visits a card, and between visits -
+    // 24 hours to 28 days depending on rating band - nothing is
+    // recorded at all. So a 7d chart routinely contains one dense
+    // cluster from a single visit, not a week of trading.
+    return `We only hold ${humaniseSpan(spanMs)} of completed sales for this card - they are collected in bursts, not continuously.`;
   }, [isFutgg, points.length, spanMs, config.days]);
 
   // An empty window has two very different causes and this used to state
