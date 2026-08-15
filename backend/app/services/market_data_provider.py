@@ -120,6 +120,8 @@ class MarketDataProvider:
 
     async def get_sales_series(self, card_id: int, *, days: int, limit: int = MAX_CHART_SALES) -> List[Dict[str, Any]]: ...
 
+    async def get_sales_coverage(self, card_id: int) -> Dict[str, Any]: ...
+
     async def get_price_history(self, card_id: int, period: Optional[str] = None) -> List[Dict[str, Any]]: ...
 
 
@@ -445,6 +447,49 @@ class FutggMarketDataProvider(MarketDataProvider):
                 card_id, bounded_limit,
             )
         return [dict(r) for r in rows]
+
+    async def get_sales_coverage(self, card_id: int) -> Dict[str, Any]:
+        """When we last LOOKED at this card's sales, as distinct from when
+        it last sold.
+
+        An empty sales list has two completely different meanings and the
+        UI could not tell them apart: "nobody has bought this card" and
+        "we have not checked this card recently". For most of the
+        catalogue it is the second - futgg_sales_sync.py re-reads by
+        rating band on intervals that, for the lower bands, are longer
+        than the windows the UI offers. A 78-rated card on a 96-hour
+        cadence will show no sales in a 24-hour window essentially always,
+        and saying "no completed sales" states that as a fact about the
+        market when it is a fact about our own coverage.
+
+        Read straight off futgg_players rather than the snapshot view on
+        purpose: these columns are written by the sales worker between
+        view refreshes, and adding them to the materialized view would
+        mean another migration on the busiest table in the system for
+        data that needs no aggregation.
+        """
+        async with self._pool.acquire() as conn:
+            try:
+                row = await conn.fetchrow(
+                    """
+                    SELECT last_sales_status, last_sales_status_at,
+                           next_sales_due_at, sales_first_read_at, rating
+                    FROM futgg_players WHERE source_card_id = $1
+                    """,
+                    card_id,
+                )
+            except asyncpg.exceptions.UndefinedColumnError:
+                # SalesSync's ensure_schema has not run on this database
+                # yet. Report "unknown" rather than failing the endpoint.
+                return {"checked_at": None, "never_checked": None, "status": None}
+        if row is None:
+            return {"checked_at": None, "never_checked": None, "status": None}
+        return {
+            "checked_at": row["last_sales_status_at"],
+            "next_due_at": row["next_sales_due_at"],
+            "never_checked": row["sales_first_read_at"] is None,
+            "status": row["last_sales_status"],
+        }
 
     async def get_sales_series(
         self, card_id: int, *, days: int, limit: int = MAX_CHART_SALES,

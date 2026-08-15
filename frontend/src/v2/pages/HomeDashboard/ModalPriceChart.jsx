@@ -3,6 +3,7 @@ import { Area, AreaChart, CartesianGrid, ReferenceLine, ResponsiveContainer, Too
 import { useSalesCandles } from "../../hooks/useSalesCandles";
 import { useFutggPlayerSales } from "../../hooks/useFutggMarket";
 import CoinValue from "../../components/CoinValue";
+import { formatAge } from "../../components/MarketFreshness";
 
 // No "30d": futgg_market_snapshot's sales window stops at 14 days and the
 // sales endpoint caps there too, so a 30d button could only ever redraw
@@ -35,6 +36,9 @@ export default function ModalPriceChart({ cardId, entryPrice, targetPrice, fairV
   const futggQuery = useFutggPlayerSales(isFutgg ? cardId : undefined, config.days);
   const isLoading = isFutgg ? futggQuery.isLoading : legacyQuery.isLoading;
   const isError = isFutgg ? futggQuery.isError : legacyQuery.isError;
+  // The FUT.GG response carries coverage metadata alongside the rows -
+  // see get_player_sales. Used only to explain an empty window.
+  const data = isFutgg ? futggQuery.data : null;
 
   const points = useMemo(() => {
     if (isFutgg) {
@@ -67,6 +71,27 @@ export default function ModalPriceChart({ cardId, entryPrice, targetPrice, fairV
     return `Only ${humaniseSpan(spanMs)} of completed sales exist for this card.`;
   }, [isFutgg, points.length, spanMs, config.days]);
 
+  // An empty window has two very different causes and this used to state
+  // only one of them. "No completed sales in the last 24h" reads as a
+  // fact about the market - nobody bought this card - when for most of
+  // the catalogue it is a fact about our own coverage: futgg_sales_sync
+  // re-reads by rating band, and the lower bands are on intervals longer
+  // than the windows offered here, so those cards would report "no sales"
+  // essentially always no matter how actively they were being traded.
+  const emptyReason = useMemo(() => {
+    if (!isFutgg) return `No completed sales in the last ${range}.`;
+    if (data?.sales_never_checked) return "We haven't collected sales for this card yet.";
+    if (data?.sales_check_stale_for_window) {
+      const when = data.sales_checked_at
+        ? formatAge((Date.now() - new Date(data.sales_checked_at).getTime()) / 1000)
+        : null;
+      return when
+        ? `We last checked this card's sales ${when} - longer ago than the ${range} window, so there is nothing to show for it yet.`
+        : `We haven't checked this card's sales within the last ${range}.`;
+    }
+    return `No completed sales in the last ${range}.`;
+  }, [isFutgg, range, data]);
+
   return <div className="dash-price-chart">
     <div className="dash-price-chart-head">
       <div><strong>Completed sales</strong>{isFutgg?<small className="dash-chart-approx"> (approximate times)</small>:null}</div>
@@ -76,7 +101,7 @@ export default function ModalPriceChart({ cardId, entryPrice, targetPrice, fairV
     </div>
     <div className="dash-chart-frame">
       {isLoading ? <div className="dash-chart-loading"><i/><i/><i/><i/></div>
-      : isError || points.length === 0 ? <div className="dash-chart-empty">No completed sales in the last {range}.</div>
+      : isError || points.length === 0 ? <div className="dash-chart-empty">{emptyReason}</div>
       : <ResponsiveContainer width="100%" height={190}>
           <AreaChart data={points} margin={{ top: 12, right: 8, left: 0, bottom: 0 }}>
             <defs><linearGradient id={`modalPriceFill-${cardId}`} x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#3bffa4" stopOpacity={0.34}/><stop offset="100%" stopColor="#3bffa4" stopOpacity={0}/></linearGradient></defs>
