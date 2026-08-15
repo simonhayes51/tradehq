@@ -446,6 +446,22 @@ def _parse_prices(soup: BeautifulSoup, card: FutggCard, captured_at: datetime) -
         if age_seconds is None or sold_price is None:
             continue
 
+        # WARNING - do not revive this path without fixing the drift.
+        #
+        # age_seconds comes from a whole-unit label ("1 hour ago"), so it
+        # stays constant while real time moves on, but captured_at does
+        # not. The derived timestamp therefore slides forward on every
+        # re-scrape of the SAME sale, and since the fingerprint below is
+        # built from it, each slide stores a NEW row. Measured: one real
+        # sale observed six times became three distinct rows, each
+        # claiming a different sale time.
+        #
+        # Harmless today only because nothing live calls this - the
+        # deployed worker is futgg_sales_sync.py, which builds rows from
+        # the API's exact soldDate (see its build_sale_rows) and does not
+        # have this problem. futgg_price_sync.py, the only caller, is not
+        # deployed. Fix by flooring to the label's own unit before
+        # fingerprinting if this is ever brought back.
         approx = captured_at - timedelta(seconds=age_seconds)
         rounded = (approx + timedelta(seconds=30)).replace(second=0, microsecond=0)
         key = (int(rounded.timestamp()), sold_price)

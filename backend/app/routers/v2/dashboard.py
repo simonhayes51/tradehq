@@ -506,7 +506,20 @@ def _futgg_to_recommendation(
         },
         "expectedNetRoi": None,
         "expectedNetRoiSource": "futgg_intelligence" if has_evaluation else None,
+        # The engine computes four deliberately-separate prices (see
+        # futgg_intelligence's module docstring, point 2). Until now the
+        # adapter forwarded only this one, so the UI had nothing to show
+        # on a WATCH - where current_executable_buy is None BY DESIGN,
+        # meaning "not buyable at a sensible price right now" - and fell
+        # back to displaying current_bin under a "Maximum entry" label.
+        # That is precisely the circularity engine v2 was written to
+        # remove: "the maximum you should pay" became "whatever it
+        # currently costs". Forward the real ceiling and target so the
+        # UI never has to invent one.
         "entryPrice": int(ci.current_executable_buy) if (ci and ci.current_executable_buy is not None) else None,
+        "recommendedBuyMax": int(ci.recommended_buy_max) if (ci and ci.recommended_buy_max is not None) else None,
+        "recommendedSellTarget": int(ci.recommended_sell_target) if (ci and ci.recommended_sell_target is not None) else None,
+        "buyBelow": int(ci.buy_below) if (ci and ci.buy_below is not None) else None,
         "breakEvenPrice": int(ci.break_even_price) if (ci and ci.break_even_price is not None) else None,
         "holdingPeriod": "Unavailable",
         "risk": (ci.risk_level or "Unknown").title() if has_evaluation else "Unknown",

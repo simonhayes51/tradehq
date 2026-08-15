@@ -146,8 +146,20 @@ class TestFailureAndSuccessWrites:
         assert 'sales_interval_minutes(rating), "success", True, 0' in body
 
     def test_first_read_is_written_once_and_never_overwritten(self):
+        """Tolerant of the table alias, because the write became a
+        set-based UPDATE ... FROM unnest() and that form REQUIRES one.
+
+        This assertion is on source text, so it can only ever check the
+        spelling of the rule, not the rule. The behaviour itself - that a
+        success never overwrites an existing sales_first_read_at, against
+        a real Postgres, for both the seeded and unseeded branch - is
+        pinned in test_futgg_sales_batch_update.py, which also asserts
+        the set-based statement produces byte-identical state to the
+        per-card loop it replaced."""
         body = self._process_batch_source()
-        assert "COALESCE(sales_first_read_at, NOW())" in body
+        assert re.search(
+            r"COALESCE\(\s*(?:p\.)?sales_first_read_at\s*,\s*NOW\(\)\s*\)", body
+        ), "the first-success-wins COALESCE is missing from the status write"
 
 
 class TestCircuitBreakerUnchanged:

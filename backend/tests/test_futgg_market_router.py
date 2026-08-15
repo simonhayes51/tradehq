@@ -81,6 +81,17 @@ class FakeProvider:
             }
         ]
 
+    async def get_sales_coverage(self, card_id: int):
+        # This card was checked recently, so an empty window here would
+        # genuinely mean "no sales", not "we did not look". See
+        # test_sales_coverage_reporting.py for the other cases.
+        return {
+            "checked_at": datetime.now(timezone.utc) - timedelta(minutes=30),
+            "next_due_at": None,
+            "never_checked": False,
+            "status": "ok",
+        }
+
     async def get_sales_series(self, card_id: int, *, days: int, limit: int = 500):
         # Two prints spanning `days` so the endpoint's covered_seconds is
         # exercised, and so a wider range genuinely returns a wider span -

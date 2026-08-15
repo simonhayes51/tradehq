@@ -294,3 +294,81 @@ def test_risk_level_is_title_cased_from_the_engine_string():
 def test_insufficient_data_signal_maps_correctly():
     d = _futgg_to_recommendation(_row(), _ci(signal="insufficient_data"))
     assert d["status"] == "INSUFFICIENT_DATA"
+
+
+# --- The advised ceiling must never be the live ask -------------------
+# Seen in production on a 98 Haaland with no usable sales: the analysis
+# panel showed "BUY BELOW 895,000 / Maximum entry" beside a blank
+# Expected profit and a blank Sell target. 895,000 was simply the current
+# asking price. The engine had produced no ceiling at all, and the UI
+# substituted current_bin because this adapter never forwarded one.
+#
+# That is exactly the circularity engine v2 was written to remove - see
+# futgg_intelligence's module docstring, point 2: "the maximum you should
+# pay" becoming "whatever it currently costs", so a card reads as a valid
+# buy purely because its own ask was substituted into the calculation.
+#
+# current_executable_buy is None on a WATCH BY DESIGN ("not buyable at a
+# sensible price right now"), so it can never be the field the UI shows
+# as a ceiling. These pin the fields that can.
+
+
+def test_a_watch_still_carries_the_engines_own_ceiling():
+    """The case that broke: no executable entry, but a real ceiling and
+    a real trigger price, both of which the UI needs."""
+    d = _futgg_to_recommendation(
+        _row(current_bin=895_000),
+        _ci(
+            signal="watch",
+            current_executable_buy=None,
+            recommended_buy_max=Decimal("780000"),
+            buy_below=Decimal("780000"),
+            recommended_sell_target=Decimal("910000"),
+        ),
+    )
+    assert d["entryPrice"] is None          # correctly not buyable now
+    assert d["recommendedBuyMax"] == 780_000
+    assert d["buyBelow"] == 780_000
+    assert d["recommendedSellTarget"] == 910_000
+    # The live ask must never leak into any of them.
+    assert 895_000 not in (
+        d["recommendedBuyMax"], d["buyBelow"], d["recommendedSellTarget"],
+    )
+
+
+def test_an_unvaluable_card_offers_no_ceiling_at_all():
+    """No sales, no verdict, no numbers. The UI renders these as em
+    dashes; what it must never do is fill the gap with current_bin."""
+    d = _futgg_to_recommendation(
+        _row(current_bin=895_000),
+        _ci(
+            signal="insufficient_data",
+            current_executable_buy=None,
+            recommended_buy_max=None,
+            buy_below=None,
+            recommended_sell_target=None,
+            fair_value=None,
+        ),
+    )
+    assert d["recommendedBuyMax"] is None
+    assert d["buyBelow"] is None
+    assert d["recommendedSellTarget"] is None
+    assert d["entryPrice"] is None
+    # current_bin is still reported - it is a real, useful fact - but
+    # only under its own name, never as advice.
+    assert d["currentBin"] == 895_000
+
+
+def test_a_buy_reports_ceiling_and_executable_entry_separately():
+    d = _futgg_to_recommendation(
+        _row(current_bin=52_000),
+        _ci(
+            signal="buy",
+            current_executable_buy=Decimal("52000"),
+            recommended_buy_max=Decimal("56500"),
+            recommended_sell_target=Decimal("64500"),
+        ),
+    )
+    assert d["entryPrice"] == 52_000        # what you would pay today
+    assert d["recommendedBuyMax"] == 56_500  # the most you should pay
+    assert d["recommendedSellTarget"] == 64_500

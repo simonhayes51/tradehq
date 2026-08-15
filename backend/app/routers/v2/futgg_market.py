@@ -423,6 +423,11 @@ async def get_player_sales(
     at 14 days; a longer range would promise data that does not exist.
     """
     rows = await provider.get_sales_series(card_id, days=days, limit=limit)
+    # "No sales" and "we have not looked" are different facts, and the UI
+    # could not tell them apart. See get_sales_coverage: for most of the
+    # catalogue an empty window means the sales worker has not visited
+    # this card recently, not that nobody bought it.
+    coverage = await provider.get_sales_coverage(card_id)
     items = [
         {
             "sold_price": r["sold_price"],
@@ -443,6 +448,7 @@ async def get_player_sales(
         span_seconds = int(
             (rows[0]["approximate_sold_at"] - rows[-1]["approximate_sold_at"]).total_seconds()
         )
+    checked_at = coverage.get("checked_at")
     return {
         "card_id": card_id,
         "items": items,
@@ -450,6 +456,13 @@ async def get_player_sales(
         "requested_days": days,
         "covered_seconds": span_seconds,
         "truncated_by_limit": len(items) >= limit,
+        # Everything the caller needs to say WHY a window is empty.
+        "sales_checked_at": checked_at.isoformat() if checked_at else None,
+        "sales_never_checked": coverage.get("never_checked"),
+        "sales_check_stale_for_window": (
+            checked_at is not None
+            and (datetime.now(timezone.utc) - checked_at).total_seconds() > days * 86400
+        ),
         "note": "approximate_sold_at is derived from a relative age string (e.g. '4 minutes ago') at scrape time, not an exact EA transaction timestamp.",
     }
 
