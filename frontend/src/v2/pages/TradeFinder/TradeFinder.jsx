@@ -151,7 +151,13 @@ export default function TradeFinder() {
               <span className="finder-confidence">{confidence == null ? "—" : `${confidence}%`}<small>CONFIDENCE</small></span>
             </div>
             <div className="finder-signals">
-              <div className="entry"><span>BUY BELOW</span><CoinValue value={item.recommended_buy_max ?? item.current_bin}/></div>
+              {/* Never fall back to current_bin here. "BUY BELOW <the
+                  current asking price>" is not advice, it is the ask
+                  echoed back under an advisory label - the circularity
+                  engine v2 exists to prevent. No ceiling means we could
+                  not value the card, and CoinValue already renders null
+                  as an em dash. */}
+              <div className="entry"><span>BUY BELOW</span><CoinValue value={item.recommended_buy_max}/></div>
               <ArrowRight size={18}/>
               <div className="profit"><span>EXPECTED PROFIT</span><CoinValue value={item.expected_profit_after_tax} signed/><small>{roi == null ? "—" : `${roi > 0 ? "+" : ""}${roi.toFixed(1)}%`} after tax</small></div>
             </div>
