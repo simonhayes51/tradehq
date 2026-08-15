@@ -1577,24 +1577,49 @@ async def apply_batch_results(
                     # instead of one per sale. The old scraper issued up
                     # to 50 sequential inserts per card.
                     await conn.executemany(_INSERT, to_insert)
-                for card_id, minutes, status, succeeded, failures in updates:
+                if updates:
+                    # One set-based statement, not one round trip per
+                    # card. This loop used to issue a separate UPDATE per
+                    # card INSIDE the transaction, which cost twice:
+                    # N sequential round trips, and - worse - it held row
+                    # locks on futgg_players for the whole sequence.
+                    # futgg_players is the table futgg_bulk_price_sync
+                    # writes for 62-66 seconds of every cycle, and the
+                    # overlap showed up as db_write p95 = 51 SECONDS
+                    # against a 381ms median, with the network fetch those
+                    # writes existed to record taking 8.85s per cycle in
+                    # total. The database, not fut.gg, is what limits how
+                    # fast this worker gets round the catalogue.
+                    #
+                    # Sorted by card_id so concurrent writers touch rows
+                    # in a consistent order - unordered set updates
+                    # against a table another worker is also updating is
+                    # how deadlocks are made.
+                    ordered = sorted(updates, key=lambda u: u[0])
                     await conn.execute(
                         """
-                        UPDATE futgg_players
-                        SET next_sales_due_at = NOW() + ($2 * INTERVAL '1 minute'),
-                            last_sales_status = $3,
+                        UPDATE futgg_players p
+                        SET next_sales_due_at = NOW() + (u.minutes * INTERVAL '1 minute'),
+                            last_sales_status = u.status,
                             last_sales_status_at = NOW(),
                             -- COALESCE: first success wins and is never
                             -- overwritten, so this stays a true "first
                             -- read" timestamp rather than a "last read".
                             sales_first_read_at = CASE
-                                WHEN $4 THEN COALESCE(sales_first_read_at, NOW())
-                                ELSE sales_first_read_at
+                                WHEN u.succeeded
+                                THEN COALESCE(p.sales_first_read_at, NOW())
+                                ELSE p.sales_first_read_at
                             END,
-                            sales_consecutive_failures = $5
-                        WHERE source_card_id = $1
+                            sales_consecutive_failures = u.failures
+                        FROM unnest(
+                            $1::bigint[], $2::int[], $3::text[],
+                            $4::boolean[], $5::int[]
+                        ) AS u(card_id, minutes, status, succeeded, failures)
+                        WHERE p.source_card_id = u.card_id
                         """,
-                        card_id, minutes, status, succeeded, failures,
+                        [u[0] for u in ordered], [u[1] for u in ordered],
+                        [u[2] for u in ordered], [u[3] for u in ordered],
+                        [u[4] for u in ordered],
                     )
 
 
