@@ -520,6 +520,16 @@ def _futgg_to_recommendation(
         "recommendedBuyMax": int(ci.recommended_buy_max) if (ci and ci.recommended_buy_max is not None) else None,
         "recommendedSellTarget": int(ci.recommended_sell_target) if (ci and ci.recommended_sell_target is not None) else None,
         "buyBelow": int(ci.buy_below) if (ci and ci.buy_below is not None) else None,
+        # The entry price expectedProfitAfterTax is computed against. The
+        # UI must show THIS number next to the profit, not the ceiling:
+        # on a buy they are different (live ask vs advised maximum), and
+        # pairing the profit with the ceiling overstated it 3.6x on a live
+        # Xhaka - "BUY BELOW 85,000" above "+25,650", where 25,650 assumed
+        # the 66,500 ask and 85,000 would really have returned 7,150.
+        "expectedProfitBasis": (
+            int(ci.expected_profit_basis)
+            if (ci and ci.expected_profit_basis is not None) else None
+        ),
         "breakEvenPrice": int(ci.break_even_price) if (ci and ci.break_even_price is not None) else None,
         "holdingPeriod": "Unavailable",
         "risk": (ci.risk_level or "Unknown").title() if has_evaluation else "Unknown",
