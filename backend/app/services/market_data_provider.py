@@ -642,6 +642,43 @@ class FutggMarketDataProvider(MarketDataProvider):
         _apply_common_filters(where, args, filters)
 
         where_clause = f"WHERE {' AND '.join(where)}" if where else ""
+
+        # Relevance first when the caller is SEARCHING, rating only after.
+        #
+        # Ordering a name search purely by rating makes it impossible to
+        # find an ordinary card. The WHERE clause is `name ILIKE %term%`,
+        # so a search matches every card of every player whose name
+        # contains the term - and then returns the highest-rated of them
+        # globally. Reproduced on a mixed catalogue: searching a term
+        # matching 40 cards across four tiers returned 20 rows that were
+        # entirely 92-rated specials and 84-rated gold rares. The 78s and
+        # 70s could not appear at any page size a user would scroll,
+        # which reads as "it doesn't show any gold cards at all".
+        #
+        # An exact name match must outrank a partial match on a higher
+        # -rated card, and a prefix match must outrank a mid-string one.
+        # Rating stays as the tie-break inside each relevance band, so a
+        # search for one player still lists their best cards first.
+        order_clause = order_by
+        if filters.search:
+            args.append(filters.search.strip())
+            term = f"${len(args)}"
+            order_clause = (
+                # Exact name.
+                f"(lower(name) = lower({term})) DESC, "
+                # Name starts with the term.
+                f"(lower(name) LIKE lower({term}) || '%%') DESC, "
+                # Term starts a WORD in the name. This is the case users
+                # actually hit: they type a surname, and "Haaland" is
+                # neither an exact nor a prefix match for "Erling
+                # Haaland". Without it every surname search falls
+                # straight through to rating and buries the plain gold
+                # card under every promo whose name merely contains the
+                # same letters.
+                f"(lower(name) LIKE '%% ' || lower({term}) || '%%') DESC, "
+                f"{order_by}"
+            )
+
         args.append(limit)
         args.append(offset)
         async with self._pool.acquire() as conn:
@@ -649,7 +686,7 @@ class FutggMarketDataProvider(MarketDataProvider):
                 SELECT {await resolve_snapshot_columns(conn)}
                 FROM futgg_market_snapshot
                 {where_clause}
-                ORDER BY {order_by}
+                ORDER BY {order_clause}
                 LIMIT ${len(args) - 1} OFFSET ${len(args)}
             """
             rows = await conn.fetch(sql, *args)
