@@ -13,8 +13,9 @@
 // independently and by using `globalThis` (valid in a page, a content
 // script, AND a service worker with no `window`) instead of `window`.
 //
-// Flip to `true` here to enable `[EAFC Live]` console logging everywhere
-// at once; leave `false` for anything resembling production use. This
-// never gates the "no EA session credential is ever logged" rule - that
-// holds regardless of this flag's value.
-globalThis.EAFC_LIVE_DEBUG = false;
+// Flip to `false` once live-testing is done - `true` here is temporary,
+// for the first end-to-end pass against a real EA session (still V1,
+// pre-release; there is no shipped build depending on this defaulting
+// off yet). This never gates the "no EA session credential is ever
+// logged" rule - that holds regardless of this flag's value.
+globalThis.EAFC_LIVE_DEBUG = true;
