@@ -1,26 +1,27 @@
 // src/market-observer.js
 // Runs in the content script's ISOLATED world (see manifest.json).
 //
-// Bridges page-bridge.js (MAIN world, observes raw fetch/XHR responses)
-// to the rest of the extension: listens for the `eafc-live:fc26-response`
-// DOM event page-bridge.js dispatches on `window`, filters it down to
-// Transfer Market responses, runs card-detector.js over the body, and
-// hands the result to whatever callback content.js has registered.
+// Bridges page-bridge.js (MAIN world) to the rest of the extension:
+// listens for the `eafc-live:transfermarket` DOM event page-bridge.js
+// dispatches on `window` - already carrying a SANITIZED auction list
+// (sourceCardId/tradeId/rating/buyNowPrice/currentBid/startingBid/
+// expires/tradeState only, see page-bridge.js's header for why) - groups
+// it by card identity, and hands the result to whatever callback
+// content.js has registered.
 //
-// This file does no rendering and no network calls of its own - it is
-// purely the listen -> detect -> notify wiring, kept separate from
-// content.js so the "what do we do when a card is detected" logic isn't
-// tangled up with "how do we hear about a response at all".
+// This file does no rendering, no network calls, and no raw EA response
+// parsing of its own (that now happens entirely in the MAIN world,
+// before the event is even dispatched) - it is purely the listen ->
+// group -> notify wiring.
 (function () {
   "use strict";
 
-  const cfg = window.EAFC_LIVE_CONFIG || { DEBUG: false };
   function log(...args) {
-    if (cfg.DEBUG) console.debug("[EAFC Live]", ...args);
+    if (globalThis.EAFC_LIVE_DEBUG) console.debug("[EAFC Live]", ...args);
   }
 
-  const detector = window.EAFCLive && window.EAFCLive.detectCardIdentity;
-  if (typeof detector !== "function") {
+  const grouper = window.EAFCLive && window.EAFCLive.groupAuctionsByCardId;
+  if (typeof grouper !== "function") {
     // card-detector.js failed to load or attach - fail harmlessly rather
     // than throwing on every market response.
     console.warn("[EAFC Live] card-detector unavailable; Transfer Market observation disabled");
@@ -36,17 +37,17 @@
     onDetected = callback;
   }
 
-  window.addEventListener("eafc-live:fc26-response", (event) => {
+  window.addEventListener("eafc-live:transfermarket", (event) => {
     const detail = event.detail;
-    if (!detail || !detail.isTransferMarket) return;
+    if (!detail || !Array.isArray(detail.auctions)) return;
 
     log("Transfer Market response detected:", detail.url);
 
     let result;
     try {
-      result = detector(detail.body);
+      result = grouper(detail.auctions);
     } catch (err) {
-      log("card detection failed, ignoring response:", err && err.message);
+      log("card grouping failed, ignoring response:", err && err.message);
       return;
     }
 

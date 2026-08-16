@@ -1,21 +1,21 @@
 // src/content.js
 // Runs in the content script's ISOLATED world - the entry point that
 // wires the other modules together. Loaded last (see manifest.json)
-// so window.EAFCLive.{detectCardIdentity, combineIntelligence,
-// getCardIntelligence, onCardDetected, overlay} are all already attached.
+// so window.EAFCLive.{groupAuctionsByCardId, combineIntelligence,
+// verdictLabel, getCardIntelligence, onCardDetected, overlay} are all
+// already attached.
 //
 // Everything here is read-only: it reacts to Transfer Market responses
-// the Web App already fetched (market-observer.js), asks our own
-// backend for intelligence on the exact card id (eafc-api.js), combines
-// that with the live auctions (market-calc.js), and renders a small
-// panel (overlay.js). It never issues a request to EA and never writes
-// to the page's DOM outside of its own overlay panel.
+// the Web App already fetched (market-observer.js), asks the background
+// service worker for intelligence on the exact card id (eafc-api.js ->
+// background.js), combines that with the live auctions (market-calc.js),
+// and renders a small panel (overlay.js). It never issues a request to
+// EA and never writes to the page's DOM outside of its own overlay panel.
 (function () {
   "use strict";
 
-  const cfg = window.EAFC_LIVE_CONFIG || { DEBUG: false };
   function log(...args) {
-    if (cfg.DEBUG) console.debug("[EAFC Live]", ...args);
+    if (globalThis.EAFC_LIVE_DEBUG) console.debug("[EAFC Live]", ...args);
   }
 
   const EAFCLive = window.EAFCLive || {};
@@ -23,6 +23,7 @@
     typeof EAFCLive.onCardDetected !== "function" ||
     typeof EAFCLive.getCardIntelligence !== "function" ||
     typeof EAFCLive.combineIntelligence !== "function" ||
+    typeof EAFCLive.verdictLabel !== "function" ||
     !EAFCLive.overlay
   ) {
     // One of the pieces failed to load - fail harmlessly rather than
@@ -32,11 +33,22 @@
     return;
   }
 
-  // Tracks the last card we rendered for, so a burst of near-identical
-  // Transfer Market responses (EA's own polling/pagination) doesn't
-  // re-render on every single one - only when the detected card or its
-  // live auctions meaningfully change.
+  // Statuses that mean "ask again later" rather than "here is the
+  // answer" - a failure of this kind must never permanently suppress a
+  // retry for the same unchanged market state (see the fix's own
+  // discussion: this used to be set BEFORE the backend call resolved,
+  // so a single transient outage could lock a card out of ever
+  // rendering, even once the backend recovered).
+  const RETRYABLE_STATUSES = new Set(["network_error", "server_error", "timeout"]);
+
+  // The last renderKey we produced a TERMINAL result for (success or a
+  // confirmed not_found) - deliberately NOT updated on a retryable
+  // failure, so the identical detection firing again still retries.
   let lastRenderKey = null;
+
+  function renderKeyFor(sourceCardId, auctions) {
+    return `${sourceCardId}:${auctions.length}:${EAFCLive.cheapestBin(auctions)}`;
+  }
 
   async function handleDetection(result) {
     const { sourceCardId, auctions } = result;
@@ -48,24 +60,43 @@
       return;
     }
 
-    const renderKey = `${sourceCardId}:${auctions.length}:${EAFCLive.cheapestBin(auctions)}`;
-    if (renderKey === lastRenderKey) return;
-    lastRenderKey = renderKey;
+    const key = renderKeyFor(sourceCardId, auctions);
+    if (key === lastRenderKey) return;
 
-    EAFCLive.overlay.render({ kind: "loading" });
+    log("exact card ID:", sourceCardId);
+    EAFCLive.overlay.render({ kind: "loading", key });
 
-    const intelligence = await EAFCLive.getCardIntelligence(sourceCardId);
-    if (!intelligence) {
-      EAFCLive.overlay.render({ kind: "no-intelligence" });
+    const intelResult = await EAFCLive.getCardIntelligence(sourceCardId);
+
+    if (RETRYABLE_STATUSES.has(intelResult.status)) {
+      // Do NOT update lastRenderKey here - an identical detection event
+      // firing again later (e.g. the same search re-runs, or EA's own
+      // pagination repeats the page) must be allowed to retry the
+      // backend rather than being silently swallowed by the dedupe
+      // check above.
+      log("intelligence request failed:", intelResult.status);
+      EAFCLive.overlay.render({ kind: "error", status: intelResult.status, key });
       return;
     }
 
+    // Terminal outcome (success or a real 404) - safe to stop
+    // re-rendering for this exact market state until it changes.
+    lastRenderKey = key;
+
+    if (intelResult.status === "not_found") {
+      EAFCLive.overlay.render({ kind: "no-intelligence", key });
+      return;
+    }
+
+    const intelligence = intelResult.data;
     const combined = EAFCLive.combineIntelligence(auctions, intelligence);
+    log("intelligence loaded, signal:", intelligence.signal);
     log("cheapest BIN:", combined.cheapestBin);
     log(`${combined.underBuyBelowCount} listing(s) under target`);
 
     EAFCLive.overlay.render({
       kind: "result",
+      key,
       player: {
         name: intelligence.name,
         rarity: intelligence.rarity,

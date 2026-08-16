@@ -143,6 +143,44 @@
     };
   }
 
+  /**
+   * Maps a combineIntelligence() `reason` (plus the backend's raw
+   * `signal`, needed only for the "there was intelligence but it wasn't
+   * a buy" case) to the text/tone the overlay renders. Pulled out as its
+   * own pure function so the mapping is unit-testable without a DOM -
+   * previously every non-confirmed state rendered the same
+   * "NO LIVE LISTING BELOW TARGET" text regardless of WHY, which is
+   * inaccurate for e.g. "no live listings at all" or "backend has no
+   * intelligence for this card".
+   *
+   * Never returns a "confirmed"/buy-flavoured tone unless reason is
+   * literally "confirmed" - live data alone still cannot manufacture a
+   * buy recommendation here either.
+   */
+  function verdictLabel(reason, signal) {
+    switch (reason) {
+      case "confirmed":
+        return { text: "OPPORTUNITY CONFIRMED", tone: "confirmed" };
+      case "above_target":
+        return { text: "NO LIVE LISTING BELOW TARGET", tone: "neutral" };
+      case "no_live_listings":
+        return { text: "NO LIVE BIN LISTINGS", tone: "neutral" };
+      case "no_target_price":
+        return { text: "NO BUY TARGET AVAILABLE", tone: "neutral" };
+      case "no_intelligence":
+        return { text: "NO EAFC LIVE INTELLIGENCE", tone: "neutral" };
+      case "no_buy_signal": {
+        const label = signal ? String(signal).replace(/_/g, " ").toUpperCase() : null;
+        return {
+          text: label ? `LIVE MARKET — ${label} (NOT A BUY)` : "LIVE MARKET — NO BUY RECOMMENDATION",
+          tone: "neutral",
+        };
+      }
+      default:
+        return { text: "NO LIVE LISTING BELOW TARGET", tone: "neutral" };
+    }
+  }
+
   return {
     EA_TAX,
     cheapestBin,
@@ -151,5 +189,6 @@
     nearestExpiry,
     afterTaxProfit,
     combineIntelligence,
+    verdictLabel,
   };
 });

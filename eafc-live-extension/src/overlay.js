@@ -24,6 +24,12 @@
     return `${h}h ${m % 60}m`;
   }
 
+  const ERROR_STATUS_TEXT = {
+    network_error: "EAFC Live backend unreachable right now.",
+    server_error: "EAFC Live backend returned an error.",
+    timeout: "EAFC Live backend timed out.",
+  };
+
   const STYLES = `
     :host { all: initial; }
     .eafc-live-panel {
@@ -85,8 +91,9 @@
       text-align: center;
     }
     .eafc-live-verdict.confirmed { background: rgba(95, 217, 138, 0.15); color: #5fd98a; }
-    .eafc-live-verdict.none { background: rgba(138, 148, 166, 0.12); color: #b7c0cf; }
+    .eafc-live-verdict.neutral { background: rgba(138, 148, 166, 0.12); color: #b7c0cf; }
     .eafc-live-muted { color: #6b7484; font-size: 11px; margin-top: 4px; }
+    .eafc-live-debug { color: #4a90d9; font-size: 10px; margin-top: 6px; font-family: monospace; }
     .eafc-live-close {
       cursor: pointer;
       color: #6b7484;
@@ -99,7 +106,12 @@
 
   let hostEl = null;
   let shadow = null;
-  let dismissed = false;
+  // The renderKey of the last panel the user explicitly closed - NOT a
+  // page-lifetime flag. A subsequent render() for a DIFFERENT key (a
+  // different card, or the same card with different live listings)
+  // reopens the panel; only a repeat of the exact dismissed state stays
+  // hidden. See content.js for how renderKey is derived.
+  let dismissedKey = null;
 
   function ensureMounted() {
     if (hostEl) return shadow;
@@ -129,18 +141,38 @@
     if (existing) existing.remove();
   }
 
+  function addRow(body, label, value) {
+    const row = el("div", "eafc-live-row");
+    row.appendChild(el("span", "label", label));
+    row.appendChild(el("span", "value", value));
+    body.appendChild(row);
+  }
+
   /**
    * Renders one of a small set of states. `state.kind` is one of:
    *   "loading"          - card detected, intelligence not back yet
-   *   "no-intelligence"  - backend has nothing for this card (404, or unreachable)
-   *   "result"           - intelligence + combined live-market summary available
+   *   "no-intelligence"  - backend has nothing for this card (404)
+   *   "error"            - backend unreachable/timed out/5xx - distinct
+   *                        from "no-intelligence" because this one is
+   *                        expected to resolve on retry, not a fact
+   *                        about the card
+   *   "result"           - intelligence + combined live-market summary
    *   "hidden"           - remove the panel entirely
+   *
+   * `state.key`, when present, identifies this exact market situation
+   * (see content.js's renderKey) - used only to remember "the user
+   * closed THIS one", not to suppress unrelated future states.
    */
   function render(state) {
-    if (dismissed || !state || state.kind === "hidden") {
+    if (!state || state.kind === "hidden") {
       clearPanel();
       return;
     }
+    if (state.key && state.key === dismissedKey) {
+      clearPanel();
+      return;
+    }
+
     const root = ensureMounted();
     clearPanel();
 
@@ -153,17 +185,13 @@
     right.style.alignItems = "center";
     right.style.gap = "8px";
     const statusClass =
-      state.kind === "result" ? "connected" : state.kind === "no-intelligence" ? "error" : "";
+      state.kind === "result" ? "connected" : state.kind === "loading" ? "" : "error";
     const statusText =
-      state.kind === "loading"
-        ? "LOADING"
-        : state.kind === "no-intelligence"
-        ? "NO DATA"
-        : "CONNECTED";
+      state.kind === "loading" ? "LOADING" : state.kind === "result" ? "CONNECTED" : "NO DATA";
     right.appendChild(el("span", `eafc-live-status ${statusClass}`.trim(), statusText));
     const closeBtn = el("span", "eafc-live-close", "×");
     closeBtn.addEventListener("click", () => {
-      dismissed = true;
+      dismissedKey = state.key || null;
       clearPanel();
     });
     right.appendChild(closeBtn);
@@ -186,6 +214,15 @@
       return;
     }
 
+    if (state.kind === "error") {
+      const message = ERROR_STATUS_TEXT[state.status] || "EAFC Live backend unavailable right now.";
+      body.appendChild(el("div", "eafc-live-muted", message));
+      body.appendChild(el("div", "eafc-live-muted", "Will retry automatically on the next market update."));
+      panel.appendChild(body);
+      root.appendChild(panel);
+      return;
+    }
+
     // state.kind === "result"
     const { player, intelligence, combined } = state;
 
@@ -194,45 +231,31 @@
       body.appendChild(el("div", "eafc-live-card-name", title));
     }
 
-    const addRow = (label, value) => {
-      const row = el("div", "eafc-live-row");
-      row.appendChild(el("span", "label", label));
-      row.appendChild(el("span", "value", value));
-      body.appendChild(row);
-    };
-
     if (intelligence.fair_value !== null && intelligence.fair_value !== undefined) {
-      addRow("Fair Value", fmt(intelligence.fair_value));
+      addRow(body, "Fair Value", fmt(intelligence.fair_value));
     }
     if (intelligence.buy_below !== null && intelligence.buy_below !== undefined) {
-      addRow("Buy Below", fmt(intelligence.buy_below));
+      addRow(body, "Buy Below", fmt(intelligence.buy_below));
     }
-    addRow("Signal", (intelligence.signal || "unknown").replace(/_/g, " ").toUpperCase());
+    addRow(body, "Signal", (intelligence.signal || "unknown").replace(/_/g, " ").toUpperCase());
 
     body.appendChild(el("div", "eafc-live-divider"));
 
-    addRow("Live Cheapest", combined.cheapestBin !== null ? fmt(combined.cheapestBin) : "no listings");
-    addRow("Live Listings", String(combined.listingCount));
+    addRow(body, "Live Cheapest", combined.cheapestBin !== null ? fmt(combined.cheapestBin) : "no listings");
+    addRow(body, "Live Listings", String(combined.listingCount));
     if (combined.hasIntelligence) {
-      addRow(
-        `${combined.underBuyBelowCount} listing(s) below target`,
-        ""
-      );
+      addRow(body, "Below Buy Target", String(combined.underBuyBelowCount));
     }
     const expiry = fmtExpiry(combined.nearestExpirySeconds);
-    if (expiry) addRow("Nearest Expiry", expiry);
+    if (expiry) addRow(body, "Nearest Expiry", expiry);
     if (combined.potentialProfitAfterTax !== null && combined.potentialProfitAfterTax !== undefined) {
-      addRow("Potential Profit", fmt(combined.potentialProfitAfterTax));
+      addRow(body, "Potential Profit", fmt(combined.potentialProfitAfterTax));
     }
 
-    const verdict = el(
-      "div",
-      `eafc-live-verdict ${combined.opportunityConfirmed ? "confirmed" : "none"}`
-    );
-    verdict.textContent = combined.opportunityConfirmed
-      ? "✓ OPPORTUNITY CONFIRMED"
-      : "NO LIVE LISTING BELOW TARGET";
-    body.appendChild(verdict);
+    const verdict = window.EAFCLive.verdictLabel(combined.reason, intelligence.signal);
+    const verdictEl = el("div", `eafc-live-verdict ${verdict.tone}`);
+    verdictEl.textContent = verdict.tone === "confirmed" ? `✓ ${verdict.text}` : verdict.text;
+    body.appendChild(verdictEl);
 
     body.appendChild(
       el(
@@ -241,6 +264,10 @@
         "Reference data from EAFC Live · live listings read from this EA search"
       )
     );
+
+    if (globalThis.EAFC_LIVE_DEBUG && intelligence.source_card_id) {
+      body.appendChild(el("div", "eafc-live-debug", `source_card_id: ${intelligence.source_card_id}`));
+    }
 
     panel.appendChild(body);
     root.appendChild(panel);
