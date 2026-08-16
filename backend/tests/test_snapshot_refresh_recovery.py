@@ -88,9 +88,27 @@ class _Pool:
 
 @pytest.fixture(autouse=True)
 def _reset():
+    """Restore every module-level knob these tests mutate.
+
+    Without this the tests that shorten REFRESH_TIMEOUT_SECONDS to force
+    a timeout leak that value into the tests that assert on its real
+    configured value - which is exactly the kind of false failure that
+    makes a suite untrustworthy."""
+    saved = (
+        mdp.REFRESH_TIMEOUT_SECONDS,
+        mdp.CONCURRENT_FAILURES_BEFORE_PLAIN_REFRESH,
+        mdp.REFRESH_FAILURE_BACKOFF_SECONDS,
+    )
     mdp._concurrent_refresh_failures = 0
+    mdp._last_refresh_failure_at = 0.0
     yield
+    (
+        mdp.REFRESH_TIMEOUT_SECONDS,
+        mdp.CONCURRENT_FAILURES_BEFORE_PLAIN_REFRESH,
+        mdp.REFRESH_FAILURE_BACKOFF_SECONDS,
+    ) = saved
     mdp._concurrent_refresh_failures = 0
+    mdp._last_refresh_failure_at = 0.0
 
 
 class TestRefreshIsBounded:
@@ -153,3 +171,46 @@ class TestStalenessDrivesTheRefresh:
             f"but the tightest tier gate is {tightest_gate_minutes} min - the "
             "snapshot's own staleness would fail every card in that tier"
         )
+
+
+class TestFailureBackoff:
+    """The regression that took the site down.
+
+    Forcing a refresh on staleness WITHOUT a failure backoff is strictly
+    worse than not forcing at all. The refresh runs for its whole timeout,
+    is cancelled, leaves the snapshot exactly as stale as before - which
+    immediately re-triggers the staleness check - and starts again. A
+    permanent, heavy, never-completing query.
+
+    Production, consecutive passes after the forced refresh shipped:
+
+        futgg scan ... in   3.2s
+        futgg scan ... in   7.5s
+        futgg scan ... in 148.0s
+        priority_recompute  9.43s -> 157.13s
+
+    with both CONCURRENTLY and plain refreshes hitting the 300s timeout
+    back to back. Nothing on the site responded.
+    """
+
+    def test_a_failure_is_timestamped_so_the_loop_can_hold_off(self):
+        assert hasattr(mdp, "_last_refresh_failure_at")
+        assert hasattr(mdp, "REFRESH_FAILURE_BACKOFF_SECONDS")
+
+    def test_the_backoff_is_long_enough_to_actually_yield(self):
+        """It has to exceed the refresh timeout, or the next attempt
+        starts before the database has had any quiet time at all."""
+        assert mdp.REFRESH_FAILURE_BACKOFF_SECONDS > mdp.REFRESH_TIMEOUT_SECONDS
+
+    def test_the_timeout_is_not_shorter_than_the_work_it_guards(self):
+        """300s cancelled a refresh that needed longer, every time. The
+        timeout is there to catch a HUNG refresh holding the advisory
+        lock, not to police a merely slow one."""
+        assert mdp.REFRESH_TIMEOUT_SECONDS >= 600
+
+    @sync
+    async def test_a_timeout_records_when_it_happened(self):
+        mdp.REFRESH_TIMEOUT_SECONDS = 0.05
+        mdp._last_refresh_failure_at = 0.0
+        assert await mdp.refresh_snapshot(_Pool(_Conn(refresh_delay=1.0))) is False
+        assert mdp._last_refresh_failure_at > 0.0
