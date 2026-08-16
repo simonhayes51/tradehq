@@ -52,6 +52,12 @@ DASHBOARD_ORDER_BY = "sales_count DESC NULLS LAST"
 
 BAR = "=" * 72
 
+#: Nothing in this report is worth waiting on. A query that blocks is
+#: itself the finding - see check_locks() - and a report that hangs
+#: instead of saying so is useless. Both are deliberately short.
+STATEMENT_TIMEOUT_MS = 15_000
+LOCK_TIMEOUT_MS = 5_000
+
 
 def _h(title: str) -> None:
     print(f"\n{BAR}\n{title}\n{BAR}")
@@ -59,6 +65,95 @@ def _h(title: str) -> None:
 
 def _pct(part: int, whole: int) -> str:
     return f"{100.0 * part / whole:5.1f}%" if whole else "    -"
+
+
+async def _section(name: str, coro):
+    """Run a section, turning a lock timeout into the finding it is.
+
+    A query that cannot get its lock is not an error to be raised at the
+    user - it is the most important thing this report can tell them, and
+    it must not take the rest of the report down with it.
+    """
+    try:
+        return await coro
+    except (asyncpg.exceptions.LockNotAvailableError,
+            asyncpg.exceptions.QueryCanceledError) as exc:
+        print(f"\n  >> BLOCKED: {name} could not acquire its lock "
+              f"({type(exc).__name__}).")
+        print("     Section 0 above names what is holding it. Until that")
+        print("     clears, every page that reads this table behaves the same")
+        print("     way: it hangs, then times out. That is the outage.")
+        return None
+    except asyncpg.exceptions.UndefinedTableError as exc:
+        print(f"\n  >> {name}: missing table - {exc}")
+        return None
+
+
+async def check_locks(conn) -> bool:
+    """Who is holding or waiting on a lock right now.
+
+    This section exists because the report itself hung here. Both
+    migrations reported applied, then the very next query - a plain
+    count over futgg_players - never returned. A 10,000-row count does
+    not take minutes; it was waiting for a lock.
+
+    That matters far beyond this script. futgg_players is read by every
+    page, and Postgres lock requests QUEUE: one blocked ACCESS EXCLUSIVE
+    request (an ALTER TABLE, say) parks every later reader behind it,
+    even though those readers would not have conflicted with each other
+    or with the holder. So a single stuck DDL statement freezes the whole
+    table for everyone - which looks exactly like "player pages don't
+    load, search shows nothing, zero trades", intermittently.
+
+    Returns True if anything is currently blocked.
+    """
+    _h("0. LOCK CONTENTION ON futgg_players")
+    rows = await conn.fetch(
+        """
+        SELECT
+            a.pid, a.state,
+            round(EXTRACT(EPOCH FROM (now() - a.state_change)))::int AS state_secs,
+            round(EXTRACT(EPOCH FROM (now() - a.xact_start)))::int   AS xact_secs,
+            a.wait_event_type, a.wait_event,
+            cardinality(pg_blocking_pids(a.pid)) AS blocked_by_count,
+            pg_blocking_pids(a.pid)              AS blocked_by,
+            left(regexp_replace(a.query, '\s+', ' ', 'g'), 90) AS query
+        FROM pg_stat_activity a
+        WHERE a.datname = current_database()
+          AND a.pid <> pg_backend_pid()
+          AND (
+              cardinality(pg_blocking_pids(a.pid)) > 0
+              OR a.state = 'idle in transaction'
+              OR (a.state = 'active' AND a.xact_start < now() - interval '30 seconds')
+          )
+        ORDER BY xact_secs DESC NULLS LAST
+        """
+    )
+    if not rows:
+        print("  No blocked sessions, no long transactions, nothing idle in")
+        print("  transaction. Locks are not the problem right now.")
+        return False
+
+    print(f"  {'pid':>7} {'state':<22} {'xact':>7} {'wait':<22} blocked_by")
+    for r in rows:
+        print(
+            f"  {r['pid']:>7} {str(r['state']):<22} "
+            f"{str(r['xact_secs'] or 0) + 's':>7} "
+            f"{str(r['wait_event_type'] or '-') + '/' + str(r['wait_event'] or '-'):<22} "
+            f"{list(r['blocked_by']) if r['blocked_by'] else '-'}"
+        )
+        print(f"          {r['query']}")
+
+    blockers = {pid for r in rows for pid in (r["blocked_by"] or [])}
+    if blockers:
+        print(f"\n  >> {len(blockers)} session(s) are BLOCKING others: {sorted(blockers)}")
+        print("     Every later reader of the same table queues behind them,")
+        print("     which is why unrelated pages stop loading at the same time.")
+    idle = [r for r in rows if r["state"] == "idle in transaction"]
+    if idle:
+        print(f"\n  >> {len(idle)} session(s) are IDLE IN TRANSACTION - holding locks")
+        print("     while doing nothing. These never resolve on their own.")
+    return True
 
 
 async def check_deployment(conn) -> Dict[str, Any]:
@@ -277,13 +372,26 @@ async def main() -> int:
         print("Set DATABASE_URL (or pass --database-url).", file=sys.stderr)
         return 2
 
-    pool = await asyncpg.create_pool(args.database_url, min_size=1, max_size=2)
+    pool = await asyncpg.create_pool(
+        args.database_url, min_size=1, max_size=2,
+        command_timeout=STATEMENT_TIMEOUT_MS / 1000.0,
+        server_settings={
+            "statement_timeout": str(STATEMENT_TIMEOUT_MS),
+            "lock_timeout": str(LOCK_TIMEOUT_MS),
+        },
+    )
     try:
         async with pool.acquire() as conn:
-            state = await check_deployment(conn)
-            await check_sales_coverage(conn)
-            await replay_dashboard_pool(
-                conn, FutggMarketDataProvider(pool), args.limit, args.examples
+            # Locks first: if the table is jammed, every section below
+            # would otherwise hang, and the hang IS the answer.
+            await _section("lock check", check_locks(conn))
+            await _section("deployment state", check_deployment(conn))
+            await _section("sales coverage", check_sales_coverage(conn))
+            await _section(
+                "engine replay",
+                replay_dashboard_pool(
+                    conn, FutggMarketDataProvider(pool), args.limit, args.examples
+                ),
             )
         print(f"\n{BAR}\nRead-only: nothing was modified.\n{BAR}")
     finally:
