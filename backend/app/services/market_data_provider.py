@@ -26,6 +26,7 @@ everywhere it's surfaced (see get_recent_sales()).
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import time
@@ -50,6 +51,33 @@ REFRESH_ADVISORY_LOCK_KEY = 7741011
 #: default 120s poll, so it is both the reason the snapshot is stale and
 #: the reason nothing else could refresh it.
 SLOW_REFRESH_WARN_SECONDS = 90.0
+
+#: Refresh regardless of the watermark once the snapshot is older than
+#: this. The watermark test answers "has anything changed", which is the
+#: wrong question when the snapshot has simply stopped advancing: the
+#: watermark moves every bulk cycle, the refresh is attempted, and if it
+#: never SUCCEEDS the loop keeps trying and keeps not noticing. Measuring
+#: the snapshot's own age asks the question that actually matters.
+SNAPSHOT_MAX_AGE_SECONDS = float(os.getenv("FUTGG_SNAPSHOT_MAX_AGE_SECONDS", "600"))
+
+#: Hard ceiling on one refresh. The core pool sets no command_timeout, so
+#: without this a slow refresh runs unbounded while holding the advisory
+#: lock - which is precisely how a snapshot reaches 117 minutes stale
+#: with nothing in the logs.
+REFRESH_TIMEOUT_SECONDS = float(os.getenv("FUTGG_REFRESH_TIMEOUT_SECONDS", "300"))
+
+#: After this many consecutive CONCURRENTLY timeouts, fall back to a
+#: plain REFRESH. CONCURRENTLY must build the new snapshot AND diff it
+#: against the old through the unique index; a plain refresh just builds
+#: and swaps, and is typically several times faster. It takes a brief
+#: exclusive lock on the VIEW (not the source tables), so readers wait
+#: seconds - which is strictly better than reading data hours old.
+CONCURRENT_FAILURES_BEFORE_PLAIN_REFRESH = int(
+    os.getenv("FUTGG_CONCURRENT_FAILURES_BEFORE_PLAIN", "2")
+)
+
+#: Consecutive CONCURRENTLY timeouts. Reset by any success.
+_concurrent_refresh_failures = 0
 
 # Same bound the migration's own recent-sales window uses - kept as a
 # named constant here too since get_recent_sales() enforces it again on
@@ -863,9 +891,36 @@ async def refresh_snapshot(pool: asyncpg.Pool) -> bool:
             # slow refresh either. Reporting the duration is what makes
             # "the refresh is the bottleneck" distinguishable from "the
             # refresher is not running".
+            global _concurrent_refresh_failures
+            use_plain = (
+                _concurrent_refresh_failures >= CONCURRENT_FAILURES_BEFORE_PLAIN_REFRESH
+            )
+            mode = "" if use_plain else "CONCURRENTLY "
             started = time.monotonic()
-            await conn.execute("REFRESH MATERIALIZED VIEW CONCURRENTLY futgg_market_snapshot")
+            try:
+                await asyncio.wait_for(
+                    conn.execute(f"REFRESH MATERIALIZED VIEW {mode}futgg_market_snapshot"),
+                    timeout=REFRESH_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                _concurrent_refresh_failures += 1
+                log.error(
+                    "futgg_market_snapshot refresh (%s) exceeded %.0fs and was "
+                    "cancelled. %s",
+                    mode.strip() or "plain", REFRESH_TIMEOUT_SECONDS,
+                    (
+                        "Falling back to a plain (non-concurrent) refresh on the "
+                        "next attempt - it rebuilds and swaps instead of diffing, "
+                        "which is far cheaper, at the cost of a brief lock on the "
+                        "view itself."
+                        if _concurrent_refresh_failures
+                        >= CONCURRENT_FAILURES_BEFORE_PLAIN_REFRESH
+                        else "Will retry."
+                    ),
+                )
+                return False
             elapsed = time.monotonic() - started
+            _concurrent_refresh_failures = 0
             if elapsed > SLOW_REFRESH_WARN_SECONDS:
                 log.warning(
                     "futgg_market_snapshot refresh took %.0fs - longer than the "
@@ -925,7 +980,30 @@ async def refresher_loop(pool: asyncpg.Pool, poll_seconds: int = 120) -> None:
                 watermark = await conn.fetchval(
                     "SELECT greatest(max(last_seen_at), max(price_updated_at)) FROM futgg_players"
                 )
-            if watermark and watermark != last_watermark:
+                # The snapshot's OWN age, measured directly. The watermark
+                # answers "has the source data changed", which is the wrong
+                # question once the snapshot has stopped advancing: the
+                # watermark moves every bulk cycle, a refresh is attempted,
+                # and if that refresh never SUCCEEDS the loop keeps trying
+                # and keeps not noticing. Production reached 117 minutes
+                # stale in exactly that state.
+                snapshot_age = await conn.fetchval(
+                    "SELECT EXTRACT(EPOCH FROM (now() - max(snapshot_computed_at)))"
+                    " FROM futgg_market_snapshot"
+                )
+            stale = (
+                snapshot_age is not None
+                and float(snapshot_age) > SNAPSHOT_MAX_AGE_SECONDS
+            )
+            if stale:
+                log.warning(
+                    "futgg_market_snapshot is %.0f min old (limit %.0f min) - "
+                    "forcing a refresh regardless of the watermark. Every card "
+                    "reads at least this stale to the engine, so special-tier "
+                    "cards fail their 20-minute freshness gate en masse.",
+                    float(snapshot_age) / 60.0, SNAPSHOT_MAX_AGE_SECONDS / 60.0,
+                )
+            if stale or (watermark and watermark != last_watermark):
                 did = await refresh_snapshot(pool)
                 if did:
                     log.info("futgg_market_snapshot refreshed (watermark=%s)", watermark)
