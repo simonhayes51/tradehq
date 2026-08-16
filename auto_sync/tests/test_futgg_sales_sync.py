@@ -153,3 +153,49 @@ class TestAdaptiveThrottle:
         t = AdaptiveThrottle(8, 0.0)
         t.record(8, 8)
         assert t.delay > 0
+
+
+class TestAdaptiveThrottleResume:
+    """resume_batch_size/resume_delay let a fresh bounded run start from
+    a previous run's persisted state (see load_throttle_state/
+    save_throttle_state) instead of the static BATCH_SIZE/BATCH_DELAY
+    every time. The bug this guards against: naively passing the
+    persisted (possibly throttled-down) values as the constructor's
+    ordinary batch_size/delay would also become the new max_batch/
+    min_delay, permanently capping the throttle at whatever it had
+    backed off to in the previous run - never able to ease back up to
+    the real BATCH_SIZE ceiling again even after sustained clean cycles."""
+
+    def test_resumes_at_the_persisted_values(self):
+        t = AdaptiveThrottle(8, 0.5, resume_batch_size=3, resume_delay=2.0)
+        assert t.batch_size == 3
+        assert t.delay == 2.0
+
+    def test_bounds_stay_at_the_configured_ceiling_not_the_resumed_value(self):
+        # Resuming from a throttled-down batch=2 must not make 2 the new
+        # ceiling - BATCH_SIZE=8 remains recoverable.
+        t = AdaptiveThrottle(8, 0.5, resume_batch_size=2, resume_delay=3.0)
+        assert t.max_batch == 8
+        assert t.min_delay == 0.5
+
+    def test_throttle_can_recover_back_toward_the_real_ceiling_after_resuming_low(self):
+        t = AdaptiveThrottle(8, 0.5, resume_batch_size=2, resume_delay=3.0)
+        for _ in range(200):
+            t.record(8, 0)  # sustained clean traffic
+        assert t.batch_size == 8
+        assert abs(t.delay - 0.5) < 1e-9
+
+    def test_no_resume_values_behaves_exactly_like_before(self):
+        t = AdaptiveThrottle(8, 0.5)
+        assert t.batch_size == 8
+        assert t.delay == 0.5
+        assert t.max_batch == 8
+        assert t.min_delay == 0.5
+
+    def test_resume_values_are_clamped_into_this_runs_bounds(self):
+        # Defensive: persisted state from a run under a DIFFERENT
+        # BATCH_SIZE/BATCH_DELAY config (an env var changed between
+        # runs) must not start outside what this run's own bounds allow.
+        t = AdaptiveThrottle(8, 0.5, resume_batch_size=99, resume_delay=0.01)
+        assert t.batch_size == 8   # clamped down to max_batch
+        assert t.delay == 0.5      # clamped up to min_delay

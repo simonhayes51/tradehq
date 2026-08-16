@@ -432,13 +432,34 @@ class AdaptiveThrottle:
     rejected requests still cost quota and risk a harder block.
     """
 
-    def __init__(self, batch_size: int, delay: float) -> None:
-        self.batch_size = batch_size
-        self.delay = delay
+    def __init__(
+        self, batch_size: int, delay: float,
+        *, resume_batch_size: int | None = None, resume_delay: float | None = None,
+    ) -> None:
+        # `batch_size`/`delay` set the BOUNDS (max_batch/min_delay), not
+        # necessarily the starting point - see resume_batch_size/
+        # resume_delay below. Without that distinction, resuming from a
+        # previous run's throttled-down state (see load_throttle_state())
+        # would permanently cap max_batch/min_delay at whatever the
+        # throttle had backed off to, e.g. batch=2, and the ceiling could
+        # then never recover back toward BATCH_SIZE even after FUT.GG
+        # stopped rate-limiting entirely.
         self.max_batch = batch_size
         self.min_batch = 1
         self.min_delay = delay
         self.max_delay = max(delay * 40, 10.0)
+        # Resume values are clamped into the bounds above - persisted
+        # state from a run under a DIFFERENT BATCH_SIZE/BATCH_DELAY
+        # config (an env var changed between runs) must not start outside
+        # what this run's own bounds allow.
+        self.batch_size = (
+            max(self.min_batch, min(self.max_batch, resume_batch_size))
+            if resume_batch_size is not None else batch_size
+        )
+        self.delay = (
+            max(self.min_delay, min(self.max_delay, resume_delay))
+            if resume_delay is not None else delay
+        )
         self._clean_streak = 0
 
     def record(self, attempted: int, throttled: int) -> None:
@@ -463,6 +484,71 @@ class AdaptiveThrottle:
 
     def describe(self) -> str:
         return f"batch={self.batch_size} delay={self.delay:.2f}s"
+
+
+#: AdaptiveThrottle only ever lives in-process. In continuous mode that's
+#: fine - it keeps learning for as long as the worker runs. But this
+#: worker also ships a "bounded" mode (MAX_RUNTIME_MINUTES/MAX_CYCLES,
+#: see run_forever()) specifically so it can run as a cheap scheduled
+#: task instead of a always-on service - and every one of those scheduled
+#: runs starts a brand new process, which throws the learned
+#: batch_size/delay away and re-learns FUT.GG's rate limit through a
+#: fresh wave of HTTP 429s each time, even though the limit itself hasn't
+#: changed since the last run minutes or hours earlier. Persisting the
+#: last-known-good values (best-effort, mirroring auto_sync/http_client.py's
+#: already-Postgres-backed rate limiter/circuit breaker for the price/bin
+#: workers) lets a new run start already-tuned instead of re-discovering
+#: the same limit from scratch every single time.
+_THROTTLE_STATE_DDL = """
+CREATE TABLE IF NOT EXISTS futgg_sales_throttle_state (
+    id         SMALLINT PRIMARY KEY DEFAULT 1,
+    batch_size INTEGER NOT NULL,
+    delay      REAL NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CHECK (id = 1)
+)
+"""
+
+
+async def load_throttle_state(pool: asyncpg.Pool) -> tuple[int, float] | None:
+    """Best-effort. Returns (batch_size, delay) learned by a previous run,
+    or None if there is no saved state yet (first-ever run) or the read
+    failed - either way the caller falls back to the static
+    BATCH_SIZE/BATCH_DELAY defaults, exactly like before this existed."""
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute(_THROTTLE_STATE_DDL)
+            row = await conn.fetchrow(
+                "SELECT batch_size, delay FROM futgg_sales_throttle_state WHERE id = 1"
+            )
+        if row is None:
+            return None
+        return int(row["batch_size"]), float(row["delay"])
+    except Exception:
+        log.warning("failed to load persisted throttle state - starting from defaults", exc_info=True)
+        return None
+
+
+async def save_throttle_state(pool: asyncpg.Pool, throttle: "AdaptiveThrottle") -> None:
+    """Best-effort. A failure here must never interrupt scraping - losing
+    the persisted tuning just means the next run re-learns it, same as
+    every run did before this existed."""
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute(_THROTTLE_STATE_DDL)
+            await conn.execute(
+                """
+                INSERT INTO futgg_sales_throttle_state (id, batch_size, delay, updated_at)
+                VALUES (1, $1, $2, NOW())
+                ON CONFLICT (id) DO UPDATE
+                    SET batch_size = EXCLUDED.batch_size,
+                        delay = EXCLUDED.delay,
+                        updated_at = NOW()
+                """,
+                throttle.batch_size, throttle.delay,
+            )
+    except Exception:
+        log.warning("failed to persist throttle state", exc_info=True)
 
 
 def circuit_breaker_tripped(stats: dict[str, Any]) -> bool:
@@ -1892,7 +1978,17 @@ async def run_forever() -> None:
                     len(capture_pages),
                 )
 
-            throttle = AdaptiveThrottle(BATCH_SIZE, BATCH_DELAY)
+            persisted = await load_throttle_state(pool)
+            throttle = AdaptiveThrottle(
+                BATCH_SIZE, BATCH_DELAY,
+                resume_batch_size=persisted[0] if persisted else None,
+                resume_delay=persisted[1] if persisted else None,
+            )
+            if persisted:
+                log.info(
+                    "resuming throttle from a previous run: %s (bounds batch<=%d delay>=%.2fs)",
+                    throttle.describe(), BATCH_SIZE, BATCH_DELAY,
+                )
 
             run_started_at = time.monotonic()
             cycles_done = 0
@@ -2025,6 +2121,14 @@ async def run_forever() -> None:
                 )
                 for line in timers.format_lines():
                     log.info(line)
+
+                # Saved every cycle, not just at shutdown: a bounded run
+                # can be stopped by MAX_RUNTIME_MINUTES/MAX_CYCLES or an
+                # external SIGTERM at any point, and losing this write
+                # would mean the next run re-learns FUT.GG's rate limit
+                # from scratch again - the exact problem this exists to
+                # avoid. Best-effort (see save_throttle_state).
+                await save_throttle_state(pool, throttle)
 
                 # A cycle that completed without tripping means the backoff
                 # did its job, so the throttle-trip streak must not carry
