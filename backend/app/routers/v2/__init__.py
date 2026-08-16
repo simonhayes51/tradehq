@@ -13,6 +13,7 @@ from app.routers.v2.dashboard import router as dashboard_router
 from app.routers.v2.trades import router as trades_router
 from app.routers.v2.ai_chat import router as ai_chat_router
 from app.routers.v2.futgg_market import router as futgg_market_router
+from app.routers.v2.companion import router as companion_router
 
 router = APIRouter(prefix="/api/v2")
 router.include_router(health_router)
@@ -30,3 +31,9 @@ router.include_router(ai_chat_router)
 # router above (confirmed against players_router/market_router's own
 # path prefixes before adding this).
 router.include_router(futgg_market_router)
+# EAFC Live Companion browser extension API (eafc-live-extension/) - a
+# thin read-only reshaping of the same provider/intelligence pair
+# futgg_market_router uses, at its own /companion/* prefix so it can
+# evolve (rate limits, API-key auth for the extension) independently of
+# the main market-intelligence surface.
+router.include_router(companion_router)
