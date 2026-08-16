@@ -1,5 +1,6 @@
 // src/page-bridge.js
-// Runs in the page's MAIN world (see manifest.json), after ea-session.js.
+// Runs in the page's MAIN world (see manifest.json), after
+// debug-flag.js, card-detector.js and ea-session.js.
 //
 // Component 2 of the milestone: OBSERVE requests the Web App is already
 // making, rather than issuing any of our own. This file wraps
@@ -10,24 +11,58 @@
 // call still completes normally - a bug here must never break the Web
 // App.
 //
-// SECURITY: this file inspects response BODIES for market data
-// (auctionInfo, resourceId, buyNowPrice, ...) but never reads request
-// HEADERS at all, and never logs a full response body (only counts/ids -
-// see the [EAFC Live] debug lines below). EA session values such as
-// X-UT-SID / X-UT-PHISHING-TOKEN pass through this wrapper completely
-// untouched and unread, exactly like every other request header.
+// SANITIZATION AT THE WORLD BOUNDARY
+// -------------------------------------------------------------------
+// Earlier V1 dispatched the ENTIRE parsed /transfermarket response body
+// across the MAIN -> isolated-world CustomEvent. That was broader than
+// this extension needs: the isolated world (src/market-observer.js
+// onward) only ever reads card identity and a handful of pricing/timing
+// fields. This file now runs card-detector.js's extraction/sanitization
+// IN THIS (MAIN) WORLD, before anything is dispatched, so the event
+// payload is already reduced to exactly:
+//
+//   { sourceCardId, tradeId, rating, buyNowPrice, currentBid,
+//     startingBid, expires, tradeState }
+//
+// per auction - never the raw itemData, never any other field EA's
+// response happens to carry, and never a request header, cookie, or
+// session value (this file never reads request headers at all, on
+// purpose - see below).
+//
+// SECURITY: this file inspects response BODIES for market data but
+// never reads request HEADERS, and never logs a full response body
+// (only counts/ids - see the [EAFC Live] debug lines below). EA session
+// values such as X-UT-SID / X-UT-PHISHING-TOKEN pass through this
+// wrapper completely untouched and unread, exactly like every other
+// request header - and even if they weren't, nothing containing them
+// would cross into the isolated world, because only the sanitized
+// auction fields above ever do.
 (function () {
   "use strict";
 
-  const cfg = window.EAFC_LIVE_CONFIG || { DEBUG: false };
   function log(...args) {
-    if (cfg.DEBUG) console.debug("[EAFC Live]", ...args);
+    if (globalThis.EAFC_LIVE_DEBUG) console.debug("[EAFC Live]", ...args);
   }
 
   const FC26_RE = /\/ut\/game\/fc26(\/|$)/;
   const TRANSFERMARKET_RE = /\/transfermarket(\/|$|\?)/;
 
-  function dispatchResponse(url, status, bodyText) {
+  function sanitizeAuctions(body) {
+    const extract = window.EAFCLive && window.EAFCLive.extractAuctionsFromResponse;
+    if (typeof extract !== "function") {
+      // card-detector.js failed to load in this world - fail harmlessly,
+      // no market event is dispatched at all.
+      return null;
+    }
+    try {
+      return extract(body);
+    } catch (err) {
+      log("card extraction failed in MAIN world, dropping response:", err && err.message);
+      return null;
+    }
+  }
+
+  function dispatchSanitizedAuctions(url, status, bodyText) {
     let body = null;
     try {
       body = bodyText ? JSON.parse(bodyText) : null;
@@ -38,14 +73,18 @@
       // milestone's graceful-failure requirement.
       return;
     }
+
+    const auctions = sanitizeAuctions(body);
+    if (auctions === null) return;
+
     try {
       window.dispatchEvent(
-        new CustomEvent("eafc-live:fc26-response", {
-          detail: { url, status, isTransferMarket: TRANSFERMARKET_RE.test(url), body },
+        new CustomEvent("eafc-live:transfermarket", {
+          detail: { url, status, auctions },
         })
       );
     } catch (err) {
-      log("failed to dispatch observed response event:", err && err.message);
+      log("failed to dispatch sanitized market event:", err && err.message);
     }
   }
 
@@ -79,7 +118,7 @@
               response
                 .clone()
                 .text()
-                .then((text) => dispatchResponse(url, response.status, text))
+                .then((text) => dispatchSanitizedAuctions(url, response.status, text))
                 .catch(() => {});
             })
             .catch(() => {
@@ -118,7 +157,7 @@
           try {
             noteRequest(url, this.status);
             if (!TRANSFERMARKET_RE.test(url)) return;
-            dispatchResponse(url, this.status, this.responseText);
+            dispatchSanitizedAuctions(url, this.status, this.responseText);
           } catch (err) {
             log("XHR hook observation failed (request unaffected):", err && err.message);
           }

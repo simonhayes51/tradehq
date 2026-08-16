@@ -1,11 +1,19 @@
 // src/card-detector.js
 //
 // Pure logic: turn an EA FC 26 Web App /transfermarket response body into
-// exact card identity + a normalized auction list. No DOM, no network,
-// no extension APIs - this file is unit-testable directly under Node
-// (see tests/card-detector.test.js) and is also loaded as a plain
-// content-script file in the browser (see manifest.json), where it
-// attaches itself to `window.EAFCLive`.
+// exact card identity + a normalized, SANITIZED auction list. No DOM, no
+// network, no extension APIs - this file is unit-testable directly under
+// Node (see tests/card-detector.test.js) and is also loaded as a plain
+// script in TWO separate browser execution contexts (see manifest.json):
+//
+//   - the page's MAIN world (src/page-bridge.js uses
+//     extractAuctionsFromResponse() to build the sanitized payload it
+//     dispatches - see that file's own header for why only a handful of
+//     fields ever cross the MAIN -> isolated-world boundary)
+//   - the content script's ISOLATED world (src/market-observer.js uses
+//     groupAuctionsByCardId() over the already-sanitized auctions it
+//     receives, to decide whether a response is confidently about a
+//     single card)
 //
 // WHAT WE OBSERVED (documented per the milestone's own requirement)
 // -------------------------------------------------------------------
@@ -36,13 +44,12 @@
 //     ]
 //   }
 //
-// This has not been confirmed against a live authenticated session in
-// this environment (no browser/EA account available here) - see the
-// implementation report for what still needs manual verification. The
-// code below is written defensively specifically because of that: every
-// field is read with fallbacks, nothing throws on an unexpected shape,
-// and identity resolution refuses to guess rather than silently return a
-// wrong card id.
+// This has NOT been confirmed against a live authenticated session in
+// this environment - see the extension README's live-test checklist for
+// what still needs manual verification. The code below is written
+// defensively specifically because of that: every field is read with
+// fallbacks, nothing throws on an unexpected shape, and identity
+// resolution refuses to guess rather than silently return a wrong card id.
 //
 // IDENTITY RULE
 // -------------------------------------------------------------------
@@ -56,7 +63,11 @@
 // underlying player and collides across every special version of that
 // player (an 85-rated gold and a 97-rated TOTY Mbappe can share it), so
 // treating it as the card id would silently mismatch a special card's
-// intelligence onto a totally different card's numbers.
+// intelligence onto a totally different card's numbers. It is also
+// deliberately dropped from the sanitized auction shape entirely (see
+// normalizeAuction below) - once sourceCardId is resolved from
+// resourceId/definitionId, nothing downstream has any use for the raw
+// EA player id, so it never needs to leave the MAIN world at all.
 (function (root, factory) {
   if (typeof module !== "undefined" && module.exports) {
     module.exports = factory();
@@ -82,10 +93,17 @@
   }
 
   /**
-   * Normalizes one auctionInfo[] entry into the flat shape the rest of
-   * the extension works with. Returns null (rather than throwing) for an
-   * entry that doesn't look like a real auction - a defensively-written
-   * caller can just filter those out.
+   * Normalizes one auctionInfo[] entry into the flat, SANITIZED shape
+   * that is safe to cross the MAIN -> isolated-world boundary (see
+   * src/page-bridge.js) and is all the rest of the extension ever needs:
+   * exact card identity plus the handful of pricing/timing fields the
+   * overlay renders. Deliberately excludes maskedDefId, itemType, seller
+   * info, or any other field EA's response happens to carry - narrower
+   * than "everything EA gave us", not a passthrough of it.
+   *
+   * Returns null (rather than throwing) for an entry that doesn't look
+   * like a real, identifiable auction - a defensively-written caller can
+   * just filter those out.
    */
   function normalizeAuction(entry) {
     if (!entry || typeof entry !== "object") return null;
@@ -96,7 +114,6 @@
     return {
       sourceCardId,
       tradeId: toPositiveInt(entry.tradeId ?? item.id) ?? null,
-      maskedDefId: toPositiveInt(item.maskedDefId),
       rating: Number.isFinite(Number(item.rating)) ? Number(item.rating) : null,
       buyNowPrice: toPositiveInt(entry.buyNowPrice) ?? 0,
       currentBid: toPositiveInt(entry.currentBid) ?? 0,
@@ -111,14 +128,15 @@
 
   /**
    * Walks a parsed /transfermarket response body and returns every
-   * auction we could confidently identify. Tolerant of:
+   * auction we could confidently identify, already sanitized down to
+   * the fields normalizeAuction() keeps. Tolerant of:
    *   - a bare array instead of {auctionInfo: [...]}
    *   - a single-item response ({itemData: {...}, buyNowPrice: ...})
    *   - fields missing/renamed/of the wrong type
    * Never throws - an unrecognised shape just yields an empty list, and
-   * the caller (market-observer.js) treats that exactly like "EA's
-   * response format changed, show nothing" per the milestone's graceful-
-   * failure requirement.
+   * the caller (page-bridge.js / market-observer.js) treats that exactly
+   * like "EA's response format changed, show nothing" per the
+   * milestone's graceful-failure requirement.
    */
   function extractAuctionsFromResponse(body) {
     if (!body || typeof body !== "object") return [];
@@ -143,37 +161,55 @@
   }
 
   /**
-   * Resolves ONE exact card id for a response, when the response is
-   * confidently about a single card - which is the normal case for a
-   * transfer-market search scoped to one player/version.
+   * Resolves ONE exact card id over a list of ALREADY-SANITIZED auctions
+   * (each already carrying a numeric sourceCardId - i.e. the shape
+   * normalizeAuction()/extractAuctionsFromResponse() produce, or the
+   * sanitized payload src/page-bridge.js dispatches across the world
+   * boundary). Pure grouping - no raw itemData involved, which is why
+   * this can run entirely in the isolated world on the payload it
+   * receives, with no access to (or need for) the original EA response.
    *
-   * Returns { sourceCardId, auctions } when every identified auction
-   * agrees on the same sourceCardId, or { sourceCardId: null, auctions,
-   * groupedByCardId } when the response mixes multiple cards (e.g. an
-   * unfiltered/"any version" search) - in that case the caller can still
-   * act per-group, but must not silently pick one card as "the" card.
+   * Returns { sourceCardId, auctions, groupedByCardId }:
+   *   - sourceCardId is set only when every auction agrees on one card -
+   *     the normal case for a Transfer Market search scoped to one
+   *     player/version.
+   *   - groupedByCardId always reflects the full breakdown, so a caller
+   *     that wants to act per-group on a mixed response still can,
+   *     without this function silently picking one card to call "the"
+   *     card.
    */
-  function detectCardIdentity(body) {
-    const auctions = extractAuctionsFromResponse(body);
-    if (auctions.length === 0) {
-      return { sourceCardId: null, auctions, groupedByCardId: {} };
-    }
+  function groupAuctionsByCardId(auctions) {
+    const list = Array.isArray(auctions)
+      ? auctions.filter((a) => a && Number.isFinite(a.sourceCardId))
+      : [];
 
     const groupedByCardId = {};
-    for (const auction of auctions) {
+    for (const auction of list) {
       (groupedByCardId[auction.sourceCardId] = groupedByCardId[auction.sourceCardId] || []).push(auction);
     }
 
     const distinctIds = Object.keys(groupedByCardId);
     const sourceCardId = distinctIds.length === 1 ? Number(distinctIds[0]) : null;
 
-    return { sourceCardId, auctions, groupedByCardId };
+    return { sourceCardId, auctions: list, groupedByCardId };
+  }
+
+  /**
+   * Convenience wrapper: extract + group in one call, for callers (tests,
+   * or a context that legitimately has the raw response body) that don't
+   * need the sanitize/group split. src/page-bridge.js and
+   * src/market-observer.js call the two halves separately instead, since
+   * one runs in the MAIN world and the other in the isolated world.
+   */
+  function detectCardIdentity(body) {
+    return groupAuctionsByCardId(extractAuctionsFromResponse(body));
   }
 
   return {
     extractExactCardId,
     normalizeAuction,
     extractAuctionsFromResponse,
+    groupAuctionsByCardId,
     detectCardIdentity,
   };
 });

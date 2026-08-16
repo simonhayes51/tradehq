@@ -11,6 +11,7 @@ const {
   countBelow,
   afterTaxProfit,
   combineIntelligence,
+  verdictLabel,
 } = require("../src/market-calc.js");
 
 function auction(buyNowPrice, extra) {
@@ -103,4 +104,73 @@ test("afterTaxProfit matches EA's flat 5% sale tax", () => {
 test("afterTaxProfit returns null for non-numeric input rather than NaN", () => {
   assert.equal(afterTaxProfit(null, 1000), null);
   assert.equal(afterTaxProfit(1000, undefined), null);
+});
+
+// ---------------------------------------------------------------------
+// verdictLabel - reason-aware overlay text. Every non-confirmed reason
+// used to render the same "NO LIVE LISTING BELOW TARGET" string; each
+// must now get its own accurate label, and only "confirmed" is allowed
+// the confirmed/buy-flavoured tone.
+// ---------------------------------------------------------------------
+
+test("verdictLabel: confirmed", () => {
+  const v = verdictLabel("confirmed", "strong_buy");
+  assert.equal(v.text, "OPPORTUNITY CONFIRMED");
+  assert.equal(v.tone, "confirmed");
+});
+
+test("verdictLabel: above_target", () => {
+  const v = verdictLabel("above_target", "buy");
+  assert.equal(v.text, "NO LIVE LISTING BELOW TARGET");
+  assert.equal(v.tone, "neutral");
+});
+
+test("verdictLabel: no_live_listings", () => {
+  const v = verdictLabel("no_live_listings", "buy");
+  assert.equal(v.text, "NO LIVE BIN LISTINGS");
+  assert.equal(v.tone, "neutral");
+});
+
+test("verdictLabel: no_target_price", () => {
+  const v = verdictLabel("no_target_price", "buy");
+  assert.equal(v.text, "NO BUY TARGET AVAILABLE");
+});
+
+test("verdictLabel: no_intelligence", () => {
+  const v = verdictLabel("no_intelligence", undefined);
+  assert.equal(v.text, "NO EAFC LIVE INTELLIGENCE");
+});
+
+test("verdictLabel: no_buy_signal shows the backend's actual signal", () => {
+  const v = verdictLabel("no_buy_signal", "hold");
+  assert.match(v.text, /^LIVE MARKET — HOLD/);
+  assert.equal(v.tone, "neutral");
+});
+
+test("verdictLabel: no_buy_signal falls back to a generic label with no signal", () => {
+  const v = verdictLabel("no_buy_signal", undefined);
+  assert.equal(v.text, "LIVE MARKET — NO BUY RECOMMENDATION");
+});
+
+test("verdictLabel: unknown reason degrades to the neutral default rather than throwing", () => {
+  const v = verdictLabel("something_new_from_a_future_change", "buy");
+  assert.equal(v.tone, "neutral");
+});
+
+test("combineIntelligence reason always round-trips through verdictLabel without throwing", () => {
+  const cases = [
+    [[], null],
+    [[{ buyNowPrice: 1000 }], { signal: "avoid", buy_below: 500 }],
+    [[{ buyNowPrice: 1000 }], { signal: "buy", buy_below: null }],
+    [[{ buyNowPrice: 0 }], { signal: "buy", buy_below: 500 }],
+    [[{ buyNowPrice: 100 }], { signal: "buy", buy_below: 500 }],
+  ];
+  for (const [auctions, intelligence] of cases) {
+    const combined = combineIntelligence(auctions, intelligence);
+    const v = verdictLabel(combined.reason, intelligence && intelligence.signal);
+    assert.ok(typeof v.text === "string" && v.text.length > 0);
+    if (v.tone === "confirmed") {
+      assert.equal(combined.reason, "confirmed");
+    }
+  }
 });
