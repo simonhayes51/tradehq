@@ -93,7 +93,17 @@ function toFutggAnalysisItem(raw, cardId) {
     cardId,
     source: "futgg",
     recommendation: _FUTGG_SIGNAL_RECOMMENDATION[raw.signal] || "WAIT",
-    entryPrice: raw.recommended_buy_max ?? raw.current_bin,
+    // Deliberately NOT `?? raw.current_bin`. entryPrice is meant to be a
+    // genuine recommended-entry price - on insufficient_data the engine
+    // returns recommended_buy_max: null (there is no such price), and
+    // falling back to current_bin here silently turned "we don't have a
+    // real target" into "the target IS whatever it costs right now",
+    // which is exactly the "BUY BELOW 895,000 beside a blank profit"
+    // bug AnalysisModal's `ceiling` was already fixed against (see its
+    // own comment) - just reintroduced through this separate field,
+    // which fed the "Wait for a better entry below X" verdict text and
+    // the chart's BUY reference line directly, bypassing that fix.
+    entryPrice: raw.recommended_buy_max ?? null,
     currentBin: raw.current_bin,
     fairValue: raw.fair_value,
     expectedRoi,
