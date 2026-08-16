@@ -92,6 +92,7 @@ from typing import Any
 import asyncpg
 
 from futgg_instrumentation import StageTimers
+from monitoring import heartbeat
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("futgg_bulk_price_sync")
@@ -881,6 +882,32 @@ async def run_forever() -> None:
                     result = await ingest_once(pool, page, timers, shutdown_event=shutdown_event)
                 except Exception:
                     log.exception("ingest failed")
+
+                # Best-effort, per cycle: GET /api/v2/market/freshness
+                # (backend/app/services/market_data_provider.py) reads
+                # pipeline_heartbeats to report worker health, but this
+                # worker went unmonitored there since it replaced
+                # futgg_price_sync.py (see Procfile's comment on the
+                # switch) - only the now-obsolete script ever called
+                # heartbeat(), so the dashboard was silently watching a
+                # script that stopped running, unable to reflect this
+                # one's actual state even while it kept working (or
+                # stalled) in the background. Written every cycle, not
+                # just on success, so a worker that is running but
+                # failing every cycle (result.get("ok") False) is
+                # visibly "ok: false" rather than indistinguishable from
+                # a worker that stopped updating altogether. heartbeat()
+                # is already best-effort internally (see monitoring.py) -
+                # no extra try/except needed here, same as every other
+                # caller of it.
+                await heartbeat(
+                    pool, "futgg_bulk_price_sync", ok=bool(result.get("ok")),
+                    detail=(
+                        f"cycle={cycle_number} coverage_pct={result.get('coverage_pct')} "
+                        f"written={result.get('written')} no_market={result.get('no_market')} "
+                        f"reason={result.get('reason')}"
+                    ),
+                )
 
                 # Pruning is best-effort and must never take the ingest
                 # down with it: a failed DELETE means the table stays a bit
