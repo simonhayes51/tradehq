@@ -91,7 +91,17 @@
   }
   const root = typeof window !== "undefined" ? window : globalThis;
   root.EAFCLive = root.EAFCLive || {};
-  Object.assign(root.EAFCLive, factory());
+  try {
+    Object.assign(root.EAFCLive, factory());
+  } catch (err) {
+    // Previously silent: a throw here left root.EAFCLive as an empty
+    // object with none of this file's functions attached, and every
+    // downstream file (market-observer.js, content.js) could only ever
+    // report "card-detector unavailable" with no way to say why. Loud
+    // now on purpose - this is exactly the class of failure that was
+    // otherwise invisible during live testing against the real EA page.
+    console.error("[EAFC Live] card-detector.js failed to initialize:", err);
+  }
 })(function () {
   "use strict";
 

@@ -21,7 +21,11 @@
   }
   const root = typeof window !== "undefined" ? window : globalThis;
   root.EAFCLive = root.EAFCLive || {};
-  Object.assign(root.EAFCLive, factory());
+  try {
+    Object.assign(root.EAFCLive, factory());
+  } catch (err) {
+    console.error("[EAFC Live] market-calc.js failed to initialize:", err);
+  }
 })(function () {
   "use strict";
 

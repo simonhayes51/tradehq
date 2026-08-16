@@ -72,3 +72,45 @@ test("card-detector.js still exports via module.exports under real Node (no wind
   const mod = require("../src/card-detector.js");
   assert.equal(typeof mod.groupAuctionsByCardId, "function");
 });
+
+test("a throwing factory is reported via console.error, not silently swallowed", () => {
+  // Regression for the actual live-test gap: before the try/catch, a
+  // throw inside factory() left window.EAFCLive as an empty object with
+  // no way to know why - every downstream file could only ever report
+  // "unavailable". This proves the failure is now visible instead.
+  const messages = [];
+  const sandbox = {
+    console: { error: (...args) => messages.push(args), log: () => {}, warn: () => {} },
+    window: {},
+    module: { exports: {} },
+  };
+  sandbox.globalThis = sandbox;
+  vm.createContext(sandbox);
+  vm.runInContext(
+    `(function (factory) {
+      const isBrowserLike = typeof window !== "undefined" || typeof importScripts === "function";
+      if (!isBrowserLike && typeof module !== "undefined" && module.exports) {
+        module.exports = factory();
+        return;
+      }
+      const root = typeof window !== "undefined" ? window : globalThis;
+      root.EAFCLive = root.EAFCLive || {};
+      try {
+        Object.assign(root.EAFCLive, factory());
+      } catch (err) {
+        console.error("[EAFC Live] test-module.js failed to initialize:", err);
+      }
+    })(function () { throw new Error("boom"); });`,
+    sandbox
+  );
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0][0], "[EAFC Live] test-module.js failed to initialize:");
+  assert.equal(messages[0][1].message, "boom");
+  // And the page must be entirely unaffected - EAFCLive still exists,
+  // just empty, exactly like every other graceful-failure path here.
+  // (Object.keys, not deepEqual: sandbox.window.EAFCLive is an object
+  // from the vm context's own realm, with a different Object.prototype
+  // than a `{}` literal in this file - deepEqual's prototype check
+  // fails across realms even when both are genuinely empty objects.)
+  assert.equal(Object.keys(sandbox.window.EAFCLive).length, 0);
+});
