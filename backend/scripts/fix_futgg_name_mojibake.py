@@ -1,7 +1,7 @@
 """
-One-off repair for UTF-8-as-Latin-1 mojibake in futgg_players text
+One-off repair for UTF-8-as-Latin-1/cp1252 mojibake in futgg_players text
 columns (name/club/league/nation) - e.g. "Kylian MbappÃ©" instead of
-"Kylian Mbappé".
+"Kylian Mbappé", or "Ivan JukiÄ‡" instead of "Ivan Jukić".
 
 BACKGROUND
 ----------
@@ -9,8 +9,9 @@ This is the classic "double-decode" artifact: a body that IS valid UTF-8
 bytes gets decoded once as Latin-1/cp1252 before being re-encoded/stored
 as UTF-8, so 'é' (UTF-8 bytes 0xC3 0xA9) turns into the two separate
 characters 'Ã' + '©'. It is reversible exactly because it's a clean
-byte-for-byte substitution: encoding the corrupted string back to
-Latin-1 recovers the original UTF-8 bytes, which then decode correctly.
+byte-for-byte substitution: encoding the corrupted string back to the
+same wrong single-byte encoding recovers the original UTF-8 bytes, which
+then decode correctly.
 
 The write path for futgg_players.name (auto_sync/futgg_player_sync.py's
 _parse_card_visual(), reading Playwright's page.content()) was audited
@@ -29,15 +30,20 @@ declared/sniffed charset - see that file's own comment.
 
 SAFETY
 ------
-- Pre-filters to rows containing 'Ã' (via `~ 'Ã'`), the tell-tale lead
-  byte of this exact corruption. 'Ã' is not a real character in any
-  player/club/league/nation name FUT.GG's catalogue is expected to
-  contain, so this is a narrow, low-false-positive filter rather than a
-  blanket re-encode of every non-ASCII row.
-- Only ever proposes a fix when `value.encode("latin-1").decode("utf-8")`
-  succeeds cleanly (`errors="strict"` on both sides) - a genuinely
-  correct string containing 'Ã' for some other reason will fail this
-  round-trip and is left untouched, reported separately as "skipped".
+- Pre-filters to rows containing ANY non-ASCII character (`~ '[^\\x00-\\x7F]'`).
+  An earlier version of this script filtered to just 'Ã' (the lead
+  character for the most common Western-European case, e.g.
+  "MbappÃ©"), which misses corruption whose first byte decodes to a
+  different lead character - confirmed against a real production row,
+  "Ivan JukiÄ‡" (should be "Ivan Jukić"), which starts with 'Ä' not 'Ã'.
+  Scanning all non-ASCII rows costs little against this table's size and
+  the round-trip check below is what actually guards against false
+  positives, not the prefilter.
+- Only ever proposes a fix when the value round-trips cleanly through
+  `_SOURCE_ENCODINGS` (see try_fix()) - a genuinely correct string is
+  left untouched, reported separately as "skipped". Verified against
+  real correct names (e.g. "Kylian Mbappé" itself, "Ángel Di María")
+  failing the round-trip, in tests/test_fix_futgg_name_mojibake.py.
 - Defaults to DRY RUN: prints every proposed change and does not write
   anything unless --apply is passed.
 
@@ -61,21 +67,39 @@ import asyncpg
 # Columns known to hold free-text scraped from FUT.GG that could
 # plausibly carry an accented character. Deliberately excludes
 # controlled-vocabulary columns (rarity, primary_position, price_tier)
-# which are drawn from a small ASCII set and have no legitimate reason
-# to contain 'Ã'.
+# which are drawn from a small ASCII set and have no legitimate reason to
+# contain non-ASCII text at all.
 TEXT_COLUMNS = ("name", "club", "league", "nation")
+
+# The wrong decode step turns out NOT to be strict Latin-1/ISO-8859-1 in
+# every case. Confirmed against a real production row from
+# /market/freshness's latest_source_errors: "Ivan JukiÄ‡" (should be
+# "Ivan Jukić"). The trailing '‡' is U+2021 (DOUBLE DAGGER) - a real,
+# printable Unicode character - which only exists at byte 0x87 under
+# Windows-1252 (cp1252 maps 0x80-0x9F to punctuation/typography marks);
+# strict Latin-1 maps that same byte range to invisible C1 control
+# characters instead, so a string containing a VISIBLE mojibake artifact
+# in that range could never have come from a true Latin-1 decode -
+# value.encode("latin-1") provably raises UnicodeEncodeError on it (see
+# tests/test_fix_futgg_name_mojibake.py). cp1252 is tried first since the
+# evidence points at it; latin-1 is kept as a fallback for completeness
+# and costs nothing since it only matters for a string cp1252 (a
+# superset of Latin-1's printable range) already rejected.
+_SOURCE_ENCODINGS = ("cp1252", "latin-1")
 
 
 def try_fix(value: str) -> Optional[str]:
     """Returns the repaired string, or None if `value` doesn't round-trip
-    cleanly as UTF-8-decoded-as-Latin-1 (i.e. isn't this exact corruption)."""
-    try:
-        fixed = value.encode("latin-1").decode("utf-8")
-    except (UnicodeEncodeError, UnicodeDecodeError):
-        return None
-    if fixed == value:
-        return None
-    return fixed
+    cleanly through any of _SOURCE_ENCODINGS (i.e. doesn't look like this
+    corruption)."""
+    for source_encoding in _SOURCE_ENCODINGS:
+        try:
+            fixed = value.encode(source_encoding).decode("utf-8")
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            continue
+        if fixed != value:
+            return fixed
+    return None
 
 
 async def run(dsn: str, apply: bool, limit: int) -> int:
@@ -90,7 +114,7 @@ async def run(dsn: str, apply: bool, limit: int) -> int:
                 f"""
                 SELECT source_card_id, {column} AS value
                 FROM futgg_players
-                WHERE {column} LIKE '%' || chr(195) || '%'  -- 'Ã' = U+00C3
+                WHERE {column} ~ '[^\x00-\x7F]'  -- any non-ASCII character
                 ORDER BY source_card_id
                 LIMIT $1
                 """,
