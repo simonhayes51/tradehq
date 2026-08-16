@@ -227,6 +227,75 @@ async def check_table_health(conn) -> None:
         print("\n  Bloat is not the problem right now.")
 
 
+async def check_snapshot_refresh(conn) -> None:
+    """Why the materialized view is not advancing.
+
+    A stale snapshot is the single most damaging state this system can be
+    in, because EVERYTHING reads from it: the engine judges a market that
+    old, so every card's price age is at least the snapshot's age, and
+    special-tier cards (a 20-minute limit) fail STALE_MARKET en masse
+    while the bulk feed is confirming their prices every few minutes.
+
+    Two things make it fail silently rather than loudly:
+
+      * market_data_provider.refresh_snapshot takes pg_try_advisory_lock
+        and returns False if it cannot get it. A refresh that is still
+        RUNNING holds that lock, so every later poll silently does
+        nothing - no error, no log, indefinitely.
+      * the backend's core pool sets no command_timeout, so a slow
+        REFRESH is never cancelled. It just keeps running.
+
+    Together: one slow refresh freezes the snapshot for as long as it
+    runs, and nothing says so.
+    """
+    _h("1b. WHY THE SNAPSHOT IS NOT REFRESHING")
+
+    running = await conn.fetch(
+        """
+        SELECT pid, round(EXTRACT(EPOCH FROM (now() - query_start)))::int AS secs,
+               state, left(regexp_replace(query, '\s+', ' ', 'g'), 70) AS query
+        FROM pg_stat_activity
+        WHERE query ILIKE '%REFRESH MATERIALIZED VIEW%'
+          AND pid <> pg_backend_pid()
+        """
+    )
+    if running:
+        for r in running:
+            print(f"  A refresh IS running: pid={r['pid']} for {r['secs']}s ({r['state']})")
+            print(f"    {r['query']}")
+        print("\n  >> While this runs it holds the advisory lock, so every other")
+        print("     refresh attempt silently does nothing. If this number keeps")
+        print("     growing, the refresh is the bottleneck - not the schedule.")
+    else:
+        print("  No refresh is running right now.")
+
+    # The index the refresh depends on most.
+    idx = await conn.fetchval(
+        "SELECT 1 FROM pg_indexes WHERE tablename = 'futgg_bin_history'"
+        "   AND indexdef ILIKE '%source_card_id%captured_at%'"
+    )
+    size = await conn.fetchrow(
+        """
+        SELECT pg_size_pretty(pg_total_relation_size('futgg_bin_history')) AS bin_size,
+               (SELECT count(*) FROM futgg_bin_history) AS bin_rows
+        """
+    )
+    print(f"\n  futgg_bin_history: {size['bin_rows']:,} rows, {size['bin_size']}")
+    print(f"  (source_card_id, captured_at) index present: {bool(idx)}")
+    if not idx:
+        print("\n  >> THE INDEX IS MISSING. The view's latest_bin CTE is")
+        print("     DISTINCT ON (source_card_id) ORDER BY source_card_id,")
+        print("     captured_at DESC over every row in that table. Without the")
+        print("     index that is a full sort of millions of rows on EVERY")
+        print("     refresh, which is how a refresh comes to outlast its own")
+        print("     120-second schedule and freeze the snapshot.")
+        print("\n     It is created by futgg_price_sync.py - the RETIRED worker -")
+        print("     and by nothing that still runs, so a rebuilt table never")
+        print("     gets it back. Build it without blocking writes:")
+        print("       CREATE INDEX CONCURRENTLY futgg_bin_history_card_captured_idx")
+        print("         ON futgg_bin_history (source_card_id, captured_at DESC);")
+
+
 async def check_deployment(conn) -> Dict[str, Any]:
     """Which of the fixes are actually live on THIS database.
 
@@ -458,6 +527,7 @@ async def main() -> int:
             await _section("lock check", check_locks(conn))
             await _section("table health", check_table_health(conn))
             await _section("deployment state", check_deployment(conn))
+            await _section("snapshot refresh", check_snapshot_refresh(conn))
             await _section("sales coverage", check_sales_coverage(conn))
             await _section(
                 "engine replay",
