@@ -25,14 +25,23 @@
 //     "timeout"         -> NEVER cached. The next call for the same card
 //                          re-hits fetchFn, so a temporary outage cannot
 //                          lock a card out of ever showing a result.
-(function (root, factory) {
-  if (typeof module !== "undefined" && module.exports) {
+(function (factory) {
+  // See card-detector.js's identical wrapper for why this checks for a
+  // browser-like global FIRST rather than trusting `typeof module` alone.
+  // This file only ever runs in a service worker (via importScripts, see
+  // background.js) or under Node (tests) - never a page - but the same
+  // defensive ordering is used for consistency and because importScripts
+  // is the correct positive signal for "service worker", not merely
+  // "not Node".
+  const isBrowserLike = typeof window !== "undefined" || typeof importScripts === "function";
+  if (!isBrowserLike && typeof module !== "undefined" && module.exports) {
     module.exports = factory();
-  } else {
-    root.EAFCLive = root.EAFCLive || {};
-    Object.assign(root.EAFCLive, factory());
+    return;
   }
-})(typeof globalThis !== "undefined" ? globalThis : this, function () {
+  const root = typeof window !== "undefined" ? window : globalThis;
+  root.EAFCLive = root.EAFCLive || {};
+  Object.assign(root.EAFCLive, factory());
+})(function () {
   "use strict";
 
   const RETRYABLE_STATUSES = ["network_error", "server_error", "timeout"];

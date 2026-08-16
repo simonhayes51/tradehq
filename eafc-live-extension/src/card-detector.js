@@ -68,14 +68,31 @@
 // normalizeAuction below) - once sourceCardId is resolved from
 // resourceId/definitionId, nothing downstream has any use for the raw
 // EA player id, so it never needs to leave the MAIN world at all.
-(function (root, factory) {
-  if (typeof module !== "undefined" && module.exports) {
+(function (factory) {
+  // Prefer the browser-global branch whenever ANY browser-like global is
+  // present (window for a page/content script, importScripts for a
+  // service worker), and only fall back to module.exports when NEITHER
+  // exists - i.e. we're definitely under Node (the test runner).
+  //
+  // The naive UMD check (`typeof module !== "undefined" && module.exports`)
+  // is not safe to run inside a content script: EA's own bundled page JS
+  // can leave a global `module` behind (a common leftover from vendor
+  // code built for CommonJS), and since content scripts execute against
+  // the SAME shared window/global as the page, `typeof module` sees it
+  // too - tripping this file into the module.exports branch and never
+  // attaching anything to window.EAFCLive at all. Confirmed live: this
+  // is exactly what happened on the real EA FC 26 Web App
+  // (market-observer.js logged "card-detector unavailable" even though
+  // this file loaded and ran with no error).
+  const isBrowserLike = typeof window !== "undefined" || typeof importScripts === "function";
+  if (!isBrowserLike && typeof module !== "undefined" && module.exports) {
     module.exports = factory();
-  } else {
-    root.EAFCLive = root.EAFCLive || {};
-    Object.assign(root.EAFCLive, factory());
+    return;
   }
-})(typeof window !== "undefined" ? window : globalThis, function () {
+  const root = typeof window !== "undefined" ? window : globalThis;
+  root.EAFCLive = root.EAFCLive || {};
+  Object.assign(root.EAFCLive, factory());
+})(function () {
   "use strict";
 
   function toPositiveInt(value) {
