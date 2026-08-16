@@ -111,7 +111,7 @@ async def check_locks(conn) -> bool:
     rows = await conn.fetch(
         """
         SELECT
-            a.pid, a.state,
+            a.datname, a.pid, a.state,
             round(EXTRACT(EPOCH FROM (now() - a.state_change)))::int AS state_secs,
             round(EXTRACT(EPOCH FROM (now() - a.xact_start)))::int   AS xact_secs,
             a.wait_event_type, a.wait_event,
@@ -119,8 +119,12 @@ async def check_locks(conn) -> bool:
             pg_blocking_pids(a.pid)              AS blocked_by,
             left(regexp_replace(a.query, '\s+', ' ', 'g'), 90) AS query
         FROM pg_stat_activity a
-        WHERE a.datname = current_database()
-          AND a.pid <> pg_backend_pid()
+        WHERE a.pid <> pg_backend_pid()
+          -- Deliberately NOT filtered to current_database(). The app's
+          -- connections may be on a different database than the one this
+          -- report is run from, and filtering by current_database() from
+          -- a psql session on `postgres` silently returns zero rows while
+          -- the application database is jammed.
           AND (
               cardinality(pg_blocking_pids(a.pid)) > 0
               OR a.state = 'idle in transaction'
@@ -134,10 +138,10 @@ async def check_locks(conn) -> bool:
         print("  transaction. Locks are not the problem right now.")
         return False
 
-    print(f"  {'pid':>7} {'state':<22} {'xact':>7} {'wait':<22} blocked_by")
+    print(f"  {'db':<12}{'pid':>7} {'state':<22} {'xact':>7} {'wait':<22} blocked_by")
     for r in rows:
         print(
-            f"  {r['pid']:>7} {str(r['state']):<22} "
+            f"  {str(r['datname'] or '-'):<12}{r['pid']:>7} {str(r['state']):<22} "
             f"{str(r['xact_secs'] or 0) + 's':>7} "
             f"{str(r['wait_event_type'] or '-') + '/' + str(r['wait_event'] or '-'):<22} "
             f"{list(r['blocked_by']) if r['blocked_by'] else '-'}"
@@ -154,6 +158,73 @@ async def check_locks(conn) -> bool:
         print(f"\n  >> {len(idle)} session(s) are IDLE IN TRANSACTION - holding locks")
         print("     while doing nothing. These never resolve on their own.")
     return True
+
+
+async def check_table_health(conn) -> None:
+    """Bloat and vacuum health on the tables every page reads.
+
+    The point-in-time lock check above can come back empty and the table
+    still be unusable, for two reasons:
+
+      * the contention is INTERMITTENT. SalesSync's ensure_schema ALTER
+        blocks the table for up to its 120s timeout, then the worker dies
+        and restarts. Sample at a random moment and you usually miss it.
+      * the damage OUTLIVES the lock. futgg_bulk_price_sync updates
+        thousands of futgg_players rows every cycle, and every UPDATE
+        leaves a dead tuple. Autovacuum reclaims them - unless it keeps
+        getting cancelled, which is exactly what repeated ACCESS
+        EXCLUSIVE requests do to it. The table then bloats, and a query
+        over "10,000 rows" becomes a scan over millions of dead ones.
+
+    That second case is why the report hung on a plain count. It leaves
+    evidence that persists, so it can be measured after the fact.
+    """
+    _h("0b. TABLE HEALTH (bloat / vacuum)")
+    rows = await conn.fetch(
+        """
+        SELECT relname,
+               n_live_tup, n_dead_tup,
+               CASE WHEN n_live_tup > 0
+                    THEN round(100.0 * n_dead_tup / n_live_tup, 1) ELSE NULL END AS dead_pct,
+               pg_size_pretty(pg_total_relation_size(relid)) AS total_size,
+               last_vacuum, last_autovacuum, last_analyze, last_autoanalyze
+        FROM pg_stat_user_tables
+        WHERE relname IN ('futgg_players', 'futgg_bin_history', 'futgg_sales_history')
+        ORDER BY pg_total_relation_size(relid) DESC
+        """
+    )
+    if not rows:
+        print("  No stats yet for the futgg tables on this database.")
+        return
+
+    print(f"  {'table':<22}{'live':>10}{'dead':>12}{'dead%':>8}{'size':>12}")
+    problems = []
+    for r in rows:
+        print(
+            f"  {r['relname']:<22}{r['n_live_tup']:>10,}{r['n_dead_tup']:>12,}"
+            f"{(str(r['dead_pct']) + '%') if r['dead_pct'] is not None else '-':>8}"
+            f"{r['total_size']:>12}"
+        )
+        print(
+            f"      last autovacuum: {r['last_autovacuum'] or 'NEVER'}"
+            f"   last vacuum: {r['last_vacuum'] or 'never'}"
+        )
+        if r["dead_pct"] is not None and r["dead_pct"] >= 50:
+            problems.append(r["relname"])
+        elif r["n_live_tup"] and r["last_autovacuum"] is None and r["n_dead_tup"] > 50_000:
+            problems.append(r["relname"])
+
+    if problems:
+        print(f"\n  >> BLOATED: {', '.join(problems)}")
+        print("     Dead rows are still scanned. This is why a count over a")
+        print("     10,000-row table can take minutes, and why unrelated pages")
+        print("     time out together. Autovacuum is not keeping up - most")
+        print("     often because repeated ACCESS EXCLUSIVE requests keep")
+        print("     cancelling it.")
+        print("     Fix now:  VACUUM (ANALYZE, VERBOSE) futgg_players;")
+        print("     Then stop the cause, or it returns within a day.")
+    else:
+        print("\n  Bloat is not the problem right now.")
 
 
 async def check_deployment(conn) -> Dict[str, Any]:
@@ -385,6 +456,7 @@ async def main() -> int:
             # Locks first: if the table is jammed, every section below
             # would otherwise hang, and the hang IS the answer.
             await _section("lock check", check_locks(conn))
+            await _section("table health", check_table_health(conn))
             await _section("deployment state", check_deployment(conn))
             await _section("sales coverage", check_sales_coverage(conn))
             await _section(
