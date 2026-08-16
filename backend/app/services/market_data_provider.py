@@ -64,7 +64,14 @@ SNAPSHOT_MAX_AGE_SECONDS = float(os.getenv("FUTGG_SNAPSHOT_MAX_AGE_SECONDS", "60
 #: without this a slow refresh runs unbounded while holding the advisory
 #: lock - which is precisely how a snapshot reaches 117 minutes stale
 #: with nothing in the logs.
-REFRESH_TIMEOUT_SECONDS = float(os.getenv("FUTGG_REFRESH_TIMEOUT_SECONDS", "300"))
+#: 300 was too short and made things worse: production showed BOTH
+#: CONCURRENTLY and plain refreshes hitting it back to back, so the
+#: refresh was cancelled every time and the snapshot never advanced at
+#: all. A timeout shorter than the work is not a safety valve, it is a
+#: guarantee of failure. It exists to stop a HUNG refresh holding the
+#: advisory lock forever, not to police a slow one - the failure backoff
+#: below is what protects the database from a slow one.
+REFRESH_TIMEOUT_SECONDS = float(os.getenv("FUTGG_REFRESH_TIMEOUT_SECONDS", "900"))
 
 #: After this many consecutive CONCURRENTLY timeouts, fall back to a
 #: plain REFRESH. CONCURRENTLY must build the new snapshot AND diff it
@@ -78,6 +85,27 @@ CONCURRENT_FAILURES_BEFORE_PLAIN_REFRESH = int(
 
 #: Consecutive CONCURRENTLY timeouts. Reset by any success.
 _concurrent_refresh_failures = 0
+
+#: How long to leave the database alone after a refresh fails.
+#:
+#: THIS IS THE IMPORTANT ONE. Forcing a refresh on staleness without a
+#: failure backoff is strictly worse than not forcing at all: the refresh
+#: runs for its whole timeout, is cancelled, leaves the snapshot exactly
+#: as stale as before - which immediately re-triggers the staleness
+#: check - and starts again. The result is a permanent, heavy, never
+#: completing query that starves every other consumer of the database.
+#:
+#: Observed in production after the forced refresh shipped: the scan went
+#: 3.2s -> 7.5s -> 148.0s and priority_recompute 9.4s -> 157.1s across
+#: consecutive passes, while both CONCURRENTLY and plain refreshes hit
+#: the 300s timeout back to back. The site stopped responding entirely.
+#: A refresh that cannot finish must yield, not spin.
+REFRESH_FAILURE_BACKOFF_SECONDS = float(
+    os.getenv("FUTGG_REFRESH_FAILURE_BACKOFF_SECONDS", "1800")
+)
+
+#: Wall-clock time of the last failed refresh, so the loop can hold off.
+_last_refresh_failure_at: float = 0.0
 
 # Same bound the migration's own recent-sales window uses - kept as a
 # named constant here too since get_recent_sales() enforces it again on
@@ -903,6 +931,8 @@ async def refresh_snapshot(pool: asyncpg.Pool) -> bool:
                     timeout=REFRESH_TIMEOUT_SECONDS,
                 )
             except asyncio.TimeoutError:
+                global _last_refresh_failure_at
+                _last_refresh_failure_at = time.monotonic()
                 _concurrent_refresh_failures += 1
                 log.error(
                     "futgg_market_snapshot refresh (%s) exceeded %.0fs and was "
@@ -995,6 +1025,31 @@ async def refresher_loop(pool: asyncpg.Pool, poll_seconds: int = 120) -> None:
                 snapshot_age is not None
                 and float(snapshot_age) > SNAPSHOT_MAX_AGE_SECONDS
             )
+            # Hold off entirely while a recent refresh is still failing.
+            # Without this the staleness check re-triggers the moment a
+            # refresh is cancelled, so the database never gets a break
+            # from a query that cannot finish - which is what took the
+            # whole site down rather than just the snapshot.
+            since_failure = time.monotonic() - _last_refresh_failure_at
+            backing_off = (
+                _last_refresh_failure_at > 0.0
+                and since_failure < REFRESH_FAILURE_BACKOFF_SECONDS
+            )
+            if backing_off:
+                if stale:
+                    log.warning(
+                        "futgg_market_snapshot is %.0f min old, but the last "
+                        "refresh failed %.0fs ago - holding off for another "
+                        "%.0fs rather than restarting a query that could not "
+                        "finish. Retrying it immediately starves every other "
+                        "consumer of the database and still does not refresh "
+                        "the snapshot.",
+                        float(snapshot_age or 0) / 60.0, since_failure,
+                        REFRESH_FAILURE_BACKOFF_SECONDS - since_failure,
+                    )
+                await asyncio.sleep(poll_seconds)
+                continue
+
             if stale:
                 log.warning(
                     "futgg_market_snapshot is %.0f min old (limit %.0f min) - "
