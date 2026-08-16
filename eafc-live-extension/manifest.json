@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "EAFC Live Companion",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Read-only EAFC Live intelligence overlay for the EA SPORTS FC Web App transfer market. Never bids, buys, lists, or automates trading.",
   "host_permissions": [
     "https://api.eafc.live/*"
@@ -12,7 +12,7 @@
   "content_scripts": [
     {
       "matches": [
-        "https://www.ea.com/*ultimate-team*web-app*"
+        "https://*.ea.com/*ultimate-team*web-app*"
       ],
       "js": ["src/debug-flag.js", "src/card-detector.js", "src/ea-session.js", "src/page-bridge.js"],
       "world": "MAIN",
@@ -20,7 +20,7 @@
     },
     {
       "matches": [
-        "https://www.ea.com/*ultimate-team*web-app*"
+        "https://*.ea.com/*ultimate-team*web-app*"
       ],
       "js": [
         "src/debug-flag.js",
