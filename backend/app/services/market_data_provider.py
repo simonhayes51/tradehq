@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -44,6 +45,11 @@ log = logging.getLogger("market_data_provider")
 # other advisory locks already in use - see scripts/run_migrations.py's
 # 7741003, recommendation_engine_v2.py's 7741007, etc.).
 REFRESH_ADVISORY_LOCK_KEY = 7741011
+
+#: A refresh slower than this has already outlasted the refresher's
+#: default 120s poll, so it is both the reason the snapshot is stale and
+#: the reason nothing else could refresh it.
+SLOW_REFRESH_WARN_SECONDS = 90.0
 
 # Same bound the migration's own recent-sales window uses - kept as a
 # named constant here too since get_recent_sales() enforces it again on
@@ -856,10 +862,54 @@ async def refresh_snapshot(pool: asyncpg.Pool) -> bool:
         if not got:
             return False
         try:
+            # Timed, because a refresh that outlasts its own poll interval
+            # is invisible otherwise: it holds this advisory lock for its
+            # whole duration, so every later attempt takes the `not got`
+            # branch above and returns False without logging anything.
+            # The snapshot then freezes for as long as the refresh runs -
+            # measured at 117 minutes in production - and the only symptom
+            # is that every card looks stale to the engine.
+            #
+            # The core pool sets no command_timeout, so nothing cancels a
+            # slow refresh either. Reporting the duration is what makes
+            # "the refresh is the bottleneck" distinguishable from "the
+            # refresher is not running".
+            started = time.monotonic()
             await conn.execute("REFRESH MATERIALIZED VIEW CONCURRENTLY futgg_market_snapshot")
+            elapsed = time.monotonic() - started
+            if elapsed > SLOW_REFRESH_WARN_SECONDS:
+                log.warning(
+                    "futgg_market_snapshot refresh took %.0fs - longer than the "
+                    "refresher's own poll interval, so the snapshot was stale for "
+                    "at least that long and every other refresh attempt in the "
+                    "window was silently skipped. Check that "
+                    "futgg_bin_history has its (source_card_id, captured_at) "
+                    "index: the view's latest_bin CTE sorts the whole table "
+                    "without it.",
+                    elapsed,
+                )
+            else:
+                log.info("futgg_market_snapshot refreshed in %.1fs", elapsed)
             return True
         finally:
-            await conn.execute("SELECT pg_advisory_unlock($1)", REFRESH_ADVISORY_LOCK_KEY)
+            # Wrapped only so a failing unlock cannot MASK the real
+            # exception from the refresh above - a bare `await` in a
+            # finally block replaces whatever was propagating.
+            #
+            # It cannot leak the lock: asyncpg runs pg_advisory_unlock_all()
+            # when a connection is released back to the pool, so a session
+            # lock is always dropped even if this statement never runs.
+            # Verified directly against Postgres - a pooled connection that
+            # takes the lock and is released without unlocking leaves zero
+            # advisory locks held. A leaked lock was a candidate
+            # explanation for the 117-minute stale snapshot seen in
+            # production; this is the test that ruled it out.
+            try:
+                await conn.execute(
+                    "SELECT pg_advisory_unlock($1)", REFRESH_ADVISORY_LOCK_KEY
+                )
+            except Exception as exc:
+                log.warning("advisory unlock after refresh failed: %s", exc)
 
 
 async def refresher_loop(pool: asyncpg.Pool, poll_seconds: int = 120) -> None:

@@ -111,7 +111,7 @@ async def check_locks(conn) -> bool:
     rows = await conn.fetch(
         """
         SELECT
-            a.pid, a.state,
+            a.datname, a.pid, a.state,
             round(EXTRACT(EPOCH FROM (now() - a.state_change)))::int AS state_secs,
             round(EXTRACT(EPOCH FROM (now() - a.xact_start)))::int   AS xact_secs,
             a.wait_event_type, a.wait_event,
@@ -119,8 +119,12 @@ async def check_locks(conn) -> bool:
             pg_blocking_pids(a.pid)              AS blocked_by,
             left(regexp_replace(a.query, '\s+', ' ', 'g'), 90) AS query
         FROM pg_stat_activity a
-        WHERE a.datname = current_database()
-          AND a.pid <> pg_backend_pid()
+        WHERE a.pid <> pg_backend_pid()
+          -- Deliberately NOT filtered to current_database(). The app's
+          -- connections may be on a different database than the one this
+          -- report is run from, and filtering by current_database() from
+          -- a psql session on `postgres` silently returns zero rows while
+          -- the application database is jammed.
           AND (
               cardinality(pg_blocking_pids(a.pid)) > 0
               OR a.state = 'idle in transaction'
@@ -134,10 +138,10 @@ async def check_locks(conn) -> bool:
         print("  transaction. Locks are not the problem right now.")
         return False
 
-    print(f"  {'pid':>7} {'state':<22} {'xact':>7} {'wait':<22} blocked_by")
+    print(f"  {'db':<12}{'pid':>7} {'state':<22} {'xact':>7} {'wait':<22} blocked_by")
     for r in rows:
         print(
-            f"  {r['pid']:>7} {str(r['state']):<22} "
+            f"  {str(r['datname'] or '-'):<12}{r['pid']:>7} {str(r['state']):<22} "
             f"{str(r['xact_secs'] or 0) + 's':>7} "
             f"{str(r['wait_event_type'] or '-') + '/' + str(r['wait_event'] or '-'):<22} "
             f"{list(r['blocked_by']) if r['blocked_by'] else '-'}"
@@ -154,6 +158,165 @@ async def check_locks(conn) -> bool:
         print(f"\n  >> {len(idle)} session(s) are IDLE IN TRANSACTION - holding locks")
         print("     while doing nothing. These never resolve on their own.")
     return True
+
+
+async def check_table_health(conn) -> None:
+    """Bloat and vacuum health on the tables every page reads.
+
+    The point-in-time lock check above can come back empty and the table
+    still be unusable, for two reasons:
+
+      * the contention is INTERMITTENT. SalesSync's ensure_schema ALTER
+        blocks the table for up to its 120s timeout, then the worker dies
+        and restarts. Sample at a random moment and you usually miss it.
+      * the damage OUTLIVES the lock. futgg_bulk_price_sync updates
+        thousands of futgg_players rows every cycle, and every UPDATE
+        leaves a dead tuple. Autovacuum reclaims them - unless it keeps
+        getting cancelled, which is exactly what repeated ACCESS
+        EXCLUSIVE requests do to it. The table then bloats, and a query
+        over "10,000 rows" becomes a scan over millions of dead ones.
+
+    That second case is why the report hung on a plain count. It leaves
+    evidence that persists, so it can be measured after the fact.
+    """
+    _h("0b. TABLE HEALTH (bloat / vacuum)")
+    rows = await conn.fetch(
+        """
+        SELECT relname,
+               n_live_tup, n_dead_tup,
+               CASE WHEN n_live_tup > 0
+                    THEN round(100.0 * n_dead_tup / n_live_tup, 1) ELSE NULL END AS dead_pct,
+               pg_size_pretty(pg_total_relation_size(relid)) AS total_size,
+               last_vacuum, last_autovacuum, last_analyze, last_autoanalyze
+        FROM pg_stat_user_tables
+        WHERE relname IN ('futgg_players', 'futgg_bin_history', 'futgg_sales_history')
+        ORDER BY pg_total_relation_size(relid) DESC
+        """
+    )
+    if not rows:
+        print("  No stats yet for the futgg tables on this database.")
+        return
+
+    print(f"  {'table':<22}{'live':>10}{'dead':>12}{'dead%':>8}{'size':>12}")
+    problems = []
+    for r in rows:
+        print(
+            f"  {r['relname']:<22}{r['n_live_tup']:>10,}{r['n_dead_tup']:>12,}"
+            f"{(str(r['dead_pct']) + '%') if r['dead_pct'] is not None else '-':>8}"
+            f"{r['total_size']:>12}"
+        )
+        print(
+            f"      last autovacuum: {r['last_autovacuum'] or 'NEVER'}"
+            f"   last vacuum: {r['last_vacuum'] or 'never'}"
+        )
+        if r["dead_pct"] is not None and r["dead_pct"] >= 50:
+            problems.append(r["relname"])
+        elif r["n_live_tup"] and r["last_autovacuum"] is None and r["n_dead_tup"] > 50_000:
+            problems.append(r["relname"])
+
+    if problems:
+        print(f"\n  >> BLOATED: {', '.join(problems)}")
+        print("     Dead rows are still scanned. This is why a count over a")
+        print("     10,000-row table can take minutes, and why unrelated pages")
+        print("     time out together. Autovacuum is not keeping up - most")
+        print("     often because repeated ACCESS EXCLUSIVE requests keep")
+        print("     cancelling it.")
+        print("     Fix now:  VACUUM (ANALYZE, VERBOSE) futgg_players;")
+        print("     Then stop the cause, or it returns within a day.")
+    else:
+        print("\n  Bloat is not the problem right now.")
+
+
+async def check_snapshot_refresh(conn) -> None:
+    """Why the materialized view is not advancing.
+
+    A stale snapshot is the single most damaging state this system can be
+    in, because EVERYTHING reads from it: the engine judges a market that
+    old, so every card's price age is at least the snapshot's age, and
+    special-tier cards (a 20-minute limit) fail STALE_MARKET en masse
+    while the bulk feed is confirming their prices every few minutes.
+
+    Two things make it fail silently rather than loudly:
+
+      * market_data_provider.refresh_snapshot takes pg_try_advisory_lock
+        and returns False if it cannot get it. A refresh that is still
+        RUNNING holds that lock, so every later poll silently does
+        nothing - no error, no log, indefinitely.
+      * the backend's core pool sets no command_timeout, so a slow
+        REFRESH is never cancelled. It just keeps running.
+
+    Together: one slow refresh freezes the snapshot for as long as it
+    runs, and nothing says so.
+    """
+    _h("1b. WHY THE SNAPSHOT IS NOT REFRESHING")
+
+    running = await conn.fetch(
+        """
+        SELECT pid, round(EXTRACT(EPOCH FROM (now() - query_start)))::int AS secs,
+               state, left(regexp_replace(query, '\s+', ' ', 'g'), 70) AS query
+        FROM pg_stat_activity
+        WHERE query ILIKE '%REFRESH MATERIALIZED VIEW%'
+          AND pid <> pg_backend_pid()
+        """
+    )
+    if running:
+        for r in running:
+            print(f"  A refresh IS running: pid={r['pid']} for {r['secs']}s ({r['state']})")
+            print(f"    {r['query']}")
+        print("\n  >> While this runs it holds the advisory lock, so every other")
+        print("     refresh attempt silently does nothing. If this number keeps")
+        print("     growing, the refresh is the bottleneck - not the schedule.")
+    else:
+        print("  No refresh is running right now.")
+
+    # The index the refresh depends on most.
+    idx = await conn.fetchval(
+        "SELECT 1 FROM pg_indexes WHERE tablename = 'futgg_bin_history'"
+        "   AND indexdef ILIKE '%source_card_id%captured_at%'"
+    )
+    size = await conn.fetchrow(
+        """
+        SELECT pg_size_pretty(pg_total_relation_size('futgg_bin_history')) AS bin_size,
+               (SELECT count(*) FROM futgg_bin_history) AS bin_rows
+        """
+    )
+    print(f"\n  futgg_bin_history: {size['bin_rows']:,} rows, {size['bin_size']}")
+    print(f"  (source_card_id, captured_at) index present: {bool(idx)}")
+    # Is anything even trying? The refresher logs on success, so silence
+    # in the logs plus no running refresh plus a present index means the
+    # loop itself is not running - a different problem from a slow one.
+    held = await conn.fetchval(
+        "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND objid = $1",
+        7741011,
+    )
+    print(f"  refresh advisory lock (7741011) held by     : {held} session(s)")
+    if held and not running:
+        print("\n  >> The lock is held but NO refresh is running. Something took")
+        print("     it and did not give it back, so every refresh attempt is")
+        print("     silently skipped. Find it:")
+        print("       SELECT pid, state, left(query,80) FROM pg_stat_activity a")
+        print("        JOIN pg_locks l ON l.pid = a.pid")
+        print("        WHERE l.locktype='advisory' AND l.objid=7741011;")
+    elif not held and not running:
+        print("\n  >> Nothing holds the lock and nothing is refreshing. If the")
+        print("     snapshot is still stale, the refresher LOOP is not running")
+        print("     at all - not blocked, not slow, absent. Check the backend")
+        print("     log for 'FUT.GG market snapshot refresher started' at boot")
+        print("     and for 'futgg_market_snapshot refreshed' since. A backend")
+        print("     that never logged the first line is not running the loop.")
+
+    if not idx:
+        print("\n  >> THE INDEX IS MISSING. The view's latest_bin CTE is")
+        print("     DISTINCT ON (source_card_id) ORDER BY source_card_id,")
+        print("     captured_at DESC over every row in that table. Without the")
+        print("     index that is a full sort of millions of rows on EVERY")
+        print("     refresh, which is how a refresh comes to outlast its own")
+        print("     120-second schedule and freeze the snapshot.")
+        print("\n     It is created by futgg_price_sync.py - the RETIRED worker -")
+        print("     and by nothing that still runs, so a rebuilt table never")
+        print("     gets it back. Build it without blocking writes:")
+        print("       CREATE INDEX CONCURRENTLY futgg_bin_history_card_captured_idx")
+        print("         ON futgg_bin_history (source_card_id, captured_at DESC);")
 
 
 async def check_deployment(conn) -> Dict[str, Any]:
@@ -385,7 +548,9 @@ async def main() -> int:
             # Locks first: if the table is jammed, every section below
             # would otherwise hang, and the hang IS the answer.
             await _section("lock check", check_locks(conn))
+            await _section("table health", check_table_health(conn))
             await _section("deployment state", check_deployment(conn))
+            await _section("snapshot refresh", check_snapshot_refresh(conn))
             await _section("sales coverage", check_sales_coverage(conn))
             await _section(
                 "engine replay",
