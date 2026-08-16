@@ -1,9 +1,6 @@
 // src/content.js
 // Runs in the content script's ISOLATED world - the entry point that
-// wires the other modules together. Loaded last (see manifest.json)
-// so window.EAFCLive.{groupAuctionsByCardId, combineIntelligence,
-// verdictLabel, getCardIntelligence, onCardDetected, overlay} are all
-// already attached.
+// wires the other modules together. Loaded last (see manifest.json).
 //
 // Everything here is read-only: it reacts to Transfer Market responses
 // the Web App already fetched (market-observer.js), asks the background
@@ -11,6 +8,25 @@
 // background.js), combines that with the live auctions (market-calc.js),
 // and renders a small panel (overlay.js). It never issues a request to
 // EA and never writes to the page's DOM outside of its own overlay panel.
+//
+// WHY window.EAFCLive's PIECES ARE READ FRESH, NOT CAPTURED ONCE
+// -------------------------------------------------------------------
+// This file previously captured `window.EAFCLive` in a const ONCE at the
+// top and refused to do anything at all (including registering with
+// market-observer.js) unless every piece it needs was already present at
+// that exact synchronous moment. Live testing against the real EA Web
+// App surfaced a case where content scripts in the same manifest.json
+// array did not finish attaching their exports in declared order on a
+// given load - see market-observer.js's own header for the fuller
+// account. The fix there was to stop assuming synchronous load-order
+// guarantees; the same applies here. `onCardDetected` (needed
+// immediately, to register at all) gets a small bounded retry; every
+// other piece (getCardIntelligence, combineIntelligence, verdictLabel,
+// overlay) is only ever actually needed once a Transfer Market response
+// has arrived - which happens well after every content script has
+// finished running regardless of relative ordering - so those are read
+// fresh off window.EAFCLive inside handleDetection() rather than
+// snapshotted at load time.
 (function () {
   "use strict";
 
@@ -18,37 +34,11 @@
     if (globalThis.EAFC_LIVE_DEBUG) console.log("[EAFC Live]", ...args);
   }
 
-  const EAFCLive = window.EAFCLive || {};
-  if (
-    typeof EAFCLive.onCardDetected !== "function" ||
-    typeof EAFCLive.getCardIntelligence !== "function" ||
-    typeof EAFCLive.combineIntelligence !== "function" ||
-    typeof EAFCLive.verdictLabel !== "function" ||
-    !EAFCLive.overlay
-  ) {
-    // One of the pieces failed to load - fail harmlessly rather than
-    // throwing into the host page. The Web App is entirely unaffected;
-    // there is simply no overlay. Diagnostic detail always printed (see
-    // market-observer.js's identical check for why).
-    console.warn("[EAFC Live] one or more modules failed to initialize; overlay disabled", {
-      href: location.href,
-      inIframe: window !== window.top,
-      onCardDetected: typeof EAFCLive.onCardDetected,
-      getCardIntelligence: typeof EAFCLive.getCardIntelligence,
-      combineIntelligence: typeof EAFCLive.combineIntelligence,
-      verdictLabel: typeof EAFCLive.verdictLabel,
-      overlay: typeof EAFCLive.overlay,
-      eafcLiveKeys: Object.keys(EAFCLive),
-    });
-    return;
-  }
-
   // Statuses that mean "ask again later" rather than "here is the
   // answer" - a failure of this kind must never permanently suppress a
-  // retry for the same unchanged market state (see the fix's own
-  // discussion: this used to be set BEFORE the backend call resolved,
-  // so a single transient outage could lock a card out of ever
-  // rendering, even once the backend recovered).
+  // retry for the same unchanged market state (this used to be set
+  // BEFORE the backend call resolved, so a single transient outage could
+  // lock a card out of ever rendering, even once the backend recovered).
   const RETRYABLE_STATUSES = new Set(["network_error", "server_error", "timeout"]);
 
   // The last renderKey we produced a TERMINAL result for (success or a
@@ -56,11 +46,29 @@
   // failure, so the identical detection firing again still retries.
   let lastRenderKey = null;
 
-  function renderKeyFor(sourceCardId, auctions) {
-    return `${sourceCardId}:${auctions.length}:${EAFCLive.cheapestBin(auctions)}`;
+  function renderKeyFor(sourceCardId, auctions, cheapestBinFn) {
+    return `${sourceCardId}:${auctions.length}:${cheapestBinFn(auctions)}`;
   }
 
   async function handleDetection(result) {
+    const EAFCLive = window.EAFCLive || {};
+    const missing = [];
+    for (const key of ["combineIntelligence", "verdictLabel", "getCardIntelligence", "cheapestBin"]) {
+      if (typeof EAFCLive[key] !== "function") missing.push(key);
+    }
+    if (!EAFCLive.overlay) missing.push("overlay");
+    if (missing.length > 0) {
+      // Still not ready by the time an actual response arrived (rather
+      // than merely at load time) - now genuinely worth reporting,
+      // rather than a load-order race we'd otherwise recover from.
+      console.warn("[EAFC Live] required modules still unavailable when a market response arrived", {
+        href: location.href,
+        missing,
+        eafcLiveKeys: Object.keys(EAFCLive),
+      });
+      return;
+    }
+
     const { sourceCardId, auctions } = result;
     if (!sourceCardId) {
       // Response covered multiple distinct cards (e.g. an unfiltered
@@ -70,7 +78,7 @@
       return;
     }
 
-    const key = renderKeyFor(sourceCardId, auctions);
+    const key = renderKeyFor(sourceCardId, auctions, EAFCLive.cheapestBin);
     if (key === lastRenderKey) return;
 
     log("exact card ID:", sourceCardId);
@@ -117,6 +125,28 @@
     });
   }
 
-  EAFCLive.onCardDetected(handleDetection);
-  log("EAFC Live Companion content script ready");
+  // onCardDetected is the one thing that must exist synchronously, to
+  // register at all - bounded retry (10 attempts, 100ms apart, 1s total)
+  // rather than an immediate hard fail, since market-observer.js (which
+  // defines it) is only ever one file-load away in the normal case, and
+  // this exists purely to tolerate the same load-order looseness
+  // documented above.
+  function register(attemptsLeft) {
+    const onCardDetected = window.EAFCLive && window.EAFCLive.onCardDetected;
+    if (typeof onCardDetected === "function") {
+      onCardDetected(handleDetection);
+      log("EAFC Live Companion content script ready");
+      return;
+    }
+    if (attemptsLeft <= 0) {
+      console.warn("[EAFC Live] onCardDetected never became available; overlay disabled", {
+        href: location.href,
+        eafcLiveKeys: window.EAFCLive ? Object.keys(window.EAFCLive) : null,
+      });
+      return;
+    }
+    setTimeout(() => register(attemptsLeft - 1), 100);
+  }
+
+  register(10);
 })();
