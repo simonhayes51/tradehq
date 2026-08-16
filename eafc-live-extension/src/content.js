@@ -28,8 +28,18 @@
   ) {
     // One of the pieces failed to load - fail harmlessly rather than
     // throwing into the host page. The Web App is entirely unaffected;
-    // there is simply no overlay.
-    console.warn("[EAFC Live] one or more modules failed to initialize; overlay disabled");
+    // there is simply no overlay. Diagnostic detail always printed (see
+    // market-observer.js's identical check for why).
+    console.warn("[EAFC Live] one or more modules failed to initialize; overlay disabled", {
+      href: location.href,
+      inIframe: window !== window.top,
+      onCardDetected: typeof EAFCLive.onCardDetected,
+      getCardIntelligence: typeof EAFCLive.getCardIntelligence,
+      combineIntelligence: typeof EAFCLive.combineIntelligence,
+      verdictLabel: typeof EAFCLive.verdictLabel,
+      overlay: typeof EAFCLive.overlay,
+      eafcLiveKeys: Object.keys(EAFCLive),
+    });
     return;
   }
 

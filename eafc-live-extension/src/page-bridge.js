@@ -167,5 +167,14 @@
     };
   }
 
-  log("page-bridge installed - observing window.fetch/XHR for /ut/game/fc26 responses");
+  // Always printed (not gated behind EAFC_LIVE_DEBUG) - this is the one
+  // line that confirms the MAIN world actually got this file at all, and
+  // `inIframe`/`href` are needed to rule out "the real Transfer Market
+  // UI renders inside an iframe, which this never saw" (manifest.json's
+  // content_scripts don't set all_frames, so only the top-level document
+  // is injected into by default).
+  console.log("[EAFC Live] page-bridge installed - observing window.fetch/XHR for /ut/game/fc26 responses", {
+    href: location.href,
+    inIframe: window !== window.top,
+  });
 })();

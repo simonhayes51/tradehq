@@ -23,8 +23,24 @@
   const grouper = window.EAFCLive && window.EAFCLive.groupAuctionsByCardId;
   if (typeof grouper !== "function") {
     // card-detector.js failed to load or attach - fail harmlessly rather
-    // than throwing on every market response.
-    console.warn("[EAFC Live] card-detector unavailable; Transfer Market observation disabled");
+    // than throwing on every market response. Diagnostic detail always
+    // printed (not gated behind EAFC_LIVE_DEBUG) because this is
+    // precisely the failure being live-debugged - in particular
+    // `inIframe` distinguishes "this really is the top frame and
+    // EAFCLive is genuinely missing" from "this script is running
+    // inside a frame that never got card-detector.js at all", which
+    // `all_frames` being unset in manifest.json would cause if the real
+    // Transfer Market UI is rendered inside an iframe rather than the
+    // top-level document.
+    console.warn(
+      "[EAFC Live] card-detector unavailable; Transfer Market observation disabled",
+      {
+        href: location.href,
+        inIframe: window !== window.top,
+        hasEAFCLive: typeof window.EAFCLive,
+        eafcLiveKeys: window.EAFCLive ? Object.keys(window.EAFCLive) : null,
+      }
+    );
     return;
   }
 
