@@ -41,7 +41,7 @@
   "use strict";
 
   function log(...args) {
-    if (globalThis.EAFC_LIVE_DEBUG) console.debug("[EAFC Live]", ...args);
+    if (globalThis.EAFC_LIVE_DEBUG) console.log("[EAFC Live]", ...args);
   }
 
   const FC26_RE = /\/ut\/game\/fc26(\/|$)/;
