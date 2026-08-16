@@ -881,7 +881,24 @@ async def refresh_snapshot(pool: asyncpg.Pool) -> bool:
                 log.info("futgg_market_snapshot refreshed in %.1fs", elapsed)
             return True
         finally:
-            await conn.execute("SELECT pg_advisory_unlock($1)", REFRESH_ADVISORY_LOCK_KEY)
+            # Wrapped only so a failing unlock cannot MASK the real
+            # exception from the refresh above - a bare `await` in a
+            # finally block replaces whatever was propagating.
+            #
+            # It cannot leak the lock: asyncpg runs pg_advisory_unlock_all()
+            # when a connection is released back to the pool, so a session
+            # lock is always dropped even if this statement never runs.
+            # Verified directly against Postgres - a pooled connection that
+            # takes the lock and is released without unlocking leaves zero
+            # advisory locks held. A leaked lock was a candidate
+            # explanation for the 117-minute stale snapshot seen in
+            # production; this is the test that ruled it out.
+            try:
+                await conn.execute(
+                    "SELECT pg_advisory_unlock($1)", REFRESH_ADVISORY_LOCK_KEY
+                )
+            except Exception as exc:
+                log.warning("advisory unlock after refresh failed: %s", exc)
 
 
 async def refresher_loop(pool: asyncpg.Pool, poll_seconds: int = 120) -> None:

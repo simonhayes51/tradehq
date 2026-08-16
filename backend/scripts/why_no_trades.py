@@ -282,6 +282,29 @@ async def check_snapshot_refresh(conn) -> None:
     )
     print(f"\n  futgg_bin_history: {size['bin_rows']:,} rows, {size['bin_size']}")
     print(f"  (source_card_id, captured_at) index present: {bool(idx)}")
+    # Is anything even trying? The refresher logs on success, so silence
+    # in the logs plus no running refresh plus a present index means the
+    # loop itself is not running - a different problem from a slow one.
+    held = await conn.fetchval(
+        "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND objid = $1",
+        7741011,
+    )
+    print(f"  refresh advisory lock (7741011) held by     : {held} session(s)")
+    if held and not running:
+        print("\n  >> The lock is held but NO refresh is running. Something took")
+        print("     it and did not give it back, so every refresh attempt is")
+        print("     silently skipped. Find it:")
+        print("       SELECT pid, state, left(query,80) FROM pg_stat_activity a")
+        print("        JOIN pg_locks l ON l.pid = a.pid")
+        print("        WHERE l.locktype='advisory' AND l.objid=7741011;")
+    elif not held and not running:
+        print("\n  >> Nothing holds the lock and nothing is refreshing. If the")
+        print("     snapshot is still stale, the refresher LOOP is not running")
+        print("     at all - not blocked, not slow, absent. Check the backend")
+        print("     log for 'FUT.GG market snapshot refresher started' at boot")
+        print("     and for 'futgg_market_snapshot refreshed' since. A backend")
+        print("     that never logged the first line is not running the loop.")
+
     if not idx:
         print("\n  >> THE INDEX IS MISSING. The view's latest_bin CTE is")
         print("     DISTINCT ON (source_card_id) ORDER BY source_card_id,")
