@@ -85,7 +85,7 @@ object:
    origin, because that would weaken the backend's origin allowlist for
    *every* caller, not just this extension. Doing the fetch from the
    background service worker sidesteps the question entirely: with
-   `https://api.futhub.co.uk/*` in `host_permissions`, an extension
+   `https://api.eafc.live/*` in `host_permissions`, an extension
    page's fetch is exempt from CORS outright, independent of the
    backend's `Access-Control-Allow-Origin` response.
 
@@ -157,14 +157,17 @@ object:
 - **`src/config.js`** - `API_BASE_URL`, cache TTLs, request timeout.
   Read by the background service worker (via `importScripts`) and, for
   reference, the isolated-world content scripts. `API_BASE_URL` is set
-  to `https://api.futhub.co.uk/api/v2` - the only production API host
-  recorded anywhere in this repo (`frontend/.env`'s `VITE_API_URL`) -
-  **verify this still matches the actually-deployed backend** before a
-  live test; update it here if not.
+  to `https://api.eafc.live/api/v2` - confirmed live in production
+  (`GET https://api.eafc.live/api/v2/companion/card/117672259` returns
+  valid companion JSON). Note this is *not* the same host
+  `frontend/.env`'s `VITE_API_URL` records (`api.futhub.co.uk`) - that
+  env var still points at the pre-migration domain; see
+  `backend/main.py`'s `ALLOWED_ORIGIN_REGEX` comment on the
+  futhub.co.uk -> eafc.live move.
 
 ## Permissions
 
-- `host_permissions: ["https://api.futhub.co.uk/*"]` - needed only so
+- `host_permissions: ["https://api.eafc.live/*"]` - needed only so
   the background service worker's fetch to the companion API bypasses
   CORS (see "How it works" step 5). No EA host is listed: the extension
   never issues its own request to EA - it only wraps `fetch`/`XHR`
@@ -193,10 +196,11 @@ actually been run against one. Specifically still open:
   cards (special and non-special).
 - The real EA FC 26 Web App URL, to confirm/adjust
   `content_scripts[].matches` above.
-- Whether a background-worker fetch to `api.futhub.co.uk` actually
-  succeeds from inside the installed extension (the CORS-bypass
-  reasoning in "How it works" step 5 is standard MV3 behaviour but has
-  not been exercised end-to-end here).
+- Whether a background-worker fetch to `api.eafc.live` actually succeeds
+  from inside the installed extension (the CORS-bypass reasoning in "How
+  it works" step 5 is standard MV3 behaviour but has not been exercised
+  end-to-end from an installed extension, as opposed to a plain `curl`,
+  which has confirmed the endpoint itself is live).
 - Whether EA ever omits `resourceId` while still providing
   `definitionId` (the fallback path) on any endpoint version.
 

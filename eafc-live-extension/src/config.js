@@ -13,11 +13,12 @@
 globalThis.EAFC_LIVE_CONFIG = {
   // Base URL of the EAFC Live backend's v2 API
   // (backend/app/routers/v2/companion.py mounts /companion/card/{id}
-  // under this prefix). Confirmed against backend/frontend/.env's
-  // VITE_API_URL, the only production API host recorded in this repo -
-  // verify this still matches the actually-deployed backend before
-  // relying on it (see the extension README's live-test checklist).
-  API_BASE_URL: "https://api.futhub.co.uk/api/v2",
+  // under this prefix). Confirmed working in production against
+  // https://api.eafc.live/api/v2/companion/card/117672259 - this is the
+  // live host, not frontend/.env's api.futhub.co.uk (that env var still
+  // points at the pre-migration domain; see backend/main.py's
+  // ALLOWED_ORIGIN_REGEX comment on the futhub.co.uk -> eafc.live move).
+  API_BASE_URL: "https://api.eafc.live/api/v2",
 
   // How long a SUCCESSFUL companion/card/{id} response is reused before
   // re-fetching. Keeps a Transfer Market search returning 20+ auctions
