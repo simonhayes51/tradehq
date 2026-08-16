@@ -58,14 +58,34 @@ object:
    any other field EA's response happens to carry. The isolated world
    never sees the original response body at all.
 
-2. **`src/card-detector.js`** (pure logic, loaded in *both* worlds - see
-   manifest.json) turns raw EA auction entries into exact card identity:
-   `resourceId` (falling back to `definitionId`), **never**
-   `maskedDefId` alone, since that identifies the underlying player and
-   collides across special versions. `groupAuctionsByCardId()` then
-   resolves identity over an already-sanitized auction list, which is
-   what runs in the isolated world (it has no raw `itemData` to work
-   with, by design).
+2. **`src/card-detector.js`** (MAIN world only) turns raw EA auction
+   entries into exact card identity: `resourceId` (falling back to
+   `definitionId`), **never** `maskedDefId` alone, since that identifies
+   the underlying player and collides across special versions.
+   **`src/card-grouping.js`** (ISOLATED world only) is its counterpart -
+   just `groupAuctionsByCardId()`, resolving identity over an
+   already-sanitized auction list (it has no raw `itemData` to work
+   with, by design). These are two separate files with some duplicated
+   logic, not one file loaded in both worlds - see the next paragraph
+   for why.
+
+   **Why not just load one `card-detector.js` in both worlds?** That was
+   the original design, and it's the obvious thing to try. Confirmed
+   live against the real EA FC 26 Web App: a script file referenced from
+   BOTH of manifest.json's `content_scripts` entries only ever executes
+   once for a given page - Chrome silently skips the second injection,
+   even though the two entries declare different `"world"` values. There
+   was no error, no warning, nothing - the MAIN-world copy ran and
+   attached correctly (confirmed via direct logging), the ISOLATED-world
+   copy of that exact same file simply never ran at all, while every
+   *other* file unique to the isolated world's own entry executed fine.
+   `debug-flag.js` had the identical problem for the same reason (also
+   referenced from both entries) - `src/debug-flag-isolated.js` is its
+   split-out counterpart, one line, kept in sync manually. **Lesson: a
+   file path must never appear in more than one `content_scripts` entry
+   in this extension**, regardless of `world`. If a future change needs
+   the same logic in both worlds again, duplicate the file (or the
+   specific function) rather than sharing the path.
 
 3. **`src/market-observer.js`** listens for the sanitized event, groups
    it by card identity, and notifies `content.js`.
@@ -218,7 +238,7 @@ simply won't appear until the parsing rules are adjusted to match.
 
 ## Testing
 
-Pure logic (`card-detector.js`, `market-calc.js`,
+Pure logic (`card-detector.js`, `card-grouping.js`, `market-calc.js`,
 `intelligence-cache.js`) has no DOM/network/`chrome.*` dependency and is
 tested directly under Node:
 

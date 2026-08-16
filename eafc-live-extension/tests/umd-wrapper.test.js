@@ -53,6 +53,12 @@ test("card-detector.js attaches to window.EAFCLive even with a polluted global `
   assert.deepEqual(sandbox.module.exports, {});
 });
 
+test("card-grouping.js attaches to window.EAFCLive even with a polluted global `module` present", () => {
+  const sandbox = loadInPolluted("src/card-grouping.js", { withWindow: true, withImportScripts: false });
+  assert.equal(typeof sandbox.window.EAFCLive.groupAuctionsByCardId, "function");
+  assert.deepEqual(sandbox.module.exports, {});
+});
+
 test("market-calc.js attaches to window.EAFCLive even with a polluted global `module` present", () => {
   const sandbox = loadInPolluted("src/market-calc.js", { withWindow: true, withImportScripts: false });
   assert.equal(typeof sandbox.window.EAFCLive.combineIntelligence, "function");

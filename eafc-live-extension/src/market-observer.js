@@ -14,26 +14,25 @@
 // before the event is even dispatched) - it is purely the listen ->
 // group -> notify wiring.
 //
-// WHY window.EAFCLive.groupAuctionsByCardId IS CHECKED LAZILY, NOT ONCE
-// AT LOAD TIME
+// WHY window.EAFCLive.groupAuctionsByCardId COMES FROM card-grouping.js,
+// NOT card-detector.js, AND IS STILL CHECKED LAZILY
 // -------------------------------------------------------------------
-// This file previously read `window.EAFCLive.groupAuctionsByCardId`
-// ONCE, synchronously, at the top of this IIFE, and bailed out (never
-// registering onCardDetected at all) if it wasn't there yet. Live
-// testing against the real EA Web App surfaced a case where, at that
-// exact synchronous moment, window.EAFCLive already had market-calc.js's
-// and eafc-api.js's exports (files listed AFTER card-detector.js in
-// manifest.json) but NOT card-detector.js's own - i.e. content scripts
-// in the same array did not finish attaching in the declared order on
-// that particular load. The root cause was never fully pinned down (and
-// may be intermittent), but the fix does not require knowing it: nothing
-// in this file needs to resolve window.EAFCLive.groupAuctionsByCardId
-// before the very first Transfer Market response arrives, which happens
-// well after every content script's top-level code has finished running
-// regardless of relative ordering between files. Reading it fresh inside
-// the event handler - instead of capturing a possibly-still-undefined
-// reference in a closure once at load time - makes this file correct
-// regardless of exactly when card-detector.js finishes attaching.
+// This file used to depend on card-detector.js (loaded earlier in the
+// same content_scripts entry). Live testing against the real EA Web App
+// proved that file's ISOLATED-world copy never executed at all, even
+// though it's declared in this entry and every OTHER file here ran
+// fine: card-detector.js is ALSO declared in the MAIN-world entry (for
+// page-bridge.js), and Chrome silently skips re-injecting a script
+// resource it already injected once for a page, even across a different
+// declared "world". See card-grouping.js's header for the full account -
+// it is a standalone file containing only groupAuctionsByCardId,
+// referenced from nowhere else, specifically so this never recurs.
+//
+// The lazy check below (reading window.EAFCLive.groupAuctionsByCardId
+// fresh inside the event handler, rather than once at load time) is kept
+// regardless, as cheap defense-in-depth: nothing in this file actually
+// needs it resolved before the first Transfer Market response arrives,
+// which is always well after every content script has finished running.
 (function () {
   "use strict";
 
@@ -56,17 +55,16 @@
 
     const grouper = window.EAFCLive && window.EAFCLive.groupAuctionsByCardId;
     if (typeof grouper !== "function") {
-      // card-detector.js still hasn't attached - fail harmlessly for
+      // card-grouping.js still hasn't attached - fail harmlessly for
       // just this one response rather than disabling observation
       // permanently. Diagnostic detail always printed (not gated behind
-      // EAFC_LIVE_DEBUG) since this is precisely the failure mode that
-      // was hard to pin down live - `inIframe` alone rules out/in the
-      // "real Transfer Market UI renders inside an iframe this content
-      // script never reached" theory (manifest.json's content_scripts
-      // don't set all_frames, so only the top-level document is injected
-      // into by default).
+      // EAFC_LIVE_DEBUG): if this ever fires again, `inIframe` is the
+      // first thing to check (whether the real Transfer Market UI is
+      // rendering inside an iframe this content script never reached -
+      // manifest.json's content_scripts don't set all_frames, so only
+      // the top-level document is injected into by default).
       console.warn(
-        "[EAFC Live] card-detector unavailable for this response; skipping",
+        "[EAFC Live] card-grouping unavailable for this response; skipping",
         {
           href: location.href,
           inIframe: window !== window.top,
@@ -108,7 +106,7 @@
     }
   });
 
-  // Registered unconditionally, regardless of whether card-detector.js
+  // Registered unconditionally, regardless of whether card-grouping.js
   // has attached yet - content.js depends on this existing to wire
   // itself up at all (see content.js's own readiness check), and there
   // is no reason it should wait on a DIFFERENT file's timing when this
