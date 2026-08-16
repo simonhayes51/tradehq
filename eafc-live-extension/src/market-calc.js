@@ -9,14 +9,20 @@
 // app/services/trading_math.py::EA_TAX applies, so a profit shown in the
 // extension is never computed on different assumptions than the backend
 // recommendation it's supposed to be confirming.
-(function (root, factory) {
-  if (typeof module !== "undefined" && module.exports) {
+(function (factory) {
+  // See card-detector.js's identical wrapper for why this checks for a
+  // browser-like global FIRST rather than trusting `typeof module` alone
+  // - EA's own page can leave a global `module` behind, which a naive
+  // UMD check would misread as "we're in Node" inside a content script.
+  const isBrowserLike = typeof window !== "undefined" || typeof importScripts === "function";
+  if (!isBrowserLike && typeof module !== "undefined" && module.exports) {
     module.exports = factory();
-  } else {
-    root.EAFCLive = root.EAFCLive || {};
-    Object.assign(root.EAFCLive, factory());
+    return;
   }
-})(typeof window !== "undefined" ? window : globalThis, function () {
+  const root = typeof window !== "undefined" ? window : globalThis;
+  root.EAFCLive = root.EAFCLive || {};
+  Object.assign(root.EAFCLive, factory());
+})(function () {
   "use strict";
 
   // Mirrors backend/app/services/trading_math.py's EA_TAX. Kept as a
