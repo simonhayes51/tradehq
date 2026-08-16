@@ -146,6 +146,13 @@ object:
    likely cause).
 4. Open the EA FC 26 Web App and search the Transfer Market normally.
 
+**After any `manifest.json` change** (e.g. pulling this fix): reload the
+extension from `chrome://extensions` (the ↻ icon on its card) AND
+reload/renavigate any already-open EA Web App tab. `matches` patterns
+are only evaluated when a page loads - a tab opened before the manifest
+changed keeps running whatever content scripts were injected under the
+old rules, even after the extension itself reloads.
+
 ## Configuration
 
 - **`src/debug-flag.js`** - single source of truth for the `[EAFC Live]`
@@ -173,12 +180,15 @@ object:
   never issues its own request to EA - it only wraps `fetch`/`XHR`
   calls the Web App's own JS already makes, inside the page it's already
   running on, which needs no separate host permission.
-- `content_scripts[].matches: ["https://www.ea.com/*ultimate-team*web-app*"]`
-  - the narrowest pattern that plausibly matches the EA FC Web App
-    without having been confirmed against a live URL. **This needs
-    verification against the real Web App URL** (see the live-test
-    checklist below) - if it doesn't match, the extension simply never
-    injects, with no error and no effect on the Web App.
+- `content_scripts[].matches: ["https://*.ea.com/*ultimate-team*web-app*"]`
+  - confirmed against a live session: the real Web App URL is
+    `https://ea.com/<locale>/ea-sports-fc/ultimate-team/web-app/` (e.g.
+    `.../fr-fr/...`) - **no `www.`**. An earlier version of this
+    manifest matched only `https://www.ea.com/*`, which meant the
+    content script never injected at all on the real site (no error, no
+    console output, no overlay - it simply never ran). `*.ea.com` in a
+    Chrome match pattern covers both the bare domain and any subdomain,
+    so this covers `ea.com` and `www.ea.com` alike regardless of locale.
 - `background.service_worker` requires no separate `permissions` entry.
 
 ## Assumptions still needing manual verification
@@ -194,8 +204,6 @@ actually been run against one. Specifically still open:
 - That `itemData.resourceId` (or `definitionId`) is present and equal to
   FUT.GG's `source_card_id` for the same card, for at least a few known
   cards (special and non-special).
-- The real EA FC 26 Web App URL, to confirm/adjust
-  `content_scripts[].matches` above.
 - Whether a background-worker fetch to `api.eafc.live` actually succeeds
   from inside the installed extension (the CORS-bypass reasoning in "How
   it works" step 5 is standard MV3 behaviour but has not been exercised
