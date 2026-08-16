@@ -39,7 +39,7 @@ importScripts("debug-flag.js", "config.js", "intelligence-cache.js");
   const REQUEST_TIMEOUT_MS = cfg.REQUEST_TIMEOUT_MS || 6000;
 
   function log(...args) {
-    if (globalThis.EAFC_LIVE_DEBUG) console.debug("[EAFC Live:bg]", ...args);
+    if (globalThis.EAFC_LIVE_DEBUG) console.log("[EAFC Live:bg]", ...args);
   }
 
   async function fetchIntelligence(sourceCardId) {
