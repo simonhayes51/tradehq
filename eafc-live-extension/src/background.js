@@ -17,7 +17,7 @@
 // origin allowlist for every caller, not just this extension).
 //
 // A background service worker's fetch, by contrast, is unambiguously an
-// extension-privileged request: with `https://api.futhub.co.uk/*` in
+// extension-privileged request: with `https://api.eafc.live/*` in
 // manifest.json's host_permissions, it is exempt from CORS entirely and
 // needs no cooperation from the backend's CORS configuration at all.
 // Content scripts ask this worker for intelligence via
@@ -35,7 +35,7 @@ importScripts("debug-flag.js", "config.js", "intelligence-cache.js");
   "use strict";
 
   const cfg = globalThis.EAFC_LIVE_CONFIG || {};
-  const API_BASE_URL = cfg.API_BASE_URL || "https://api.futhub.co.uk/api/v2";
+  const API_BASE_URL = cfg.API_BASE_URL || "https://api.eafc.live/api/v2";
   const REQUEST_TIMEOUT_MS = cfg.REQUEST_TIMEOUT_MS || 6000;
 
   function log(...args) {

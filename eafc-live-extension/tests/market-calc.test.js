@@ -157,6 +157,40 @@ test("verdictLabel: unknown reason degrades to the neutral default rather than t
   assert.equal(v.tone, "neutral");
 });
 
+// Real production shape (companion/card/117672259, Mbappé) as of the
+// live-test round: engine returned insufficient_data with every price
+// field null. This must render useful live-market info and a reason-
+// aware "not a buy" status, never a confirmed opportunity - see
+// verdictLabel's "no_buy_signal" branch.
+test("combineIntelligence never confirms on a real insufficient_data payload (Mbappé production shape)", () => {
+  const mbappeIntelligence = {
+    source_card_id: 117672259,
+    name: "Kylian Mbappé",
+    rating: 97,
+    rarity: "Team of the Year",
+    fair_value: null,
+    buy_below: null,
+    recommended_buy_max: null,
+    recommended_sell_target: null,
+    signal: "insufficient_data",
+    status: "insufficient_data",
+    confidence: 0.0,
+  };
+  const auctions = [auction(1090000), auction(1110000)];
+  const combined = combineIntelligence(auctions, mbappeIntelligence);
+
+  assert.equal(combined.hasIntelligence, true);
+  assert.equal(combined.opportunityConfirmed, false);
+  assert.equal(combined.reason, "no_buy_signal");
+  // Live-market numbers are still surfaced even with no recommendation.
+  assert.equal(combined.cheapestBin, 1090000);
+  assert.equal(combined.listingCount, 2);
+
+  const verdict = verdictLabel(combined.reason, mbappeIntelligence.signal);
+  assert.equal(verdict.text, "LIVE MARKET — INSUFFICIENT DATA (NOT A BUY)");
+  assert.equal(verdict.tone, "neutral");
+});
+
 test("combineIntelligence reason always round-trips through verdictLabel without throwing", () => {
   const cases = [
     [[], null],

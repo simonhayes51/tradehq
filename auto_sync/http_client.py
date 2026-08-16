@@ -267,7 +267,19 @@ async def get_with_retry(
                     return 403, None
                 if r.status != 200:
                     return r.status, None
-                return 200, await r.text()
+                # Force UTF-8 rather than trusting the response's
+                # declared/sniffed charset. aiohttp's default
+                # get_encoding() prefers a Content-Type charset param when
+                # present, and falls back to guessing otherwise - either
+                # path decodes wrong if a server ever mis-declares or a
+                # guesser mis-detects an actual UTF-8 body as e.g.
+                # Latin-1/cp1252, which reads back as exactly the
+                # "MbappÃ©"-style mojibake seen in scraped names (every
+                # source this client talks to serves UTF-8; there is no
+                # legitimate case where forcing it here changes correct
+                # output). See scripts/fix_futgg_name_mojibake.py for the
+                # one-off repair of rows already written before this fix.
+                return 200, await r.text(encoding="utf-8")
         except CircuitOpenError:
             raise
         except Exception:

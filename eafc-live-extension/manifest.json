@@ -4,7 +4,7 @@
   "version": "0.1.1",
   "description": "Read-only EAFC Live intelligence overlay for the EA SPORTS FC Web App transfer market. Never bids, buys, lists, or automates trading.",
   "host_permissions": [
-    "https://api.futhub.co.uk/*"
+    "https://api.eafc.live/*"
   ],
   "background": {
     "service_worker": "src/background.js"
