@@ -91,8 +91,24 @@
   }
   const root = typeof window !== "undefined" ? window : globalThis;
   root.EAFCLive = root.EAFCLive || {};
+  // Unconditional (not gated behind EAFC_LIVE_DEBUG) proof-of-execution
+  // for live debugging: confirms this exact file instance actually ran
+  // in this world, distinguishing "the file never executed here at all"
+  // from "it ran but something about the attachment itself is wrong".
+  console.log("[EAFC Live] card-detector.js executing", {
+    href: typeof location !== "undefined" ? location.href : null,
+    isBrowserLike,
+    rootIsWindow: root === (typeof window !== "undefined" ? window : undefined),
+    eafcLiveBeforeAttach: Object.keys(root.EAFCLive),
+  });
   try {
-    Object.assign(root.EAFCLive, factory());
+    const exported = factory();
+    Object.assign(root.EAFCLive, exported);
+    console.log("[EAFC Live] card-detector.js attached", {
+      exportedKeys: Object.keys(exported),
+      eafcLiveAfterAttach: Object.keys(root.EAFCLive),
+      sameObjectAsRootEAFCLive: root.EAFCLive === (typeof window !== "undefined" ? window.EAFCLive : globalThis.EAFCLive),
+    });
   } catch (err) {
     // Previously silent: a throw here left root.EAFCLive as an empty
     // object with none of this file's functions attached, and every
