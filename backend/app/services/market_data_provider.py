@@ -685,7 +685,18 @@ class FutggMarketDataProvider(MarketDataProvider):
                 """
                 SELECT worker, last_run_at, ok, detail
                 FROM pipeline_heartbeats
-                WHERE worker IN ('futgg_player_sync', 'futgg_price_sync')
+                -- 'futgg_price_sync' is the retired per-card Playwright
+                -- scraper (see Procfile's own comment on the switch) -
+                -- kept here only so an old/never-migrated deployment
+                -- still shows something, since that worker's own
+                -- heartbeat() call remains in its source. The live
+                -- price worker is 'futgg_bulk_price_sync' (continuous
+                -- bulk-feed service, see Dockerfile.price) - it did not
+                -- call heartbeat() at all until this fix, which is why
+                -- this panel could show a stale entry under the retired
+                -- worker's name while the real worker's actual state
+                -- (healthy or stalled) stayed invisible here.
+                WHERE worker IN ('futgg_player_sync', 'futgg_price_sync', 'futgg_bulk_price_sync')
                 """
             )
             totals = await conn.fetchrow(
