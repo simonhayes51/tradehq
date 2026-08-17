@@ -307,6 +307,14 @@ PAGE_TIMEOUT_MS = env_int("FUTGG_SALES_PAGE_TIMEOUT_MS", 15000, minimum=2000)
 #: bit after the minimum navigation event, not full page load" idiom
 #: PriceSync's HYDRATION_WAIT_MS already uses successfully.
 PAGE_SETTLE_MS = env_int("FUTGG_SALES_PAGE_SETTLE_MS", 4000, minimum=500)
+#: A normal player page with no price panel is not a transport failure:
+#: FUT.GG uses that shape for cards which have no market (most commonly
+#: untradeable SBC/objective rewards). Quarantine rather than permanently
+#: changing is_tradeable, because FUT.GG can later add a market or briefly
+#: fail to render the panel. The default rechecks once a week.
+NO_PRICE_SECTION_RECHECK_MINUTES = env_int(
+    "FUTGG_SALES_NO_PRICE_SECTION_RECHECK_MIN", 10080, minimum=60
+)
 #: In auto mode, once the circuit breaker has forced a switch to
 #: page_capture, how long to wait before trying a small signed_fetch
 #: probe batch again - deliberately long, so a still-blocked signed
@@ -896,6 +904,42 @@ def _player_prices_url_marker(card_id: int) -> str:
     return f"/api/fut/player-prices/{GAME_YEAR}/{card_id}/"
 
 
+def classify_page_capture_error(
+    *,
+    nav_status: int | None,
+    nav_cf_mitigated: str | None,
+    data_status: int | None,
+    data_cf_mitigated: str | None,
+    parse_error: bool,
+    price_section_count: int | None,
+) -> str:
+    """Classify a page_capture attempt which produced no JSON payload.
+
+    `no_price_section` is deliberately narrow: the page itself must have
+    loaded normally (HTTP 200, no Cloudflare challenge), the price API must
+    not have returned an error, and the stable price-panel element must be
+    absent. This is the observed distinction between untradeable SBC cards
+    and a known tradeable comparison card.
+    """
+    if nav_cf_mitigated == "challenge":
+        return "page_capture_nav_challenge"
+    if data_cf_mitigated == "challenge":
+        return "page_capture_challenge"
+    if data_status == 403:
+        return "page_capture_403"
+    if (
+        nav_status == 200
+        and data_status is None
+        and price_section_count == 0
+    ):
+        return "no_price_section"
+    if data_status is None:
+        return "page_capture_timeout"
+    if parse_error:
+        return "malformed_json"
+    return f"page_capture_status_{data_status}"
+
+
 async def fetch_via_page_capture(
     page, card_id: int, url: str, *, diagnostic: bool = False
 ) -> dict[str, Any]:
@@ -963,6 +1007,7 @@ async def fetch_via_page_capture(
     # to move the investigation forward.
     nav_status: int | None = None
     nav_cf_mitigated: str | None = None
+    price_section_count: int | None = None
 
     page.on("response", on_response)
     try:
@@ -990,26 +1035,30 @@ async def fetch_via_page_capture(
                 )
             except asyncio.TimeoutError:
                 pass
+
+        # A successful page navigation which never requests price JSON can
+        # mean either slow/broken hydration or a card with no market. FUT.GG
+        # exposes a stable structural distinction: market cards render
+        # #prices-overview; confirmed SBC reward pages do not.
+        try:
+            price_section_count = await page.locator("#prices-overview").count()
+        except Exception:
+            # If DOM inspection itself fails, retain the ordinary timeout
+            # path. Never classify an unknown browser failure as no-market.
+            price_section_count = None
     finally:
         page.remove_listener("response", on_response)
 
     if "payload" not in captured:
         status = captured.get("status")
-        if nav_cf_mitigated == "challenge":
-            # The player page navigation itself was Cloudflare's
-            # interstitial - the real app never ran, so the API
-            # subrequest was never going to fire regardless of transport.
-            error = "page_capture_nav_challenge"
-        elif captured.get("cf_mitigated") == "challenge":
-            error = "page_capture_challenge"
-        elif status == 403:
-            error = "page_capture_403"
-        elif status is None:
-            error = "page_capture_timeout"
-        elif captured.get("parse_error"):
-            error = "malformed_json"
-        else:
-            error = f"page_capture_status_{status}"
+        error = classify_page_capture_error(
+            nav_status=nav_status,
+            nav_cf_mitigated=nav_cf_mitigated,
+            data_status=status,
+            data_cf_mitigated=captured.get("cf_mitigated"),
+            parse_error=bool(captured.get("parse_error")),
+            price_section_count=price_section_count,
+        )
         result: dict[str, Any] = {"eaId": card_id, "error": error}
         # Always included, not diagnostic-only: cheap (status/one header,
         # no secrets), and exactly the field needed to tell a page-level
@@ -1017,6 +1066,7 @@ async def fetch_via_page_capture(
         # -driven runs, not just one-card diagnostic mode.
         result["navStatus"] = nav_status
         result["navCfMitigated"] = nav_cf_mitigated
+        result["priceSectionCount"] = price_section_count
         if diagnostic:
             result["dataStatus"] = status
             result["cfMitigated"] = captured.get("cf_mitigated")
@@ -1552,9 +1602,11 @@ def log_failure_sample(card_id: int, result: dict[str, Any], transport: str = "s
     if transport == "page_capture":
         log.warning(
             "sales fetch failed [page_capture] card=%s error=%s navStatus=%s "
-            "navCfMitigated=%s dataStatus=%s dataContentType=%r cfMitigated=%s%s",
+            "navCfMitigated=%s priceSectionCount=%s dataStatus=%s "
+            "dataContentType=%r cfMitigated=%s%s",
             card_id, result.get("error"), result.get("navStatus"), result.get("navCfMitigated"),
-            result.get("dataStatus"), result.get("dataContentType"), result.get("cfMitigated"),
+            result.get("priceSectionCount"), result.get("dataStatus"),
+            result.get("dataContentType"), result.get("cfMitigated"),
             f" bodyPreview={redact_value(preview)!r}" if preview else "",
         )
         return
@@ -1627,6 +1679,21 @@ async def apply_batch_results(
         error = result.get("error")
 
         if error:
+            if error == "no_price_section":
+                # This is a classified no-market page, not a broken fetch.
+                # Record the reason in the existing status column and move
+                # it out of the hot queue for a week. Do not set
+                # is_tradeable=false permanently: a mistaken/temporary DOM
+                # result will self-heal on the scheduled recheck.
+                stats["excluded_no_price_section"] = (
+                    stats.get("excluded_no_price_section", 0) + 1
+                )
+                updates.append((
+                    card_id, NO_PRICE_SECTION_RECHECK_MINUTES,
+                    "excluded:no_price_section", False, prior_failures,
+                ))
+                continue
+
             stats["failed"] += 1
             stats.setdefault("errors", {})
             stats["errors"][error] = stats["errors"].get(error, 0) + 1
@@ -2207,9 +2274,11 @@ async def run_forever() -> None:
 
                 elapsed = max(time.perf_counter() - started, 0.001)
                 log.info(
-                    "cycle[%s]: cards_ok=%d failed=%d sales=%d in %.1fs (%.0f cards/min) "
+                    "cycle[%s]: cards_ok=%d excluded_no_price_section=%d failed=%d "
+                    "sales=%d in %.1fs (%.0f cards/min) "
                     "throttle[%s] errors=%s%s",
-                    transport, stats["ok"], stats["failed"], stats["sales_seen"], elapsed,
+                    transport, stats["ok"], stats.get("excluded_no_price_section", 0),
+                    stats["failed"], stats["sales_seen"], elapsed,
                     (stats["ok"] / elapsed) * 60, throttle.describe(),
                     stats.get("errors", {}),
                     " CIRCUIT_BREAKER_TRIPPED" if breaker_tripped else "",

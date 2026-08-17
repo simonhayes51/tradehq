@@ -9,11 +9,53 @@ os.environ.setdefault("DATABASE_URL", "postgresql://x:y@localhost/z")
 
 from futgg_sales_sync import (  # noqa: E402
     _parse_sold_at, AdaptiveThrottle, build_sale_rows,
-    circuit_breaker_tripped, sales_interval_minutes,
+    circuit_breaker_tripped, classify_page_capture_error, sales_interval_minutes,
     should_fall_back_to_page_capture,
 )
 
 NOW = datetime(2026, 8, 3, 23, 0, tzinfo=timezone.utc)
+
+
+class TestPageCaptureClassification:
+    def test_normal_page_without_price_panel_is_no_market(self):
+        assert classify_page_capture_error(
+            nav_status=200,
+            nav_cf_mitigated=None,
+            data_status=None,
+            data_cf_mitigated=None,
+            parse_error=False,
+            price_section_count=0,
+        ) == "no_price_section"
+
+    def test_tradeable_page_without_api_response_remains_timeout(self):
+        assert classify_page_capture_error(
+            nav_status=200,
+            nav_cf_mitigated=None,
+            data_status=None,
+            data_cf_mitigated=None,
+            parse_error=False,
+            price_section_count=1,
+        ) == "page_capture_timeout"
+
+    def test_unknown_dom_state_is_never_classified_as_no_market(self):
+        assert classify_page_capture_error(
+            nav_status=200,
+            nav_cf_mitigated=None,
+            data_status=None,
+            data_cf_mitigated=None,
+            parse_error=False,
+            price_section_count=None,
+        ) == "page_capture_timeout"
+
+    def test_cloudflare_challenge_takes_precedence(self):
+        assert classify_page_capture_error(
+            nav_status=200,
+            nav_cf_mitigated="challenge",
+            data_status=None,
+            data_cf_mitigated=None,
+            parse_error=False,
+            price_section_count=0,
+        ) == "page_capture_nav_challenge"
 
 
 class TestParseSoldAt:
