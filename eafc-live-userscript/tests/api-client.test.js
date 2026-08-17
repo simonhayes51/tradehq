@@ -51,9 +51,42 @@ test("onerror resolves status network_error", async () => {
 
 test("missing GM_xmlhttpRequest fails harmlessly instead of throwing", async () => {
   globalThis.GM_xmlhttpRequest = undefined;
+  globalThis.GM = undefined;
   const { getCardIntelligence } = await import(`../src/api-client.js?case=missing`);
   const result = await getCardIntelligence(1);
   assert.equal(result.status, "network_error");
+});
+
+test("falls back to the namespaced GM.xmlHttpRequest when the legacy global is absent", async () => {
+  // Confirmed live: some userscript managers (e.g. the iOS "Userscripts"
+  // app) only expose GM.xmlHttpRequest, not the legacy GM_xmlhttpRequest
+  // global - this is the exact case that produced a silent
+  // "backend unreachable" overlay in production before this fallback
+  // was added.
+  globalThis.GM_xmlhttpRequest = undefined;
+  globalThis.GM = {
+    xmlHttpRequest(opts) {
+      opts.onload({ status: 200, responseText: JSON.stringify({ signal: "strong_buy" }) });
+    },
+  };
+  const { getCardIntelligence } = await import(`../src/api-client.js?case=namespaced`);
+  const result = await getCardIntelligence(1);
+  assert.equal(result.status, "success");
+  assert.equal(result.data.signal, "strong_buy");
+  globalThis.GM = undefined;
+});
+
+test("falls back to GM.xmlHttpRequest when it only resolves a Promise (no callbacks fired)", async () => {
+  globalThis.GM_xmlhttpRequest = undefined;
+  globalThis.GM = {
+    xmlHttpRequest() {
+      return Promise.resolve({ status: 404, responseText: "" });
+    },
+  };
+  const { getCardIntelligence } = await import(`../src/api-client.js?case=namespaced-promise`);
+  const result = await getCardIntelligence(1);
+  assert.equal(result.status, "not_found");
+  globalThis.GM = undefined;
 });
 
 test("never forwards EA session data - only the numeric card id reaches the URL", async () => {
