@@ -8,7 +8,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("DATABASE_URL", "postgresql://x:y@localhost/z")
 
 from futgg_sales_sync import (  # noqa: E402
-    _parse_sold_at, build_sale_rows, sales_interval_minutes,
+    _parse_sold_at, AdaptiveThrottle, build_sale_rows,
+    circuit_breaker_tripped, sales_interval_minutes,
+    should_fall_back_to_page_capture,
 )
 
 NOW = datetime(2026, 8, 3, 23, 0, tzinfo=timezone.utc)
@@ -102,8 +104,8 @@ class TestIntervals:
     def test_none_rating_is_slowest(self):
         assert sales_interval_minutes(None) == sales_interval_minutes(50)
 
-
-from futgg_sales_sync import AdaptiveThrottle  # noqa: E402
+    def test_95_plus_is_never_slower_than_85_plus(self):
+        assert sales_interval_minutes(98) <= sales_interval_minutes(91)
 
 
 class TestAdaptiveThrottle:
@@ -153,6 +155,24 @@ class TestAdaptiveThrottle:
         t = AdaptiveThrottle(8, 0.0)
         t.record(8, 8)
         assert t.delay > 0
+
+    def test_recent_429_wall_is_not_hidden_by_earlier_successes(self):
+        t = AdaptiveThrottle(8, 0.5)
+        stats = {"ok": 100, "failed": 16}
+        t.record(8, 8)
+        assert not circuit_breaker_tripped(stats, t)
+        t.record(8, 8)
+        assert circuit_breaker_tripped(stats, t)
+        switch, reason = should_fall_back_to_page_capture(stats, t)
+        assert switch
+        assert "fully-throttled batches" in reason
+
+    def test_fully_throttled_batch_streak_resets_when_clean(self):
+        t = AdaptiveThrottle(8, 0.5)
+        t.record(8, 8)
+        t.record(8, 0)
+        t.record(8, 8)
+        assert t.consecutive_fully_throttled_batches == 1
 
 
 class TestAdaptiveThrottleResume:

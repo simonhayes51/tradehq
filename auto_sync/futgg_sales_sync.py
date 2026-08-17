@@ -82,6 +82,7 @@ import hashlib
 import json
 import logging
 import os
+import random
 import re
 import signal
 import sys
@@ -260,6 +261,17 @@ CIRCUIT_BREAKER_MIN_SAMPLE = env_int("FUTGG_SALES_CIRCUIT_BREAKER_MIN_SAMPLE", 2
 CIRCUIT_BREAKER_BACKOFF_SECONDS = env_float(
     "FUTGG_SALES_CIRCUIT_BREAKER_BACKOFF_SECONDS", 300.0, minimum=0.0
 )
+CONSECUTIVE_FULL_THROTTLE_BATCHES = env_int(
+    "FUTGG_SALES_FULL_THROTTLE_BATCHES_BEFORE_BREAKER", 2, minimum=1
+)
+DB_WRITE_MAX_ATTEMPTS = env_int("FUTGG_SALES_DB_WRITE_MAX_ATTEMPTS", 4, minimum=1)
+DB_WRITE_RETRY_BASE_SECONDS = env_float(
+    "FUTGG_SALES_DB_WRITE_RETRY_BASE_SECONDS", 0.25, minimum=0.0
+)
+PROGRESS_LOG_EVERY = env_int("FUTGG_SALES_PROGRESS_LOG_EVERY", 25, minimum=1)
+SALES_SYNC_ADVISORY_LOCK_KEY = env_int(
+    "FUTGG_SALES_ADVISORY_LOCK_KEY", 7741013
+)
 
 # ---------------------------------------------------------------------
 # Transport: signed_fetch (the original design) vs page_capture (the
@@ -324,11 +336,19 @@ SIGNED_REPROBE_SAMPLE = env_int("FUTGG_SALES_SIGNED_REPROBE_SAMPLE", 5, minimum=
 # demanded ~133 cards/min sustained, which is what produced 144 HTTP 429s
 # in the first live run. Halving each band brings it to ~67/min.
 SALES_INTERVALS = {
+    "95_plus": env_int("FUTGG_SALES_95_PLUS_INTERVAL_MIN", 180, minimum=5),
     "85_plus": env_int("FUTGG_SALES_85_PLUS_INTERVAL_MIN", 60, minimum=5),
     "80_84": env_int("FUTGG_SALES_80_84_INTERVAL_MIN", 240, minimum=10),
     "75_79": env_int("FUTGG_SALES_75_79_INTERVAL_MIN", 720, minimum=30),
     "under_75": env_int("FUTGG_SALES_UNDER_75_INTERVAL_MIN", 2880, minimum=60),
 }
+# A more valuable band must never accidentally run less often because an
+# operator tightened the broader 85+ override but left the new 95+ env
+# unset. Railway's current 85+=1440 makes this 180; the source defaults
+# make it 60.
+SALES_INTERVALS["95_plus"] = min(
+    SALES_INTERVALS["95_plus"], SALES_INTERVALS["85_plus"]
+)
 
 #: Mirror of backend futgg_config.EngineConfig.reject_sales_older_than_minutes.
 #: Past this age the engine refuses to value a card at all - the sales
@@ -463,8 +483,13 @@ class AdaptiveThrottle:
             if resume_delay is not None else delay
         )
         self._clean_streak = 0
+        self.consecutive_fully_throttled_batches = 0
 
     def record(self, attempted: int, throttled: int) -> None:
+        if attempted > 0 and throttled >= attempted:
+            self.consecutive_fully_throttled_batches += 1
+        else:
+            self.consecutive_fully_throttled_batches = 0
         if throttled:
             self._clean_streak = 0
             # Proportional to how badly we overshot: a batch that was
@@ -553,13 +578,25 @@ async def save_throttle_state(pool: asyncpg.Pool, throttle: "AdaptiveThrottle") 
         log.warning("failed to persist throttle state", exc_info=True)
 
 
-def circuit_breaker_tripped(stats: dict[str, Any]) -> bool:
+def circuit_breaker_tripped(
+    stats: dict[str, Any], throttle: "AdaptiveThrottle | None" = None,
+) -> bool:
     """True once a cycle's running failure ratio reaches
     CIRCUIT_BREAKER_THRESHOLD, but only after at least
     CIRCUIT_BREAKER_MIN_SAMPLE cards have actually been attempted (item 6)
     - a single unlucky batch of 8 must not trip a 5-minute backoff; the
     production incident this guards against was ~100% failed over 200
     cards, not a blip."""
+    # A cumulative cycle ratio hides a late hard 429 wall after a long
+    # successful prefix. Two consecutive batches in which every request
+    # is throttled are stronger and more recent evidence than that diluted
+    # ratio, so stop promptly and let auto mode move to page_capture.
+    if (
+        throttle is not None
+        and throttle.consecutive_fully_throttled_batches
+        >= CONSECUTIVE_FULL_THROTTLE_BATCHES
+    ):
+        return True
     attempted = stats["ok"] + stats["failed"]
     if attempted < CIRCUIT_BREAKER_MIN_SAMPLE:
         return False
@@ -622,6 +659,8 @@ def signed_reprobe_due() -> bool:
 def sales_interval_minutes(rating: int | None) -> int:
     if rating is None:
         return SALES_INTERVALS["under_75"]
+    if rating >= 95:
+        return SALES_INTERVALS["95_plus"]
     if rating >= 85:
         return SALES_INTERVALS["85_plus"]
     if rating >= 80:
@@ -1060,10 +1099,11 @@ async def select_due(conn: asyncpg.Connection) -> list[asyncpg.Record]:
             -- never-SUCCESSFULLY-read cards first (backfill), best cards
             -- within that. A failed attempt does not forfeit this.
             (sales_first_read_at IS NOT NULL),
-            CASE WHEN rating >= 85 THEN 0
-                 WHEN rating >= 80 THEN 1
-                 WHEN rating >= 75 THEN 2
-                 ELSE 3 END,
+            CASE WHEN rating >= 95 THEN 0
+                 WHEN rating >= 85 THEN 1
+                 WHEN rating >= 80 THEN 2
+                 WHEN rating >= 75 THEN 3
+                 ELSE 4 END,
             next_sales_due_at ASC NULLS FIRST,
             rating DESC NULLS LAST
         LIMIT $1
@@ -1658,57 +1698,58 @@ async def apply_batch_results(
         return
 
     with timers.track("db_write"):
-        async with pool.acquire() as conn:
-            async with conn.transaction():
-                if to_insert:
-                    # executemany: one round trip for the whole batch
-                    # instead of one per sale. The old scraper issued up
-                    # to 50 sequential inserts per card.
-                    await conn.executemany(_INSERT, to_insert)
-                if updates:
-                    # One set-based statement, not one round trip per
-                    # card. This loop used to issue a separate UPDATE per
-                    # card INSIDE the transaction, which cost twice:
-                    # N sequential round trips, and - worse - it held row
-                    # locks on futgg_players for the whole sequence.
-                    # futgg_players is the table futgg_bulk_price_sync
-                    # writes for 62-66 seconds of every cycle, and the
-                    # overlap showed up as db_write p95 = 51 SECONDS
-                    # against a 381ms median, with the network fetch those
-                    # writes existed to record taking 8.85s per cycle in
-                    # total. The database, not fut.gg, is what limits how
-                    # fast this worker gets round the catalogue.
-                    #
-                    # Sorted by card_id so concurrent writers touch rows
-                    # in a consistent order - unordered set updates
-                    # against a table another worker is also updating is
-                    # how deadlocks are made.
-                    ordered = sorted(updates, key=lambda u: u[0])
-                    await conn.execute(
-                        """
-                        UPDATE futgg_players p
-                        SET next_sales_due_at = NOW() + (u.minutes * INTERVAL '1 minute'),
-                            last_sales_status = u.status,
-                            last_sales_status_at = NOW(),
-                            -- COALESCE: first success wins and is never
-                            -- overwritten, so this stays a true "first
-                            -- read" timestamp rather than a "last read".
-                            sales_first_read_at = CASE
-                                WHEN u.succeeded
-                                THEN COALESCE(p.sales_first_read_at, NOW())
-                                ELSE p.sales_first_read_at
-                            END,
-                            sales_consecutive_failures = u.failures
-                        FROM unnest(
-                            $1::bigint[], $2::int[], $3::text[],
-                            $4::boolean[], $5::int[]
-                        ) AS u(card_id, minutes, status, succeeded, failures)
-                        WHERE p.source_card_id = u.card_id
-                        """,
-                        [u[0] for u in ordered], [u[1] for u in ordered],
-                        [u[2] for u in ordered], [u[3] for u in ordered],
-                        [u[4] for u in ordered],
+        for attempt in range(1, DB_WRITE_MAX_ATTEMPTS + 1):
+            try:
+                async with pool.acquire() as conn:
+                    async with conn.transaction():
+                        if to_insert:
+                            # executemany: one round trip for the whole batch
+                            # instead of one per sale. The old scraper issued up
+                            # to 50 sequential inserts per card.
+                            await conn.executemany(_INSERT, to_insert)
+                        if updates:
+                            # One set-based statement, not one round trip per
+                            # card. Sorting also makes concurrent writers take
+                            # row locks in a consistent order.
+                            ordered = sorted(updates, key=lambda u: u[0])
+                            await conn.execute(
+                                """
+                                UPDATE futgg_players p
+                                SET next_sales_due_at = NOW() + (u.minutes * INTERVAL '1 minute'),
+                                    last_sales_status = u.status,
+                                    last_sales_status_at = NOW(),
+                                    sales_first_read_at = CASE
+                                        WHEN u.succeeded
+                                        THEN COALESCE(p.sales_first_read_at, NOW())
+                                        ELSE p.sales_first_read_at
+                                    END,
+                                    sales_consecutive_failures = u.failures
+                                FROM unnest(
+                                    $1::bigint[], $2::int[], $3::text[],
+                                    $4::boolean[], $5::int[]
+                                ) AS u(card_id, minutes, status, succeeded, failures)
+                                WHERE p.source_card_id = u.card_id
+                                """,
+                                [u[0] for u in ordered], [u[1] for u in ordered],
+                                [u[2] for u in ordered], [u[3] for u in ordered],
+                                [u[4] for u in ordered],
+                            )
+                break
+            except asyncpg.exceptions.DeadlockDetectedError:
+                if attempt >= DB_WRITE_MAX_ATTEMPTS:
+                    log.error(
+                        "database deadlock persisted after %d write attempts",
+                        attempt,
                     )
+                    raise
+                delay = DB_WRITE_RETRY_BASE_SECONDS * (2 ** (attempt - 1))
+                delay += random.uniform(0.0, DB_WRITE_RETRY_BASE_SECONDS)
+                log.warning(
+                    "database deadlock on write attempt %d/%d; transaction rolled "
+                    "back, retrying in %.2fs",
+                    attempt, DB_WRITE_MAX_ATTEMPTS, delay,
+                )
+                await asyncio.sleep(delay)
 
 
 async def process_batch_page_capture(
@@ -1820,6 +1861,18 @@ def should_fall_back_to_page_capture(
             "predominantly blocking-shaped: 403/challenge)"
         )
 
+    if (
+        throttle is not None
+        and throttle.consecutive_fully_throttled_batches
+        >= CONSECUTIVE_FULL_THROTTLE_BATCHES
+    ):
+        _consecutive_signed_throttle_trips = 0
+        return True, (
+            f"signed_fetch had {throttle.consecutive_fully_throttled_batches} "
+            "consecutive fully-throttled batches - switching immediately to "
+            "page_capture instead of letting earlier cycle successes hide the 429 wall"
+        )
+
     _consecutive_signed_throttle_trips += 1
     if _throttle_is_saturated(throttle):
         _consecutive_signed_throttle_trips = 0
@@ -1918,6 +1971,21 @@ async def run_forever() -> None:
     pool = await create_pool_with_retry(
         DATABASE_URL, min_size=1, max_size=4, command_timeout=120
     )
+    # Session advisory lock: only one scheduled/continuous SalesSync may
+    # own the queue at a time, even if Railway starts a new cron container
+    # before the previous bounded run has exited.
+    lock_conn = await pool.acquire()
+    got_lock = await lock_conn.fetchval(
+        "SELECT pg_try_advisory_lock($1)", SALES_SYNC_ADVISORY_LOCK_KEY
+    )
+    if not got_lock:
+        log.warning(
+            "another SalesSync owns advisory lock %d; exiting cleanly",
+            SALES_SYNC_ADVISORY_LOCK_KEY,
+        )
+        await pool.release(lock_conn)
+        await pool.close()
+        return
     async with pool.acquire() as conn:
         await ensure_schema(conn)
         anchor = await conn.fetchval(
@@ -2023,6 +2091,7 @@ async def run_forever() -> None:
                 timers = StageTimers()
                 stats = {"ok": 0, "failed": 0, "sales_seen": 0, "batch_errors": 0}
                 started = time.perf_counter()
+                last_progress_attempted = 0
 
                 async with pool.acquire() as conn:
                     due = await select_due(conn)
@@ -2065,7 +2134,18 @@ async def run_forever() -> None:
                         )
                         offset += size
 
-                        if circuit_breaker_tripped(stats):
+                        attempted = stats["ok"] + stats["failed"]
+                        if attempted - last_progress_attempted >= PROGRESS_LOG_EVERY:
+                            last_progress_attempted = attempted
+                            log.info(
+                                "progress[%s]: attempted=%d/%d ok=%d failed=%d sales=%d "
+                                "elapsed=%.1fs throttle[%s]",
+                                transport, attempted, len(due), stats["ok"],
+                                stats["failed"], stats["sales_seen"],
+                                time.perf_counter() - started, throttle.describe(),
+                            )
+
+                        if circuit_breaker_tripped(stats, throttle):
                             breaker_tripped = True
                             log.warning(
                                 "circuit breaker TRIPPED on signed_fetch: %d/%d failed "
@@ -2101,6 +2181,17 @@ async def run_forever() -> None:
                             shutdown_event=shutdown_event,
                         )
                         offset += chunk_size
+
+                        attempted = stats["ok"] + stats["failed"]
+                        if attempted - last_progress_attempted >= PROGRESS_LOG_EVERY:
+                            last_progress_attempted = attempted
+                            log.info(
+                                "progress[%s]: attempted=%d/%d ok=%d failed=%d sales=%d "
+                                "elapsed=%.1fs",
+                                transport, attempted, len(due), stats["ok"],
+                                stats["failed"], stats["sales_seen"],
+                                time.perf_counter() - started,
+                            )
 
                         if circuit_breaker_tripped(stats):
                             breaker_tripped = True
@@ -2151,6 +2242,10 @@ async def run_forever() -> None:
         finally:
             log.info("shutting down: closing browser and database pool")
             await browser.close()
+            await lock_conn.execute(
+                "SELECT pg_advisory_unlock($1)", SALES_SYNC_ADVISORY_LOCK_KEY
+            )
+            await pool.release(lock_conn)
             await pool.close()
     log.info("shutdown complete")
 
