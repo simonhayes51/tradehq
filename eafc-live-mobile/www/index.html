@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>EAFC Live</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="landing">
+      <div class="landing-top">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">EA</div>
+          <h1>EAFC LIVE</h1>
+        </div>
+        <p class="subtitle">Mobile Companion</p>
+      </div>
+
+      <div class="landing-middle">
+        <button id="launch-btn" class="launch-btn" type="button">LAUNCH WEB APP</button>
+        <p class="launch-copy">
+          Connect to the FC Web App and access EAFC Live trading
+          intelligence while browsing the Transfer Market.
+        </p>
+        <p id="launch-status" class="launch-status" role="status" aria-live="polite"></p>
+      </div>
+
+      <div class="landing-bottom">
+        <div class="status-row">
+          <span class="status-label">Chrome Companion</span>
+          <span class="status-value status-value-ok">Connected/Available</span>
+        </div>
+        <div class="status-row">
+          <span class="status-label">Mobile Companion</span>
+          <span class="status-value status-value-beta">Beta</span>
+        </div>
+        <p class="version">v0.1</p>
+      </div>
+    </main>
+
+    <script src="app.js"></script>
+  </body>
+</html>
