@@ -7,7 +7,7 @@
 // a new page rather than an edit of an existing one.
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { ArrowRight, RotateCcw, ShieldAlert, TrendingUp } from "lucide-react";
+import { ArrowRight, RotateCcw, ShieldAlert, SlidersHorizontal, TrendingUp } from "lucide-react";
 import CoinValue from "../../components/CoinValue";
 import EmptyState from "../../components/EmptyState";
 import MarketFreshness from "../../components/MarketFreshness";
@@ -18,6 +18,16 @@ import "./opportunities.css";
 
 const DEFAULTS = { risk: "", min_confidence: "", min_roi: "" };
 
+// Opportunities and Trade Finder both read the FUT.GG-backed market feed,
+// which is why they used to look like the same tool twice: same card
+// layout, same "Scanning FUT.GG…" copy, an almost-identical filter panel.
+// The actual difference is scope, not data source - Opportunities is the
+// zero-setup shortlist (server-side pre-filtered to buy/strong-buy
+// signals only, GET /api/v2/opportunities), Trade Finder is the full
+// search across every signal with the complete filter/sort set. Cut this
+// page's filter panel down to the handful of quick refinements that make
+// sense on an already-curated list, and say the split out loud instead of
+// leaving people to infer it from two near-identical screens.
 export default function Opportunities() {
   const [filters, setFilters] = useState(DEFAULTS);
   const query = useFutggOpportunities({
@@ -40,9 +50,13 @@ export default function Opportunities() {
     <main className="v2-destination trade-finder-page opportunities-page">
       <PageHead
         eyebrow="OPPORTUNITIES"
-        title="Real buy signals, live from FUT.GG"
-        copy="Cards where the current BIN sits meaningfully below recent completed sales, filtered to real buy/strong-buy signals only."
+        title="Today's shortlist, no setup needed"
+        copy="A pre-filtered feed of cards already qualifying as a buy or strong buy signal — the current BIN sits meaningfully below recent completed sales. Want full control over budget, position, rarity and sort order instead? That's Trade Finder."
       />
+
+      <Link className="opp-crosslink" to="/v2/trade-finder">
+        <SlidersHorizontal size={15} /> Need more control? Open Trade Finder <ArrowRight size={14} />
+      </Link>
 
       <section className="finder-controls opp-controls" aria-label="Opportunity filters">
         <div className="finder-control">

@@ -196,6 +196,68 @@
   letter-spacing: .04em;
 }
 
+/* ---------------------------------------------------------------------
+ * Button consistency pass. Every page built its own button look (own
+ * radius, padding, font-weight, hover state) because each page's CSS
+ * file only ever had to match itself. Consolidated here, once, under
+ * .v2-root so it wins regardless of load order - the selectors below
+ * are every "secondary/utility button" class actually in use across v2
+ * (Watchlist row actions, alerts panel, strategy tabs, market/queue
+ * cards' watch toggle) plus the two real primary-button groups already
+ * targeted above. Deliberately additive on top of each page's existing
+ * rule, not a replacement - color/background differences that encode
+ * meaning (danger red, active green) are left alone.
+ * ------------------------------------------------------------------- */
+.v2-root .lead-actions button,
+.v2-root .dash-modal-actions button,
+.v2-root .v2-watch-actions button,
+.v2-root .v2-alerts-panel button,
+.v2-root .strategy-tabs button,
+.v2-root .finder-result-head button,
+.v2-root .quick-error button {
+  border-radius: var(--v2-radius);
+  font-weight: 700;
+  font-size: 13px;
+  min-height: 40px;
+  cursor: pointer;
+  transition: border-color .12s ease, color .12s ease, background-color .12s ease;
+}
+.v2-root .lead-actions button,
+.v2-root .dash-modal-actions button {
+  font-weight: 900;
+  min-height: 44px;
+}
+.v2-root .v2-watch-actions button,
+.v2-root .v2-alerts-panel .danger,
+.v2-root .finder-result-head button,
+.v2-root .quick-error button {
+  padding: 0 12px;
+}
+.v2-root .v2-watch-actions button:hover,
+.v2-root .strategy-tabs button:hover,
+.v2-root .finder-result-head button:hover,
+.v2-root .quick-error button:hover {
+  border-color: var(--v2-accent);
+  color: var(--v2-accent);
+}
+.v2-root .v2-watch-actions .danger:hover,
+.v2-root .v2-alerts-panel .danger:hover {
+  border-color: var(--v2-negative) !important;
+  color: var(--v2-negative) !important;
+}
+
+/* Status/verdict badges (BUY/WAIT/AVOID "call" pills, recommendation
+   badges) are informational, not actions - they must never share a
+   button's solid-fill look. See dashboard-v2.css's .call for the fill
+   -> outline fix; this just guarantees the non-interactive affordance
+   (no pointer cursor) wherever a badge sits next to real buttons. */
+.v2-root .call,
+.v2-root .risk-low,
+.v2-root .risk-medium,
+.v2-root .risk-high {
+  cursor: default;
+}
+
 /* Shared empty/loading/error placeholder (EmptyState.jsx) - one look
    for "nothing to show here" everywhere it appears in v2. */
 .v2-root .v2-empty-state {

@@ -215,10 +215,25 @@ function expectedProfit(item){return item?.source==="futgg"&&item.expectedProfit
 // count, so a large scan of cards nothing could be said about read as a
 // strong market. A confident read of a FALLING market would have been
 // mislabelled the same way.
+// The regime LABEL only has four possible values (see STATE_LABEL-style
+// mapping upstream) and stays on whichever one is true for days at a
+// time, while `score` - a completely different axis, confidence in that
+// label - moves every refresh. Reading "text never changes, just the
+// number" was the natural result of only ever qualifying the label
+// below one single cutoff: a score crawling from 41 to 79 showed the
+// exact same string throughout. Graduated bands make the qualifier
+// track the number the way the number visibly moves, without inventing
+// a market condition the backend never actually said.
+function confidenceBand(score){
+  if(score<25)return"very low confidence";
+  if(score<MIN_CONFIDENT_SCORE)return"low confidence";
+  if(score<70)return"building confidence";
+  if(score<85)return"good confidence";
+  return"high confidence";
+}
 function mood(label,score){
   const known=String(label||"").trim();
   if(!known||known==="Unknown")return"Checking the market";
-  if(score<MIN_CONFIDENT_SCORE)return`${known} (low confidence)`;
-  return known;
+  return`${known} (${confidenceBand(score)})`;
 }
 const MIN_CONFIDENT_SCORE=40;
