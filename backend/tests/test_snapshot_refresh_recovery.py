@@ -173,6 +173,52 @@ class TestStalenessDrivesTheRefresh:
         )
 
 
+class _StandaloneConn(_Conn):
+    """_Conn plus the close() a real asyncpg.connect() result needs -
+    refresh_snapshot(pool, dsn=...) always closes its standalone
+    connection in a finally block."""
+
+    async def close(self):
+        pass
+
+
+class TestDsnPathGetsSameProtections:
+    """refresh_snapshot(pool, dsn=...) - what main.py actually calls in
+    production (see its own docstring for why) - used to reimplement
+    only the advisory-lock/REFRESH/unlock skeleton inline, none of the
+    timeout/plain-refresh-fallback/failure-tracking below. Every one of
+    TestRefreshIsBounded's guarantees must hold on this path too, not
+    just on the pool.acquire() path the other tests exercise."""
+
+    @sync
+    async def test_a_slow_refresh_is_still_cancelled_on_the_dsn_path(self, monkeypatch):
+        mdp.REFRESH_TIMEOUT_SECONDS = 0.05
+        conn = _StandaloneConn(refresh_delay=1.0)
+
+        async def fake_connect(dsn):
+            return conn
+
+        monkeypatch.setattr(mdp.asyncpg, "connect", fake_connect)
+        did = await mdp.refresh_snapshot(_Pool(_Conn()), dsn="postgres://irrelevant")
+        assert did is False
+        assert mdp._concurrent_refresh_failures == 1
+        assert mdp._last_refresh_failure_at > 0.0
+
+    @sync
+    async def test_a_successful_dsn_refresh_still_uses_concurrently(self, monkeypatch):
+        mdp.REFRESH_TIMEOUT_SECONDS = 5.0
+        conn = _StandaloneConn()
+
+        async def fake_connect(dsn):
+            return conn
+
+        monkeypatch.setattr(mdp.asyncpg, "connect", fake_connect)
+        did = await mdp.refresh_snapshot(_Pool(_Conn()), dsn="postgres://irrelevant")
+        assert did is True
+        refreshes = [q for q in conn.executed if "REFRESH MATERIALIZED VIEW" in q]
+        assert "CONCURRENTLY" in refreshes[0]
+
+
 class TestFailureBackoff:
     """The regression that took the site down.
 
