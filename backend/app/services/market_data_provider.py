@@ -906,15 +906,114 @@ def _period_to_interval(period: Optional[str]) -> Optional[timedelta]:
     return mapping.get(period)
 
 
+async def _refresh_on_connection(conn) -> bool:
+    """The actual advisory-locked, timed, plain-refresh-falling-back
+    REFRESH - factored out of refresh_snapshot() so BOTH the pool path
+    and the standalone-connection path (see refresh_snapshot()'s own
+    docstring for why there are two) run the identical safety logic
+    instead of one silently having it and the other silently not.
+    Previously this all lived inline in refresh_snapshot()'s
+    pool.acquire() branch, and refresh_snapshot(pool, dsn=...)'s
+    standalone-connection branch (what main.py actually calls in
+    production) reimplemented only the advisory-lock/REFRESH/unlock
+    skeleton - none of the timeout, plain-refresh fallback, or failure
+    tracking below. Every deploy was silently running production on the
+    unprotected path while only tests (which never pass dsn) exercised
+    the protected one."""
+    got = await conn.fetchval("SELECT pg_try_advisory_lock($1)", REFRESH_ADVISORY_LOCK_KEY)
+    if not got:
+        return False
+    try:
+        # Timed, because a refresh that outlasts its own poll interval
+        # is invisible otherwise: it holds this advisory lock for its
+        # whole duration, so every later attempt takes the `not got`
+        # branch above and returns False without logging anything.
+        # The snapshot then freezes for as long as the refresh runs -
+        # measured at 117 minutes in production - and the only symptom
+        # is that every card looks stale to the engine.
+        #
+        # The core pool sets no command_timeout, so nothing cancels a
+        # slow refresh either. Reporting the duration is what makes
+        # "the refresh is the bottleneck" distinguishable from "the
+        # refresher is not running".
+        global _concurrent_refresh_failures
+        use_plain = (
+            _concurrent_refresh_failures >= CONCURRENT_FAILURES_BEFORE_PLAIN_REFRESH
+        )
+        mode = "" if use_plain else "CONCURRENTLY "
+        started = time.monotonic()
+        try:
+            await asyncio.wait_for(
+                conn.execute(f"REFRESH MATERIALIZED VIEW {mode}futgg_market_snapshot"),
+                timeout=REFRESH_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            global _last_refresh_failure_at
+            _last_refresh_failure_at = time.monotonic()
+            _concurrent_refresh_failures += 1
+            log.error(
+                "futgg_market_snapshot refresh (%s) exceeded %.0fs and was "
+                "cancelled. %s",
+                mode.strip() or "plain", REFRESH_TIMEOUT_SECONDS,
+                (
+                    "Falling back to a plain (non-concurrent) refresh on the "
+                    "next attempt - it rebuilds and swaps instead of diffing, "
+                    "which is far cheaper, at the cost of a brief lock on the "
+                    "view itself."
+                    if _concurrent_refresh_failures
+                    >= CONCURRENT_FAILURES_BEFORE_PLAIN_REFRESH
+                    else "Will retry."
+                ),
+            )
+            return False
+        elapsed = time.monotonic() - started
+        _concurrent_refresh_failures = 0
+        if elapsed > SLOW_REFRESH_WARN_SECONDS:
+            log.warning(
+                "futgg_market_snapshot refresh took %.0fs - longer than the "
+                "refresher's own poll interval, so the snapshot was stale for "
+                "at least that long and every other refresh attempt in the "
+                "window was silently skipped. Check that "
+                "futgg_bin_history has its (source_card_id, captured_at) "
+                "index: the view's latest_bin CTE sorts the whole table "
+                "without it.",
+                elapsed,
+            )
+        else:
+            log.info("futgg_market_snapshot refreshed in %.1fs", elapsed)
+        return True
+    finally:
+        # Wrapped only so a failing unlock cannot MASK the real
+        # exception from the refresh above - a bare `await` in a
+        # finally block replaces whatever was propagating.
+        #
+        # It cannot leak the lock: asyncpg runs pg_advisory_unlock_all()
+        # when a connection is released back to the pool, so a session
+        # lock is always dropped even if this statement never runs.
+        # Verified directly against Postgres - a pooled connection that
+        # takes the lock and is released without unlocking leaves zero
+        # advisory locks held. A leaked lock was a candidate
+        # explanation for the 117-minute stale snapshot seen in
+        # production; this is the test that ruled it out.
+        try:
+            await conn.execute(
+                "SELECT pg_advisory_unlock($1)", REFRESH_ADVISORY_LOCK_KEY
+            )
+        except Exception as exc:
+            log.warning("advisory unlock after refresh failed: %s", exc)
+
+
 async def refresh_snapshot(pool: asyncpg.Pool, dsn: Optional[str] = None) -> bool:
-    """REFRESH MATERIALIZED VIEW CONCURRENTLY futgg_market_snapshot,
+    """REFRESH MATERIALIZED VIEW CONCURRENTLY futgg_market_snapshot (or a
+    plain REFRESH after repeated timeouts - see _refresh_on_connection()),
     advisory-locked so multiple app instances never race the refresh -
     same convention as fair_value_mv / recommendations_latest (see
     app/services/fair_value.py, recommendation_engine_v2.py's
     run_pass_v2). Returns True if this call actually performed the
-    refresh, False if another instance already held the lock.
+    refresh, False if another instance already held the lock or the
+    refresh timed out.
 
-    WHY A STANDALONE CONNECTION, NOT pool.acquire()
+    WHY A STANDALONE CONNECTION, NOT pool.acquire(), IN PRODUCTION
     -------------------------------------------------------------------
     Confirmed live in production: this REFRESH can legitimately run for
     many minutes under load (CONCURRENTLY diffs old vs new row-by-row,
@@ -935,103 +1034,19 @@ async def refresh_snapshot(pool: asyncpg.Pool, dsn: Optional[str] = None) -> boo
     this call instead - however long the REFRESH takes, it can never
     take a connection away from `pool`. Falls back to `pool.acquire()`
     when no dsn is given (keeps this callable from anywhere `pool` is
-    the only thing on hand, e.g. existing tests/scripts)."""
+    the only thing on hand, e.g. existing tests/scripts) - both paths
+    run the identical _refresh_on_connection() logic, so REFRESH_TIMEOUT_
+    SECONDS/the plain-refresh fallback/failure tracking apply regardless
+    of which one a given caller uses."""
     if dsn:
         conn = await asyncpg.connect(dsn)
         try:
-            got = await conn.fetchval("SELECT pg_try_advisory_lock($1)", REFRESH_ADVISORY_LOCK_KEY)
-            if not got:
-                return False
-            try:
-                await conn.execute("REFRESH MATERIALIZED VIEW CONCURRENTLY futgg_market_snapshot")
-                return True
-            finally:
-                await conn.execute("SELECT pg_advisory_unlock($1)", REFRESH_ADVISORY_LOCK_KEY)
+            return await _refresh_on_connection(conn)
         finally:
             await conn.close()
 
     async with pool.acquire() as conn:
-        got = await conn.fetchval("SELECT pg_try_advisory_lock($1)", REFRESH_ADVISORY_LOCK_KEY)
-        if not got:
-            return False
-        try:
-            # Timed, because a refresh that outlasts its own poll interval
-            # is invisible otherwise: it holds this advisory lock for its
-            # whole duration, so every later attempt takes the `not got`
-            # branch above and returns False without logging anything.
-            # The snapshot then freezes for as long as the refresh runs -
-            # measured at 117 minutes in production - and the only symptom
-            # is that every card looks stale to the engine.
-            #
-            # The core pool sets no command_timeout, so nothing cancels a
-            # slow refresh either. Reporting the duration is what makes
-            # "the refresh is the bottleneck" distinguishable from "the
-            # refresher is not running".
-            global _concurrent_refresh_failures
-            use_plain = (
-                _concurrent_refresh_failures >= CONCURRENT_FAILURES_BEFORE_PLAIN_REFRESH
-            )
-            mode = "" if use_plain else "CONCURRENTLY "
-            started = time.monotonic()
-            try:
-                await asyncio.wait_for(
-                    conn.execute(f"REFRESH MATERIALIZED VIEW {mode}futgg_market_snapshot"),
-                    timeout=REFRESH_TIMEOUT_SECONDS,
-                )
-            except asyncio.TimeoutError:
-                global _last_refresh_failure_at
-                _last_refresh_failure_at = time.monotonic()
-                _concurrent_refresh_failures += 1
-                log.error(
-                    "futgg_market_snapshot refresh (%s) exceeded %.0fs and was "
-                    "cancelled. %s",
-                    mode.strip() or "plain", REFRESH_TIMEOUT_SECONDS,
-                    (
-                        "Falling back to a plain (non-concurrent) refresh on the "
-                        "next attempt - it rebuilds and swaps instead of diffing, "
-                        "which is far cheaper, at the cost of a brief lock on the "
-                        "view itself."
-                        if _concurrent_refresh_failures
-                        >= CONCURRENT_FAILURES_BEFORE_PLAIN_REFRESH
-                        else "Will retry."
-                    ),
-                )
-                return False
-            elapsed = time.monotonic() - started
-            _concurrent_refresh_failures = 0
-            if elapsed > SLOW_REFRESH_WARN_SECONDS:
-                log.warning(
-                    "futgg_market_snapshot refresh took %.0fs - longer than the "
-                    "refresher's own poll interval, so the snapshot was stale for "
-                    "at least that long and every other refresh attempt in the "
-                    "window was silently skipped. Check that "
-                    "futgg_bin_history has its (source_card_id, captured_at) "
-                    "index: the view's latest_bin CTE sorts the whole table "
-                    "without it.",
-                    elapsed,
-                )
-            else:
-                log.info("futgg_market_snapshot refreshed in %.1fs", elapsed)
-            return True
-        finally:
-            # Wrapped only so a failing unlock cannot MASK the real
-            # exception from the refresh above - a bare `await` in a
-            # finally block replaces whatever was propagating.
-            #
-            # It cannot leak the lock: asyncpg runs pg_advisory_unlock_all()
-            # when a connection is released back to the pool, so a session
-            # lock is always dropped even if this statement never runs.
-            # Verified directly against Postgres - a pooled connection that
-            # takes the lock and is released without unlocking leaves zero
-            # advisory locks held. A leaked lock was a candidate
-            # explanation for the 117-minute stale snapshot seen in
-            # production; this is the test that ruled it out.
-            try:
-                await conn.execute(
-                    "SELECT pg_advisory_unlock($1)", REFRESH_ADVISORY_LOCK_KEY
-                )
-            except Exception as exc:
-                log.warning("advisory unlock after refresh failed: %s", exc)
+        return await _refresh_on_connection(conn)
 
 
 async def refresher_loop(pool: asyncpg.Pool, poll_seconds: int = 120, dsn: Optional[str] = None) -> None:
@@ -1042,10 +1057,30 @@ async def refresher_loop(pool: asyncpg.Pool, poll_seconds: int = 120, dsn: Optio
     source tables have moved since the last refresh, not on a blind
     fixed-interval REFRESH regardless of whether anything changed.
 
+    Two more triggers layered on top of the watermark, closing the exact
+    gap TestStalenessDrivesTheRefresh/TestFailureBackoff in
+    tests/test_snapshot_refresh_recovery.py describe but which this loop
+    never actually consulted before now (SNAPSHOT_MAX_AGE_SECONDS and
+    REFRESH_FAILURE_BACKOFF_SECONDS existed as constants with nothing
+    reading them):
+
+      - the watermark answers "has anything changed", which is the wrong
+        question once the snapshot has stopped advancing at all - the
+        watermark moves every bulk cycle regardless of whether the
+        refresh itself is succeeding. Once the snapshot is older than
+        SNAPSHOT_MAX_AGE_SECONDS, a refresh is attempted even if the
+        watermark hasn't moved.
+      - after a refresh times out, refresh_snapshot() timestamps it in
+        _last_refresh_failure_at. Attempting another refresh immediately
+        is what turned a slow refresh into an outage in production (see
+        REFRESH_FAILURE_BACKOFF_SECONDS's own comment) - this loop now
+        holds off for REFRESH_FAILURE_BACKOFF_SECONDS after a recorded
+        failure before trying again, on either trigger.
+
     `dsn` is passed straight through to refresh_snapshot() - see that
     function's docstring for why the REFRESH itself must not borrow a
-    connection from `pool`, which the watermark check above still uses
-    (that query is a fast, single SELECT, not a multi-minute hold)."""
+    connection from `pool`, which the watermark/age checks above still
+    use (fast, single-row SELECTs, not a multi-minute hold)."""
     import asyncio
 
     await asyncio.sleep(15)
@@ -1059,11 +1094,39 @@ async def refresher_loop(pool: asyncpg.Pool, poll_seconds: int = 120, dsn: Optio
     consecutive_skips = 0
     while True:
         try:
+            backoff_remaining = (
+                REFRESH_FAILURE_BACKOFF_SECONDS - (time.monotonic() - _last_refresh_failure_at)
+                if _last_refresh_failure_at
+                else 0.0
+            )
+            if backoff_remaining > 0:
+                log.info(
+                    "futgg_market_snapshot refresh backing off for another %.0fs "
+                    "after a recent timeout - not attempting a refresh this cycle.",
+                    backoff_remaining,
+                )
+                await asyncio.sleep(poll_seconds)
+                continue
+
             async with pool.acquire() as conn:
                 watermark = await conn.fetchval(
                     "SELECT greatest(max(last_seen_at), max(price_updated_at)) FROM futgg_players"
                 )
-            if watermark and watermark != last_watermark:
+                snapshot_age = await conn.fetchval(
+                    "SELECT EXTRACT(EPOCH FROM (now() - max(snapshot_computed_at)))"
+                    " FROM futgg_market_snapshot"
+                )
+            watermark_moved = bool(watermark and watermark != last_watermark)
+            snapshot_too_old = bool(snapshot_age is not None and snapshot_age > SNAPSHOT_MAX_AGE_SECONDS)
+            if watermark_moved or snapshot_too_old:
+                if snapshot_too_old and not watermark_moved:
+                    log.warning(
+                        "futgg_market_snapshot is %.0fs old (over the %.0fs limit) with "
+                        "an unmoved watermark - forcing a refresh regardless, since "
+                        "waiting for the watermark to move again has already failed to "
+                        "recover it.",
+                        snapshot_age, SNAPSHOT_MAX_AGE_SECONDS,
+                    )
                 did = await refresh_snapshot(pool, dsn=dsn)
                 if did:
                     log.info("futgg_market_snapshot refreshed (watermark=%s)", watermark)
@@ -1079,7 +1142,8 @@ async def refresher_loop(pool: asyncpg.Pool, poll_seconds: int = 120, dsn: Optio
                             "advancing and every consumer of it is reading stale rows.",
                             consecutive_skips, REFRESH_ADVISORY_LOCK_KEY,
                         )
-                last_watermark = watermark
+                if watermark:
+                    last_watermark = watermark
             else:
                 consecutive_skips += 1
                 if consecutive_skips in (5,) or consecutive_skips % 25 == 0:
@@ -1091,10 +1155,10 @@ async def refresher_loop(pool: asyncpg.Pool, poll_seconds: int = 120, dsn: Optio
                         consecutive_skips, watermark,
                     )
         except asyncpg.exceptions.UndefinedTableError:
-            # futgg_players doesn't exist yet on this database (auto_sync
-            # hasn't bootstrapped it) - same "wait, don't crash" tolerance
-            # migrations/038's own requires-table guard gives the
-            # migration itself.
+            # futgg_players/futgg_market_snapshot don't exist yet on this
+            # database (auto_sync hasn't bootstrapped it) - same "wait,
+            # don't crash" tolerance migrations/038's own requires-table
+            # guard gives the migration itself.
             pass
         except Exception as e:  # never let the loop die
             log.error("futgg market snapshot refresher iteration failed: %s", e)
