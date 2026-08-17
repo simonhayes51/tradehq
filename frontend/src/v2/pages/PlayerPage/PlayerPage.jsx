@@ -104,6 +104,19 @@ function toFutggAnalysisItem(raw, cardId) {
     // which fed the "Wait for a better entry below X" verdict text and
     // the chart's BUY reference line directly, bypassing that fix.
     entryPrice: raw.recommended_buy_max ?? null,
+    // AnalysisModal's "Buy Below" TILE reads item.buyBelow/
+    // item.recommendedBuyMax/item.expectedProfitBasis (its own `ceiling`/
+    // `basis` computation), a SEPARATE field path from entryPrice above
+    // (which only drives the verdict TEXT via realEntry). Leaving these
+    // three unset left the tile permanently blank ("Not enough data to
+    // set one") even when entryPrice/the verdict text had a real number -
+    // seen live on a 96 Haaland: "Wait for a better entry below 655,000"
+    // directly beside a blank Buy Below tile. Mirrors the backend's own
+    // field names 1:1 (see futgg_market.py's _serialize_intelligence) so
+    // the tile and the verdict text always agree.
+    buyBelow: raw.buy_below ?? null,
+    recommendedBuyMax: raw.recommended_buy_max ?? null,
+    expectedProfitBasis: raw.expected_profit_basis ?? null,
     currentBin: raw.current_bin,
     fairValue: raw.fair_value,
     expectedRoi,
