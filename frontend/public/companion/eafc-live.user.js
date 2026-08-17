@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EAFC Live Companion
 // @namespace    https://app.eafc.live/
-// @version      1.1.0
+// @version      1.2.0
 // @description  Read-only EAFC Live trading intelligence overlay for the EA SPORTS FC 26 Web App Transfer Market. Never buys, bids, lists, or automates anything - observation only.
 // @author       EAFC Live
 // @match        https://www.ea.com/*/ea-sports-fc/ultimate-team/web-app/*
@@ -590,6 +590,166 @@
     root.appendChild(panel);
   }
 
+  // src/list-badges.js
+  var NUMBER_FORMAT2 = new Intl.NumberFormat("en-US");
+  var REPOSITION_INTERVAL_MS = 250;
+  var containerEl = null;
+  var badges = /* @__PURE__ */ new Map();
+  var repositionTimer = null;
+  function log3(...args) {
+    if (typeof window !== "undefined" && window.EAFC_LIVE_DEBUG) console.log("[EAFC Live]", ...args);
+  }
+  function ensureContainer() {
+    if (containerEl && containerEl.isConnected) return containerEl;
+    containerEl = document.createElement("div");
+    containerEl.id = "eafc-live-list-badges-root";
+    containerEl.style.cssText = "position:fixed;top:0;left:0;width:0;height:0;z-index:2147483646;";
+    (document.body || document.documentElement).appendChild(containerEl);
+    return containerEl;
+  }
+  function auctionKey(auction) {
+    return auction.tradeId != null ? `t:${auction.tradeId}` : `c:${auction.sourceCardId}:${auction.buyNowPrice}`;
+  }
+  function findPriceAnchor(priceText) {
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+      acceptNode(node2) {
+        return node2.nodeValue && node2.nodeValue.trim() === priceText ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP;
+      }
+    });
+    const candidates = [];
+    let node;
+    while (node = walker.nextNode()) {
+      if (containerEl && containerEl.contains(node)) continue;
+      candidates.push(node);
+    }
+    if (candidates.length === 0) return null;
+    for (const candidate of candidates) {
+      let el2 = candidate.parentElement;
+      for (let depth = 0; el2 && depth < 6; depth++, el2 = el2.parentElement) {
+        const text = el2.textContent || "";
+        if (/buy\s*now/i.test(text)) return candidate;
+      }
+    }
+    return candidates[0];
+  }
+  function verdictFor(auction, intelligence) {
+    if (!intelligence) return null;
+    const combined = combineIntelligence([auction], intelligence);
+    if (combined.reason === "confirmed") return { tone: "buy", label: "BUY" };
+    if (intelligence.signal === "avoid") return { tone: "avoid", label: "AVOID" };
+    return null;
+  }
+  function makeBadgeEl(verdict, onClick) {
+    const el2 = document.createElement("button");
+    el2.type = "button";
+    el2.textContent = verdict.label === "BUY" ? "\u2713 BUY" : "\u26A0 AVOID";
+    const bg = verdict.tone === "buy" ? "#123d24" : "#3d1414";
+    const fg = verdict.tone === "buy" ? "#5fd98a" : "#e5734a";
+    const border = verdict.tone === "buy" ? "#5fd98a" : "#e5734a";
+    el2.style.cssText = [
+      "position:fixed",
+      "pointer-events:auto",
+      "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif",
+      "font-size:10px",
+      "font-weight:700",
+      "letter-spacing:0.02em",
+      "padding:3px 6px",
+      "border-radius:5px",
+      "cursor:pointer",
+      "line-height:1",
+      "white-space:nowrap",
+      `background:${bg}`,
+      `color:${fg}`,
+      `border:1px solid ${border}`,
+      "box-shadow:0 2px 6px rgba(0,0,0,0.35)"
+    ].join(";");
+    el2.addEventListener("click", (event) => {
+      event.stopPropagation();
+      event.preventDefault();
+      onClick();
+    });
+    return el2;
+  }
+  var MAX_MISSING_TICKS = 8;
+  function positionBadge(entry) {
+    const { el: el2, anchorNode } = entry;
+    if (!anchorNode || !anchorNode.parentElement || !anchorNode.parentElement.isConnected) {
+      el2.style.display = "none";
+      entry.missingTicks = (entry.missingTicks || 0) + 1;
+      return;
+    }
+    const range = document.createRange();
+    range.selectNodeContents(anchorNode);
+    const rect = range.getBoundingClientRect();
+    if (rect.width === 0 && rect.height === 0) {
+      el2.style.display = "none";
+      entry.missingTicks = (entry.missingTicks || 0) + 1;
+      return;
+    }
+    entry.missingTicks = 0;
+    el2.style.display = "";
+    el2.style.left = `${Math.max(4, rect.left)}px`;
+    el2.style.top = `${Math.max(4, rect.top - 20)}px`;
+  }
+  function repositionAll() {
+    for (const [key, entry] of badges) {
+      positionBadge(entry);
+      if (entry.missingTicks >= MAX_MISSING_TICKS) {
+        entry.el.remove();
+        badges.delete(key);
+      }
+    }
+  }
+  function startRepositionLoop() {
+    if (repositionTimer) return;
+    repositionTimer = setInterval(repositionAll, REPOSITION_INTERVAL_MS);
+  }
+  function openOverlayFor(auction, sameCardAuctions, intelligence) {
+    const combined = combineIntelligence(sameCardAuctions, intelligence);
+    render({
+      kind: "result",
+      key: `list-badge:${auction.sourceCardId}:${Date.now()}`,
+      player: { name: intelligence.name, rarity: intelligence.rarity, rating: intelligence.rating },
+      intelligence,
+      combined
+    });
+  }
+  async function renderListBadges(auctions) {
+    if (!Array.isArray(auctions) || auctions.length === 0) return;
+    ensureContainer();
+    startRepositionLoop();
+    const byCard = /* @__PURE__ */ new Map();
+    for (const auction of auctions) {
+      if (!byCard.has(auction.sourceCardId)) byCard.set(auction.sourceCardId, []);
+      byCard.get(auction.sourceCardId).push(auction);
+    }
+    await Promise.all(
+      [...byCard.keys()].map(async (cardId) => {
+        const intelResult = await getCardIntelligence(cardId);
+        if (intelResult.status !== "success") return;
+        const intelligence = intelResult.data;
+        const sameCardAuctions = byCard.get(cardId);
+        for (const auction of sameCardAuctions) {
+          const key = auctionKey(auction);
+          if (badges.has(key)) continue;
+          const verdict = verdictFor(auction, intelligence);
+          if (!verdict) continue;
+          const priceText = NUMBER_FORMAT2.format(auction.buyNowPrice);
+          const anchorNode = findPriceAnchor(priceText);
+          if (!anchorNode) {
+            log3("list-badges: no DOM match for price", priceText, "- skipping this row's badge");
+            continue;
+          }
+          const el2 = makeBadgeEl(verdict, () => openOverlayFor(auction, sameCardAuctions, intelligence));
+          ensureContainer().appendChild(el2);
+          const entry = { el: el2, auction, anchorNode, verdict };
+          badges.set(key, entry);
+          positionBadge(entry);
+        }
+      })
+    );
+  }
+
   // src/lifecycle.js
   var initialized = false;
   function initLifecycle(setup2) {
@@ -599,7 +759,7 @@
   }
 
   // src/main.js
-  function log3(...args) {
+  function log4(...args) {
     if (typeof window !== "undefined" && window.EAFC_LIVE_DEBUG) console.log("[EAFC Live]", ...args);
   }
   var RETRYABLE_STATUSES = /* @__PURE__ */ new Set(["network_error", "server_error", "timeout"]);
@@ -609,16 +769,19 @@
   }
   async function handleDetection(result) {
     const { sourceCardId, auctions } = result;
+    renderListBadges(auctions).catch((err) => {
+      log4("list badge rendering failed:", err && err.message);
+    });
     if (!sourceCardId) {
       return;
     }
     const key = renderKeyFor(sourceCardId, auctions);
     if (key === lastRenderKey) return;
-    log3("exact card ID:", sourceCardId);
+    log4("exact card ID:", sourceCardId);
     render({ kind: "loading", key });
     const intelResult = await getCardIntelligence(sourceCardId);
     if (RETRYABLE_STATUSES.has(intelResult.status)) {
-      log3("intelligence request failed:", intelResult.status, intelResult.detail);
+      log4("intelligence request failed:", intelResult.status, intelResult.detail);
       render({ kind: "error", status: intelResult.status, detail: intelResult.detail, key });
       return;
     }
@@ -629,9 +792,9 @@
     }
     const intelligence = intelResult.data;
     const combined = combineIntelligence(auctions, intelligence);
-    log3("intelligence loaded, signal:", intelligence.signal);
-    log3("cheapest BIN:", combined.cheapestBin);
-    log3(`${combined.underBuyBelowCount} listing(s) under target`);
+    log4("intelligence loaded, signal:", intelligence.signal);
+    log4("cheapest BIN:", combined.cheapestBin);
+    log4(`${combined.underBuyBelowCount} listing(s) under target`);
     render({
       kind: "result",
       key,

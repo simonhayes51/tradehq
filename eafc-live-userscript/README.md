@@ -13,38 +13,85 @@ Xcode, no Android Studio, no Mac, no custom native app required.
 ## How it works
 
 ```
-eafc-live.user.js   (bundled from src/, single execution context)
-    ├── market-observer.js   — hooks window.fetch / XMLHttpRequest,
-    │                          reads /transfermarket responses EA's own
-    │                          page already requested
-    ├── card-detector.js     — exact card identity (resourceId, falling
-    │                          back to definitionId; NEVER maskedDefId
-    │                          alone) + sanitized auction extraction
-    ├── api-client.js        — GM_xmlhttpRequest-based client for
-    │                          GET https://api.eafc.live/api/v2/companion/card/{id}
-    ├── intelligence-cache.js— success/not_found/never-cache-failures
-    │                          caching policy in front of api-client.js
-    ├── market-calc.js       — combines live EA auctions with backend
-    │                          intelligence into the overlay's numbers
-    ├── overlay.js            — the small floating panel (Shadow DOM)
-    └── lifecycle.js          — idempotent init guard for SPA re-entry
+eafc-live.user.js        (bundled from src/)
+    ├── page-hook.js        — bundled SEPARATELY, injected as a literal
+    │                         <script> tag at runtime so it always runs
+    │                         in the page's TRUE realm (see below).
+    │                         Hooks window.fetch/XMLHttpRequest, reads
+    │                         /transfermarket responses EA's own page
+    │                         already requested, sanitizes, and
+    │                         dispatches a CustomEvent.
+    ├── market-observer.js  — runs in the userscript manager's default
+    │                         context; injects page-hook.js and listens
+    │                         for its event
+    ├── card-detector.js    — exact card identity (resourceId, falling
+    │                         back to definitionId; NEVER maskedDefId
+    │                         alone) + sanitized auction extraction
+    │                         (used by BOTH bundles above)
+    ├── api-client.js       — GM_xmlhttpRequest/GM.xmlHttpRequest client
+    │                         for GET .../companion/card/{id}
+    ├── intelligence-cache.js — success/not_found/never-cache-failures
+    │                         caching policy in front of api-client.js
+    ├── market-calc.js      — combines live EA auctions with backend
+    │                         intelligence into the overlay's numbers
+    ├── overlay.js           — the single-card floating panel (Shadow DOM)
+    ├── list-badges.js       — per-row BUY/AVOID markers for a
+    │                         multi-card search (see below)
+    └── lifecycle.js         — idempotent init guard for SPA re-entry
 ```
 
-Unlike the Chrome extension (`eafc-live-extension/`), this all runs in
-**one JS execution context** — a userscript with `@inject-into page`
-runs directly in the page's own realm, so there is no MAIN-world /
-isolated-world split, no `CustomEvent` bridge, and no background service
-worker. `GM_xmlhttpRequest` (declared via `@grant`) plays the same role
-the extension's privileged background-worker fetch did: it is exempt
-from the page's own CORS policy, so it can reach `api.eafc.live`
-directly without the backend having to loosen its CORS allowlist for
-the EA page's origin.
+**Two execution contexts, not one.** V1 ran the entire userscript with
+`@inject-into page`, on the assumption that this was needed both to
+observe `window.fetch`/`XHR` reliably AND to reach
+`GM_xmlhttpRequest`/`GM.xmlHttpRequest`. Confirmed live on a real iOS
+session: only the first half was true - at least one real, currently-
+used manager (the "Userscripts" app) does not bridge either GM API into
+a script actually running in page context, only into its own default
+context. So responsibility is split: `page-hook.js` is bundled to its
+own IIFE and injected as a plain `<script>` tag (always runs in the
+page's true realm, regardless of manager, since it's just DOM
+manipulation - the same as any page's own inline script), while
+everything else runs in the manager's default context, where GM access
+is reliable. The two talk over one `CustomEvent` on `window`, carrying
+only the sanitized auction fields - the same MAIN-world/isolated-world
+security boundary `eafc-live-extension/` used, for the identical reason.
+
+`GM_xmlhttpRequest`/`GM.xmlHttpRequest` (declared via `@grant`) play the
+same role the Chrome extension's privileged background-worker fetch
+did: exempt from the page's own CORS policy, so they can reach
+`api.eafc.live` directly without the backend having to loosen its CORS
+allowlist for the EA page's origin.
 
 Most of the pure logic (`card-detector.js`, `market-calc.js`,
 `intelligence-cache.js`) is ported near-verbatim from
 `eafc-live-extension/src/` — same functions, same behaviour, only the
-UMD/browser-extension wrapper removed since it isn't needed in a single
+UMD/browser-extension wrapper removed since it isn't needed in a
 bundled ES module.
+
+## Per-row badges (multi-card search)
+
+`overlay.js`'s floating panel only ever describes ONE card - it can't
+say anything useful when a search returns many different players at
+once (an unfiltered Transfer Market search). `list-badges.js` adds a
+small floating "✓ BUY" / "⚠ AVOID" marker positioned over each row's own
+"Buy Now" price, independent of the summary panel, driven by that row's
+OWN price against its OWN card's backend recommendation - never an
+aggregate. A row with a `watch`/`insufficient_data` signal, or a `buy`
+signal whose price doesn't clear the target, stays unbadged rather than
+showing a neutral/uncertain marker - same "never manufacture a signal"
+principle as the overlay. Tapping a badge opens the same single-card
+overlay panel for that card.
+
+**This is the one part of the userscript that has to touch EA's live
+DOM** (every other file only ever reasons from parsed network
+responses) - it text-matches each auction's formatted price to find
+where EA rendered it on screen, which is inherently a best-effort match
+against markup this project has no other visibility into. To keep a
+wrong match harmless, badges are positioned `fixed` elements anchored to
+on-screen coordinates, never inserted into EA's own row - a bad match
+degrades to "a badge floats in the wrong spot", never to broken EA
+layout or click handling. `findPriceAnchor()` in `list-badges.js` is the
+function to revisit if badges are missing or misplaced on a real device.
 
 ## Building
 
@@ -114,10 +161,20 @@ it's a proven, currently-working install path for this exact page.
    `.user.js` link directly from Safari.
 4. Open the EA FC 26 Web App in Safari.
 
-**Not yet verified against a real iOS device/session in this project** —
-the compatibility claim above is based on the Userscripts app's own
-published feature support (`GM.xmlHttpRequest`, confirmed as of its
-v4.7.1 release), not a live test performed here.
+**Confirmed working end-to-end on a real iOS session** (Userscripts app,
+Safari, live EA FC 26 Web App Transfer Market) as of v1.1.0 - exact card
+identity, live BIN/listings, and the correct verdict all rendered
+correctly. Getting there took two real fixes discovered only through
+live testing: v1.0.1 added a fallback to the namespaced `GM.xmlHttpRequest`
+API, and v1.1.0 (see `src/page-hook.js`) stopped running the whole
+script with `@inject-into page`, since this manager does not bridge
+EITHER GM API into a script actually running in page context - only its
+default context has that access. The fetch/XHR observation itself still
+needs true page-context execution, so it now runs via a separately
+bundled, injected `<script>` tag instead of the userscript's own
+top-level context. If you hit anything unexpected on iOS, it's most
+likely version drift - confirm the installed script reports `1.1.0`+
+before assuming a new bug.
 
 ### Android
 
@@ -164,21 +221,24 @@ reference for real, working `@match`/`@grant`/`@inject-into`/
 `@downloadURL` metadata — its (obfuscated) SBC automation logic was
 never read or copied.
 
-## What still needs a real authenticated EA session to verify
+## What's confirmed vs. still open
 
-- Whether `/ut/game/fc26/transfermarket` responses (and the
-  `resourceId`/`definitionId`/`maskedDefId`/`auctionInfo` shape assumed
-  by `card-detector.js`) still match what a live search actually
-  returns — this was last confirmed working end-to-end against a real
-  session for the Chrome extension (see `eafc-live-extension/README.md`
-  for that verification), and the parsing logic is unchanged here, but
-  the userscript's own fetch/XHR hook and GM_xmlhttpRequest path have
-  not yet been exercised against a live EA session.
-- Whether `@inject-into page` behaves identically to the Chrome
-  extension's MAIN-world injection for observing the page's real
-  `window.fetch`/`XMLHttpRequest` (rather than a sandboxed copy) on each
-  of Tampermonkey, Violentmonkey, and Userscripts (iOS) — this differs
-  by userscript manager and was not independently tested here.
-- The iPhone and Android install/behaviour claims above, which are
-  based on each project's own published capabilities, not a live device
-  test performed in this environment.
+**Confirmed on a real iOS session (Userscripts app), v1.1.0+:**
+`/ut/game/fc26/transfermarket` response parsing (`card-detector.js`),
+exact-card identity, the injected page-hook's fetch/XHR observation, the
+GM_xmlhttpRequest/GM.xmlHttpRequest fallback in `api-client.js`, and the
+overlay end-to-end against a live Mbappé TOTY card.
+
+**Still open:**
+- Desktop (Tampermonkey/Violentmonkey) and Android (Firefox +
+  Tampermonkey) installs are still based on each project's own
+  published capabilities, not a live device test performed in this
+  project - the iOS case above is the only one actually exercised
+  end-to-end so far. Given how many real, manager-specific surprises iOS
+  turned up (GM API availability, `@inject-into page` behavior), treat
+  desktop/Android as unverified until someone actually tests them, not
+  as "probably fine because iOS worked."
+- Whether the page-hook's injected `<script>` tag technique behaves
+  identically across Tampermonkey/Violentmonkey on desktop - expected to
+  work (it's plain DOM manipulation, not a GM feature), but not
+  independently confirmed there yet.
