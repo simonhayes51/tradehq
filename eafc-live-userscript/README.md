@@ -114,10 +114,20 @@ it's a proven, currently-working install path for this exact page.
    `.user.js` link directly from Safari.
 4. Open the EA FC 26 Web App in Safari.
 
-**Not yet verified against a real iOS device/session in this project** —
-the compatibility claim above is based on the Userscripts app's own
-published feature support (`GM.xmlHttpRequest`, confirmed as of its
-v4.7.1 release), not a live test performed here.
+**Confirmed working end-to-end on a real iOS session** (Userscripts app,
+Safari, live EA FC 26 Web App Transfer Market) as of v1.1.0 - exact card
+identity, live BIN/listings, and the correct verdict all rendered
+correctly. Getting there took two real fixes discovered only through
+live testing: v1.0.1 added a fallback to the namespaced `GM.xmlHttpRequest`
+API, and v1.1.0 (see `src/page-hook.js`) stopped running the whole
+script with `@inject-into page`, since this manager does not bridge
+EITHER GM API into a script actually running in page context - only its
+default context has that access. The fetch/XHR observation itself still
+needs true page-context execution, so it now runs via a separately
+bundled, injected `<script>` tag instead of the userscript's own
+top-level context. If you hit anything unexpected on iOS, it's most
+likely version drift - confirm the installed script reports `1.1.0`+
+before assuming a new bug.
 
 ### Android
 
@@ -164,21 +174,24 @@ reference for real, working `@match`/`@grant`/`@inject-into`/
 `@downloadURL` metadata — its (obfuscated) SBC automation logic was
 never read or copied.
 
-## What still needs a real authenticated EA session to verify
+## What's confirmed vs. still open
 
-- Whether `/ut/game/fc26/transfermarket` responses (and the
-  `resourceId`/`definitionId`/`maskedDefId`/`auctionInfo` shape assumed
-  by `card-detector.js`) still match what a live search actually
-  returns — this was last confirmed working end-to-end against a real
-  session for the Chrome extension (see `eafc-live-extension/README.md`
-  for that verification), and the parsing logic is unchanged here, but
-  the userscript's own fetch/XHR hook and GM_xmlhttpRequest path have
-  not yet been exercised against a live EA session.
-- Whether `@inject-into page` behaves identically to the Chrome
-  extension's MAIN-world injection for observing the page's real
-  `window.fetch`/`XMLHttpRequest` (rather than a sandboxed copy) on each
-  of Tampermonkey, Violentmonkey, and Userscripts (iOS) — this differs
-  by userscript manager and was not independently tested here.
-- The iPhone and Android install/behaviour claims above, which are
-  based on each project's own published capabilities, not a live device
-  test performed in this environment.
+**Confirmed on a real iOS session (Userscripts app), v1.1.0+:**
+`/ut/game/fc26/transfermarket` response parsing (`card-detector.js`),
+exact-card identity, the injected page-hook's fetch/XHR observation, the
+GM_xmlhttpRequest/GM.xmlHttpRequest fallback in `api-client.js`, and the
+overlay end-to-end against a live Mbappé TOTY card.
+
+**Still open:**
+- Desktop (Tampermonkey/Violentmonkey) and Android (Firefox +
+  Tampermonkey) installs are still based on each project's own
+  published capabilities, not a live device test performed in this
+  project - the iOS case above is the only one actually exercised
+  end-to-end so far. Given how many real, manager-specific surprises iOS
+  turned up (GM API availability, `@inject-into page` behavior), treat
+  desktop/Android as unverified until someone actually tests them, not
+  as "probably fine because iOS worked."
+- Whether the page-hook's injected `<script>` tag technique behaves
+  identically across Tampermonkey/Violentmonkey on desktop - expected to
+  work (it's plain DOM manipulation, not a GM feature), but not
+  independently confirmed there yet.
