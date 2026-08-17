@@ -91,6 +91,8 @@ from typing import Any
 
 import asyncpg
 
+from db_connect import connect_with_retry, create_pool_with_retry
+
 from futgg_instrumentation import StageTimers, redact_headers, redact_url, redact_value
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -1913,7 +1915,9 @@ def _on_shutdown_signal(sig: "signal.Signals", shutdown_event: asyncio.Event) ->
 async def run_forever() -> None:
     from playwright.async_api import async_playwright
 
-    pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=4, command_timeout=120)
+    pool = await create_pool_with_retry(
+        DATABASE_URL, min_size=1, max_size=4, command_timeout=120
+    )
     async with pool.acquire() as conn:
         await ensure_schema(conn)
         anchor = await conn.fetchval(

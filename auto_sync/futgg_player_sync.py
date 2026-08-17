@@ -51,6 +51,8 @@ from typing import Any
 from urllib.parse import urljoin, urlparse
 
 import asyncpg
+
+from db_connect import connect_with_retry, create_pool_with_retry
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from playwright.async_api import async_playwright
 
@@ -588,14 +590,18 @@ async def _fetch_worker(
 
 
 async def crawl_once() -> None:
-    lock_conn = await asyncpg.connect(DATABASE_URL)
+    # Retried: this is the worker's first statement, and an unguarded
+    # connect here turned a one-second TLS blip into a dead worker.
+    lock_conn = await connect_with_retry(DATABASE_URL)
     got_lock = await lock_conn.fetchval("SELECT pg_try_advisory_lock($1)", OVERLAP_LOCK_KEY)
     if not got_lock:
         log.info("Previous FUT.GG player sync still running; skipping")
         await lock_conn.close()
         return
 
-    pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=PLAYER_CONCURRENCY + 2)
+    pool = await create_pool_with_retry(
+        DATABASE_URL, min_size=1, max_size=PLAYER_CONCURRENCY + 2
+    )
     playwright = browser = context = None
     stats: dict[str, int] = {"discovered": 0, "new": 0, "updated": 0, "failed": 0, "skipped_existing": 0}
     breaker = CircuitBreaker(CIRCUIT_BREAKER_THRESHOLD)

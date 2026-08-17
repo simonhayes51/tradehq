@@ -160,7 +160,15 @@ def _serialize_intelligence(ci: CardIntelligence) -> Dict[str, Any]:
 
 def _serialize_player(row: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(row)
-    bin_captured_at = out.get("bin_captured_at")
+    # Prefer when the feed last CONFIRMED the price over when it last
+    # CHANGED - the same distinction futgg_intelligence._price_observed_at
+    # makes, and for the same reason. Reading bin_captured_at here meant
+    # the "Live market source - updated N minutes ago" badge reported the
+    # last price MOVE, so a card whose price was confirmed three minutes
+    # ago could advertise itself as 17 minutes stale while the engine,
+    # correctly, treated it as fresh. Two numbers for one fact, disagreeing
+    # on screen.
+    bin_captured_at = out.get("bin_checked_at") or out.get("bin_captured_at")
     # Frontend-facing aliases (current_bin_captured_at / price_age_seconds)
     # alongside the raw column names - computed here, not duplicated in SQL,
     # since "now" has to be evaluated at serialization time either way.
