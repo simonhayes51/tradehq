@@ -20,20 +20,34 @@
 //                         only api.eafc.live is listed since that's the
 //                         only cross-origin host this script ever calls.
 //   @grant GM_xmlhttpRequest
-//                       - the one privileged API this script needs (see
+//   @grant GM.xmlHttpRequest
+//                       - the privileged APIs this script needs (see
 //                         src/api-client.js's header for why a plain
-//                         page fetch() can't reach api.eafc.live).
-//   @inject-into page   - runs in the page's own JS realm rather than a
-//                         sandboxed content-script-like context. Chosen
-//                         because (a) autosbc.user.js itself uses it
-//                         against the same page, so it's confirmed
-//                         compatible with the managers that matter here,
-//                         and (b) it's what makes the single-execution-
-//                         context simplification in market-observer.js
-//                         possible at all - a sandboxed context runs
-//                         against a separate, wrapped window.fetch that
-//                         may not see the page's real network activity
-//                         the same way.
+//                         page fetch() can't reach api.eafc.live); both
+//                         forms granted since managers differ on which
+//                         one they actually implement (see api-client.js).
+//   (no @inject-into)  - V1 forced `@inject-into page`, matching
+//                         autosbc.user.js, on the theory that running in
+//                         the page's own JS realm was needed for BOTH
+//                         observing window.fetch/XHR reliably AND
+//                         reaching GM_xmlhttpRequest. Confirmed live on
+//                         a real iOS session (the "Userscripts" app):
+//                         the first half held, the second did not -
+//                         neither GM API was reachable from a script
+//                         actually running in page context on that
+//                         manager. Omitting @inject-into lets each
+//                         manager use its own default context, which
+//                         reliably has GM access everywhere tested; the
+//                         fetch/XHR observation need is now met a
+//                         different way - see page-hook.js's header for
+//                         the split and why it doesn't depend on this
+//                         script's own execution context at all.
+//   @run-at document-start
+//                       - the page-hook <script> tag (see
+//                         market-observer.js) has to be injected before
+//                         the Web App's own bundle makes its first
+//                         /transfermarket request, or that first
+//                         response is missed.
 //   @downloadURL/@updateURL
 //                       - point at the same hosted URL so a userscript
 //                         manager can detect and offer future updates
@@ -45,7 +59,7 @@
 export const METADATA_BLOCK = `// ==UserScript==
 // @name         EAFC Live Companion
 // @namespace    https://app.eafc.live/
-// @version      1.0.2
+// @version      1.1.0
 // @description  Read-only EAFC Live trading intelligence overlay for the EA SPORTS FC 26 Web App Transfer Market. Never buys, bids, lists, or automates anything - observation only.
 // @author       EAFC Live
 // @match        https://www.ea.com/*/ea-sports-fc/ultimate-team/web-app/*
@@ -53,7 +67,6 @@ export const METADATA_BLOCK = `// ==UserScript==
 // @connect      api.eafc.live
 // @grant        GM_xmlhttpRequest
 // @grant        GM.xmlHttpRequest
-// @inject-into  page
 // @run-at       document-start
 // @downloadURL  https://app.eafc.live/companion/eafc-live.user.js
 // @updateURL    https://app.eafc.live/companion/eafc-live.user.js
