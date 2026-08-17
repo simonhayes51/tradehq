@@ -1,0 +1,55 @@
+-- Migration 053: missing indexes behind the slow snapshot refresh
+-- target: core
+-- requires-table: futgg_bin_history, futgg_sales_history
+--
+-- WHAT BROKE
+-- ----------
+-- futgg_market_snapshot's two most expensive CTEs each need to find,
+-- per card, the newest row(s) in a large history table:
+--
+--   latest_bin:      DISTINCT ON (source_card_id) ... ORDER BY
+--                     source_card_id, captured_at DESC   -- futgg_bin_history
+--   bounded_sales:    ROW_NUMBER() OVER (PARTITION BY source_card_id
+--                     ORDER BY approximate_sold_at DESC)  -- futgg_sales_history
+--
+-- Neither futgg_bin_history nor futgg_sales_history had an index on
+-- (source_card_id, <its timestamp column>) anywhere in this migration
+-- history - both CTEs were doing a full sequential scan + sort of the
+-- entire table on every single refresh. With a row written per card on
+-- roughly every price/sales cycle for weeks, that's a genuinely large
+-- table, and this cost is paid identically by REFRESH MATERIALIZED VIEW
+-- CONCURRENTLY and a plain REFRESH alike - CONCURRENTLY only adds
+-- diffing on top of it, it isn't the thing making a plain refresh slow.
+-- Confirmed live in production: a plain (non-CONCURRENTLY) refresh -
+-- expected to be a sub-second rebuild+swap - was still running after
+-- 10+ minutes, holding an exclusive lock on the view (blocking every
+-- read of it, site-wide) the entire time, and had to be killed.
+--
+-- CREATE INDEX CONCURRENTLY (not plain CREATE INDEX)
+-- -------------------------------------------------------------------
+-- These tables are under continuous write load from auto_sync's
+-- PriceSync/SalesSync services. A plain CREATE INDEX takes a lock that
+-- blocks WRITES for as long as building the index takes - on a table
+-- this size, that could stall the live sync workers for a long time.
+-- CONCURRENTLY avoids that (at the cost of two scans instead of one and
+-- a longer build), which is the correct trade for a table this actively
+-- written to.
+--
+-- CONCURRENTLY cannot run inside a transaction block, and
+-- scripts/run_migrations.py wraps every migration file in one - so this
+-- file is NOT meant to be applied by the normal boot-time runner against
+-- an already-populated database. It was run manually, once, directly
+-- against production (see the incident notes for the exact commands),
+-- and the row below records that as already applied so the runner never
+-- attempts to redo it with a blocking, non-concurrent index build.
+--
+-- The IF NOT EXISTS index creation below still matters for a FRESH
+-- database bootstrap (an empty or small table makes a plain CREATE
+-- INDEX effectively instant, so the normal transactional path is fine
+-- there) - this file is the source of truth for that case, even though
+-- it was not how it reached the current production database.
+CREATE INDEX IF NOT EXISTS idx_futgg_bin_history_card_captured
+    ON futgg_bin_history (source_card_id, captured_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_futgg_sales_history_card_sold
+    ON futgg_sales_history (source_card_id, approximate_sold_at DESC);
