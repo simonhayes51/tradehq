@@ -1,13 +1,14 @@
 // ==UserScript==
 // @name         EAFC Live Companion
 // @namespace    https://app.eafc.live/
-// @version      1.0.0
+// @version      1.0.1
 // @description  Read-only EAFC Live trading intelligence overlay for the EA SPORTS FC 26 Web App Transfer Market. Never buys, bids, lists, or automates anything - observation only.
 // @author       EAFC Live
 // @match        https://www.ea.com/*/ea-sports-fc/ultimate-team/web-app/*
 // @match        https://www.ea.com/ea-sports-fc/ultimate-team/web-app/*
 // @connect      api.eafc.live
 // @grant        GM_xmlhttpRequest
+// @grant        GM.xmlHttpRequest
 // @inject-into  page
 // @run-at       document-start
 // @downloadURL  https://app.eafc.live/companion/eafc-live.user.js
@@ -250,59 +251,84 @@
   function log2(...args) {
     if (typeof window !== "undefined" && window.EAFC_LIVE_DEBUG) console.log("[EAFC Live]", ...args);
   }
-  function fetchIntelligence(sourceCardId) {
-    return new Promise((resolve) => {
-      if (typeof GM_xmlhttpRequest !== "function") {
-        log2("GM_xmlhttpRequest is not available in this userscript manager");
-        resolve({ status: "network_error", data: null });
-        return;
-      }
-      const url = `${CONFIG.API_BASE_URL}/companion/card/${sourceCardId}`;
+  function resolveGMRequest() {
+    if (typeof GM_xmlhttpRequest === "function") return GM_xmlhttpRequest;
+    if (typeof GM !== "undefined" && GM && typeof GM.xmlHttpRequest === "function") {
+      return GM.xmlHttpRequest.bind(GM);
+    }
+    return null;
+  }
+  function callGM(gmRequest, details) {
+    return new Promise((resolve, reject) => {
       let settled = false;
-      const finish = (result) => {
+      const settleResolve = (response) => {
         if (settled) return;
         settled = true;
-        resolve(result);
+        resolve(response);
       };
-      GM_xmlhttpRequest({
+      const settleReject = (kind) => {
+        if (settled) return;
+        settled = true;
+        reject({ kind });
+      };
+      let maybePromise;
+      try {
+        maybePromise = gmRequest({
+          ...details,
+          onload: settleResolve,
+          onerror: () => settleReject("network_error"),
+          ontimeout: () => settleReject("timeout"),
+          onabort: () => settleReject("network_error")
+        });
+      } catch (err) {
+        settleReject("network_error");
+        return;
+      }
+      if (maybePromise && typeof maybePromise.then === "function") {
+        maybePromise.then(settleResolve).catch(() => settleReject("network_error"));
+      }
+    });
+  }
+  async function fetchIntelligence(sourceCardId) {
+    const gmRequest = resolveGMRequest();
+    if (!gmRequest) {
+      log2("no GM_xmlhttpRequest / GM.xmlHttpRequest available in this userscript manager");
+      return { status: "network_error", data: null };
+    }
+    const url = `${CONFIG.API_BASE_URL}/companion/card/${sourceCardId}`;
+    let response;
+    try {
+      response = await callGM(gmRequest, {
         method: "GET",
         url,
         timeout: CONFIG.REQUEST_TIMEOUT_MS,
-        headers: { Accept: "application/json" },
-        onload(response) {
-          const status = response.status;
-          if (status === 404) {
-            log2("no intelligence available for card", sourceCardId);
-            finish({ status: "not_found", data: null });
-            return;
-          }
-          if (status >= 500 || !(status >= 200 && status < 300)) {
-            log2("companion API unexpected status", status, "for card", sourceCardId);
-            finish({ status: "server_error", data: null });
-            return;
-          }
-          try {
-            const data = JSON.parse(response.responseText);
-            log2("intelligence loaded for card", sourceCardId, data && data.signal);
-            finish({ status: "success", data });
-          } catch (err) {
-            log2("companion API returned unparsable JSON for card", sourceCardId, ":", err && err.message);
-            finish({ status: "server_error", data: null });
-          }
-        },
-        onerror() {
-          log2("companion API request failed for card", sourceCardId);
-          finish({ status: "network_error", data: null });
-        },
-        ontimeout() {
-          log2("companion API request timed out for card", sourceCardId);
-          finish({ status: "timeout", data: null });
-        },
-        onabort() {
-          finish({ status: "network_error", data: null });
-        }
+        headers: { Accept: "application/json" }
       });
-    });
+    } catch (err) {
+      if (err && err.kind === "timeout") {
+        log2("companion API request timed out for card", sourceCardId);
+        return { status: "timeout", data: null };
+      }
+      log2("companion API request failed for card", sourceCardId);
+      return { status: "network_error", data: null };
+    }
+    const status = response.status;
+    if (status === 404) {
+      log2("no intelligence available for card", sourceCardId);
+      return { status: "not_found", data: null };
+    }
+    if (status >= 500 || !(status >= 200 && status < 300)) {
+      log2("companion API unexpected status", status, "for card", sourceCardId);
+      return { status: "server_error", data: null };
+    }
+    try {
+      const data = JSON.parse(response.responseText);
+      log2("intelligence loaded for card", sourceCardId, data && data.signal);
+      return { status: "success", data };
+    } catch (err) {
+      log2("companion API returned unparsable JSON for card", sourceCardId, ":", err && err.message);
+      return { status: "server_error", data: null };
+    }
   }
   var cache = createIntelligenceCache(fetchIntelligence, {
     successTtlMs: CONFIG.SUCCESS_CACHE_TTL_MS,
