@@ -20,7 +20,7 @@
 //                             to ea.com, exactly like the "Already
 //                             installed? Just launch the Web App
 //                             normally." copy beneath it says.
-const USERSCRIPT_URL = "https://eafc.live/companion/eafc-live.user.js";
+const USERSCRIPT_URL = "https://app.eafc.live/companion/eafc-live.user.js";
 const EA_WEB_APP_URL = "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/";
 
 export default function Companion() {
