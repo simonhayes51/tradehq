@@ -16,6 +16,7 @@ import { onCardDetected, installMarketObserver } from "./market-observer.js";
 import { getCardIntelligence } from "./api-client.js";
 import { combineIntelligence, cheapestBin } from "./market-calc.js";
 import { render as renderOverlay } from "./overlay.js";
+import { renderListBadges } from "./list-badges.js";
 import { initLifecycle } from "./lifecycle.js";
 
 function log(...args) {
@@ -38,11 +39,21 @@ function renderKeyFor(sourceCardId, auctions) {
 
 async function handleDetection(result) {
   const { sourceCardId, auctions } = result;
+
+  // Per-row BUY/AVOID markers apply regardless of whether this response
+  // is scoped to one card or covers many distinct cards (an unfiltered
+  // search) - unlike the single-card summary panel below, a badge only
+  // ever describes the one row it's anchored to, so there's no
+  // "which card is this about" ambiguity to avoid here.
+  renderListBadges(auctions).catch((err) => {
+    log("list badge rendering failed:", err && err.message);
+  });
+
   if (!sourceCardId) {
-    // Response covered multiple distinct cards (e.g. an unfiltered
-    // search) - V1 only surfaces a single-card confirmation panel, so
-    // there is nothing safe to show without guessing which card the
-    // user is looking at.
+    // Response covered multiple distinct cards - the single-card
+    // summary panel below only ever describes ONE card, so there is
+    // nothing safe to show there without guessing which card the user
+    // is focused on. Per-row badges (above) already cover this case.
     return;
   }
 

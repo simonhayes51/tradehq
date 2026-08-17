@@ -13,38 +13,85 @@ Xcode, no Android Studio, no Mac, no custom native app required.
 ## How it works
 
 ```
-eafc-live.user.js   (bundled from src/, single execution context)
-    ├── market-observer.js   — hooks window.fetch / XMLHttpRequest,
-    │                          reads /transfermarket responses EA's own
-    │                          page already requested
-    ├── card-detector.js     — exact card identity (resourceId, falling
-    │                          back to definitionId; NEVER maskedDefId
-    │                          alone) + sanitized auction extraction
-    ├── api-client.js        — GM_xmlhttpRequest-based client for
-    │                          GET https://api.eafc.live/api/v2/companion/card/{id}
-    ├── intelligence-cache.js— success/not_found/never-cache-failures
-    │                          caching policy in front of api-client.js
-    ├── market-calc.js       — combines live EA auctions with backend
-    │                          intelligence into the overlay's numbers
-    ├── overlay.js            — the small floating panel (Shadow DOM)
-    └── lifecycle.js          — idempotent init guard for SPA re-entry
+eafc-live.user.js        (bundled from src/)
+    ├── page-hook.js        — bundled SEPARATELY, injected as a literal
+    │                         <script> tag at runtime so it always runs
+    │                         in the page's TRUE realm (see below).
+    │                         Hooks window.fetch/XMLHttpRequest, reads
+    │                         /transfermarket responses EA's own page
+    │                         already requested, sanitizes, and
+    │                         dispatches a CustomEvent.
+    ├── market-observer.js  — runs in the userscript manager's default
+    │                         context; injects page-hook.js and listens
+    │                         for its event
+    ├── card-detector.js    — exact card identity (resourceId, falling
+    │                         back to definitionId; NEVER maskedDefId
+    │                         alone) + sanitized auction extraction
+    │                         (used by BOTH bundles above)
+    ├── api-client.js       — GM_xmlhttpRequest/GM.xmlHttpRequest client
+    │                         for GET .../companion/card/{id}
+    ├── intelligence-cache.js — success/not_found/never-cache-failures
+    │                         caching policy in front of api-client.js
+    ├── market-calc.js      — combines live EA auctions with backend
+    │                         intelligence into the overlay's numbers
+    ├── overlay.js           — the single-card floating panel (Shadow DOM)
+    ├── list-badges.js       — per-row BUY/AVOID markers for a
+    │                         multi-card search (see below)
+    └── lifecycle.js         — idempotent init guard for SPA re-entry
 ```
 
-Unlike the Chrome extension (`eafc-live-extension/`), this all runs in
-**one JS execution context** — a userscript with `@inject-into page`
-runs directly in the page's own realm, so there is no MAIN-world /
-isolated-world split, no `CustomEvent` bridge, and no background service
-worker. `GM_xmlhttpRequest` (declared via `@grant`) plays the same role
-the extension's privileged background-worker fetch did: it is exempt
-from the page's own CORS policy, so it can reach `api.eafc.live`
-directly without the backend having to loosen its CORS allowlist for
-the EA page's origin.
+**Two execution contexts, not one.** V1 ran the entire userscript with
+`@inject-into page`, on the assumption that this was needed both to
+observe `window.fetch`/`XHR` reliably AND to reach
+`GM_xmlhttpRequest`/`GM.xmlHttpRequest`. Confirmed live on a real iOS
+session: only the first half was true - at least one real, currently-
+used manager (the "Userscripts" app) does not bridge either GM API into
+a script actually running in page context, only into its own default
+context. So responsibility is split: `page-hook.js` is bundled to its
+own IIFE and injected as a plain `<script>` tag (always runs in the
+page's true realm, regardless of manager, since it's just DOM
+manipulation - the same as any page's own inline script), while
+everything else runs in the manager's default context, where GM access
+is reliable. The two talk over one `CustomEvent` on `window`, carrying
+only the sanitized auction fields - the same MAIN-world/isolated-world
+security boundary `eafc-live-extension/` used, for the identical reason.
+
+`GM_xmlhttpRequest`/`GM.xmlHttpRequest` (declared via `@grant`) play the
+same role the Chrome extension's privileged background-worker fetch
+did: exempt from the page's own CORS policy, so they can reach
+`api.eafc.live` directly without the backend having to loosen its CORS
+allowlist for the EA page's origin.
 
 Most of the pure logic (`card-detector.js`, `market-calc.js`,
 `intelligence-cache.js`) is ported near-verbatim from
 `eafc-live-extension/src/` — same functions, same behaviour, only the
-UMD/browser-extension wrapper removed since it isn't needed in a single
+UMD/browser-extension wrapper removed since it isn't needed in a
 bundled ES module.
+
+## Per-row badges (multi-card search)
+
+`overlay.js`'s floating panel only ever describes ONE card - it can't
+say anything useful when a search returns many different players at
+once (an unfiltered Transfer Market search). `list-badges.js` adds a
+small floating "✓ BUY" / "⚠ AVOID" marker positioned over each row's own
+"Buy Now" price, independent of the summary panel, driven by that row's
+OWN price against its OWN card's backend recommendation - never an
+aggregate. A row with a `watch`/`insufficient_data` signal, or a `buy`
+signal whose price doesn't clear the target, stays unbadged rather than
+showing a neutral/uncertain marker - same "never manufacture a signal"
+principle as the overlay. Tapping a badge opens the same single-card
+overlay panel for that card.
+
+**This is the one part of the userscript that has to touch EA's live
+DOM** (every other file only ever reasons from parsed network
+responses) - it text-matches each auction's formatted price to find
+where EA rendered it on screen, which is inherently a best-effort match
+against markup this project has no other visibility into. To keep a
+wrong match harmless, badges are positioned `fixed` elements anchored to
+on-screen coordinates, never inserted into EA's own row - a bad match
+degrades to "a badge floats in the wrong spot", never to broken EA
+layout or click handling. `findPriceAnchor()` in `list-badges.js` is the
+function to revisit if badges are missing or misplaced on a real device.
 
 ## Building
 
