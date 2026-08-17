@@ -66,9 +66,16 @@ function resolveGMRequest() {
 
 /** Wraps one GM request in a Promise that settles from whichever of the
  * callback-style or Promise-style contract actually fires. Rejects with
- * { kind: "network_error" | "timeout" }; resolves with the response
- * object ({ status, responseText }) on completion, regardless of HTTP
- * status - HTTP-level interpretation happens in fetchIntelligence(). */
+ * { kind: "network_error" | "timeout", detail: <short diagnostic string> };
+ * resolves with the response object ({ status, responseText }) on
+ * completion, regardless of HTTP status - HTTP-level interpretation
+ * happens in fetchIntelligence().
+ *
+ * `detail` exists because this is genuinely hard to debug blind: a
+ * userscript running on an iPhone has no attached console without a Mac
+ * (Safari's remote Web Inspector requires one), so the overlay itself
+ * (see overlay.js's "error" state) surfaces this string on-screen -
+ * that's the only debugging channel available on that platform. */
 function callGM(gmRequest, details) {
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -77,10 +84,10 @@ function callGM(gmRequest, details) {
       settled = true;
       resolve(response);
     };
-    const settleReject = (kind) => {
+    const settleReject = (kind, detail) => {
       if (settled) return;
       settled = true;
-      reject({ kind });
+      reject({ kind, detail });
     };
 
     let maybePromise;
@@ -88,19 +95,34 @@ function callGM(gmRequest, details) {
       maybePromise = gmRequest({
         ...details,
         onload: settleResolve,
-        onerror: () => settleReject("network_error"),
-        ontimeout: () => settleReject("timeout"),
-        onabort: () => settleReject("network_error"),
+        onerror: (err) => settleReject("network_error", `onerror: ${describeGmError(err)}`),
+        ontimeout: () => settleReject("timeout", "ontimeout fired"),
+        onabort: () => settleReject("network_error", "onabort fired"),
       });
     } catch (err) {
-      settleReject("network_error");
+      settleReject("network_error", `gmRequest() threw: ${err && err.message}`);
       return;
     }
 
     if (maybePromise && typeof maybePromise.then === "function") {
-      maybePromise.then(settleResolve).catch(() => settleReject("network_error"));
+      maybePromise
+        .then(settleResolve)
+        .catch((err) => settleReject("network_error", `promise rejected: ${describeGmError(err)}`));
     }
   });
+}
+
+function describeGmError(err) {
+  if (!err) return "no error info given";
+  if (typeof err === "string") return err;
+  if (err.error || err.message || err.statusText) {
+    return String(err.error || err.message || err.statusText);
+  }
+  try {
+    return JSON.stringify(err).slice(0, 120);
+  } catch (_e) {
+    return String(err);
+  }
 }
 
 /**
@@ -109,9 +131,14 @@ function callGM(gmRequest, details) {
  *
  *   { status: "success",       data: <companion intelligence object> }
  *   { status: "not_found",     data: null }  // backend 404
- *   { status: "server_error",  data: null }  // backend 5xx / unexpected status
- *   { status: "network_error", data: null }  // unreachable
- *   { status: "timeout",       data: null }  // exceeded REQUEST_TIMEOUT_MS
+ *   { status: "server_error",  data: null, detail }  // backend 5xx / unexpected status
+ *   { status: "network_error", data: null, detail }  // unreachable
+ *   { status: "timeout",       data: null, detail }  // exceeded REQUEST_TIMEOUT_MS
+ *
+ * `detail` is a short, always-on (not debug-flag-gated) diagnostic
+ * string - see callGM()'s header for why: this is the only debugging
+ * channel available on an iOS userscript manager with no attached
+ * console.
  */
 async function fetchIntelligence(sourceCardId) {
   const gmRequest = resolveGMRequest();
@@ -119,8 +146,9 @@ async function fetchIntelligence(sourceCardId) {
     // Neither API shape is available in this userscript manager (or the
     // @grant wasn't honoured) - fail harmlessly rather than throwing
     // into the page.
-    log("no GM_xmlhttpRequest / GM.xmlHttpRequest available in this userscript manager");
-    return { status: "network_error", data: null };
+    const detail = "no GM_xmlhttpRequest / GM.xmlHttpRequest in this manager";
+    log(detail);
+    return { status: "network_error", data: null, detail };
   }
 
   const url = `${CONFIG.API_BASE_URL}/companion/card/${sourceCardId}`;
@@ -134,30 +162,43 @@ async function fetchIntelligence(sourceCardId) {
       headers: { Accept: "application/json" },
     });
   } catch (err) {
+    const detail = (err && err.detail) || "unknown request failure";
     if (err && err.kind === "timeout") {
-      log("companion API request timed out for card", sourceCardId);
-      return { status: "timeout", data: null };
+      log("companion API request timed out for card", sourceCardId, detail);
+      return { status: "timeout", data: null, detail };
     }
-    log("companion API request failed for card", sourceCardId);
-    return { status: "network_error", data: null };
+    log("companion API request failed for card", sourceCardId, detail);
+    return { status: "network_error", data: null, detail };
   }
 
   const status = response.status;
+  if (status === 0) {
+    // A GM.xmlHttpRequest/XHR-style status of 0 is the conventional
+    // signature of a request that never actually reached the network
+    // (blocked before the fact, not a real HTTP round trip) - reported
+    // distinctly from a genuine backend 5xx so the on-screen detail
+    // doesn't misleadingly suggest the backend itself responded.
+    const detail = `status 0 (request blocked before reaching the network - likely missing @connect approval or a manager-level permission)`;
+    log(detail);
+    return { status: "network_error", data: null, detail };
+  }
   if (status === 404) {
     log("no intelligence available for card", sourceCardId);
     return { status: "not_found", data: null };
   }
   if (status >= 500 || !(status >= 200 && status < 300)) {
+    const detail = `HTTP ${status}`;
     log("companion API unexpected status", status, "for card", sourceCardId);
-    return { status: "server_error", data: null };
+    return { status: "server_error", data: null, detail };
   }
   try {
     const data = JSON.parse(response.responseText);
     log("intelligence loaded for card", sourceCardId, data && data.signal);
     return { status: "success", data };
   } catch (err) {
+    const detail = `unparsable JSON: ${err && err.message}`;
     log("companion API returned unparsable JSON for card", sourceCardId, ":", err && err.message);
-    return { status: "server_error", data: null };
+    return { status: "server_error", data: null, detail };
   }
 }
 

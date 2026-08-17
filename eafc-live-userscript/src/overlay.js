@@ -233,6 +233,13 @@ export function render(state) {
     const message = ERROR_STATUS_TEXT[state.status] || "EAFC Live backend unavailable right now.";
     body.appendChild(el("div", "eafc-live-muted", message));
     body.appendChild(el("div", "eafc-live-muted", "Will retry automatically on the next market update."));
+    // Always shown (not gated behind EAFC_LIVE_DEBUG) - on iOS there is
+    // no attached console without a Mac, so this on-screen line is the
+    // only debugging channel available for diagnosing a real failure.
+    // See api-client.js's callGM()/fetchIntelligence() for what sets it.
+    if (state.detail) {
+      body.appendChild(el("div", "eafc-live-debug", state.detail));
+    }
     panel.appendChild(body);
     root.appendChild(panel);
     return;

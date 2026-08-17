@@ -58,8 +58,8 @@ async function handleDetection(result) {
     // Do NOT update lastRenderKey here - an identical detection event
     // firing again later must be allowed to retry the backend rather
     // than being silently swallowed by the dedupe check above.
-    log("intelligence request failed:", intelResult.status);
-    renderOverlay({ kind: "error", status: intelResult.status, key });
+    log("intelligence request failed:", intelResult.status, intelResult.detail);
+    renderOverlay({ kind: "error", status: intelResult.status, detail: intelResult.detail, key });
     return;
   }
 
