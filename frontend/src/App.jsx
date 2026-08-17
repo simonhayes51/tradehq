@@ -44,6 +44,11 @@ const UndervaluedBoard = lazy(() => import("./pages/UndervaluedBoard"));
 const AdminUsers = lazy(() => import("./pages/AdminUsers"));
 const Demo = lazy(() => import("./pages/Demo"));
 
+// EAFC Live Companion userscript launcher page - public on purpose, same
+// reasoning as /demo: a visitor reaching this link to install the
+// userscript is never expected to already have a TradeHQ session.
+const Companion = lazy(() => import("./pages/Companion"));
+
 // Server-render-only route: the backend's headless Chromium renderer
 // navigates here (see app/services/player_card_render.py), not a real
 // visitor - sits outside PrivateRoute like /demo, since Chromium carries
@@ -86,6 +91,10 @@ function App() {
                   {/* Investor/buyer-facing read-only data pipeline demo -
                       public on purpose, must not sit behind PrivateRoute */}
                   <Route path="/demo" element={<Demo />} />
+                  {/* EAFC Live Companion launcher: "install the userscript
+                      once, then launch the Web App normally" - see
+                      pages/Companion.jsx. Public, no app shell. */}
+                  <Route path="/companion" element={<Companion />} />
 
                   {/* Internal render-only route for card PNG generation -
                       see PlayerCardExport.jsx's header comment. */}
