@@ -807,13 +807,50 @@ def _period_to_interval(period: Optional[str]) -> Optional[timedelta]:
     return mapping.get(period)
 
 
-async def refresh_snapshot(pool: asyncpg.Pool) -> bool:
+async def refresh_snapshot(pool: asyncpg.Pool, dsn: Optional[str] = None) -> bool:
     """REFRESH MATERIALIZED VIEW CONCURRENTLY futgg_market_snapshot,
     advisory-locked so multiple app instances never race the refresh -
     same convention as fair_value_mv / recommendations_latest (see
     app/services/fair_value.py, recommendation_engine_v2.py's
     run_pass_v2). Returns True if this call actually performed the
-    refresh, False if another instance already held the lock."""
+    refresh, False if another instance already held the lock.
+
+    WHY A STANDALONE CONNECTION, NOT pool.acquire()
+    -------------------------------------------------------------------
+    Confirmed live in production: this REFRESH can legitimately run for
+    many minutes under load (CONCURRENTLY diffs old vs new row-by-row,
+    and a snapshot that has gone a while without refreshing has more to
+    reconcile). `pool` is the SAME small (max_size=10, see main.py)
+    connection pool every web request, every other background refresher
+    loop, AND `/health` all share. Borrowing a connection from it for
+    the full duration of a multi-minute REFRESH can starve that pool
+    under load - `/health`'s own `pool.acquire()` then can't get a
+    connection, Coolify's health check sees that as unhealthy, and
+    restarts the container mid-refresh. That kills the REFRESH before
+    it commits, releases the advisory lock, and the freshly-restarted
+    refresher_loop immediately starts another one - an infinite loop of
+    a refresh that can never complete, which reads identically to "the
+    snapshot never refreshes" from every consumer's point of view.
+
+    `dsn`, when given, opens ONE throwaway asyncpg.connect() just for
+    this call instead - however long the REFRESH takes, it can never
+    take a connection away from `pool`. Falls back to `pool.acquire()`
+    when no dsn is given (keeps this callable from anywhere `pool` is
+    the only thing on hand, e.g. existing tests/scripts)."""
+    if dsn:
+        conn = await asyncpg.connect(dsn)
+        try:
+            got = await conn.fetchval("SELECT pg_try_advisory_lock($1)", REFRESH_ADVISORY_LOCK_KEY)
+            if not got:
+                return False
+            try:
+                await conn.execute("REFRESH MATERIALIZED VIEW CONCURRENTLY futgg_market_snapshot")
+                return True
+            finally:
+                await conn.execute("SELECT pg_advisory_unlock($1)", REFRESH_ADVISORY_LOCK_KEY)
+        finally:
+            await conn.close()
+
     async with pool.acquire() as conn:
         got = await conn.fetchval("SELECT pg_try_advisory_lock($1)", REFRESH_ADVISORY_LOCK_KEY)
         if not got:
@@ -825,13 +862,18 @@ async def refresh_snapshot(pool: asyncpg.Pool) -> bool:
             await conn.execute("SELECT pg_advisory_unlock($1)", REFRESH_ADVISORY_LOCK_KEY)
 
 
-async def refresher_loop(pool: asyncpg.Pool, poll_seconds: int = 120) -> None:
+async def refresher_loop(pool: asyncpg.Pool, poll_seconds: int = 120, dsn: Optional[str] = None) -> None:
     """Self-synchronizing on futgg_players.last_seen_at/price_updated_at's
     own watermark, same pattern as recommendation_engine_v2's
     refresher_loop_v2 keying off fair_value_mv - only actually refreshes
     the (relatively expensive) materialized view when the underlying
     source tables have moved since the last refresh, not on a blind
-    fixed-interval REFRESH regardless of whether anything changed."""
+    fixed-interval REFRESH regardless of whether anything changed.
+
+    `dsn` is passed straight through to refresh_snapshot() - see that
+    function's docstring for why the REFRESH itself must not borrow a
+    connection from `pool`, which the watermark check above still uses
+    (that query is a fast, single SELECT, not a multi-minute hold)."""
     import asyncio
 
     await asyncio.sleep(15)
@@ -850,7 +892,7 @@ async def refresher_loop(pool: asyncpg.Pool, poll_seconds: int = 120) -> None:
                     "SELECT greatest(max(last_seen_at), max(price_updated_at)) FROM futgg_players"
                 )
             if watermark and watermark != last_watermark:
-                did = await refresh_snapshot(pool)
+                did = await refresh_snapshot(pool, dsn=dsn)
                 if did:
                     log.info("futgg_market_snapshot refreshed (watermark=%s)", watermark)
                     consecutive_skips = 0
