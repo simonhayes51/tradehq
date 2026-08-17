@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EAFC Live Companion
 // @namespace    https://app.eafc.live/
-// @version      1.0.1
+// @version      1.0.2
 // @description  Read-only EAFC Live trading intelligence overlay for the EA SPORTS FC 26 Web App Transfer Market. Never buys, bids, lists, or automates anything - observation only.
 // @author       EAFC Live
 // @match        https://www.ea.com/*/ea-sports-fc/ultimate-team/web-app/*
@@ -266,34 +266,47 @@
         settled = true;
         resolve(response);
       };
-      const settleReject = (kind) => {
+      const settleReject = (kind, detail) => {
         if (settled) return;
         settled = true;
-        reject({ kind });
+        reject({ kind, detail });
       };
       let maybePromise;
       try {
         maybePromise = gmRequest({
           ...details,
           onload: settleResolve,
-          onerror: () => settleReject("network_error"),
-          ontimeout: () => settleReject("timeout"),
-          onabort: () => settleReject("network_error")
+          onerror: (err) => settleReject("network_error", `onerror: ${describeGmError(err)}`),
+          ontimeout: () => settleReject("timeout", "ontimeout fired"),
+          onabort: () => settleReject("network_error", "onabort fired")
         });
       } catch (err) {
-        settleReject("network_error");
+        settleReject("network_error", `gmRequest() threw: ${err && err.message}`);
         return;
       }
       if (maybePromise && typeof maybePromise.then === "function") {
-        maybePromise.then(settleResolve).catch(() => settleReject("network_error"));
+        maybePromise.then(settleResolve).catch((err) => settleReject("network_error", `promise rejected: ${describeGmError(err)}`));
       }
     });
+  }
+  function describeGmError(err) {
+    if (!err) return "no error info given";
+    if (typeof err === "string") return err;
+    if (err.error || err.message || err.statusText) {
+      return String(err.error || err.message || err.statusText);
+    }
+    try {
+      return JSON.stringify(err).slice(0, 120);
+    } catch (_e) {
+      return String(err);
+    }
   }
   async function fetchIntelligence(sourceCardId) {
     const gmRequest = resolveGMRequest();
     if (!gmRequest) {
-      log2("no GM_xmlhttpRequest / GM.xmlHttpRequest available in this userscript manager");
-      return { status: "network_error", data: null };
+      const detail = "no GM_xmlhttpRequest / GM.xmlHttpRequest in this manager";
+      log2(detail);
+      return { status: "network_error", data: null, detail };
     }
     const url = `${CONFIG.API_BASE_URL}/companion/card/${sourceCardId}`;
     let response;
@@ -305,29 +318,37 @@
         headers: { Accept: "application/json" }
       });
     } catch (err) {
+      const detail = err && err.detail || "unknown request failure";
       if (err && err.kind === "timeout") {
-        log2("companion API request timed out for card", sourceCardId);
-        return { status: "timeout", data: null };
+        log2("companion API request timed out for card", sourceCardId, detail);
+        return { status: "timeout", data: null, detail };
       }
-      log2("companion API request failed for card", sourceCardId);
-      return { status: "network_error", data: null };
+      log2("companion API request failed for card", sourceCardId, detail);
+      return { status: "network_error", data: null, detail };
     }
     const status = response.status;
+    if (status === 0) {
+      const detail = `status 0 (request blocked before reaching the network - likely missing @connect approval or a manager-level permission)`;
+      log2(detail);
+      return { status: "network_error", data: null, detail };
+    }
     if (status === 404) {
       log2("no intelligence available for card", sourceCardId);
       return { status: "not_found", data: null };
     }
     if (status >= 500 || !(status >= 200 && status < 300)) {
+      const detail = `HTTP ${status}`;
       log2("companion API unexpected status", status, "for card", sourceCardId);
-      return { status: "server_error", data: null };
+      return { status: "server_error", data: null, detail };
     }
     try {
       const data = JSON.parse(response.responseText);
       log2("intelligence loaded for card", sourceCardId, data && data.signal);
       return { status: "success", data };
     } catch (err) {
+      const detail = `unparsable JSON: ${err && err.message}`;
       log2("companion API returned unparsable JSON for card", sourceCardId, ":", err && err.message);
-      return { status: "server_error", data: null };
+      return { status: "server_error", data: null, detail };
     }
   }
   var cache = createIntelligenceCache(fetchIntelligence, {
@@ -621,6 +642,9 @@
       const message = ERROR_STATUS_TEXT[state.status] || "EAFC Live backend unavailable right now.";
       body.appendChild(el("div", "eafc-live-muted", message));
       body.appendChild(el("div", "eafc-live-muted", "Will retry automatically on the next market update."));
+      if (state.detail) {
+        body.appendChild(el("div", "eafc-live-debug", state.detail));
+      }
       panel.appendChild(body);
       root.appendChild(panel);
       return;
@@ -690,8 +714,8 @@
     render({ kind: "loading", key });
     const intelResult = await getCardIntelligence(sourceCardId);
     if (RETRYABLE_STATUSES.has(intelResult.status)) {
-      log3("intelligence request failed:", intelResult.status);
-      render({ kind: "error", status: intelResult.status, key });
+      log3("intelligence request failed:", intelResult.status, intelResult.detail);
+      render({ kind: "error", status: intelResult.status, detail: intelResult.detail, key });
       return;
     }
     lastRenderKey = key;

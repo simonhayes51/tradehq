@@ -49,12 +49,21 @@ test("onerror resolves status network_error", async () => {
   assert.equal(result.status, "network_error");
 });
 
-test("missing GM_xmlhttpRequest fails harmlessly instead of throwing", async () => {
+test("missing GM_xmlhttpRequest fails harmlessly instead of throwing, with a diagnostic detail", async () => {
   globalThis.GM_xmlhttpRequest = undefined;
   globalThis.GM = undefined;
   const { getCardIntelligence } = await import(`../src/api-client.js?case=missing`);
   const result = await getCardIntelligence(1);
   assert.equal(result.status, "network_error");
+  assert.match(result.detail, /GM_xmlhttpRequest/);
+});
+
+test("a status-0 response is reported distinctly from a real backend error", async () => {
+  stubGM((opts) => opts.onload({ status: 0, responseText: "" }));
+  const { getCardIntelligence } = await import(`../src/api-client.js?case=status0`);
+  const result = await getCardIntelligence(1);
+  assert.equal(result.status, "network_error");
+  assert.match(result.detail, /status 0/);
 });
 
 test("falls back to the namespaced GM.xmlHttpRequest when the legacy global is absent", async () => {
