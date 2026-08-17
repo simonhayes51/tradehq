@@ -585,8 +585,14 @@ async def lifespan(app: FastAPI):
     # the underlying tables not existing yet if this backend boots before
     # auto_sync has ever run (see that loop's own try/except).
     futgg_snapshot_poll = int(os.getenv("FUTGG_MARKET_SNAPSHOT_REFRESH_SECONDS", "120"))
+    # dsn=DATABASE_URL: the REFRESH itself runs on its own standalone
+    # connection, never one borrowed from `pool` - see
+    # market_data_provider.py's refresh_snapshot() docstring for why a
+    # multi-minute REFRESH holding a shared-pool connection can starve
+    # /health's own pool.acquire() and get this container restarted by
+    # Coolify mid-refresh, which only makes the snapshot staler.
     app.state.futgg_market_snapshot_task = asyncio.create_task(
-        futgg_market_snapshot_refresher_loop(pool, futgg_snapshot_poll)
+        futgg_market_snapshot_refresher_loop(pool, futgg_snapshot_poll, dsn=DATABASE_URL)
     )
     logging.info("✅ FUT.GG market snapshot refresher started (poll every %ss)", futgg_snapshot_poll)
 
