@@ -26,8 +26,10 @@ everywhere it's surfaced (see get_recent_sales()).
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+import time
 import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -44,6 +46,66 @@ log = logging.getLogger("market_data_provider")
 # other advisory locks already in use - see scripts/run_migrations.py's
 # 7741003, recommendation_engine_v2.py's 7741007, etc.).
 REFRESH_ADVISORY_LOCK_KEY = 7741011
+
+#: A refresh slower than this has already outlasted the refresher's
+#: default 120s poll, so it is both the reason the snapshot is stale and
+#: the reason nothing else could refresh it.
+SLOW_REFRESH_WARN_SECONDS = 90.0
+
+#: Refresh regardless of the watermark once the snapshot is older than
+#: this. The watermark test answers "has anything changed", which is the
+#: wrong question when the snapshot has simply stopped advancing: the
+#: watermark moves every bulk cycle, the refresh is attempted, and if it
+#: never SUCCEEDS the loop keeps trying and keeps not noticing. Measuring
+#: the snapshot's own age asks the question that actually matters.
+SNAPSHOT_MAX_AGE_SECONDS = float(os.getenv("FUTGG_SNAPSHOT_MAX_AGE_SECONDS", "600"))
+
+#: Hard ceiling on one refresh. The core pool sets no command_timeout, so
+#: without this a slow refresh runs unbounded while holding the advisory
+#: lock - which is precisely how a snapshot reaches 117 minutes stale
+#: with nothing in the logs.
+#: 300 was too short and made things worse: production showed BOTH
+#: CONCURRENTLY and plain refreshes hitting it back to back, so the
+#: refresh was cancelled every time and the snapshot never advanced at
+#: all. A timeout shorter than the work is not a safety valve, it is a
+#: guarantee of failure. It exists to stop a HUNG refresh holding the
+#: advisory lock forever, not to police a slow one - the failure backoff
+#: below is what protects the database from a slow one.
+REFRESH_TIMEOUT_SECONDS = float(os.getenv("FUTGG_REFRESH_TIMEOUT_SECONDS", "900"))
+
+#: After this many consecutive CONCURRENTLY timeouts, fall back to a
+#: plain REFRESH. CONCURRENTLY must build the new snapshot AND diff it
+#: against the old through the unique index; a plain refresh just builds
+#: and swaps, and is typically several times faster. It takes a brief
+#: exclusive lock on the VIEW (not the source tables), so readers wait
+#: seconds - which is strictly better than reading data hours old.
+CONCURRENT_FAILURES_BEFORE_PLAIN_REFRESH = int(
+    os.getenv("FUTGG_CONCURRENT_FAILURES_BEFORE_PLAIN", "2")
+)
+
+#: Consecutive CONCURRENTLY timeouts. Reset by any success.
+_concurrent_refresh_failures = 0
+
+#: How long to leave the database alone after a refresh fails.
+#:
+#: THIS IS THE IMPORTANT ONE. Forcing a refresh on staleness without a
+#: failure backoff is strictly worse than not forcing at all: the refresh
+#: runs for its whole timeout, is cancelled, leaves the snapshot exactly
+#: as stale as before - which immediately re-triggers the staleness
+#: check - and starts again. The result is a permanent, heavy, never
+#: completing query that starves every other consumer of the database.
+#:
+#: Observed in production after the forced refresh shipped: the scan went
+#: 3.2s -> 7.5s -> 148.0s and priority_recompute 9.4s -> 157.1s across
+#: consecutive passes, while both CONCURRENTLY and plain refreshes hit
+#: the 300s timeout back to back. The site stopped responding entirely.
+#: A refresh that cannot finish must yield, not spin.
+REFRESH_FAILURE_BACKOFF_SECONDS = float(
+    os.getenv("FUTGG_REFRESH_FAILURE_BACKOFF_SECONDS", "1800")
+)
+
+#: Wall-clock time of the last failed refresh, so the loop can hold off.
+_last_refresh_failure_at: float = 0.0
 
 # Same bound the migration's own recent-sales window uses - kept as a
 # named constant here too since get_recent_sales() enforces it again on
@@ -642,6 +704,43 @@ class FutggMarketDataProvider(MarketDataProvider):
         _apply_common_filters(where, args, filters)
 
         where_clause = f"WHERE {' AND '.join(where)}" if where else ""
+
+        # Relevance first when the caller is SEARCHING, rating only after.
+        #
+        # Ordering a name search purely by rating makes it impossible to
+        # find an ordinary card. The WHERE clause is `name ILIKE %term%`,
+        # so a search matches every card of every player whose name
+        # contains the term - and then returns the highest-rated of them
+        # globally. Reproduced on a mixed catalogue: searching a term
+        # matching 40 cards across four tiers returned 20 rows that were
+        # entirely 92-rated specials and 84-rated gold rares. The 78s and
+        # 70s could not appear at any page size a user would scroll,
+        # which reads as "it doesn't show any gold cards at all".
+        #
+        # An exact name match must outrank a partial match on a higher
+        # -rated card, and a prefix match must outrank a mid-string one.
+        # Rating stays as the tie-break inside each relevance band, so a
+        # search for one player still lists their best cards first.
+        order_clause = order_by
+        if filters.search:
+            args.append(filters.search.strip())
+            term = f"${len(args)}"
+            order_clause = (
+                # Exact name.
+                f"(lower(name) = lower({term})) DESC, "
+                # Name starts with the term.
+                f"(lower(name) LIKE lower({term}) || '%%') DESC, "
+                # Term starts a WORD in the name. This is the case users
+                # actually hit: they type a surname, and "Haaland" is
+                # neither an exact nor a prefix match for "Erling
+                # Haaland". Without it every surname search falls
+                # straight through to rating and buries the plain gold
+                # card under every promo whose name merely contains the
+                # same letters.
+                f"(lower(name) LIKE '%% ' || lower({term}) || '%%') DESC, "
+                f"{order_by}"
+            )
+
         args.append(limit)
         args.append(offset)
         async with self._pool.acquire() as conn:
@@ -649,7 +748,7 @@ class FutggMarketDataProvider(MarketDataProvider):
                 SELECT {await resolve_snapshot_columns(conn)}
                 FROM futgg_market_snapshot
                 {where_clause}
-                ORDER BY {order_by}
+                ORDER BY {order_clause}
                 LIMIT ${len(args) - 1} OFFSET ${len(args)}
             """
             rows = await conn.fetch(sql, *args)
@@ -856,10 +955,83 @@ async def refresh_snapshot(pool: asyncpg.Pool, dsn: Optional[str] = None) -> boo
         if not got:
             return False
         try:
-            await conn.execute("REFRESH MATERIALIZED VIEW CONCURRENTLY futgg_market_snapshot")
+            # Timed, because a refresh that outlasts its own poll interval
+            # is invisible otherwise: it holds this advisory lock for its
+            # whole duration, so every later attempt takes the `not got`
+            # branch above and returns False without logging anything.
+            # The snapshot then freezes for as long as the refresh runs -
+            # measured at 117 minutes in production - and the only symptom
+            # is that every card looks stale to the engine.
+            #
+            # The core pool sets no command_timeout, so nothing cancels a
+            # slow refresh either. Reporting the duration is what makes
+            # "the refresh is the bottleneck" distinguishable from "the
+            # refresher is not running".
+            global _concurrent_refresh_failures
+            use_plain = (
+                _concurrent_refresh_failures >= CONCURRENT_FAILURES_BEFORE_PLAIN_REFRESH
+            )
+            mode = "" if use_plain else "CONCURRENTLY "
+            started = time.monotonic()
+            try:
+                await asyncio.wait_for(
+                    conn.execute(f"REFRESH MATERIALIZED VIEW {mode}futgg_market_snapshot"),
+                    timeout=REFRESH_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                global _last_refresh_failure_at
+                _last_refresh_failure_at = time.monotonic()
+                _concurrent_refresh_failures += 1
+                log.error(
+                    "futgg_market_snapshot refresh (%s) exceeded %.0fs and was "
+                    "cancelled. %s",
+                    mode.strip() or "plain", REFRESH_TIMEOUT_SECONDS,
+                    (
+                        "Falling back to a plain (non-concurrent) refresh on the "
+                        "next attempt - it rebuilds and swaps instead of diffing, "
+                        "which is far cheaper, at the cost of a brief lock on the "
+                        "view itself."
+                        if _concurrent_refresh_failures
+                        >= CONCURRENT_FAILURES_BEFORE_PLAIN_REFRESH
+                        else "Will retry."
+                    ),
+                )
+                return False
+            elapsed = time.monotonic() - started
+            _concurrent_refresh_failures = 0
+            if elapsed > SLOW_REFRESH_WARN_SECONDS:
+                log.warning(
+                    "futgg_market_snapshot refresh took %.0fs - longer than the "
+                    "refresher's own poll interval, so the snapshot was stale for "
+                    "at least that long and every other refresh attempt in the "
+                    "window was silently skipped. Check that "
+                    "futgg_bin_history has its (source_card_id, captured_at) "
+                    "index: the view's latest_bin CTE sorts the whole table "
+                    "without it.",
+                    elapsed,
+                )
+            else:
+                log.info("futgg_market_snapshot refreshed in %.1fs", elapsed)
             return True
         finally:
-            await conn.execute("SELECT pg_advisory_unlock($1)", REFRESH_ADVISORY_LOCK_KEY)
+            # Wrapped only so a failing unlock cannot MASK the real
+            # exception from the refresh above - a bare `await` in a
+            # finally block replaces whatever was propagating.
+            #
+            # It cannot leak the lock: asyncpg runs pg_advisory_unlock_all()
+            # when a connection is released back to the pool, so a session
+            # lock is always dropped even if this statement never runs.
+            # Verified directly against Postgres - a pooled connection that
+            # takes the lock and is released without unlocking leaves zero
+            # advisory locks held. A leaked lock was a candidate
+            # explanation for the 117-minute stale snapshot seen in
+            # production; this is the test that ruled it out.
+            try:
+                await conn.execute(
+                    "SELECT pg_advisory_unlock($1)", REFRESH_ADVISORY_LOCK_KEY
+                )
+            except Exception as exc:
+                log.warning("advisory unlock after refresh failed: %s", exc)
 
 
 async def refresher_loop(pool: asyncpg.Pool, poll_seconds: int = 120, dsn: Optional[str] = None) -> None:
