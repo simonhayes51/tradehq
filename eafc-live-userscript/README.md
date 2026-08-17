@@ -60,15 +60,28 @@ asked that the distributed script stay auditable and readable, unlike
 `autosbc.user.js`'s obfuscated body. Do not add a minify step to this
 build without an explicit request.
 
-## Hosting requirement
+## Hosting
 
 `@downloadURL` / `@updateURL` both point at
-`https://app.eafc.live/companion/eafc-live.user.js`. For userscript-manager
-auto-updates to work, `dist/eafc-live.user.js` needs to be served at
-that exact URL (same file, same version-bump-on-change convention) —
-this repository does not currently include the deploy step that
-publishes it there; that's an infrastructure task outside this
-directory's scope.
+`https://app.eafc.live/companion/eafc-live.user.js`. The built file is
+checked into `frontend/public/companion/eafc-live.user.js` — Vite
+serves everything under `frontend/public/` verbatim from the root of its
+build output, so it ships automatically with every `app.eafc.live`
+deploy, the same as `frontend/public/manifest.json` or
+`frontend/public/sw.js` already do.
+
+**This copy is not regenerated automatically.** After changing anything
+under `eafc-live-userscript/src/`, bump `version` in
+`eafc-live-userscript/src/metadata.js` (userscript managers key
+auto-update off this), then:
+
+```bash
+cd eafc-live-userscript
+npm run build
+cp dist/eafc-live.user.js ../frontend/public/companion/eafc-live.user.js
+```
+
+and commit both the source change and the updated copy in the same PR.
 
 ## Installation
 
