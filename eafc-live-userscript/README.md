@@ -63,7 +63,7 @@ build without an explicit request.
 ## Hosting requirement
 
 `@downloadURL` / `@updateURL` both point at
-`https://eafc.live/companion/eafc-live.user.js`. For userscript-manager
+`https://app.eafc.live/companion/eafc-live.user.js`. For userscript-manager
 auto-updates to work, `dist/eafc-live.user.js` needs to be served at
 that exact URL (same file, same version-bump-on-change convention) —
 this repository does not currently include the deploy step that
@@ -76,8 +76,8 @@ directory's scope.
 
 1. Install **Tampermonkey** or **Violentmonkey** from your browser's
    extension store.
-2. Visit `https://eafc.live/companion/eafc-live.user.js` (or the
-   `INSTALL COMPANION` button on `https://eafc.live/companion`) — the
+2. Visit `https://app.eafc.live/companion/eafc-live.user.js` (or the
+   `INSTALL COMPANION` button on `https://app.eafc.live/companion`) — the
    userscript manager intercepts the `.user.js` URL and shows an install
    prompt.
 3. Confirm the install. Open the EA FC 26 Web App normally
@@ -96,7 +96,7 @@ it's a proven, currently-working install path for this exact page.
 2. Open Settings → Safari → Extensions → Userscripts, and turn it on
    (Safari extensions must be explicitly enabled here).
 3. In the Userscripts app (or via Safari's extension settings), add
-   `https://eafc.live/companion/eafc-live.user.js` as a new script, or
+   `https://app.eafc.live/companion/eafc-live.user.js` as a new script, or
    use the app's "add from URL" install flow if it detects the
    `.user.js` link directly from Safari.
 4. Open the EA FC 26 Web App in Safari.
@@ -114,7 +114,7 @@ v4.7.1 release), not a live test performed here.
 2. In Firefox for Android, install **Tampermonkey** from Firefox's
    Add-ons page (Tampermonkey ships an official Firefox-for-Android
    build, and added `GM_xmlhttpRequest` proxy support for it).
-3. Visit `https://eafc.live/companion/eafc-live.user.js` in Firefox —
+3. Visit `https://app.eafc.live/companion/eafc-live.user.js` in Firefox —
    Tampermonkey intercepts it and offers to install.
 4. Open the EA FC 26 Web App in Firefox for Android.
 

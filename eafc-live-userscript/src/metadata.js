@@ -44,7 +44,7 @@
 //                         rather than a one-off local file.
 export const METADATA_BLOCK = `// ==UserScript==
 // @name         EAFC Live Companion
-// @namespace    https://eafc.live/
+// @namespace    https://app.eafc.live/
 // @version      1.0.0
 // @description  Read-only EAFC Live trading intelligence overlay for the EA SPORTS FC 26 Web App Transfer Market. Never buys, bids, lists, or automates anything - observation only.
 // @author       EAFC Live
@@ -54,7 +54,7 @@ export const METADATA_BLOCK = `// ==UserScript==
 // @grant        GM_xmlhttpRequest
 // @inject-into  page
 // @run-at       document-start
-// @downloadURL  https://eafc.live/companion/eafc-live.user.js
-// @updateURL    https://eafc.live/companion/eafc-live.user.js
+// @downloadURL  https://app.eafc.live/companion/eafc-live.user.js
+// @updateURL    https://app.eafc.live/companion/eafc-live.user.js
 // ==/UserScript==
 `;
