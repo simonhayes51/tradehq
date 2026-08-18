@@ -142,20 +142,20 @@ async def test_collect_listing_urls_navigates_pages_in_order(monkeypatch):
 
 
 def test_collect_listing_urls_no_scroll_calls():
-    """collect_listing_urls itself must never call window.scrollTo or a
-    scroll-settle wait_for_timeout - confirmed via source inspection of
-    the function BODY, excluding its own docstring (which explains what
-    it no longer does, by name, for historical context). The fake page
-    used elsewhere in this file doesn't even implement .evaluate()/
-    .wait_for_timeout(), so a real call would raise AttributeError too."""
-    doc = mod.collect_listing_urls.__doc__
+    """The real per-page pagination engine (_paginate_listing, shared by
+    daily and full-scan discovery) must never call window.scrollTo -
+    confirmed via source inspection of the function BODY, excluding its
+    own docstring (which explains what it no longer does, by name, for
+    historical context). The fake page used elsewhere in this file
+    doesn't even implement .evaluate(), so a real call would raise
+    AttributeError too."""
+    doc = mod._paginate_listing.__doc__
     consts = [
-        c for c in mod.collect_listing_urls.__code__.co_consts
+        c for c in mod._paginate_listing.__code__.co_consts
         if isinstance(c, str) and c != doc
     ]
     joined = " ".join(consts)
     assert "scrollTo" not in joined
-    assert "wait_for_timeout" not in joined
 
 
 @run_async
@@ -375,6 +375,173 @@ def test_daily_mode_is_the_default():
 def test_scroll_round_config_removed():
     assert not hasattr(mod, "SCROLL_ROUNDS")
     assert not hasattr(mod, "LISTING_URL")
+
+
+# ---------------------------------------------------------------------
+# Full-scan multi-partition discovery. Regression coverage for the live
+# production gap: /players/new/ is a recency-windowed feed, not the whole
+# catalogue - a full-scan run walked it to the real end (4 consecutive
+# zero-new pages) and stopped at 9,970 unique cards while futgg_players
+# already held 10,838 rows, missing verified-live FC26 base cards
+# (Haaland card 239085, Mbappe card 231747) that had simply aged out of
+# that feed. Full-scan mode now walks FULL_SCAN_PARTITIONS (by default
+# /players/new/ AND FUT.GG's main catalogue browse /players/), merging
+# and de-duplicating across them.
+# ---------------------------------------------------------------------
+
+
+class _FakeMultiPartitionPage:
+    """Simulates FUT.GG across more than one listing partition (used for
+    full-scan tests) - hrefs_by_path is keyed by the literal path+query
+    actually navigated to (everything after BASE_URL), so different
+    partitions (different path templates) can return different content
+    for what would otherwise collide as "page 1"."""
+
+    def __init__(self, hrefs_by_path, status=200):
+        self.goto_urls: list[str] = []
+        self._hrefs_by_path = hrefs_by_path
+        self._status = status
+        self._current_path = None
+
+    async def goto(self, url, wait_until=None, timeout=None):
+        self.goto_urls.append(url)
+        self._current_path = url.replace(mod.BASE_URL, "")
+        return _FakeResponse(self._status)
+
+    async def wait_for_timeout(self, ms):
+        pass
+
+    def locator(self, selector):
+        if selector == "a[href*='/players/']":
+            has_links = bool(self._hrefs_by_path.get(self._current_path))
+            return _FakeLocator(should_timeout=not has_links)
+        if selector == "a[href]":
+            return _FakeLocator(hrefs=self._hrefs_by_path.get(self._current_path, []))
+        return _FakeLocator()
+
+
+@run_async
+async def test_full_scan_uses_configured_partitions_and_dedupes(monkeypatch):
+    monkeypatch.setattr(mod, "FULL_SCAN", True)
+    monkeypatch.setattr(mod, "MAX_PAGES_FULL", 2)
+    monkeypatch.setattr(mod, "PLAYER_LIMIT", 0)
+    monkeypatch.setattr(mod, "IDLE_ROUNDS", 10)
+    monkeypatch.setattr(mod, "PAGE_DELAY", 0)
+    monkeypatch.setattr(
+        mod, "FULL_SCAN_PARTITIONS",
+        [("new", "/players/new/?page={page}"), ("catalogue", "/players/?page={page}")],
+    )
+    hrefs_by_path = {
+        "/players/new/?page=1": [_card_href(1), _card_href(2)],
+        "/players/?page=1": [_card_href(2), _card_href(3)],  # card 2 overlaps both partitions
+    }
+    page = _FakeMultiPartitionPage(hrefs_by_path)
+
+    urls = await mod.collect_listing_urls(page)
+
+    expected = {mod.urljoin(mod.BASE_URL, _card_href(n)) for n in (1, 2, 3)}
+    assert set(urls.keys()) == expected
+    # Deduplicated: card 2 appeared in both partitions but only counts once.
+    assert len(urls) == 3
+    assert "https://www.fut.gg/players/new/?page=1" in page.goto_urls
+    assert "https://www.fut.gg/players/?page=1" in page.goto_urls
+
+
+@run_async
+async def test_daily_mode_only_touches_the_new_partition(monkeypatch):
+    """Daily mode must not touch the catalogue-browse partition at all -
+    it stays on the fast /players/new/ path even though FULL_SCAN_PARTITIONS
+    (an unrelated config) includes more than one entry."""
+    monkeypatch.setattr(mod, "FULL_SCAN", False)
+    monkeypatch.setattr(mod, "MAX_PAGES", 1)
+    monkeypatch.setattr(mod, "PLAYER_LIMIT", 0)
+    monkeypatch.setattr(mod, "IDLE_ROUNDS", 10)
+    monkeypatch.setattr(mod, "PAGE_DELAY", 0)
+    monkeypatch.setattr(
+        mod, "FULL_SCAN_PARTITIONS",
+        [("new", "/players/new/?page={page}"), ("catalogue", "/players/?page={page}")],
+    )
+    hrefs_by_path = {
+        "/players/new/?page=1": [_card_href(1)],
+        "/players/?page=1": [_card_href(2), _card_href(3)],
+    }
+    page = _FakeMultiPartitionPage(hrefs_by_path)
+
+    urls = await mod.collect_listing_urls(page)
+
+    assert page.goto_urls == ["https://www.fut.gg/players/new/?page=1"]
+    assert len(urls) == 1
+
+
+@run_async
+async def test_full_scan_discovers_known_regression_base_cards(monkeypatch):
+    """Diagnostic regression test for the two live cards confirmed
+    missing from /players/new/'s recency window: Haaland card 239085 and
+    Mbappe card 231747, both ordinary base cards
+    (source_card_id == source_player_id). These IDs are referenced only
+    here, as a test-time diagnostic proving the multi-partition full-scan
+    mechanism surfaces base-card-shaped URLs in general - discovery
+    itself has no special-case for these or any other specific player."""
+    monkeypatch.setattr(mod, "FULL_SCAN", True)
+    monkeypatch.setattr(mod, "MAX_PAGES_FULL", 1)
+    monkeypatch.setattr(mod, "PLAYER_LIMIT", 0)
+    monkeypatch.setattr(mod, "IDLE_ROUNDS", 10)
+    monkeypatch.setattr(mod, "PAGE_DELAY", 0)
+    monkeypatch.setattr(mod, "FULL_SCAN_PARTITIONS", [("catalogue", "/players/?page={page}")])
+    HAALAND_ID, MBAPPE_ID = 239085, 231747
+    hrefs_by_path = {
+        "/players/?page=1": [
+            f"/players/{HAALAND_ID}-erling-haaland/26-{HAALAND_ID}/",
+            f"/players/{MBAPPE_ID}-kylian-mbappe/26-{MBAPPE_ID}/",
+        ],
+    }
+    page = _FakeMultiPartitionPage(hrefs_by_path)
+
+    urls = await mod.collect_listing_urls(page)
+
+    discovered_ids = {
+        int(mod.CARD_URL_RE.match(mod.urlparse(u).path).group("card_id")) for u in urls
+    }
+    found_regression_ids = {HAALAND_ID, MBAPPE_ID} & discovered_ids
+    print(f"[diagnostic] regression card IDs discovered by full-scan: {sorted(found_regression_ids)}")
+    assert found_regression_ids == {HAALAND_ID, MBAPPE_ID}
+    # Both are ordinary base cards - confirms discovery isn't relying on
+    # any rarity-specific handling to find them.
+    for url in urls:
+        match = mod.CARD_URL_RE.match(mod.urlparse(url).path)
+        assert int(match.group("player_id")) == int(match.group("card_id"))
+
+
+def test_full_scan_is_plausible_true_for_first_run_with_empty_db():
+    assert mod._full_scan_is_plausible(discovered=0, db_total=0, min_coverage=0.9) is True
+
+
+def test_full_scan_is_plausible_false_when_far_below_known_db_total():
+    # 8000 / 10838 =~ 74% - below the 90% floor.
+    assert mod._full_scan_is_plausible(discovered=8000, db_total=10838, min_coverage=0.9) is False
+
+
+def test_full_scan_is_plausible_true_when_above_coverage_threshold():
+    assert mod._full_scan_is_plausible(discovered=10000, db_total=10838, min_coverage=0.9) is True
+
+
+def test_full_scan_is_plausible_disabled_when_min_coverage_zero():
+    assert mod._full_scan_is_plausible(discovered=1, db_total=10838, min_coverage=0) is True
+
+
+def test_build_targets_skips_existing_unless_refresh_requested():
+    url1 = mod.urljoin(mod.BASE_URL, _card_href(1))  # card_id 1001
+    url2 = mod.urljoin(mod.BASE_URL, _card_href(2))  # card_id 1002
+    urls = {url1: None, url2: "img"}
+    known = {1001}
+
+    targets, skipped = mod._build_targets(urls, known, refresh_existing=False)
+    assert skipped == 1
+    assert targets == [(url2, False, "img")]
+
+    targets_refresh, skipped_refresh = mod._build_targets(urls, known, refresh_existing=True)
+    assert skipped_refresh == 0
+    assert sorted(targets_refresh) == sorted([(url1, True, None), (url2, False, "img")])
 
 
 class _FakeCardLocator:
