@@ -239,8 +239,16 @@
   color: #c6c6c6;
   font-weight: 400;
 }
+/* This file's own earlier attempt at the exact bug dashboard-analysis-
+   modal.css's .dash-modal-actions rule now documents: two side-by-side
+   tracks (130px/145px minimums) that "Add to watchlist" doesn't
+   reliably fit in on the confidence panel's real width. This rule is
+   unconditional (not inside a media query) and !important, so it was
+   still winning over that file's later single-column fix regardless of
+   viewport - stacking here too instead of fighting it with a second
+   !important. */
 .dash-modal-actions {
-  grid-template-columns: minmax(130px,1fr) minmax(145px,1fr) !important;
+  grid-template-columns: 1fr !important;
 }
 .dash-modal-actions .watch-action {
   color: #e6e6e6;
@@ -557,7 +565,7 @@
     border-bottom: 1px solid #323232;
   }
   .dash-modal-actions {
-    grid-template-columns: 1fr 1fr !important;
+    grid-template-columns: 1fr !important;
     gap: 8px !important;
     margin-top: 14px !important;
     padding-top: 0 !important;
