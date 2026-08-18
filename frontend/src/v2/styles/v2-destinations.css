@@ -15,7 +15,7 @@
   margin-bottom: 28px;
 }
 .v2-page-head > div > span {
-  color: #3bffa4;
+  color: #39ff8a;
   font-size: 11px;
   font-weight: 900;
   letter-spacing: 0.12em;
@@ -73,9 +73,9 @@
   align-items: center;
   gap: 7px;
   padding: 10px 14px;
-  border: 1px solid #3bffa4;
+  border: 1px solid #39ff8a;
   border-radius:3px;
-  background: #3bffa4;
+  background: #39ff8a;
   color: #101010;
   font-weight: 850;
   text-decoration: none;
@@ -150,7 +150,7 @@
   font-weight: 800;
 }
 .v2-segmented button.active {
-  border-color: #3bffa4;
+  border-color: #39ff8a;
   background: #14291f;
   color: #fff;
 }
@@ -200,10 +200,10 @@
   justify-content: flex-end;
 }
 .positive {
-  color: #3bffa4 !important;
+  color: #39ff8a !important;
 }
 .negative {
-  color: #ff6574 !important;
+  color: #ff5c5c !important;
 }
 .v2-watch-grid {
   display: grid;
@@ -220,7 +220,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  color: #3bffa4;
+  color: #39ff8a;
 }
 .v2-watch-top span {
   color: #a6a6a6;
@@ -320,17 +320,17 @@
 .v2-page-head h1 { margin: 5px 0 6px; font-size: clamp(36px, 4vw, 52px); line-height: 1; letter-spacing: -0.04em; }
 .v2-page-head p { font-size: 15px; line-height: 1.5; }
 .v2-search-box { max-width: 900px; height: 58px; border-color: #404040; background: #161616; box-shadow: 0 12px 30px rgba(0,0,0,.14); }
-.v2-search-box:focus-within { border-color: #3bffa4; box-shadow: 0 0 0 3px rgba(156,255,59,.08); }
+.v2-search-box:focus-within { border-color: #39ff8a; box-shadow: 0 0 0 3px rgba(156,255,59,.08); }
 .v2-page-state.compact { min-height: 120px; }
 .v2-player-start { display: grid; grid-template-columns: minmax(0,1.3fr) minmax(280px,.7fr); gap: 1px; max-width: 900px; margin-top: 18px; border: 1px solid #343434; border-radius:4px; overflow: hidden; background: #343434; }
 .v2-player-start > div { padding: 26px; background: #161616; }
-.v2-player-start-copy > span, .v2-search-examples > small { display: flex; align-items: center; gap: 6px; color: #3bffa4; font-size: 10px; font-weight: 900; letter-spacing: .11em; }
+.v2-player-start-copy > span, .v2-search-examples > small { display: flex; align-items: center; gap: 6px; color: #39ff8a; font-size: 10px; font-weight: 900; letter-spacing: .11em; }
 .v2-player-start-copy h2 { margin: 8px 0; font-size: 23px; }
 .v2-player-start-copy p { max-width: 540px; margin: 0; color: #a2a2a2; line-height: 1.6; }
 .v2-search-examples { display: grid; align-content: center; gap: 7px; }
 .v2-search-examples > small { margin-bottom: 3px; color: #909090; }
 .v2-search-examples button { display: flex; align-items: center; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #2e2e2e; color: #e6e6e6; text-align: left; }
-.v2-search-examples button:hover { color: #3bffa4; }
+.v2-search-examples button:hover { color: #39ff8a; }
 .v2-player-grid { gap: 10px; max-width: 1180px; }
 .v2-player-result { min-height: 124px; padding: 12px 16px; border-color: #343434; background: linear-gradient(135deg,#171717,#121212); }
 .v2-player-result > img { width: 74px; height: 96px; filter: drop-shadow(0 10px 12px rgba(0,0,0,.36)); }
@@ -349,7 +349,7 @@
 .v2-market-row > div > strong { font-size: 16px; }
 .v2-market-row > .coin-value { justify-content: flex-end; font-size: 17px; font-weight: 850; }
 .v2-market-row.unverified { opacity: .78; }
-.v2-market-row .needs-review { display: flex; align-items: center; justify-content: flex-end; gap: 5px; color: #ffd34d; font-size: 11px; }
+.v2-market-row .needs-review { display: flex; align-items: center; justify-content: flex-end; gap: 5px; color: #f2c94c; font-size: 11px; }
 .v2-data-note { display: flex; align-items: center; gap: 8px; margin: 0 0 12px; padding: 10px 12px; border: 1px solid rgba(255,211,77,.25); border-radius:3px; background: rgba(255,211,77,.06); color: #c8b66d; font-size: 12px; }
 .v2-watch-grid { grid-template-columns: repeat(3,minmax(0,1fr)); gap: 12px; }
 .v2-watch-card { display: flex; flex-direction: column; min-height: 360px; padding: 16px; background: linear-gradient(145deg,#171717,#121212); }
@@ -390,7 +390,7 @@
   padding: 10px 12px; border: 1px solid #2a2a2a; border-radius: 3px; background: #141414; font-size: 13px;
 }
 .v2-alert-detail { margin-top: 4px; color: #868686; font-size: 11px; }
-.v2-alerts-panel .danger { border: 1px solid #3e3e3e; border-radius: 2px; background: transparent; color: #ff8792; padding: 6px 8px; cursor: pointer; }
+.v2-alerts-panel .danger { border: 1px solid #3e3e3e; background: transparent; color: #ff8792; cursor: pointer; }
 
 .v2-modal-backdrop {
   position: fixed; inset: 0; z-index: 100; background: rgba(0,0,0,.72);

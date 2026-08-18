@@ -72,7 +72,7 @@
 }
 .lead-numbers .metric.entry > span,
 .dash-modal-numbers .metric.entry > span {
-  color: #ffd34d;
+  color: #f2c94c;
 }
 .lead-numbers .metric.positive {
   border-color: rgba(156,255,59,.42) !important;
@@ -80,7 +80,7 @@
 }
 .lead-numbers .metric.positive > span,
 .dash-modal-numbers .metric.positive > span {
-  color: #3bffa4;
+  color: #39ff8a;
 }
 .lead-numbers .metric.entry > strong { color: #fff4bf; }
 .dash-modal-numbers .metric.entry {
@@ -131,13 +131,13 @@
   border-color: rgba(255,211,77,.3);
   background: rgba(255,211,77,.07);
 }
-.trade-signal.entry > span { color: #ffd34d !important; }
+.trade-signal.entry > span { color: #f2c94c !important; }
 .trade-signal.profit {
   border-color: rgba(156,255,59,.3);
   background: rgba(156,255,59,.08);
 }
 .trade-signal.profit > span,
-.trade-signal.profit > strong { color: #3bffa4 !important; }
+.trade-signal.profit > strong { color: #39ff8a !important; }
 .queue-reason { display: none; }
 .player-meta-pills {
   display: flex;
@@ -189,9 +189,9 @@
 }
 .queue-watch:hover,
 .queue-watch.saved {
-  border-color: #3bffa4;
+  border-color: #39ff8a;
   background: rgba(156,255,59,.11);
-  color: #3bffa4;
+  color: #39ff8a;
 }
 .strategy-profit {
   display: flex;
@@ -203,10 +203,10 @@
   border: 1px solid rgba(156,255,59,.28);
   border-radius:2px;
   background: rgba(156,255,59,.07);
-  color: #3bffa4;
+  color: #39ff8a;
 }
 .strategy-profit > small {
-  color: #3bffa4 !important;
+  color: #39ff8a !important;
   font-size: 7px !important;
   font-weight: 900;
   letter-spacing: .06em;
@@ -223,7 +223,7 @@
   height: 21px;
   border-radius: 50%;
   background: rgba(156,255,59,.12);
-  color: #3bffa4;
+  color: #39ff8a;
   font-weight: 900;
 }
 .dash-analysis-modal li .coin-value {
@@ -247,7 +247,7 @@
 }
 .dash-modal-back{position:absolute;z-index:3;top:15px;left:18px;display:flex;align-items:center;gap:7px;color:#bbbbbb;font-size:12px;font-weight:800}
 .dash-modal-back svg{transform:rotate(180deg)}
-.dash-modal-back:hover{color:#3bffa4}
+.dash-modal-back:hover{color:#39ff8a}
 .dash-chart-tooltip {
   display: flex !important;
   flex-direction: column !important;
@@ -314,7 +314,7 @@
     position: absolute;
     inset: 0 auto 0 0;
     width: 3px;
-    background: linear-gradient(#3bffa4,rgba(156,255,59,0));
+    background: linear-gradient(#39ff8a,rgba(156,255,59,0));
   }
   .queue-card > .rank {
     grid-area: rank;
@@ -523,7 +523,7 @@
   .dash-modal-verdict {
     margin: 15px 0 17px !important;
     padding: 11px 14px;
-    border-left: 3px solid #3bffa4;
+    border-left: 3px solid #39ff8a;
     border-radius: 0 9px 9px 0;
     background: rgba(156,255,59,.045);
   }
@@ -598,7 +598,7 @@
     position: absolute;
     inset: 0 auto 0 0;
     width: 3px;
-    background: linear-gradient(#3bffa4,rgba(156,255,59,0));
+    background: linear-gradient(#39ff8a,rgba(156,255,59,0));
   }
   .queue-card > .rank {
     position: absolute;
@@ -967,8 +967,8 @@
 
 .home-in-shell { margin-left: 0 !important; }
 .map-bars > button { display: grid; grid-template-columns: 190px minmax(0,1fr) 60px; align-items: center; gap: 12px; width: 100%; color: #f8f8f8; text-align: left; }
-.map-bars > button:hover span { color: #3bffa4; }
+.map-bars > button:hover span { color: #39ff8a; }
 .map-bars > button > i { height: 8px; overflow: hidden; border-radius:99px; background: #242424; }
-.map-bars > button > i > b { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg,#4dcf92,#3bffa4); }
-.map-bars > button > strong { color: #3bffa4; font-size: 12px; text-align: right; }
+.map-bars > button > i > b { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg,#4dcf92,#39ff8a); }
+.map-bars > button > strong { color: #39ff8a; font-size: 12px; text-align: right; }
 @media (max-width: 700px) { .map-bars > button { grid-template-columns: 110px minmax(0,1fr) 48px; } }

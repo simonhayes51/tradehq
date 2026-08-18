@@ -8,7 +8,7 @@
 // see the FUTBIN -> FUT.GG migration plan.
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { ArrowRight, RotateCcw, ShieldAlert, SlidersHorizontal } from "lucide-react";
+import { ArrowRight, RotateCcw, ShieldAlert, SlidersHorizontal, TrendingUp } from "lucide-react";
 import CoinValue from "../../components/CoinValue";
 import EmptyState from "../../components/EmptyState";
 import MarketFreshness from "../../components/MarketFreshness";
@@ -60,7 +60,11 @@ export default function TradeFinder() {
   const notDeployed = query.isError && [404, undefined].includes(query.error?.response?.status);
 
   return <main className="v2-destination trade-finder-page">
-    <PageHead eyebrow="TRADE FINDER" title="Find a move that fits you" copy="Set your budget, minimum return and risk. We’ll only show current FUT.GG-priced trades that match." />
+    <PageHead eyebrow="TRADE FINDER" title="Search every trade, your way" copy="Set your budget, minimum return, risk, position, rarity and sort order — every current FUT.GG-priced trade is in scope here, not just the pre-filtered buy signals. Just want today's top picks with no setup? Try Opportunities." />
+
+    <Link className="opp-crosslink" to="/v2/opportunities">
+      <TrendingUp size={15} /> Just want the shortlist? Open Opportunities <ArrowRight size={14} />
+    </Link>
 
     <section className="finder-controls trade-finder-controls" aria-label="Trade filters">
       <div className="finder-control">
