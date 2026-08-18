@@ -61,12 +61,12 @@ export default function PlayerPage() {
   }
   if (!item) return <div className="quick-analysis-page"><div className="quick-error"><p>Loading the latest analysis…</p><button onClick={goBack}>{backLabel}</button></div></div>;
 
-  return <div className="quick-analysis-page">
-    {/* FutggMarketSection adds the BIN history and completed-sales
-        detail beneath the headline verdict; both now read the same
-        FUT.GG source, so the two can no longer disagree. */}
-    <AnalysisModal item={item} onClose={goBack} navigate={navigate} onWatch={watch} watchState={watchState} backLabel={backLabel} extra={<FutggMarketSection cardId={cardId} />}/>
-  </div>;
+  {/* variant="page": this route is a standalone page (own URL, own back
+      button, indefinitely long FutggMarketSection content below), not a
+      click-triggered overlay - see AnalysisModal's own comment for why
+      the default fixed/centred/self-scrolling modal chrome broke here
+      (card art rendering behind the sidebar / far down the page). */}
+  return <AnalysisModal item={item} onClose={goBack} navigate={navigate} onWatch={watch} watchState={watchState} backLabel={backLabel} variant="page" extra={<FutggMarketSection cardId={cardId} />}/>;
 }
 
 // Maps the engine's signal vocabulary onto the verdict the shared

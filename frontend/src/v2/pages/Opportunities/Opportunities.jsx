@@ -113,7 +113,7 @@ function OpportunityCard({ item }) {
   return (
     <Link className="finder-card opp-card" to={`/v2/players/${cardId}`} state={{ from: "opportunities" }}>
       <div className="finder-card-top">
-        <img src={item.image_url || "/img/card-placeholder.png"} alt="" />
+        <img src={item.composited_image_url || item.image_url || "/img/card-placeholder.png"} alt="" />
         <div>
           <h2>{item.name || "Unknown player"}</h2>
           <div className="v2-meta-pills">
