@@ -1,25 +1,52 @@
 #!/usr/bin/env python
 """Daily FUT.GG player catalogue sync.
 
-Discovers cards from https://www.fut.gg/players/new/?page=N (real
-pagination - see collect_listing_urls()), visits only cards that are new
-(unless FUTGG_REFRESH_EXISTING=true), and upserts metadata into the
-independent futgg_players table. It intentionally does not write prices or
-sales; futgg_price_sync.py owns those.
+Discovers cards via real pagination (?page=N - see _paginate_listing()/
+collect_listing_urls()), visits only cards that are new (unless
+FUTGG_REFRESH_EXISTING=true), and upserts metadata into the independent
+futgg_players table. It intentionally does not write prices or sales;
+futgg_price_sync.py owns those.
 
 Recommended Railway Cron: once daily, e.g. 15 5 * * *
 
-Two discovery modes, since new cards appear at the front of the listing:
-  - Daily (default): only the first FUTGG_LISTING_MAX_PAGES pages, enough
-    to catch what's new since yesterday without re-walking the whole
+Two discovery modes:
+  - Daily (default): a single partition, FUT.GG's newest-first feed
+    (/players/new/), capped at FUTGG_LISTING_MAX_PAGES pages - enough to
+    catch what's new since yesterday without re-walking the whole
     catalogue every run.
-  - Full scan (FUTGG_LISTING_FULL_SCAN=true): up to
+  - Full scan (FUTGG_LISTING_FULL_SCAN=true): one or more partitions (see
+    FUTGG_FULL_SCAN_PARTITIONS below), each capped at
     FUTGG_LISTING_MAX_PAGES_FULL pages, for an occasional full-catalogue
-    sync (the real catalogue is 350+ pages as of writing).
-Either mode also stops early after FUTGG_LISTING_IDLE_ROUNDS consecutive
-pages with zero new cards - the real signal that pagination has run past
-the end of the catalogue, so a full scan doesn't have to walk its whole
-page cap every time and a daily run doesn't overrun a slow news day.
+    reconciliation.
+
+    IMPORTANT: /players/new/ is a RECENCY WINDOW, not the whole catalogue.
+    Confirmed live 2026-08: a full-scan run walked every page of
+    /players/new/ down to 4 consecutive zero-new pages and stopped at
+    9,970 unique cards, while futgg_players already held 10,838 rows -
+    including verified-live FC26 base cards (e.g. Haaland card 239085,
+    Mbappe card 231747) that simply aged out of the "new" feed as the
+    catalogue grew past its window. Full-scan mode therefore also walks
+    FUT.GG's main catalogue browse (/players/, unfiltered) as a second
+    partition by default, using the identical pagination engine. Which
+    partitions run is controlled by FUTGG_FULL_SCAN_PARTITIONS so this can
+    be re-pointed at a different verified-complete FUT.GG source (a
+    rarity/category filter, a profile-version listing, etc.) without a
+    code change - see that variable's description and
+    collect_listing_urls()'s docstring for why no such filter is
+    hardcoded here.
+
+Either mode also stops early, per partition, after FUTGG_LISTING_IDLE_ROUNDS
+consecutive pages with zero new cards - the real signal that pagination has
+run past the end of that partition's catalogue, so a full scan doesn't have
+to walk its whole page cap every time and a daily run doesn't overrun a
+slow news day.
+
+A full-scan run also checks its combined result against futgg_players'
+current row count (FUTGG_FULL_SCAN_MIN_COVERAGE) before it can report
+success - see _full_scan_is_plausible(). It will still upsert whatever
+legitimate new cards it found even if that check fails (no reason to
+discard real discoveries), but the run is flagged as failed rather than
+silently reported as a complete reconciliation.
 
 Important environment variables:
   DATABASE_URL                    required
@@ -28,8 +55,17 @@ Important environment variables:
   FUTGG_PLAYER_LIMIT              0 = no card limit
   FUTGG_LISTING_FULL_SCAN         false
   FUTGG_LISTING_MAX_PAGES         5 (daily mode)
-  FUTGG_LISTING_MAX_PAGES_FULL    400 (full-scan mode)
-  FUTGG_LISTING_IDLE_ROUNDS       4 (consecutive pages w/ 0 new cards before stopping)
+  FUTGG_LISTING_MAX_PAGES_FULL    400 (full-scan mode, per partition)
+  FUTGG_FULL_SCAN_PARTITIONS      "new:/players/new/?page={page},catalogue:/players/?page={page}"
+                                   comma-separated name:template pairs, each
+                                   template containing a literal '{page}'
+                                   placeholder - the full-scan sources to
+                                   walk and merge/de-duplicate
+  FUTGG_FULL_SCAN_MIN_COVERAGE    0.9 (full-scan must discover >= this
+                                   fraction of futgg_players' current row
+                                   count to be treated as a plausible
+                                   complete catalogue; 0 disables the check)
+  FUTGG_LISTING_IDLE_ROUNDS       4 (consecutive pages w/ 0 new cards before stopping, per partition)
   FUTGG_LISTING_PAGE_DELAY        0.5 seconds, between listing-page navigations
   FUTGG_LISTING_STABILIZE_ATTEMPTS 6 (retries waiting for a page's cards to differ from the previous page's)
   FUTGG_LISTING_STABILIZE_POLL_MS 400 (wait between stabilize retries)
@@ -76,12 +112,55 @@ PLAYER_LIMIT = max(0, int(os.getenv("FUTGG_PLAYER_LIMIT", "0")))
 # Pagination (replaces scroll-based discovery entirely - see
 # collect_listing_urls()). Two page caps, selected by FULL_SCAN: a small
 # one for the normal daily run (new cards appear at the front of the
-# listing, so a handful of pages is enough) and a large one for an
-# occasional full-catalogue sync (~350+ real pages as of writing).
+# listing, so a handful of pages is enough) and a large one, applied per
+# partition, for an occasional full-catalogue sync.
 FULL_SCAN = os.getenv("FUTGG_LISTING_FULL_SCAN", "false").strip().lower() in {"1", "true", "yes", "on"}
 MAX_PAGES_DAILY = max(1, int(os.getenv("FUTGG_LISTING_MAX_PAGES", "5")))
 MAX_PAGES_FULL = max(1, int(os.getenv("FUTGG_LISTING_MAX_PAGES_FULL", "400")))
 MAX_PAGES = MAX_PAGES_FULL if FULL_SCAN else MAX_PAGES_DAILY
+
+# Full-scan discovery sources. /players/new/ is a recency-windowed feed,
+# not the whole catalogue (see module docstring) - full-scan mode walks
+# each of these partitions and merges/de-duplicates their results. Format:
+# comma-separated "name:template" pairs, each template containing a
+# literal "{page}" placeholder, resolved against BASE_URL. Configurable
+# (rather than hardcoding a rarity/category filter) because this worker
+# has no live network access to FUT.GG from this dev/CI environment to
+# confirm any such filter's exact query parameter by inspection - an
+# operator with live access can repoint this at a verified-complete source
+# without a code change.
+DEFAULT_FULL_SCAN_PARTITIONS = "new:/players/new/?page={page},catalogue:/players/?page={page}"
+
+
+def _parse_full_scan_partitions(raw: str) -> list[tuple[str, str]]:
+    partitions: list[tuple[str, str]] = []
+    for chunk in raw.split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        if ":" not in chunk:
+            raise ValueError(
+                f"Invalid FUTGG_FULL_SCAN_PARTITIONS entry (expected name:template): {chunk!r}"
+            )
+        name, template = chunk.split(":", 1)
+        name, template = name.strip(), template.strip()
+        if "{page}" not in template:
+            raise ValueError(
+                f"FUTGG_FULL_SCAN_PARTITIONS entry {chunk!r} is missing the '{{page}}' placeholder"
+            )
+        partitions.append((name, template))
+    if not partitions:
+        raise ValueError("FUTGG_FULL_SCAN_PARTITIONS resolved to zero partitions")
+    return partitions
+
+
+FULL_SCAN_PARTITIONS = _parse_full_scan_partitions(
+    os.getenv("FUTGG_FULL_SCAN_PARTITIONS", DEFAULT_FULL_SCAN_PARTITIONS)
+)
+# A genuinely complete full-scan shouldn't discover meaningfully fewer
+# cards than are already confirmed in futgg_players - existing rows don't
+# vanish from FUT.GG. See _full_scan_is_plausible().
+FULL_SCAN_MIN_COVERAGE = max(0.0, min(1.0, float(os.getenv("FUTGG_FULL_SCAN_MIN_COVERAGE", "0.9"))))
 # Same name/default as before scrolling was removed - now counts
 # consecutive PAGES with zero new cards instead of scroll rounds, same
 # early-stop role either way.
@@ -314,32 +393,38 @@ async def _read_card_hrefs(page) -> dict[str, str | None]:
     return matched
 
 
-async def collect_listing_urls(page) -> dict[str, str | None]:
-    """Discovers card URLs via real pagination (?page=1, ?page=2, ...) -
-    no window.scrollTo() or scroll-settle waits anywhere. Each page is a
-    direct navigation; MAX_PAGES caps how many pages are visited (small
-    for a daily run, large for FULL_SCAN - see module docstring), and
-    IDLE_ROUNDS consecutive pages with zero new cards stops early
-    regardless of the cap, since that's the real signal pagination has
-    run past the end of the catalogue.
+async def _paginate_listing(
+    page, url_template: str, max_pages: int, partition_label: str
+) -> dict[str, str | None]:
+    """Paginates a single FUT.GG listing partition (?page=1, ?page=2, ...
+    against url_template, a path containing a literal '{page}'
+    placeholder) - no window.scrollTo() or scroll-settle waits anywhere.
+    Each page is a direct navigation; max_pages caps how many pages are
+    visited, and IDLE_ROUNDS consecutive pages with zero new cards stops
+    this partition early regardless of the cap, since that's the real
+    signal pagination has run past the end of it. This is the shared
+    engine behind both daily discovery (a single partition) and full-scan
+    discovery (one or more partitions, merged - see collect_listing_urls());
+    partition_label only affects logging.
 
     Returns card URL -> composited card image URL (or None if that
     card's tile had none) - see _read_card_hrefs' docstring for why this
-    listing crawl is the only place that image can be captured. Callers
-    that only need the URLs can still iterate/len() this like the old
-    list return - dict keys behave identically for that."""
+    listing crawl is the only place that image can be captured."""
     seen: dict[str, str | None] = {}
     idle_pages = 0
     previous_page_hrefs: dict[str, str | None] = {}
 
-    for page_number in range(1, MAX_PAGES + 1):
-        listing_url = f"{BASE_URL}/players/new/?page={page_number}"
+    for page_number in range(1, max_pages + 1):
+        listing_url = f"{BASE_URL}{url_template.format(page=page_number)}"
         response = await page.goto(listing_url, wait_until="domcontentloaded", timeout=TIMEOUT_MS)
         status = response.status if response else 0
         if status != 200:
             if page_number == 1:
-                raise RuntimeError(f"FUT.GG listing returned HTTP {status}")
-            log.warning("FUT.GG listing page %d returned HTTP %d - stopping pagination", page_number, status)
+                raise RuntimeError(f"FUT.GG listing partition={partition_label} returned HTTP {status}")
+            log.warning(
+                "FUT.GG listing partition=%s page %d returned HTTP %d - stopping pagination",
+                partition_label, page_number, status,
+            )
             break
 
         await dismiss_cookie_banner(page)
@@ -347,8 +432,11 @@ async def collect_listing_urls(page) -> dict[str, str | None]:
             await page.locator("a[href*='/players/']").first.wait_for(state="attached", timeout=TIMEOUT_MS)
         except PlaywrightTimeoutError as exc:
             if page_number == 1:
-                raise RuntimeError("No card links appeared on FUT.GG listing") from exc
-            log.info("No card links on listing page %d - treating as end of catalogue", page_number)
+                raise RuntimeError(f"No card links appeared on FUT.GG listing partition={partition_label}") from exc
+            log.info(
+                "No card links on listing partition=%s page %d - treating as end of catalogue",
+                partition_label, page_number,
+            )
             break
 
         # FUT.GG's listing is client-rendered - a query-param-only
@@ -388,7 +476,8 @@ async def collect_listing_urls(page) -> dict[str, str | None]:
         previous_page_hrefs = current_hrefs
 
         log.info(
-            "Listing page %d: %d new cards, %d unique total", page_number, new_this_page, len(seen)
+            "Listing partition=%s page %d: %d new cards, %d unique total",
+            partition_label, page_number, new_this_page, len(seen),
         )
 
         if PLAYER_LIMIT and len(seen) >= PLAYER_LIMIT:
@@ -397,17 +486,82 @@ async def collect_listing_urls(page) -> dict[str, str | None]:
         if new_this_page == 0:
             idle_pages += 1
             if idle_pages >= IDLE_ROUNDS:
-                log.info("%d consecutive pages with no new cards - stopping pagination", idle_pages)
+                log.info(
+                    "partition=%s: %d consecutive pages with no new cards - stopping pagination",
+                    partition_label, idle_pages,
+                )
                 break
         else:
             idle_pages = 0
 
-        if page_number < MAX_PAGES and PAGE_DELAY:
+        if page_number < max_pages and PAGE_DELAY:
             await asyncio.sleep(random.uniform(PAGE_DELAY * 0.7, PAGE_DELAY * 1.3))
 
-    if PLAYER_LIMIT:
-        return dict(list(seen.items())[:PLAYER_LIMIT])
     return seen
+
+
+async def collect_listing_urls(page) -> dict[str, str | None]:
+    """Top-level discovery entry point - see module docstring for the
+    daily-vs-full-scan distinction and why full-scan walks more than
+    /players/new/.
+
+    Daily mode (FULL_SCAN=false): a single partition, /players/new/,
+    capped at MAX_PAGES_DAILY pages.
+
+    Full-scan mode: every partition in FULL_SCAN_PARTITIONS (each capped
+    at MAX_PAGES_FULL pages), merged into one URL -> image dict,
+    de-duplicating by canonical card URL using the same "a None image
+    coalesces to a real one" rule _paginate_listing() applies across
+    pages of a single partition - a card that surfaces under more than
+    one partition (e.g. a genuinely new card that appears in both the
+    "new" feed and the main catalogue browse) is only fetched once.
+
+    Returns card URL -> composited card image URL (or None) - see
+    _read_card_hrefs' docstring for why this listing crawl is the only
+    place that image can be captured. Callers that only need the URLs can
+    still iterate/len() this like a plain list - dict keys behave
+    identically for that."""
+    if not FULL_SCAN:
+        urls = await _paginate_listing(page, "/players/new/?page={page}", MAX_PAGES, "daily-new")
+        log.info("Discovery mode=daily source=partition:daily-new unique=%d", len(urls))
+        if PLAYER_LIMIT:
+            return dict(list(urls.items())[:PLAYER_LIMIT])
+        return urls
+
+    combined: dict[str, str | None] = {}
+    for name, template in FULL_SCAN_PARTITIONS:
+        partition_urls = await _paginate_listing(page, template, MAX_PAGES_FULL, name)
+        before = len(combined)
+        for card_url, image_url in partition_urls.items():
+            if card_url not in combined or (combined[card_url] is None and image_url):
+                combined[card_url] = image_url
+        log.info(
+            "Discovery mode=full source=partition:%s partition_unique=%d new_to_combined=%d combined_total=%d",
+            name, len(partition_urls), len(combined) - before, len(combined),
+        )
+        if PLAYER_LIMIT and len(combined) >= PLAYER_LIMIT:
+            break
+
+    log.info(
+        "Discovery mode=full partitions=%d combined_unique=%d",
+        len(FULL_SCAN_PARTITIONS), len(combined),
+    )
+    if PLAYER_LIMIT:
+        return dict(list(combined.items())[:PLAYER_LIMIT])
+    return combined
+
+
+def _full_scan_is_plausible(discovered: int, db_total: int, min_coverage: float) -> bool:
+    """A genuinely complete full-scan should discover at least
+    min_coverage (default 90%) of whatever's already confirmed in
+    futgg_players - existing rows don't vanish from FUT.GG, so a
+    full-scan result well below the current row count means the
+    discovery source(s) returned an incomplete catalogue, not that the
+    real catalogue shrank. db_total<=0 (empty table - first ever run) or
+    min_coverage<=0 (check disabled) always passes."""
+    if db_total <= 0 or min_coverage <= 0:
+        return True
+    return discovered >= db_total * min_coverage
 
 
 async def existing_ids(conn: asyncpg.Connection, urls) -> set[int]:
@@ -425,6 +579,29 @@ async def existing_ids(conn: asyncpg.Connection, urls) -> set[int]:
         "SELECT source_card_id FROM futgg_players WHERE source_card_id = ANY($1::bigint[])", ids
     )
     return {int(row["source_card_id"]) for row in rows}
+
+
+def _build_targets(
+    urls: dict[str, str | None], known: set[int], refresh_existing: bool,
+) -> tuple[list[tuple[str, bool, str | None]], int]:
+    """Splits discovered URLs into (fetch targets, skipped-existing
+    count). A card already in futgg_players (card_id in known) is skipped
+    unless refresh_existing - same skip rule crawl_once has always
+    applied, pulled out into its own pure function so it's unit-testable
+    without a live DB/Playwright."""
+    targets: list[tuple[str, bool, str | None]] = []
+    skipped = 0
+    for url, listing_image_url in urls.items():
+        match = CARD_URL_RE.match(urlparse(url).path)
+        if not match:
+            continue
+        card_id = int(match.group("card_id"))
+        existed = card_id in known
+        if existed and not refresh_existing:
+            skipped += 1
+            continue
+        targets.append((url, existed, listing_image_url))
+    return targets, skipped
 
 
 async def upsert_card(conn: asyncpg.Connection, card: FutggCard) -> None:
@@ -628,22 +805,30 @@ async def crawl_once() -> None:
         stats["discovered"] = len(urls)
         async with pool.acquire() as conn:
             known = await existing_ids(conn, urls)
+            db_total = await conn.fetchval("SELECT COUNT(*) FROM futgg_players")
 
-        targets: list[tuple[str, bool, str | None]] = []
-        for url, listing_image_url in urls.items():
-            match = CARD_URL_RE.match(urlparse(url).path)
-            if not match:
-                continue
-            card_id = int(match.group("card_id"))
-            existed = card_id in known
-            if existed and not REFRESH_EXISTING:
-                stats["skipped_existing"] += 1
-                continue
-            targets.append((url, existed, listing_image_url))
+        scan_plausible = True
+        if FULL_SCAN:
+            scan_plausible = _full_scan_is_plausible(len(urls), db_total, FULL_SCAN_MIN_COVERAGE)
+            log.info(
+                "Full-scan plausibility check: discovered=%d db_total=%d min_coverage=%.2f plausible=%s",
+                len(urls), db_total, FULL_SCAN_MIN_COVERAGE, scan_plausible,
+            )
+            if not scan_plausible:
+                log.error(
+                    "Full-scan discovered only %d cards but futgg_players already has %d rows "
+                    "(below %.0f%% coverage) - discovery source(s) look incomplete; this run's "
+                    "any legitimate upserts still apply, but it will NOT be reported as a "
+                    "successful complete reconciliation",
+                    len(urls), db_total, FULL_SCAN_MIN_COVERAGE * 100,
+                )
+
+        targets, skipped_existing = _build_targets(urls, known, REFRESH_EXISTING)
+        stats["skipped_existing"] = skipped_existing
 
         log.info(
-            "Discovered=%d known=%d targets=%d refresh_existing=%s concurrency=%d",
-            len(urls), len(known), len(targets), REFRESH_EXISTING, PLAYER_CONCURRENCY,
+            "Discovery mode=%s discovered=%d known=%d targets=%d refresh_existing=%s concurrency=%d",
+            "full" if FULL_SCAN else "daily", len(urls), len(known), len(targets), REFRESH_EXISTING, PLAYER_CONCURRENCY,
         )
 
         queue: "asyncio.Queue[tuple[int, str, bool, str | None]]" = asyncio.Queue()
@@ -665,7 +850,11 @@ async def crawl_once() -> None:
         if breaker.tripped:
             log.warning("Circuit breaker tripped: %s - stopped fetching remaining cards this run", breaker.trip_reason)
 
-        ok = (stats["failed"] == 0 or (stats["new"] + stats["updated"]) > 0) and not breaker.tripped
+        ok = (
+            (stats["failed"] == 0 or (stats["new"] + stats["updated"]) > 0)
+            and not breaker.tripped
+            and scan_plausible
+        )
         async with pool.acquire() as conn:
             await heartbeat(
                 conn,
@@ -673,9 +862,14 @@ async def crawl_once() -> None:
                 ok=ok,
                 detail=" ".join(f"{key}={value}" for key, value in stats.items()),
             )
-        if not ok:
+        if not scan_plausible:
+            await alert(
+                f"futgg_player_sync full-scan looked incomplete: discovered={len(urls)} "
+                f"db_total={db_total} min_coverage={FULL_SCAN_MIN_COVERAGE}"
+            )
+        elif not ok:
             await alert(f"futgg_player_sync failed: {stats}")
-        log.info("Run complete: %s", stats)
+        log.info("Run complete: mode=%s scan_plausible=%s %s", "full" if FULL_SCAN else "daily", scan_plausible, stats)
 
     finally:
         if context:
