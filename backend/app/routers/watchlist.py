@@ -210,6 +210,16 @@ async def list_watch_items(
             # (possibly older) last_price column, no extra request needed.
             live_price = fg.get("current_bin") if fg else None
             is_extinct = fg is None or fg.get("is_tradeable") is False
+            # composited_image_url: same field/precedence as
+            # futgg_market.py's own serializer (card_image_stored_url, our
+            # R2 mirror, else the raw FUT.GG card_image_url) - the single
+            # pre-composited full-card image with rating/stats baked in.
+            # get_players_by_ids() already selects these columns (see
+            # market_data_provider.py's _SNAPSHOT_COLUMNS), this route
+            # just wasn't reading them, so every FUT.GG watchlist row fell
+            # back to the frontend's raw-photo fallback even when a real
+            # card image existed - the generated_card_url pipeline below
+            # is legacy-table only and is never populated for FUT.GG rows.
             m = {
                 "name": fg.get("name") if fg else it["player_name"],
                 "rating": fg.get("rating") if fg else None,
@@ -217,6 +227,7 @@ async def list_watch_items(
                 "nation": fg.get("nation") if fg else None,
                 "version": fg.get("rarity") if fg else it.get("version"),
                 "image_url": fg.get("player_image_url") if fg else None,
+                "composited_image_url": (fg.get("card_image_stored_url") or fg.get("card_image_url")) if fg else None,
                 "card_bg_image": None, "card_cutout_image": None, "card_cutout_type": None,
                 "card_name": fg.get("name") if fg else None,
                 "generated_card_url": None, "generated_card_status": None, "generated_card_flagged": None,
@@ -260,6 +271,7 @@ async def list_watch_items(
             "nation": m.get("nation"),
             "version": m.get("version"),
             "image_url": m.get("image_url"),
+            "composited_image_url": m.get("composited_image_url"),
             "card_bg_image": m.get("card_bg_image"),
             "card_cutout_image": m.get("card_cutout_image"),
             "card_cutout_type": m.get("card_cutout_type"),
