@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EAFC Live Companion
 // @namespace    https://app.eafc.live/
-// @version      1.2.0
+// @version      1.2.1
 // @description  Read-only EAFC Live trading intelligence overlay for the EA SPORTS FC 26 Web App Transfer Market. Never buys, bids, lists, or automates anything - observation only.
 // @author       EAFC Live
 // @match        https://www.ea.com/*/ea-sports-fc/ultimate-team/web-app/*
@@ -382,19 +382,23 @@
     return `${h}h ${m % 60}m`;
   }
   var ERROR_STATUS_TEXT = {
-    network_error: "EAFC Live backend unreachable right now.",
-    server_error: "EAFC Live backend returned an error.",
-    timeout: "EAFC Live backend timed out."
+    network_error: "Backend unreachable.",
+    server_error: "Backend error.",
+    timeout: "Backend timed out."
   };
   var STYLES = `
   :host { all: initial; }
   .eafc-live-panel {
     position: fixed;
-    bottom: max(16px, env(safe-area-inset-bottom));
-    right: max(16px, env(safe-area-inset-right));
+    /* EA's own bottom tab bar (Home/Squads/SBC/Transfers/Store/Club) sits
+       roughly 64-72px tall on phone - a plain safe-area offset put this
+       panel underneath/behind it. Cleared with a fixed floor, not just
+       the safe-area inset. */
+    bottom: max(76px, calc(env(safe-area-inset-bottom) + 68px));
+    right: max(12px, env(safe-area-inset-right));
     z-index: 2147483647;
-    width: min(92vw, 300px);
-    max-height: 80vh;
+    width: min(88vw, 270px);
+    max-height: 70vh;
     overflow-y: auto;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     font-size: 13px;
@@ -461,7 +465,6 @@
 `;
   var hostEl = null;
   var shadow = null;
-  var dismissedKey = null;
   var collapsed = false;
   function ensureMounted() {
     if (hostEl && hostEl.isConnected) return shadow;
@@ -496,10 +499,6 @@
       clearPanel();
       return;
     }
-    if (state.key && state.key === dismissedKey) {
-      clearPanel();
-      return;
-    }
     const root = ensureMounted();
     clearPanel();
     const panel = el("div", `eafc-live-panel${collapsed ? " collapsed" : ""}`);
@@ -519,8 +518,8 @@
     const closeBtn = el("span", "eafc-live-btn", "\xD7");
     closeBtn.addEventListener("click", (event) => {
       event.stopPropagation();
-      dismissedKey = state.key || null;
-      clearPanel();
+      collapsed = true;
+      render(state);
     });
     controls.appendChild(closeBtn);
     header.appendChild(controls);
@@ -531,21 +530,20 @@
     panel.appendChild(header);
     const body = el("div", "eafc-live-body");
     if (state.kind === "loading") {
-      body.appendChild(el("div", "eafc-live-muted", "Loading EAFC Live intelligence..."));
+      body.appendChild(el("div", "eafc-live-muted", "Loading\u2026"));
       panel.appendChild(body);
       root.appendChild(panel);
       return;
     }
     if (state.kind === "no-intelligence") {
-      body.appendChild(el("div", "eafc-live-muted", "No intelligence available for this card."));
+      body.appendChild(el("div", "eafc-live-muted", "No data for this card."));
       panel.appendChild(body);
       root.appendChild(panel);
       return;
     }
     if (state.kind === "error") {
-      const message = ERROR_STATUS_TEXT[state.status] || "EAFC Live backend unavailable right now.";
+      const message = ERROR_STATUS_TEXT[state.status] || "Backend unavailable.";
       body.appendChild(el("div", "eafc-live-muted", message));
-      body.appendChild(el("div", "eafc-live-muted", "Will retry automatically on the next market update."));
       if (state.detail) {
         body.appendChild(el("div", "eafc-live-debug", state.detail));
       }
@@ -580,9 +578,6 @@
     const verdictEl = el("div", `eafc-live-verdict ${verdict.tone}`);
     verdictEl.textContent = verdict.tone === "confirmed" ? `\u2713 ${verdict.text}` : verdict.text;
     body.appendChild(verdictEl);
-    body.appendChild(
-      el("div", "eafc-live-muted", "Reference data from EAFC Live \xB7 live listings read from this EA search")
-    );
     if (window.EAFC_LIVE_DEBUG && intelligence.source_card_id) {
       body.appendChild(el("div", "eafc-live-debug", `source_card_id: ${intelligence.source_card_id}`));
     }
@@ -672,8 +667,8 @@
   }
   var MAX_MISSING_TICKS = 8;
   function positionBadge(entry) {
-    const { el: el2, anchorNode } = entry;
-    if (!anchorNode || !anchorNode.parentElement || !anchorNode.parentElement.isConnected) {
+    const { el: el2, anchorNode, priceText } = entry;
+    if (!anchorNode || !anchorNode.parentElement || !anchorNode.parentElement.isConnected || anchorNode.nodeValue == null || anchorNode.nodeValue.trim() !== priceText) {
       el2.style.display = "none";
       entry.missingTicks = (entry.missingTicks || 0) + 1;
       return;
@@ -742,7 +737,7 @@
           }
           const el2 = makeBadgeEl(verdict, () => openOverlayFor(auction, sameCardAuctions, intelligence));
           ensureContainer().appendChild(el2);
-          const entry = { el: el2, auction, anchorNode, verdict };
+          const entry = { el: el2, auction, anchorNode, priceText, verdict };
           badges.set(key, entry);
           positionBadge(entry);
         }

@@ -39,20 +39,24 @@ function fmtExpiry(seconds) {
 }
 
 const ERROR_STATUS_TEXT = {
-  network_error: "EAFC Live backend unreachable right now.",
-  server_error: "EAFC Live backend returned an error.",
-  timeout: "EAFC Live backend timed out.",
+  network_error: "Backend unreachable.",
+  server_error: "Backend error.",
+  timeout: "Backend timed out.",
 };
 
 const STYLES = `
   :host { all: initial; }
   .eafc-live-panel {
     position: fixed;
-    bottom: max(16px, env(safe-area-inset-bottom));
-    right: max(16px, env(safe-area-inset-right));
+    /* EA's own bottom tab bar (Home/Squads/SBC/Transfers/Store/Club) sits
+       roughly 64-72px tall on phone - a plain safe-area offset put this
+       panel underneath/behind it. Cleared with a fixed floor, not just
+       the safe-area inset. */
+    bottom: max(76px, calc(env(safe-area-inset-bottom) + 68px));
+    right: max(12px, env(safe-area-inset-right));
     z-index: 2147483647;
-    width: min(92vw, 300px);
-    max-height: 80vh;
+    width: min(88vw, 270px);
+    max-height: 70vh;
     overflow-y: auto;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     font-size: 13px;
@@ -120,10 +124,12 @@ const STYLES = `
 
 let hostEl = null;
 let shadow = null;
-// The renderKey of the last panel the user explicitly closed - NOT a
-// page-lifetime flag. A subsequent render() for a DIFFERENT key reopens
-// the panel; only a repeat of the exact dismissed state stays hidden.
-let dismissedKey = null;
+// "×" used to fully hide the panel via a dismissedKey that only the
+// EXACT same market state would clear - in practice that meant closing
+// it once could make it unrecoverable (no visible way back short of a
+// new detection event with a different key). "×" now just collapses to
+// the header pill instead, same as tapping the header - always tappable
+// to reopen, never gone for good.
 let collapsed = false;
 
 function ensureMounted() {
@@ -170,10 +176,6 @@ export function render(state) {
     clearPanel();
     return;
   }
-  if (state.key && state.key === dismissedKey) {
-    clearPanel();
-    return;
-  }
 
   const root = ensureMounted();
   clearPanel();
@@ -201,8 +203,8 @@ export function render(state) {
   const closeBtn = el("span", "eafc-live-btn", "×");
   closeBtn.addEventListener("click", (event) => {
     event.stopPropagation();
-    dismissedKey = state.key || null;
-    clearPanel();
+    collapsed = true;
+    render(state);
   });
   controls.appendChild(closeBtn);
 
@@ -216,23 +218,22 @@ export function render(state) {
   const body = el("div", "eafc-live-body");
 
   if (state.kind === "loading") {
-    body.appendChild(el("div", "eafc-live-muted", "Loading EAFC Live intelligence..."));
+    body.appendChild(el("div", "eafc-live-muted", "Loading…"));
     panel.appendChild(body);
     root.appendChild(panel);
     return;
   }
 
   if (state.kind === "no-intelligence") {
-    body.appendChild(el("div", "eafc-live-muted", "No intelligence available for this card."));
+    body.appendChild(el("div", "eafc-live-muted", "No data for this card."));
     panel.appendChild(body);
     root.appendChild(panel);
     return;
   }
 
   if (state.kind === "error") {
-    const message = ERROR_STATUS_TEXT[state.status] || "EAFC Live backend unavailable right now.";
+    const message = ERROR_STATUS_TEXT[state.status] || "Backend unavailable.";
     body.appendChild(el("div", "eafc-live-muted", message));
-    body.appendChild(el("div", "eafc-live-muted", "Will retry automatically on the next market update."));
     // Always shown (not gated behind EAFC_LIVE_DEBUG) - on iOS there is
     // no attached console without a Mac, so this on-screen line is the
     // only debugging channel available for diagnosing a real failure.
@@ -278,10 +279,6 @@ export function render(state) {
   const verdictEl = el("div", `eafc-live-verdict ${verdict.tone}`);
   verdictEl.textContent = verdict.tone === "confirmed" ? `✓ ${verdict.text}` : verdict.text;
   body.appendChild(verdictEl);
-
-  body.appendChild(
-    el("div", "eafc-live-muted", "Reference data from EAFC Live · live listings read from this EA search")
-  );
 
   if (window.EAFC_LIVE_DEBUG && intelligence.source_card_id) {
     body.appendChild(el("div", "eafc-live-debug", `source_card_id: ${intelligence.source_card_id}`));
