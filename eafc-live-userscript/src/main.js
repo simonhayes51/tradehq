@@ -17,6 +17,7 @@ import { getCardIntelligence } from "./api-client.js";
 import { combineIntelligence, cheapestBin } from "./market-calc.js";
 import { render as renderOverlay } from "./overlay.js";
 import { renderListBadges } from "./list-badges.js";
+import { installNavTab } from "./nav-tab.js";
 import { initLifecycle } from "./lifecycle.js";
 
 function log(...args) {
@@ -114,9 +115,27 @@ async function handleDetection(result) {
   });
 }
 
+// EA's nav bar isn't necessarily in the DOM yet this early (@run-at
+// document-start) - retry on an interval until installNavTab() finds it
+// (it's a no-op once already injected, or if the heuristic never
+// matches at all - see that file's own header for why a failed match
+// degrades to "no tab" rather than a broken one).
+function pollForNavTab() {
+  const timer = setInterval(() => {
+    if (installNavTab()) clearInterval(timer);
+  }, 2000);
+  // No real upper bound on how long the Web App might take to render
+  // its own nav bar on a slow connection - stop polling after 5 minutes
+  // rather than forever, since by then the user has very likely either
+  // left the page or the heuristic genuinely isn't going to match on
+  // this session.
+  setTimeout(() => clearInterval(timer), 5 * 60 * 1000);
+}
+
 function setup() {
   onCardDetected(handleDetection);
   installMarketObserver();
+  pollForNavTab();
   console.log("[EAFC Live] Companion userscript ready", { href: location.href });
 }
 

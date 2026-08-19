@@ -98,6 +98,26 @@ test("falls back to GM.xmlHttpRequest when it only resolves a Promise (no callba
   globalThis.GM = undefined;
 });
 
+test("getOpportunities hits the public /opportunities endpoint, no auth", async () => {
+  let capturedUrl = null;
+  stubGM((opts) => {
+    capturedUrl = opts.url;
+    opts.onload({ status: 200, responseText: JSON.stringify([{ name: "Test Player", signal: "buy" }]) });
+  });
+  const { getOpportunities } = await import(`../src/api-client.js?case=opportunities`);
+  const result = await getOpportunities(20);
+  assert.equal(result.status, "success");
+  assert.equal(result.data[0].name, "Test Player");
+  assert.equal(capturedUrl, "https://api.eafc.live/api/v2/opportunities?page_size=20");
+});
+
+test("getOpportunities surfaces a network failure the same way getCardIntelligence does", async () => {
+  stubGM((opts) => opts.onerror());
+  const { getOpportunities } = await import(`../src/api-client.js?case=opportunities-error`);
+  const result = await getOpportunities(20);
+  assert.equal(result.status, "network_error");
+});
+
 test("never forwards EA session data - only the numeric card id reaches the URL", async () => {
   let capturedUrl = null;
   stubGM((opts) => {
