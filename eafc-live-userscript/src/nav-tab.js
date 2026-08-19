@@ -412,6 +412,13 @@ export function installNavTab() {
   tab.className = "eafc-live-nav-tab";
   tab.setAttribute("role", "button");
   tab.setAttribute("aria-label", "EAFC Live opportunities");
+  // Inline, not just the class rule below - inline style specificity
+  // beats ANY selector-based CSS rule (short of !important), where the
+  // class rule can still lose to something like a `.nav-bar > div`
+  // child-combinator rule of EA's own that happens to be more specific
+  // than a lone class selector. Belt and braces against a v1.6.1 fix
+  // that clearly didn't hold on the device this keeps failing on.
+  tab.style.pointerEvents = "auto";
   const icon = el("span", "eafc-live-nav-tab-icon", "⚡");
   const label = el("span", "eafc-live-nav-tab-label", "LIVE");
   tab.appendChild(icon);
@@ -422,12 +429,38 @@ export function installNavTab() {
   document.head.appendChild(styleEl);
 
   let open = false;
-  tab.addEventListener("click", (event) => {
-    event.stopPropagation();
-    event.preventDefault();
+  let lastToggleAt = 0;
+  const toggle = () => {
+    // touchend AND the browser's own synthesized click can both fire
+    // for one physical tap - this collapses them into a single toggle
+    // rather than open-then-immediately-close.
+    const now = Date.now();
+    if (now - lastToggleAt < 400) return;
+    lastToggleAt = now;
     open = !open;
     if (open) openPanel();
     else closePanel();
+  };
+  // v1.6.1 already tried forcing pointer-events via a CSS class rule and
+  // it made no difference on the device this was tested on - `click`
+  // itself may simply never be reaching this element (some app shells
+  // that hand-roll their own touch handling call preventDefault() on
+  // touchend for elements THEY recognize, which can suppress the
+  // browser's synthesized click for the whole interaction). touchend is
+  // handled directly, independently of whether click ever arrives.
+  tab.addEventListener(
+    "touchend",
+    (event) => {
+      event.stopPropagation();
+      event.preventDefault();
+      toggle();
+    },
+    { passive: false }
+  );
+  tab.addEventListener("click", (event) => {
+    event.stopPropagation();
+    event.preventDefault();
+    toggle();
   });
 
   // Any OTHER tab in the same bar being tapped means the user is
