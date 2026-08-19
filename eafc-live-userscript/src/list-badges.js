@@ -19,30 +19,41 @@
 // likely to need correction once tested live (matches the earlier
 // overlay's own history - see README.md).
 //
-// WHY BADGES ARE NOW INSERTED INTO THE ROW, NOT POSITION:FIXED-TRACKED
+// WHY BADGES SIT INSIDE THE ROW CARD, ABSOLUTELY POSITIONED - NOT
+// POSITION:FIXED-TRACKED, AND NOT A PLAIN INLINE SIBLING EITHER
 // -------------------------------------------------------------------
 // v1 placed a `position: fixed` badge at the matched price node's
 // on-screen coordinates, recomputed on a 250ms timer, appended to this
 // module's OWN container - never inserted into EA's row itself. Live
 // tested on a real multi-card Grid Mode search: badges were absent
-// entirely from the visible rows (only the unrelated single-card
-// overlay showed anything), and the explicit ask was to stop "hovering"
-// and be embedded in the row instead.
+// entirely from the visible rows, and the explicit ask was to stop
+// "hovering" and be embedded in the row instead.
+// v2 tried inserting the badge as a genuine inline DOM sibling right
+// after the matched price element. Live tested immediately after: still
+// invisible, on rows that WERE flagged (the summary overlay's count
+// went up). The likely cause is the mirror image of the nav-tab saga's
+// squeeze bug (see nav-tab.js's header) - a row card built for a fixed
+// set of children (image, name, price, time) with a fixed height and/or
+// overflow:hidden can silently clip or collapse an unplanned EXTRA
+// child, exactly the way appending an unplanned 7th nav tab silently
+// shrank six others instead of erroring.
 //
-// Badges are now inserted as an actual DOM sibling right after the
-// matched price element - `insertAdjacentElement("afterend", ...)` - so
-// normal document flow positions and scrolls it with zero coordinate
-// tracking or per-frame math. This can't drift, can't end up floating
-// disconnected from its row, and needs no reposition loop at all. The
-// non-interference guarantee still holds the same way: nothing is
-// removed or altered on EA's own row, only a new small element is added
-// next to it - a wrong or fragile price match still just means "no
-// badge for that row," never a change to EA's own layout or click
-// handling. verifyBadge() (replacing the old positionBadge()) still
-// runs periodically, but only to detect a recycled/stale row (list
-// virtualization reusing the same DOM node for a different card - see
-// its own comment) and remove the badge then; it no longer computes or
-// writes any position.
+// Badges now go into the row CARD (found by findRowContainer() below,
+// climbing from the price up to the nearest ancestor whose own text
+// contains both "Buy Now" and "Start Price" - a decent proxy for "the
+// whole card, not just the price's immediate wrapper") as `position:
+// absolute`, anchored to that card's own top-right corner. Taking it
+// out of flow entirely means it can't be squeezed or clipped by
+// whatever fixed layout the card uses for ITS OWN children, the same
+// reasoning that fixed the nav badge - while still being a child of the
+// row card, not the viewport, so it moves and scrolls with the row for
+// free and needs no coordinate-tracking loop. The non-interference
+// guarantee still holds: nothing on the card is removed, resized, or
+// altered - only a new small absolutely-positioned element is added,
+// which cannot itself disturb the card's own layout. verifyBadge()
+// still runs periodically, but only to detect a recycled/stale row
+// (list virtualization reusing the same DOM node for a different card)
+// and remove the badge then.
 import { getCardIntelligence } from "./api-client.js";
 import { combineIntelligence } from "./market-calc.js";
 import { render as renderOverlay } from "./overlay.js";
@@ -95,6 +106,23 @@ function findPriceAnchor(priceText) {
   return candidates[0];
 }
 
+/**
+ * Climbs from the matched price node up to the nearest ancestor whose
+ * own text contains both "Buy Now" and "Start Price" - a proxy for "the
+ * whole row card," not just the small element directly wrapping the
+ * price. Falls back to the price's immediate parent if nothing in range
+ * matches both (still degrades to a plausible position rather than
+ * throwing), same tolerance-for-a-wrong-guess policy as findPriceAnchor.
+ */
+function findRowContainer(anchorNode) {
+  let el = anchorNode.parentElement;
+  for (let depth = 0; el && depth < 10; depth++, el = el.parentElement) {
+    const text = el.textContent || "";
+    if (/buy\s*now/i.test(text) && /start\s*price/i.test(text)) return el;
+  }
+  return anchorNode.parentElement;
+}
+
 export function verdictFor(auction, intelligence) {
   if (!intelligence) return null;
   const combined = combineIntelligence([auction], intelligence);
@@ -112,10 +140,17 @@ function makeBadgeEl(verdict, onClick) {
   const bg = verdict.tone === "buy" ? "#123d24" : "#3d1414";
   const fg = verdict.tone === "buy" ? "#5fd98a" : "#e5734a";
   const border = verdict.tone === "buy" ? "#5fd98a" : "#e5734a";
-  // No position/top/left - this is a genuine sibling of the row's price
-  // element now (see this file's header), positioned by normal document
-  // flow like any other inline element EA itself rendered there.
+  // position:absolute, anchored to the row CARD's own top-right corner
+  // (see this file's header for why this replaced plain in-flow
+  // insertion) - out of the row's own layout flow entirely, so it can't
+  // be squeezed or clipped by whatever fixed structure the card uses
+  // for its own children, while still being a child of the card (not
+  // the viewport), so it scrolls and moves with it for free.
   el.style.cssText = [
+    "position:absolute",
+    "top:6px",
+    "right:6px",
+    "z-index:2147483645",
     "display:inline-flex",
     "align-items:center",
     "pointer-events:auto",
@@ -124,12 +159,10 @@ function makeBadgeEl(verdict, onClick) {
     "font-weight:700",
     "letter-spacing:0.02em",
     "padding:3px 6px",
-    "margin:4px 0 0 6px",
     "border-radius:5px",
     "cursor:pointer",
     "line-height:1",
     "white-space:nowrap",
-    "vertical-align:middle",
     `background:${bg}`,
     `color:${fg}`,
     `border:1px solid ${border}`,
@@ -239,13 +272,16 @@ export async function renderListBadges(auctions) {
           continue;
         }
 
-        // Inserted right after the price element itself, as a genuine
-        // sibling in the row's own DOM - see this file's header for why,
-        // in place of the old position:fixed + coordinate-tracking
-        // approach. anchorNode is the Text node showing the price;
-        // insertAdjacentElement needs an Element, hence parentElement.
+        // Appended into the row CARD (not just the price's immediate
+        // wrapper) as position:absolute - see this file's header for the
+        // two prior attempts this replaced and why. The card needs a
+        // positioned ancestor for that to anchor against; only touches
+        // `position` when it's still the browser default (`static`), so
+        // it can't alter how the card's own children are laid out.
+        const row = findRowContainer(anchorNode);
+        if (getComputedStyle(row).position === "static") row.style.position = "relative";
         const el = makeBadgeEl(verdict, () => openOverlayFor(auction, sameCardAuctions, intelligence));
-        anchorNode.parentElement.insertAdjacentElement("afterend", el);
+        row.appendChild(el);
         const entry = { el, auction, anchorNode, priceText, verdict, missingTicks: 0 };
         badges.set(key, entry);
       }
