@@ -17,30 +17,25 @@
 // than inserting a broken/misplaced tab - the existing floating
 // indicator (overlay.js) still works as a fallback either way.
 //
-// WHY A FLOATING, BODY-LEVEL BADGE - NOT A CLONED FLEX SIBLING, NOT AN
-// ABSOLUTE CHILD OF THE BAR EITHER
+// WHY A REAL FLEX CHILD, WITH EVERY TAB'S WIDTH FORCED EQUAL
 // -------------------------------------------------------------------
-// Two live-tested failures got here in order:
+// Three live-tested attempts got here:
 //   v1.4.0 cloned an existing tab item's DOM structure to inherit EA's
-//   own icon size/spacing for free. EA's bar turned out to allot FIXED
-//   width per tab (not flex-grow that reflows), so a real 7th child
-//   squeezed all seven into the space budgeted for six - every icon
-//   shrank, including EA's own.
-//   v1.5.0 fixed that by taking the badge out of the flex flow with
-//   `position: absolute` - but still nested inside navBar. That broke
-//   two different ways on the next test: it rendered nowhere near the
-//   bar's visible box (the matched container's true bounding box isn't
-//   what the on-screen tab strip looks like), and taps didn't register
-//   (an absolutely-positioned descendant is confined to ITS OWN
-//   ancestor's stacking context regardless of z-index - a sibling page
-//   region painted later can still sit above it).
-// installNavTab() now appends the badge directly to <body> as
-// `position: fixed`, exactly like this file's own openPanel() panel and
-// overlay.js's panel already do - measured from the viewport, not an
-// unpredictable ancestor box, and always its own top-level stacking
-// context. findNavBar()'s match is still used, just only to read
-// getBoundingClientRect() off of - to place the badge next to the real
-// bar's on-screen position - not to host it.
+//   own icon size/spacing for free. EA's bar turned out to have some
+//   fixed-width rule per tab, and a real 7th flex child squeezed all
+//   seven into the space budgeted for six - every icon shrank.
+//   v1.5.0/v1.5.1 tried taking the tab OUT of the bar instead (absolute,
+//   then fixed + body-level) to dodge that squeeze. Confirmed working
+//   (tap registered, panel opened) but explicitly rejected on sight:
+//   floating on top of the bar hid EA's own Club tab underneath it,
+//   which is worse than being small - the request was to be embedded IN
+//   the bar, not to sit on top of it.
+// installNavTab() now appends a real 7th child again, but immediately
+// calls equalizeTabWidths() to set `flex: 1 1 0%` inline on EVERY child
+// of the bar - EA's original six AND the new one. An inline style beats
+// an external stylesheet rule of equal specificity, so this overrides
+// whatever fixed-width rule caused the v1.4.0 squeeze and forces a
+// genuine even 1/7 split instead, for all seven tabs including EA's own.
 //
 // WHY THE PANEL IS OUR OWN OVERLAY, NOT REAL EA NAVIGATION
 // -------------------------------------------------------------------
@@ -270,6 +265,13 @@ async function openPanel() {
     return;
   }
 
+  // Tallies how art actually resolved, for the always-on footer line
+  // below - the only way to tell "backend never gave us a URL for these
+  // cards" from "the URL was given but the image request itself failed
+  // (e.g. EA's page CSP blocking a cross-origin <img> load)" without any
+  // console access on the device this has to be diagnosed from.
+  const artStats = { withUrl: 0, loaded: 0, failed: 0 };
+
   items.forEach((item, index) => {
     const isStrong = item.signal === "strong_buy";
     const card = el("div", `eafc-live-opp-card${isStrong ? " strong" : ""}`);
@@ -279,17 +281,23 @@ async function openPanel() {
     // (background + cutout + rating/stats already baked in) mirrored to
     // our storage - see futgg_market.py's _serialize_player() comment on
     // why this field, specifically, is safe to drop straight into an
-    // <img> with nothing drawn on top of it. Falls back to a plain
-    // placeholder glyph rather than a broken image icon if neither this
-    // nor the cutout-only image_url is present for a card.
+    // <img> with nothing drawn on top of it. Always reserves the art
+    // slot (image OR placeholder) rather than collapsing the row when a
+    // URL fails to load, so a broken image can never silently eat the
+    // whole art column - see artStats above for surfacing WHY it failed.
     const artUrl = item.composited_image_url || item.image_url;
     if (artUrl) {
+      artStats.withUrl++;
       const img = document.createElement("img");
       img.className = "eafc-live-opp-art";
       img.src = artUrl;
       img.loading = "lazy";
       img.alt = "";
-      img.onerror = () => img.remove();
+      img.onload = () => artStats.loaded++;
+      img.onerror = () => {
+        artStats.failed++;
+        img.replaceWith(el("div", "eafc-live-opp-art-placeholder", "⚽"));
+      };
       card.appendChild(img);
     } else {
       card.appendChild(el("div", "eafc-live-opp-art-placeholder", "⚽"));
@@ -317,49 +325,73 @@ async function openPanel() {
     card.appendChild(main);
     body.appendChild(card);
   });
+
+  // Image load/error events settle asynchronously after this function
+  // returns - a fixed delay is imprecise but good enough to answer the
+  // one question this exists for (see artStats above): is a missing
+  // card image a "backend gave no URL" gap or an "image request itself
+  // failed" gap. Only shown at all when at least one card had a URL to
+  // try, and only when something is actually off (a fully healthy page
+  // says nothing, same as the nav tab diagnostic's "found" case staying
+  // out of the way).
+  setTimeout(() => {
+    if (artStats.withUrl > 0 && artStats.failed > 0) {
+      body.appendChild(
+        el(
+          "div",
+          "eafc-live-muted",
+          `Card art: ${artStats.loaded}/${artStats.withUrl} loaded, ${artStats.failed} failed to load.`
+        )
+      );
+    }
+  }, 2500);
 }
 
 const TAB_CSS = `
   .eafc-live-nav-tab {
-    position: fixed;
-    width: 46px;
-    height: 46px;
-    border-radius: 50%;
-    background: radial-gradient(circle at 35% 30%, #1e2838, #0b0e14);
-    border: 2px solid #7fd8ff;
-    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.55), 0 0 0 4px #0b0e14, 0 0 14px rgba(127, 216, 255, 0.35);
     display: flex;
+    flex-direction: column;
     align-items: center;
     justify-content: center;
-    font-size: 22px;
-    line-height: 1;
+    gap: 2px;
+    min-width: 0;
     color: #7fd8ff;
-    z-index: 2147483645;
     cursor: pointer;
-    animation: eafc-live-tab-pulse 2.4s ease-in-out infinite;
   }
-  .eafc-live-nav-tab:active { transform: scale(0.94); }
-  .eafc-live-nav-tab.eafc-live-tab-active {
-    background: radial-gradient(circle at 35% 30%, #244059, #0b0e14);
-    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.55), 0 0 0 4px #0b0e14, 0 0 20px rgba(127, 216, 255, 0.6);
-    animation: none;
+  .eafc-live-nav-tab .eafc-live-nav-tab-icon { font-size: 18px; line-height: 1; }
+  .eafc-live-nav-tab .eafc-live-nav-tab-label {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
   }
-  @keyframes eafc-live-tab-pulse {
-    0%, 100% { box-shadow: 0 4px 14px rgba(0, 0, 0, 0.55), 0 0 0 4px #0b0e14, 0 0 10px rgba(127, 216, 255, 0.25); }
-    50% { box-shadow: 0 4px 14px rgba(0, 0, 0, 0.55), 0 0 0 4px #0b0e14, 0 0 18px rgba(127, 216, 255, 0.55); }
-  }
+  .eafc-live-nav-tab.eafc-live-tab-active { color: #fff; text-shadow: 0 0 8px rgba(127, 216, 255, 0.8); }
+  .eafc-live-nav-tab:active { opacity: 0.7; }
 `;
 
-function positionTab(tab, navBar) {
-  const rect = navBar.getBoundingClientRect();
-  tab.style.top = `${Math.max(8, rect.top - 18)}px`;
-  tab.style.right = `${Math.max(8, window.innerWidth - rect.right + 10)}px`;
+/** Forces every direct child of the bar (EA's own six tabs AND ours) to
+ * share EQUAL width via inline `flex` - the actual fix for what broke
+ * in v1.4.0. That attempt appended a real 7th flex child and let
+ * whatever sizing rule EA's CSS already had (turned out to be a fixed
+ * per-tab width, not flex-grow) squeeze all seven into the space
+ * budgeted for six. Inline styles win over an external stylesheet's
+ * rule of the same specificity, so explicitly setting `flex: 1 1 0%` on
+ * every child - not just the new one - overrides that fixed-width rule
+ * for the whole bar and forces a genuine even 1/7 split instead of
+ * whatever the shrink algorithm was doing before. min-width: 0 keeps
+ * flexbox from refusing to shrink a child below its content's natural
+ * width, which is what over-wide labels/icons would otherwise fight. */
+function equalizeTabWidths(navBar) {
+  for (const child of navBar.children) {
+    child.style.flex = "1 1 0%";
+    child.style.minWidth = "0";
+  }
 }
 
-/** Best-effort: injects the floating "EAFC LIVE" badge once EA's nav bar
- * can be found. Safe to call repeatedly (module-level `injected` guard) -
- * does nothing at all if the heuristic can't confidently locate the nav
- * bar, rather than inserting a broken tab. */
+/** Best-effort: injects the "EAFC LIVE" tab as a genuine child of EA's
+ * own nav bar once it can be found. Safe to call repeatedly (module-
+ * level `injected` guard) - does nothing at all if the heuristic can't
+ * confidently locate the nav bar, rather than inserting a broken tab. */
 export function installNavTab() {
   if (injected) return true;
   const navBar = findNavBar();
@@ -368,9 +400,12 @@ export function installNavTab() {
 
   const tab = document.createElement("div");
   tab.className = "eafc-live-nav-tab";
-  tab.textContent = "⚡";
   tab.setAttribute("role", "button");
   tab.setAttribute("aria-label", "EAFC Live opportunities");
+  const icon = el("span", "eafc-live-nav-tab-icon", "⚡");
+  const label = el("span", "eafc-live-nav-tab-label", "LIVE");
+  tab.appendChild(icon);
+  tab.appendChild(label);
 
   const styleEl = document.createElement("style");
   styleEl.textContent = TAB_CSS;
@@ -402,29 +437,9 @@ export function installNavTab() {
     { capture: true }
   );
 
-  // Appended to document.body, NOT navBar - v1.5.0 nested the badge
-  // inside navBar as `position: absolute`, which live-tested broken two
-  // different ways: it rendered nowhere near the bar's own visible box
-  // (the matched "nav bar" container's true bounding box isn't what its
-  // on-screen tab strip looks like), and taps didn't reach it (an
-  // absolutely-positioned descendant is confined to ITS OWN ancestor's
-  // stacking context no matter how high its z-index is set - a sibling
-  // page region painted later can still sit above it, same as an
-  // overlay z-index only ever wins comparisons within one shared
-  // stacking context, not globally). Being a direct child of <body>,
-  // like overlay.js's and this file's own openPanel() panel already
-  // are, sidesteps both problems: position:fixed measures from the
-  // viewport, not an unpredictable ancestor box, and a body-level
-  // sibling is always its own top-level stacking context, immune to
-  // being buried under whatever EA happens to paint nearby.
-  // getBoundingClientRect() on the matched nav bar still supplies the
-  // real on-screen coordinates to sit next to - just without being
-  // physically inside it.
-  positionTab(tab, navBar);
-  window.addEventListener("resize", () => positionTab(tab, navBar));
-
   tabEl = tab;
-  (document.body || document.documentElement).appendChild(tab);
-  log("EAFC LIVE nav badge installed");
+  navBar.appendChild(tab);
+  equalizeTabWidths(navBar);
+  log("EAFC LIVE nav tab installed");
   return true;
 }
