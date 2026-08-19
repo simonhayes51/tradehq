@@ -45,15 +45,27 @@ async function handleDetection(result) {
   // search) - unlike the single-card summary panel below, a badge only
   // ever describes the one row it's anchored to, so there's no
   // "which card is this about" ambiguity to avoid here.
-  renderListBadges(auctions).catch((err) => {
+  const badgeResult = renderListBadges(auctions).catch((err) => {
     log("list badge rendering failed:", err && err.message);
+    return null;
   });
 
   if (!sourceCardId) {
     // Response covered multiple distinct cards - the single-card
     // summary panel below only ever describes ONE card, so there is
     // nothing safe to show there without guessing which card the user
-    // is focused on. Per-row badges (above) already cover this case.
+    // is focused on. Per-row badges (above) already cover confirmed
+    // opportunities, but a page where NONE qualify would otherwise show
+    // nothing at all - indistinguishable from the script not running.
+    // This keeps the presence indicator visible everywhere, not just on
+    // a single-card search.
+    const badges = await badgeResult;
+    renderOverlay({
+      kind: "watching",
+      key: `watching:${auctions.length}`,
+      cardsChecked: badges ? badges.cardsChecked : null,
+      badgeCount: badges ? badges.badgeCount : null,
+    });
     return;
   }
 

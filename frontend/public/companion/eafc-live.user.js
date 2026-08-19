@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EAFC Live Companion
 // @namespace    https://app.eafc.live/
-// @version      1.2.2
+// @version      1.3.0
 // @description  Read-only EAFC Live trading intelligence overlay for the EA SPORTS FC 26 Web App Transfer Market. Never buys, bids, lists, or automates anything - observation only.
 // @author       EAFC Live
 // @match        https://www.ea.com/*/ea-sports-fc/ultimate-team/web-app/*
@@ -491,7 +491,7 @@
 `;
   var hostEl = null;
   var shadow = null;
-  var collapsed = false;
+  var collapsed = true;
   function ensureMounted() {
     if (hostEl && hostEl.isConnected) return shadow;
     hostEl = document.createElement("div");
@@ -530,8 +530,8 @@
     const panel = el("div", `eafc-live-panel${collapsed ? " collapsed" : ""}`);
     const header = el("div", "eafc-live-header");
     header.appendChild(el("span", "eafc-live-brand", "EAFC LIVE"));
-    const statusClass = state.kind === "result" ? "connected" : state.kind === "loading" ? "" : "error";
-    const statusText = state.kind === "loading" ? "LOADING" : state.kind === "result" ? "CONNECTED" : "NO DATA";
+    const statusClass = state.kind === "result" ? "connected" : state.kind === "loading" || state.kind === "watching" ? "" : "error";
+    const statusText = state.kind === "loading" ? "LOADING" : state.kind === "result" ? "CONNECTED" : state.kind === "watching" ? "WATCHING" : "NO DATA";
     const collapsedIcon = el("span", "eafc-live-collapsed-icon", "\u26A1");
     collapsedIcon.style.color = statusClass === "connected" ? "#5fd98a" : statusClass === "error" ? "#e5734a" : "#8a94a6";
     header.appendChild(collapsedIcon);
@@ -558,6 +558,13 @@
     });
     panel.appendChild(header);
     const body = el("div", "eafc-live-body");
+    if (state.kind === "watching") {
+      const text = state.cardsChecked == null ? "Watching this search." : state.badgeCount > 0 ? `${state.cardsChecked} card${state.cardsChecked === 1 ? "" : "s"} checked, ${state.badgeCount} flagged.` : `${state.cardsChecked} card${state.cardsChecked === 1 ? "" : "s"} checked, nothing actionable right now.`;
+      body.appendChild(el("div", "eafc-live-muted", text));
+      panel.appendChild(body);
+      root.appendChild(panel);
+      return;
+    }
     if (state.kind === "loading") {
       body.appendChild(el("div", "eafc-live-muted", "Loading\u2026"));
       panel.appendChild(body);
@@ -739,7 +746,7 @@
     });
   }
   async function renderListBadges(auctions) {
-    if (!Array.isArray(auctions) || auctions.length === 0) return;
+    if (!Array.isArray(auctions) || auctions.length === 0) return { cardsChecked: 0, badgeCount: 0 };
     ensureContainer();
     startRepositionLoop();
     const byCard = /* @__PURE__ */ new Map();
@@ -772,6 +779,7 @@
         }
       })
     );
+    return { cardsChecked: byCard.size, badgeCount: badges.size };
   }
 
   // src/lifecycle.js
@@ -793,10 +801,18 @@
   }
   async function handleDetection(result) {
     const { sourceCardId, auctions } = result;
-    renderListBadges(auctions).catch((err) => {
+    const badgeResult = renderListBadges(auctions).catch((err) => {
       log4("list badge rendering failed:", err && err.message);
+      return null;
     });
     if (!sourceCardId) {
+      const badges2 = await badgeResult;
+      render({
+        kind: "watching",
+        key: `watching:${auctions.length}`,
+        cardsChecked: badges2 ? badges2.cardsChecked : null,
+        badgeCount: badges2 ? badges2.badgeCount : null
+      });
       return;
     }
     const key = renderKeyFor(sourceCardId, auctions);

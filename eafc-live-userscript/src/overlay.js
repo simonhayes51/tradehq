@@ -156,7 +156,12 @@ let shadow = null;
 // new detection event with a different key). "×" now just collapses to
 // the header pill instead, same as tapping the header - always tappable
 // to reopen, never gone for good.
-let collapsed = false;
+// Starts collapsed (a small dot, not a panel) - live feedback was that
+// an automatically-expanded panel was "in the way" and "too wordy" on
+// every single detection. The dot alone still conveys the key signal at
+// a glance (color = connected/confirmed vs error vs neutral); expanding
+// is now always an explicit tap, never something sprung on the user.
+let collapsed = true;
 
 function ensureMounted() {
   if (hostEl && hostEl.isConnected) return shadow;
@@ -193,7 +198,10 @@ function addRow(body, label, value) {
 
 /**
  * Renders one of a small set of states. `state.kind` is one of:
- *   "loading", "no-intelligence", "error", "result", "hidden"
+ *   "loading", "no-intelligence", "error", "result", "watching", "hidden"
+ * "watching" is the multi-card-page presence indicator (see main.js) -
+ * badges (list-badges.js) carry the actual per-row signal there; this
+ * just proves the script is alive when a page has nothing to flag.
  * `state.key`, when present, identifies this exact market situation -
  * used only to remember "the user closed THIS one".
  */
@@ -212,9 +220,11 @@ export function render(state) {
   header.appendChild(el("span", "eafc-live-brand", "EAFC LIVE"));
 
   const statusClass =
-    state.kind === "result" ? "connected" : state.kind === "loading" ? "" : "error";
+    state.kind === "result" ? "connected" : state.kind === "loading" || state.kind === "watching" ? "" : "error";
   const statusText =
-    state.kind === "loading" ? "LOADING" : state.kind === "result" ? "CONNECTED" : "NO DATA";
+    state.kind === "loading" ? "LOADING" :
+    state.kind === "result" ? "CONNECTED" :
+    state.kind === "watching" ? "WATCHING" : "NO DATA";
 
   // The collapsed resting state shows only this - a colored dot (no
   // text) so there's still an at-a-glance signal without expanding.
@@ -250,6 +260,19 @@ export function render(state) {
   panel.appendChild(header);
 
   const body = el("div", "eafc-live-body");
+
+  if (state.kind === "watching") {
+    const text =
+      state.cardsChecked == null
+        ? "Watching this search."
+        : state.badgeCount > 0
+          ? `${state.cardsChecked} card${state.cardsChecked === 1 ? "" : "s"} checked, ${state.badgeCount} flagged.`
+          : `${state.cardsChecked} card${state.cardsChecked === 1 ? "" : "s"} checked, nothing actionable right now.`;
+    body.appendChild(el("div", "eafc-live-muted", text));
+    panel.appendChild(body);
+    root.appendChild(panel);
+    return;
+  }
 
   if (state.kind === "loading") {
     body.appendChild(el("div", "eafc-live-muted", "Loading…"));
