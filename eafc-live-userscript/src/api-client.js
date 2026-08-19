@@ -140,7 +140,15 @@ function describeGmError(err) {
  * channel available on an iOS userscript manager with no attached
  * console.
  */
-async function fetchIntelligence(sourceCardId) {
+/**
+ * Shared GET implementation behind both fetchIntelligence() and
+ * getOpportunities() - same structured-result contract described above,
+ * generalized over the URL and what "not_found" means for it (the
+ * companion endpoint has a real 404 case per-card; the opportunities
+ * list endpoint does not, so callers that don't need it just never see
+ * that status).
+ */
+async function getJson(url, label) {
   const gmRequest = resolveGMRequest();
   if (!gmRequest) {
     // Neither API shape is available in this userscript manager (or the
@@ -150,8 +158,6 @@ async function fetchIntelligence(sourceCardId) {
     log(detail);
     return { status: "network_error", data: null, detail };
   }
-
-  const url = `${CONFIG.API_BASE_URL}/companion/card/${sourceCardId}`;
 
   let response;
   try {
@@ -164,10 +170,10 @@ async function fetchIntelligence(sourceCardId) {
   } catch (err) {
     const detail = (err && err.detail) || "unknown request failure";
     if (err && err.kind === "timeout") {
-      log("companion API request timed out for card", sourceCardId, detail);
+      log(`${label} request timed out`, detail);
       return { status: "timeout", data: null, detail };
     }
-    log("companion API request failed for card", sourceCardId, detail);
+    log(`${label} request failed`, detail);
     return { status: "network_error", data: null, detail };
   }
 
@@ -183,23 +189,27 @@ async function fetchIntelligence(sourceCardId) {
     return { status: "network_error", data: null, detail };
   }
   if (status === 404) {
-    log("no intelligence available for card", sourceCardId);
+    log(`${label}: not found`);
     return { status: "not_found", data: null };
   }
   if (status >= 500 || !(status >= 200 && status < 300)) {
     const detail = `HTTP ${status}`;
-    log("companion API unexpected status", status, "for card", sourceCardId);
+    log(`${label} unexpected status`, status);
     return { status: "server_error", data: null, detail };
   }
   try {
     const data = JSON.parse(response.responseText);
-    log("intelligence loaded for card", sourceCardId, data && data.signal);
+    log(`${label} loaded`);
     return { status: "success", data };
   } catch (err) {
     const detail = `unparsable JSON: ${err && err.message}`;
-    log("companion API returned unparsable JSON for card", sourceCardId, ":", err && err.message);
+    log(`${label} returned unparsable JSON:`, err && err.message);
     return { status: "server_error", data: null, detail };
   }
+}
+
+function fetchIntelligence(sourceCardId) {
+  return getJson(`${CONFIG.API_BASE_URL}/companion/card/${sourceCardId}`, `companion card ${sourceCardId}`);
 }
 
 const cache = createIntelligenceCache(fetchIntelligence, {
@@ -211,4 +221,18 @@ const cache = createIntelligenceCache(fetchIntelligence, {
  * success/not_found/never-cache-failures policy from intelligence-cache.js. */
 export function getCardIntelligence(sourceCardId) {
   return cache.get(sourceCardId);
+}
+
+/**
+ * GET /api/v2/opportunities - a public, unauthenticated feed of cards
+ * the backend already scores as a real buy/strong_buy signal (server-
+ * side filtered, same contract HomeDashboard.jsx's normaliseFutgg()
+ * consumes - see backend/app/routers/v2/futgg_market.py's
+ * list_opportunities()). No TradeHQ login/session involved - this
+ * userscript has no concept of one, same as the companion endpoint.
+ * Not cached (the nav tab panel re-fetches fresh every time it's
+ * opened, which is infrequent enough not to need it).
+ */
+export function getOpportunities(pageSize = 20) {
+  return getJson(`${CONFIG.API_BASE_URL}/opportunities?page_size=${pageSize}`, "opportunities feed");
 }

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EAFC Live Companion
 // @namespace    https://app.eafc.live/
-// @version      1.2.1
+// @version      1.4.0
 // @description  Read-only EAFC Live trading intelligence overlay for the EA SPORTS FC 26 Web App Transfer Market. Never buys, bids, lists, or automates anything - observation only.
 // @author       EAFC Live
 // @match        https://www.ea.com/*/ea-sports-fc/ultimate-team/web-app/*
@@ -205,14 +205,13 @@
       return String(err);
     }
   }
-  async function fetchIntelligence(sourceCardId) {
+  async function getJson(url, label) {
     const gmRequest = resolveGMRequest();
     if (!gmRequest) {
       const detail = "no GM_xmlhttpRequest / GM.xmlHttpRequest in this manager";
       log2(detail);
       return { status: "network_error", data: null, detail };
     }
-    const url = `${CONFIG.API_BASE_URL}/companion/card/${sourceCardId}`;
     let response;
     try {
       response = await callGM(gmRequest, {
@@ -224,10 +223,10 @@
     } catch (err) {
       const detail = err && err.detail || "unknown request failure";
       if (err && err.kind === "timeout") {
-        log2("companion API request timed out for card", sourceCardId, detail);
+        log2(`${label} request timed out`, detail);
         return { status: "timeout", data: null, detail };
       }
-      log2("companion API request failed for card", sourceCardId, detail);
+      log2(`${label} request failed`, detail);
       return { status: "network_error", data: null, detail };
     }
     const status = response.status;
@@ -237,23 +236,26 @@
       return { status: "network_error", data: null, detail };
     }
     if (status === 404) {
-      log2("no intelligence available for card", sourceCardId);
+      log2(`${label}: not found`);
       return { status: "not_found", data: null };
     }
     if (status >= 500 || !(status >= 200 && status < 300)) {
       const detail = `HTTP ${status}`;
-      log2("companion API unexpected status", status, "for card", sourceCardId);
+      log2(`${label} unexpected status`, status);
       return { status: "server_error", data: null, detail };
     }
     try {
       const data = JSON.parse(response.responseText);
-      log2("intelligence loaded for card", sourceCardId, data && data.signal);
+      log2(`${label} loaded`);
       return { status: "success", data };
     } catch (err) {
       const detail = `unparsable JSON: ${err && err.message}`;
-      log2("companion API returned unparsable JSON for card", sourceCardId, ":", err && err.message);
+      log2(`${label} returned unparsable JSON:`, err && err.message);
       return { status: "server_error", data: null, detail };
     }
+  }
+  function fetchIntelligence(sourceCardId) {
+    return getJson(`${CONFIG.API_BASE_URL}/companion/card/${sourceCardId}`, `companion card ${sourceCardId}`);
   }
   var cache = createIntelligenceCache(fetchIntelligence, {
     successTtlMs: CONFIG.SUCCESS_CACHE_TTL_MS,
@@ -261,6 +263,9 @@
   });
   function getCardIntelligence(sourceCardId) {
     return cache.get(sourceCardId);
+  }
+  function getOpportunities(pageSize = 20) {
+    return getJson(`${CONFIG.API_BASE_URL}/opportunities?page_size=${pageSize}`, "opportunities feed");
   }
 
   // src/market-calc.js
@@ -388,17 +393,22 @@
   };
   var STYLES = `
   :host { all: initial; }
+  /* Bottom-anchored (any fixed corner, really) inevitably collides with
+     SOME EA control eventually - the bottom tab bar on a results
+     screen, a Reset/Search button on a filters screen, different things
+     on different screens we don't control the layout of. The vertical
+     middle of the right edge is the one spot that's consistently empty
+     across every EA screen actually seen live (search results, filters,
+     item detail) - anchoring there instead of chasing each individual
+     overlap. */
   .eafc-live-panel {
     position: fixed;
-    /* EA's own bottom tab bar (Home/Squads/SBC/Transfers/Store/Club) sits
-       roughly 64-72px tall on phone - a plain safe-area offset put this
-       panel underneath/behind it. Cleared with a fixed floor, not just
-       the safe-area inset. */
-    bottom: max(76px, calc(env(safe-area-inset-bottom) + 68px));
-    right: max(12px, env(safe-area-inset-right));
+    top: 50%;
+    transform: translateY(-50%);
+    right: max(10px, env(safe-area-inset-right));
     z-index: 2147483647;
     width: min(88vw, 270px);
-    max-height: 70vh;
+    max-height: 60vh;
     overflow-y: auto;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     font-size: 13px;
@@ -407,6 +417,16 @@
     border: 1px solid #2c3542;
     border-radius: 12px;
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  }
+  /* Collapsed: a small icon-only circle, not a full-width bar - even if
+     it does end up near a real EA control, it's small enough not to
+     cover it. This is the DEFAULT resting state, not just what "x"
+     leaves behind. */
+  .eafc-live-panel.collapsed {
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    overflow: visible;
   }
   .eafc-live-header {
     display: flex;
@@ -419,8 +439,19 @@
     cursor: pointer;
     user-select: none;
   }
-  .eafc-live-panel.collapsed .eafc-live-header { border-bottom: none; border-radius: 12px; }
+  .eafc-live-panel.collapsed .eafc-live-header {
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    border-bottom: none;
+    border-radius: 50%;
+    justify-content: center;
+  }
   .eafc-live-panel.collapsed .eafc-live-body { display: none; }
+  .eafc-live-panel.collapsed .eafc-live-controls { display: none; }
+  .eafc-live-collapsed-icon { display: none; font-size: 18px; }
+  .eafc-live-panel.collapsed .eafc-live-collapsed-icon { display: block; }
+  .eafc-live-panel.collapsed .eafc-live-brand { display: none; }
   .eafc-live-brand {
     font-weight: 700;
     letter-spacing: 0.04em;
@@ -465,7 +496,7 @@
 `;
   var hostEl = null;
   var shadow = null;
-  var collapsed = false;
+  var collapsed = true;
   function ensureMounted() {
     if (hostEl && hostEl.isConnected) return shadow;
     hostEl = document.createElement("div");
@@ -504,9 +535,12 @@
     const panel = el("div", `eafc-live-panel${collapsed ? " collapsed" : ""}`);
     const header = el("div", "eafc-live-header");
     header.appendChild(el("span", "eafc-live-brand", "EAFC LIVE"));
+    const statusClass = state.kind === "result" ? "connected" : state.kind === "loading" || state.kind === "watching" ? "" : "error";
+    const statusText = state.kind === "loading" ? "LOADING" : state.kind === "result" ? "CONNECTED" : state.kind === "watching" ? "WATCHING" : "NO DATA";
+    const collapsedIcon = el("span", "eafc-live-collapsed-icon", "\u26A1");
+    collapsedIcon.style.color = statusClass === "connected" ? "#5fd98a" : statusClass === "error" ? "#e5734a" : "#8a94a6";
+    header.appendChild(collapsedIcon);
     const controls = el("div", "eafc-live-controls");
-    const statusClass = state.kind === "result" ? "connected" : state.kind === "loading" ? "" : "error";
-    const statusText = state.kind === "loading" ? "LOADING" : state.kind === "result" ? "CONNECTED" : "NO DATA";
     controls.appendChild(el("span", `eafc-live-status ${statusClass}`.trim(), statusText));
     const collapseBtn = el("span", "eafc-live-btn", collapsed ? "\u25B4" : "\u25BE");
     collapseBtn.addEventListener("click", (event) => {
@@ -529,6 +563,13 @@
     });
     panel.appendChild(header);
     const body = el("div", "eafc-live-body");
+    if (state.kind === "watching") {
+      const text = state.cardsChecked == null ? "Watching this search." : state.badgeCount > 0 ? `${state.cardsChecked} card${state.cardsChecked === 1 ? "" : "s"} checked, ${state.badgeCount} flagged.` : `${state.cardsChecked} card${state.cardsChecked === 1 ? "" : "s"} checked, nothing actionable right now.`;
+      body.appendChild(el("div", "eafc-live-muted", text));
+      panel.appendChild(body);
+      root.appendChild(panel);
+      return;
+    }
     if (state.kind === "loading") {
       body.appendChild(el("div", "eafc-live-muted", "Loading\u2026"));
       panel.appendChild(body);
@@ -619,9 +660,9 @@
     }
     if (candidates.length === 0) return null;
     for (const candidate of candidates) {
-      let el2 = candidate.parentElement;
-      for (let depth = 0; el2 && depth < 6; depth++, el2 = el2.parentElement) {
-        const text = el2.textContent || "";
+      let el3 = candidate.parentElement;
+      for (let depth = 0; el3 && depth < 6; depth++, el3 = el3.parentElement) {
+        const text = el3.textContent || "";
         if (/buy\s*now/i.test(text)) return candidate;
       }
     }
@@ -635,13 +676,13 @@
     return null;
   }
   function makeBadgeEl(verdict, onClick) {
-    const el2 = document.createElement("button");
-    el2.type = "button";
-    el2.textContent = verdict.label === "BUY" ? "\u2713 BUY" : "\u26A0 AVOID";
+    const el3 = document.createElement("button");
+    el3.type = "button";
+    el3.textContent = verdict.label === "BUY" ? "\u2713 BUY" : "\u26A0 AVOID";
     const bg = verdict.tone === "buy" ? "#123d24" : "#3d1414";
     const fg = verdict.tone === "buy" ? "#5fd98a" : "#e5734a";
     const border = verdict.tone === "buy" ? "#5fd98a" : "#e5734a";
-    el2.style.cssText = [
+    el3.style.cssText = [
       "position:fixed",
       "pointer-events:auto",
       "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif",
@@ -658,18 +699,18 @@
       `border:1px solid ${border}`,
       "box-shadow:0 2px 6px rgba(0,0,0,0.35)"
     ].join(";");
-    el2.addEventListener("click", (event) => {
+    el3.addEventListener("click", (event) => {
       event.stopPropagation();
       event.preventDefault();
       onClick();
     });
-    return el2;
+    return el3;
   }
   var MAX_MISSING_TICKS = 8;
   function positionBadge(entry) {
-    const { el: el2, anchorNode, priceText } = entry;
+    const { el: el3, anchorNode, priceText } = entry;
     if (!anchorNode || !anchorNode.parentElement || !anchorNode.parentElement.isConnected || anchorNode.nodeValue == null || anchorNode.nodeValue.trim() !== priceText) {
-      el2.style.display = "none";
+      el3.style.display = "none";
       entry.missingTicks = (entry.missingTicks || 0) + 1;
       return;
     }
@@ -677,14 +718,14 @@
     range.selectNodeContents(anchorNode);
     const rect = range.getBoundingClientRect();
     if (rect.width === 0 && rect.height === 0) {
-      el2.style.display = "none";
+      el3.style.display = "none";
       entry.missingTicks = (entry.missingTicks || 0) + 1;
       return;
     }
     entry.missingTicks = 0;
-    el2.style.display = "";
-    el2.style.left = `${Math.max(4, rect.left)}px`;
-    el2.style.top = `${Math.max(4, rect.top - 20)}px`;
+    el3.style.display = "";
+    el3.style.left = `${Math.max(4, rect.left)}px`;
+    el3.style.top = `${Math.max(4, rect.top - 20)}px`;
   }
   function repositionAll() {
     for (const [key, entry] of badges) {
@@ -710,7 +751,7 @@
     });
   }
   async function renderListBadges(auctions) {
-    if (!Array.isArray(auctions) || auctions.length === 0) return;
+    if (!Array.isArray(auctions) || auctions.length === 0) return { cardsChecked: 0, badgeCount: 0 };
     ensureContainer();
     startRepositionLoop();
     const byCard = /* @__PURE__ */ new Map();
@@ -735,14 +776,201 @@
             log3("list-badges: no DOM match for price", priceText, "- skipping this row's badge");
             continue;
           }
-          const el2 = makeBadgeEl(verdict, () => openOverlayFor(auction, sameCardAuctions, intelligence));
-          ensureContainer().appendChild(el2);
-          const entry = { el: el2, auction, anchorNode, priceText, verdict };
+          const el3 = makeBadgeEl(verdict, () => openOverlayFor(auction, sameCardAuctions, intelligence));
+          ensureContainer().appendChild(el3);
+          const entry = { el: el3, auction, anchorNode, priceText, verdict };
           badges.set(key, entry);
           positionBadge(entry);
         }
       })
     );
+    return { cardsChecked: byCard.size, badgeCount: badges.size };
+  }
+
+  // src/nav-tab.js
+  var NUMBER_FORMAT3 = new Intl.NumberFormat("en-US");
+  function fmt2(n) {
+    return n === null || n === void 0 ? "-" : NUMBER_FORMAT3.format(n);
+  }
+  function log4(...args) {
+    if (typeof window !== "undefined" && window.EAFC_LIVE_DEBUG) console.log("[EAFC Live]", ...args);
+  }
+  var KNOWN_TAB_LABELS = ["Home", "Squads", "Transfers"];
+  function findNavBar() {
+    const candidates = document.querySelectorAll("body *");
+    for (const el3 of candidates) {
+      if (el3.children.length < KNOWN_TAB_LABELS.length) continue;
+      const childTexts = Array.from(el3.children).map((c) => (c.textContent || "").trim());
+      const hasAll = KNOWN_TAB_LABELS.every((label) => childTexts.some((t) => t === label));
+      if (hasAll) return el3;
+    }
+    return null;
+  }
+  var injected = false;
+  var panelHostEl = null;
+  var panelShadow = null;
+  var tabEl = null;
+  var PANEL_STYLES = `
+  :host { all: initial; }
+  .eafc-live-full-panel {
+    position: fixed;
+    inset: 0;
+    z-index: 2147483647;
+    background: #0b0e14;
+    color: #e8ecf1;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    display: flex;
+    flex-direction: column;
+  }
+  .eafc-live-full-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: max(14px, env(safe-area-inset-top)) 16px 14px;
+    border-bottom: 1px solid #2c3542;
+    background: #14181f;
+  }
+  .eafc-live-full-title { font-weight: 700; letter-spacing: 0.04em; font-size: 13px; color: #7fd8ff; }
+  .eafc-live-full-close {
+    cursor: pointer; color: #8a94a6; font-size: 20px; line-height: 1;
+    min-width: 36px; min-height: 36px; display: flex; align-items: center; justify-content: center;
+    border-radius: 8px;
+  }
+  .eafc-live-full-close:active { background: rgba(255,255,255,0.06); }
+  .eafc-live-full-body { flex: 1; overflow-y: auto; padding: 12px 16px max(16px, env(safe-area-inset-bottom)); }
+  .eafc-live-opp-card {
+    background: #14181f; border: 1px solid #2c3542; border-radius: 10px;
+    padding: 12px; margin-bottom: 10px;
+  }
+  .eafc-live-opp-name { font-weight: 700; font-size: 14px; margin-bottom: 6px; }
+  .eafc-live-opp-row { display: flex; justify-content: space-between; font-size: 12px; color: #b7c0cf; padding: 2px 0; }
+  .eafc-live-opp-row .label { color: #8a94a6; }
+  .eafc-live-opp-row .value { font-variant-numeric: tabular-nums; color: #e8ecf1; }
+  .eafc-live-opp-signal {
+    display: inline-block; margin-top: 6px; padding: 3px 8px; border-radius: 5px;
+    font-size: 10px; font-weight: 700; letter-spacing: 0.02em;
+    background: rgba(95, 217, 138, 0.15); color: #5fd98a;
+  }
+  .eafc-live-muted { color: #6b7484; font-size: 12px; text-align: center; padding: 24px 0; }
+`;
+  function el2(tag, className, text) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== void 0) node.textContent = text;
+    return node;
+  }
+  function ensurePanelMounted() {
+    if (panelHostEl && panelHostEl.isConnected) return panelShadow;
+    panelHostEl = document.createElement("div");
+    panelHostEl.id = "eafc-live-nav-panel-root";
+    panelShadow = panelHostEl.attachShadow({ mode: "closed" });
+    const styleEl = document.createElement("style");
+    styleEl.textContent = PANEL_STYLES;
+    panelShadow.appendChild(styleEl);
+    (document.body || document.documentElement).appendChild(panelHostEl);
+    return panelShadow;
+  }
+  function closePanel() {
+    if (!panelShadow) return;
+    const existing = panelShadow.querySelector(".eafc-live-full-panel");
+    if (existing) existing.remove();
+    if (tabEl) tabEl.classList.remove("eafc-live-tab-active");
+  }
+  async function openPanel() {
+    const shadow2 = ensurePanelMounted();
+    const existing = shadow2.querySelector(".eafc-live-full-panel");
+    if (existing) existing.remove();
+    const panel = el2("div", "eafc-live-full-panel");
+    const header = el2("div", "eafc-live-full-header");
+    header.appendChild(el2("span", "eafc-live-full-title", "EAFC LIVE OPPORTUNITIES"));
+    const closeBtn = el2("span", "eafc-live-full-close", "\xD7");
+    closeBtn.addEventListener("click", closePanel);
+    header.appendChild(closeBtn);
+    panel.appendChild(header);
+    const body = el2("div", "eafc-live-full-body");
+    body.appendChild(el2("div", "eafc-live-muted", "Loading\u2026"));
+    panel.appendChild(body);
+    shadow2.appendChild(panel);
+    if (tabEl) tabEl.classList.add("eafc-live-tab-active");
+    const result = await getOpportunities(20);
+    body.innerHTML = "";
+    if (result.status !== "success") {
+      body.appendChild(el2("div", "eafc-live-muted", "Could not load opportunities right now."));
+      return;
+    }
+    const items = Array.isArray(result.data) ? result.data : result.data?.items || [];
+    if (items.length === 0) {
+      body.appendChild(el2("div", "eafc-live-muted", "No live buy signals right now."));
+      return;
+    }
+    for (const item of items) {
+      const card = el2("div", "eafc-live-opp-card");
+      card.appendChild(el2("div", "eafc-live-opp-name", [item.name, item.rarity].filter(Boolean).join(" \u2014 ")));
+      const row = (label, value) => {
+        const r = el2("div", "eafc-live-opp-row");
+        r.appendChild(el2("span", "label", label));
+        r.appendChild(el2("span", "value", value));
+        card.appendChild(r);
+      };
+      row("Current BIN", fmt2(item.current_bin));
+      row("Buy Below", fmt2(item.recommended_buy_max ?? item.buy_below));
+      if (item.expected_profit_after_tax != null) row("Expected Profit", fmt2(Math.round(item.expected_profit_after_tax)));
+      const signal = el2("span", "eafc-live-opp-signal", String(item.signal || "buy").replace(/_/g, " ").toUpperCase());
+      card.appendChild(signal);
+      body.appendChild(card);
+    }
+  }
+  var TAB_CSS = `
+  .eafc-live-tab-active :is(span, div, p, svg, img) { color: #7fd8ff !important; }
+`;
+  function installNavTab() {
+    if (injected) return true;
+    const navBar = findNavBar();
+    if (!navBar) return false;
+    injected = true;
+    const templateTab = navBar.lastElementChild;
+    const tab = templateTab.cloneNode(true);
+    tab.removeAttribute("id");
+    tab.classList.add("eafc-live-nav-tab");
+    const walker = document.createTreeWalker(tab, NodeFilter.SHOW_TEXT);
+    const textNodes = [];
+    let n;
+    while (n = walker.nextNode()) textNodes.push(n);
+    if (textNodes.length > 0) {
+      textNodes[0].nodeValue = "EAFC LIVE";
+      for (let i = 1; i < textNodes.length; i++) textNodes[i].nodeValue = "";
+    }
+    for (const icon of tab.querySelectorAll("svg, img")) icon.remove();
+    const iconSpan = document.createElement("span");
+    iconSpan.textContent = "\u26A1";
+    iconSpan.style.fontSize = "18px";
+    tab.insertBefore(iconSpan, tab.firstChild);
+    const styleEl = document.createElement("style");
+    styleEl.textContent = TAB_CSS;
+    document.head.appendChild(styleEl);
+    let open = false;
+    tab.addEventListener("click", (event) => {
+      event.stopPropagation();
+      event.preventDefault();
+      open = !open;
+      if (open) openPanel();
+      else closePanel();
+    });
+    navBar.addEventListener(
+      "click",
+      (event) => {
+        if (event.target === tab || tab.contains(event.target)) return;
+        if (open) {
+          open = false;
+          closePanel();
+        }
+      },
+      { capture: true }
+    );
+    tabEl = tab;
+    navBar.appendChild(tab);
+    log4("EAFC LIVE nav tab installed");
+    return true;
   }
 
   // src/lifecycle.js
@@ -754,7 +982,7 @@
   }
 
   // src/main.js
-  function log4(...args) {
+  function log5(...args) {
     if (typeof window !== "undefined" && window.EAFC_LIVE_DEBUG) console.log("[EAFC Live]", ...args);
   }
   var RETRYABLE_STATUSES = /* @__PURE__ */ new Set(["network_error", "server_error", "timeout"]);
@@ -764,19 +992,27 @@
   }
   async function handleDetection(result) {
     const { sourceCardId, auctions } = result;
-    renderListBadges(auctions).catch((err) => {
-      log4("list badge rendering failed:", err && err.message);
+    const badgeResult = renderListBadges(auctions).catch((err) => {
+      log5("list badge rendering failed:", err && err.message);
+      return null;
     });
     if (!sourceCardId) {
+      const badges2 = await badgeResult;
+      render({
+        kind: "watching",
+        key: `watching:${auctions.length}`,
+        cardsChecked: badges2 ? badges2.cardsChecked : null,
+        badgeCount: badges2 ? badges2.badgeCount : null
+      });
       return;
     }
     const key = renderKeyFor(sourceCardId, auctions);
     if (key === lastRenderKey) return;
-    log4("exact card ID:", sourceCardId);
+    log5("exact card ID:", sourceCardId);
     render({ kind: "loading", key });
     const intelResult = await getCardIntelligence(sourceCardId);
     if (RETRYABLE_STATUSES.has(intelResult.status)) {
-      log4("intelligence request failed:", intelResult.status, intelResult.detail);
+      log5("intelligence request failed:", intelResult.status, intelResult.detail);
       render({ kind: "error", status: intelResult.status, detail: intelResult.detail, key });
       return;
     }
@@ -787,9 +1023,9 @@
     }
     const intelligence = intelResult.data;
     const combined = combineIntelligence(auctions, intelligence);
-    log4("intelligence loaded, signal:", intelligence.signal);
-    log4("cheapest BIN:", combined.cheapestBin);
-    log4(`${combined.underBuyBelowCount} listing(s) under target`);
+    log5("intelligence loaded, signal:", intelligence.signal);
+    log5("cheapest BIN:", combined.cheapestBin);
+    log5(`${combined.underBuyBelowCount} listing(s) under target`);
     render({
       kind: "result",
       key,
@@ -802,9 +1038,16 @@
       combined
     });
   }
+  function pollForNavTab() {
+    const timer = setInterval(() => {
+      if (installNavTab()) clearInterval(timer);
+    }, 2e3);
+    setTimeout(() => clearInterval(timer), 5 * 60 * 1e3);
+  }
   function setup() {
     onCardDetected(handleDetection);
     installMarketObserver();
+    pollForNavTab();
     console.log("[EAFC Live] Companion userscript ready", { href: location.href });
   }
   initLifecycle(setup);

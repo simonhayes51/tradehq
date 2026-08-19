@@ -17,6 +17,7 @@ import { getCardIntelligence } from "./api-client.js";
 import { combineIntelligence, cheapestBin } from "./market-calc.js";
 import { render as renderOverlay } from "./overlay.js";
 import { renderListBadges } from "./list-badges.js";
+import { installNavTab } from "./nav-tab.js";
 import { initLifecycle } from "./lifecycle.js";
 
 function log(...args) {
@@ -45,15 +46,27 @@ async function handleDetection(result) {
   // search) - unlike the single-card summary panel below, a badge only
   // ever describes the one row it's anchored to, so there's no
   // "which card is this about" ambiguity to avoid here.
-  renderListBadges(auctions).catch((err) => {
+  const badgeResult = renderListBadges(auctions).catch((err) => {
     log("list badge rendering failed:", err && err.message);
+    return null;
   });
 
   if (!sourceCardId) {
     // Response covered multiple distinct cards - the single-card
     // summary panel below only ever describes ONE card, so there is
     // nothing safe to show there without guessing which card the user
-    // is focused on. Per-row badges (above) already cover this case.
+    // is focused on. Per-row badges (above) already cover confirmed
+    // opportunities, but a page where NONE qualify would otherwise show
+    // nothing at all - indistinguishable from the script not running.
+    // This keeps the presence indicator visible everywhere, not just on
+    // a single-card search.
+    const badges = await badgeResult;
+    renderOverlay({
+      kind: "watching",
+      key: `watching:${auctions.length}`,
+      cardsChecked: badges ? badges.cardsChecked : null,
+      badgeCount: badges ? badges.badgeCount : null,
+    });
     return;
   }
 
@@ -102,9 +115,27 @@ async function handleDetection(result) {
   });
 }
 
+// EA's nav bar isn't necessarily in the DOM yet this early (@run-at
+// document-start) - retry on an interval until installNavTab() finds it
+// (it's a no-op once already injected, or if the heuristic never
+// matches at all - see that file's own header for why a failed match
+// degrades to "no tab" rather than a broken one).
+function pollForNavTab() {
+  const timer = setInterval(() => {
+    if (installNavTab()) clearInterval(timer);
+  }, 2000);
+  // No real upper bound on how long the Web App might take to render
+  // its own nav bar on a slow connection - stop polling after 5 minutes
+  // rather than forever, since by then the user has very likely either
+  // left the page or the heuristic genuinely isn't going to match on
+  // this session.
+  setTimeout(() => clearInterval(timer), 5 * 60 * 1000);
+}
+
 function setup() {
   onCardDetected(handleDetection);
   installMarketObserver();
+  pollForNavTab();
   console.log("[EAFC Live] Companion userscript ready", { href: location.href });
 }
 

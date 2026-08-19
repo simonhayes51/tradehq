@@ -46,17 +46,22 @@ const ERROR_STATUS_TEXT = {
 
 const STYLES = `
   :host { all: initial; }
+  /* Bottom-anchored (any fixed corner, really) inevitably collides with
+     SOME EA control eventually - the bottom tab bar on a results
+     screen, a Reset/Search button on a filters screen, different things
+     on different screens we don't control the layout of. The vertical
+     middle of the right edge is the one spot that's consistently empty
+     across every EA screen actually seen live (search results, filters,
+     item detail) - anchoring there instead of chasing each individual
+     overlap. */
   .eafc-live-panel {
     position: fixed;
-    /* EA's own bottom tab bar (Home/Squads/SBC/Transfers/Store/Club) sits
-       roughly 64-72px tall on phone - a plain safe-area offset put this
-       panel underneath/behind it. Cleared with a fixed floor, not just
-       the safe-area inset. */
-    bottom: max(76px, calc(env(safe-area-inset-bottom) + 68px));
-    right: max(12px, env(safe-area-inset-right));
+    top: 50%;
+    transform: translateY(-50%);
+    right: max(10px, env(safe-area-inset-right));
     z-index: 2147483647;
     width: min(88vw, 270px);
-    max-height: 70vh;
+    max-height: 60vh;
     overflow-y: auto;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     font-size: 13px;
@@ -65,6 +70,16 @@ const STYLES = `
     border: 1px solid #2c3542;
     border-radius: 12px;
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  }
+  /* Collapsed: a small icon-only circle, not a full-width bar - even if
+     it does end up near a real EA control, it's small enough not to
+     cover it. This is the DEFAULT resting state, not just what "x"
+     leaves behind. */
+  .eafc-live-panel.collapsed {
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    overflow: visible;
   }
   .eafc-live-header {
     display: flex;
@@ -77,8 +92,19 @@ const STYLES = `
     cursor: pointer;
     user-select: none;
   }
-  .eafc-live-panel.collapsed .eafc-live-header { border-bottom: none; border-radius: 12px; }
+  .eafc-live-panel.collapsed .eafc-live-header {
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    border-bottom: none;
+    border-radius: 50%;
+    justify-content: center;
+  }
   .eafc-live-panel.collapsed .eafc-live-body { display: none; }
+  .eafc-live-panel.collapsed .eafc-live-controls { display: none; }
+  .eafc-live-collapsed-icon { display: none; font-size: 18px; }
+  .eafc-live-panel.collapsed .eafc-live-collapsed-icon { display: block; }
+  .eafc-live-panel.collapsed .eafc-live-brand { display: none; }
   .eafc-live-brand {
     font-weight: 700;
     letter-spacing: 0.04em;
@@ -130,7 +156,12 @@ let shadow = null;
 // new detection event with a different key). "×" now just collapses to
 // the header pill instead, same as tapping the header - always tappable
 // to reopen, never gone for good.
-let collapsed = false;
+// Starts collapsed (a small dot, not a panel) - live feedback was that
+// an automatically-expanded panel was "in the way" and "too wordy" on
+// every single detection. The dot alone still conveys the key signal at
+// a glance (color = connected/confirmed vs error vs neutral); expanding
+// is now always an explicit tap, never something sprung on the user.
+let collapsed = true;
 
 function ensureMounted() {
   if (hostEl && hostEl.isConnected) return shadow;
@@ -167,7 +198,10 @@ function addRow(body, label, value) {
 
 /**
  * Renders one of a small set of states. `state.kind` is one of:
- *   "loading", "no-intelligence", "error", "result", "hidden"
+ *   "loading", "no-intelligence", "error", "result", "watching", "hidden"
+ * "watching" is the multi-card-page presence indicator (see main.js) -
+ * badges (list-badges.js) carry the actual per-row signal there; this
+ * just proves the script is alive when a page has nothing to flag.
  * `state.key`, when present, identifies this exact market situation -
  * used only to remember "the user closed THIS one".
  */
@@ -185,11 +219,21 @@ export function render(state) {
   const header = el("div", "eafc-live-header");
   header.appendChild(el("span", "eafc-live-brand", "EAFC LIVE"));
 
-  const controls = el("div", "eafc-live-controls");
   const statusClass =
-    state.kind === "result" ? "connected" : state.kind === "loading" ? "" : "error";
+    state.kind === "result" ? "connected" : state.kind === "loading" || state.kind === "watching" ? "" : "error";
   const statusText =
-    state.kind === "loading" ? "LOADING" : state.kind === "result" ? "CONNECTED" : "NO DATA";
+    state.kind === "loading" ? "LOADING" :
+    state.kind === "result" ? "CONNECTED" :
+    state.kind === "watching" ? "WATCHING" : "NO DATA";
+
+  // The collapsed resting state shows only this - a colored dot (no
+  // text) so there's still an at-a-glance signal without expanding.
+  const collapsedIcon = el("span", "eafc-live-collapsed-icon", "⚡");
+  collapsedIcon.style.color =
+    statusClass === "connected" ? "#5fd98a" : statusClass === "error" ? "#e5734a" : "#8a94a6";
+  header.appendChild(collapsedIcon);
+
+  const controls = el("div", "eafc-live-controls");
   controls.appendChild(el("span", `eafc-live-status ${statusClass}`.trim(), statusText));
 
   const collapseBtn = el("span", "eafc-live-btn", collapsed ? "▴" : "▾");
@@ -216,6 +260,19 @@ export function render(state) {
   panel.appendChild(header);
 
   const body = el("div", "eafc-live-body");
+
+  if (state.kind === "watching") {
+    const text =
+      state.cardsChecked == null
+        ? "Watching this search."
+        : state.badgeCount > 0
+          ? `${state.cardsChecked} card${state.cardsChecked === 1 ? "" : "s"} checked, ${state.badgeCount} flagged.`
+          : `${state.cardsChecked} card${state.cardsChecked === 1 ? "" : "s"} checked, nothing actionable right now.`;
+    body.appendChild(el("div", "eafc-live-muted", text));
+    panel.appendChild(body);
+    root.appendChild(panel);
+    return;
+  }
 
   if (state.kind === "loading") {
     body.appendChild(el("div", "eafc-live-muted", "Loading…"));

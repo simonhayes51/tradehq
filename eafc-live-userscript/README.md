@@ -93,13 +93,40 @@ degrades to "a badge floats in the wrong spot", never to broken EA
 layout or click handling. `findPriceAnchor()` in `list-badges.js` is the
 function to revisit if badges are missing or misplaced on a real device.
 
+## EAFC LIVE nav tab
+
+The floating overlay and per-row badges are both easy to miss, especially
+once collapsed - `nav-tab.js` adds a real "EAFC LIVE" tab to EA's own
+bottom navigation bar (Home / Squads / SBC / Transfers / Store / Club),
+matching how third-party userscripts like Paletools add their own extra
+tabs for things like the Club Analyzer. Tapping it opens a full-screen
+panel listing the backend's current buy/strong-buy opportunities (`GET
+/api/v2/opportunities`, public and unauthenticated - same endpoint
+`HomeDashboard.jsx` uses) - name, current BIN, buy-below target, expected
+profit, and signal. Tapping any other EA tab closes the panel again.
+
+The tab is a `cloneNode` of EA's own last tab (never its JS listeners),
+so it inherits EA's current icon size, spacing, and active/inactive
+styling for free - only the label text and icon glyph are replaced.
+Tapping it never touches EA's own SPA router; it only shows or hides our
+own closed-Shadow-DOM panel, so a mistake here can't break EA's real
+navigation.
+
+**Also unverified against EA's live markup**, same caveat as the per-row
+badges above: `findNavBar()` locates the nav bar by text content (every
+screenshot shows "Home", "Squads", and "Transfers" as sibling tab
+labels), not a class name this project has any way to know. A wrong or
+missing match degrades safely - no tab is inserted at all, and the
+existing overlay/badges keep working regardless. `findNavBar()` is the
+function to revisit if the tab doesn't appear on a real device.
+
 ## Building
 
 ```bash
 cd eafc-live-userscript
 npm install
 npm run build   # -> dist/eafc-live.user.js
-npm test        # 37 tests, node's built-in test runner
+npm test        # 48 tests, node's built-in test runner
 ```
 
 `dist/eafc-live.user.js` is **not minified on purpose** — the user

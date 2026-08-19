@@ -218,7 +218,7 @@ function openOverlayFor(auction, sameCardAuctions, intelligence) {
  * the DOM) fade out via positionBadge()'s display:none path.
  */
 export async function renderListBadges(auctions) {
-  if (!Array.isArray(auctions) || auctions.length === 0) return;
+  if (!Array.isArray(auctions) || auctions.length === 0) return { cardsChecked: 0, badgeCount: 0 };
   ensureContainer();
   startRepositionLoop();
 
@@ -257,4 +257,6 @@ export async function renderListBadges(auctions) {
       }
     })
   );
+
+  return { cardsChecked: byCard.size, badgeCount: badges.size };
 }
