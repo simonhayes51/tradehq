@@ -56,7 +56,7 @@ function log(...args) {
   if (typeof window !== "undefined" && window.EAFC_LIVE_DEBUG) console.log("[EAFC Live]", ...args);
 }
 
-function resolveGMRequest() {
+export function resolveGMRequest() {
   if (typeof GM_xmlhttpRequest === "function") return GM_xmlhttpRequest;
   if (typeof GM !== "undefined" && GM && typeof GM.xmlHttpRequest === "function") {
     return GM.xmlHttpRequest.bind(GM);

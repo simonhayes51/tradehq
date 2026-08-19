@@ -15,10 +15,21 @@
 //                         forms are real by autosbc.user.js itself
 //                         shipping both @match lines, not just the
 //                         locale-prefixed one.
-//   @connect            - userscript managers require @connect for any
-//                         host GM_xmlhttpRequest is allowed to reach;
-//                         only api.eafc.live is listed since that's the
-//                         only cross-origin host this script ever calls.
+//   @connect             - userscript managers require @connect for any
+//                         host GM_xmlhttpRequest is allowed to reach.
+//                         api.eafc.live for the JSON API, plus a wildcard
+//                         for the card-art image host: that host is
+//                         whatever AWS_PUBLIC_BASE_URL resolves to on the
+//                         backend (an R2/CDN domain set by deploy-time
+//                         config, not a fixed value this file can name -
+//                         see nav-tab.js's fetchImageAsObjectUrl() for why
+//                         card images are fetched through GM at all, not
+//                         a plain <img src>). The wildcard only ever
+//                         receives URLs that came back from OUR OWN
+//                         api.eafc.live response in the first place, never
+//                         attacker- or page-supplied ones, so it's not
+//                         widening what this script can be made to fetch
+//                         by anything untrusted.
 //   @grant GM_xmlhttpRequest
 //   @grant GM.xmlHttpRequest
 //                       - the privileged APIs this script needs (see
@@ -59,12 +70,13 @@
 export const METADATA_BLOCK = `// ==UserScript==
 // @name         EAFC Live Companion
 // @namespace    https://app.eafc.live/
-// @version      1.6.4
+// @version      1.7.0
 // @description  Read-only EAFC Live trading intelligence overlay for the EA SPORTS FC 26 Web App Transfer Market. Never buys, bids, lists, or automates anything - observation only.
 // @author       EAFC Live
 // @match        https://www.ea.com/*/ea-sports-fc/ultimate-team/web-app/*
 // @match        https://www.ea.com/ea-sports-fc/ultimate-team/web-app/*
 // @connect      api.eafc.live
+// @connect      *
 // @grant        GM_xmlhttpRequest
 // @grant        GM.xmlHttpRequest
 // @run-at       document-start
