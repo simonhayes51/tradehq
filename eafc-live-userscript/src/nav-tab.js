@@ -47,22 +47,77 @@ function log(...args) {
   if (typeof window !== "undefined" && window.EAFC_LIVE_DEBUG) console.log("[EAFC Live]", ...args);
 }
 
-const KNOWN_TAB_LABELS = ["Home", "Squads", "Transfers"];
+const KNOWN_TAB_LABELS = ["home", "squads", "transfers"];
+
+// First real device test (v1.4.0) found nothing at all - no console
+// access to say why. Two plausible causes get addressed here rather
+// than guessed at blind: (1) the original matcher required an EXACT,
+// case-sensitive text match per child, which breaks on anything the
+// screenshots couldn't show (extra whitespace, a different case, a
+// label wrapped across two text nodes); (2) `document.querySelectorAll`
+// never descends into a shadow root, open or closed - if EA's nav bar
+// is built as a web component (plausible for a component this old and
+// this reused), the bar would be invisible to the original "body *"
+// query even though it's visibly on screen. allElements() below walks
+// open shadow roots too; a closed shadow root is a real dead end (same
+// limitation this project's OWN panels rely on to stay unreachable by
+// EA's page) and is recorded in the diagnostic rather than silently
+// skipped.
+function* allElements(root) {
+  for (const el of root.querySelectorAll("*")) {
+    yield el;
+    if (el.shadowRoot) yield* allElements(el.shadowRoot);
+  }
+}
+
+function normalizedText(el) {
+  return (el.textContent || "").trim().toLowerCase();
+}
+
+// Populated by findNavBar() on every call (success or failure) so a
+// caller with no console can still learn something concrete - see
+// getNavTabDiagnostic() below.
+let diagnostic = "not run yet";
 
 /** Finds EA's bottom nav bar by locating a container whose direct
  * children collectively include text matching every label in
- * KNOWN_TAB_LABELS - the common ancestor of "Home"/"Squads"/"Transfers"
- * as sibling elements. Returns null (never throws, never guesses a
- * wrong container) if that pattern isn't found. */
+ * KNOWN_TAB_LABELS (case-insensitive, whitespace-trimmed) - the common
+ * ancestor of "Home"/"Squads"/"Transfers" as sibling elements. Also
+ * descends into open shadow roots (see allElements() above). Returns
+ * null (never throws, never guesses a wrong container) if that pattern
+ * isn't found anywhere reachable. */
 function findNavBar() {
-  const candidates = document.querySelectorAll("body *");
-  for (const el of candidates) {
+  let scanned = 0;
+  let bestMatch = null;
+  let bestMatchCount = 0;
+
+  for (const el of allElements(document.documentElement)) {
+    scanned++;
     if (el.children.length < KNOWN_TAB_LABELS.length) continue;
-    const childTexts = Array.from(el.children).map((c) => (c.textContent || "").trim());
-    const hasAll = KNOWN_TAB_LABELS.every((label) => childTexts.some((t) => t === label));
-    if (hasAll) return el;
+    const childTexts = Array.from(el.children).map(normalizedText);
+    const matched = KNOWN_TAB_LABELS.filter((label) => childTexts.some((t) => t === label));
+    if (matched.length === KNOWN_TAB_LABELS.length) {
+      diagnostic = `found (scanned ${scanned} elements)`;
+      return el;
+    }
+    if (matched.length > bestMatchCount) {
+      bestMatchCount = matched.length;
+      bestMatch = childTexts.filter((t) => t).slice(0, 6);
+    }
   }
+
+  diagnostic =
+    bestMatchCount > 0
+      ? `not found (scanned ${scanned}; closest had ${bestMatchCount}/${KNOWN_TAB_LABELS.length} labels: [${bestMatch.join(", ")}])`
+      : `not found (scanned ${scanned}; no candidate matched any label - possibly inside a closed shadow root)`;
   return null;
+}
+
+/** Short diagnostic string for the last findNavBar() attempt - surfaced
+ * in overlay.js since there is no console access on the one platform
+ * (iOS) this has actually failed on. */
+export function getNavTabDiagnostic() {
+  return diagnostic;
 }
 
 let injected = false;
