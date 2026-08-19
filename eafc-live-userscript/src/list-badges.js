@@ -210,15 +210,25 @@ function makeBadgeEl(verdict, onClick) {
 const MAX_MISSING_TICKS = 8;
 
 /**
- * No position math anymore - the badge lives in the row's own DOM flow
- * (see this file's header), so it moves/scrolls with it for free. This
- * only ever needs to catch ONE thing: EA's results list almost
- * certainly virtualizes/recycles row DOM nodes on scroll (a very common
- * pattern for long lists), which can silently repoint the anchor text
- * node at a DIFFERENT row's price without removing it from the
- * document - if that happens, this badge is now sitting in a row about
- * a different card than the one it claims, which has to be torn down
- * rather than left showing a stale verdict.
+ * Live test: badges appeared correctly but "disappear very quickly" -
+ * much faster than this loop's own MAX_MISSING_TICKS countdown could
+ * explain on its own. Most likely cause: a countdown label in the same
+ * row ("Time: <15 Seconds") ticks down often enough that EA's own
+ * rendering REPLACES the row's DOM node outright on each tick rather
+ * than mutating it in place - which destroys this badge (a child of the
+ * now-discarded old node) instantly, and since nothing but a genuine
+ * market re-fetch calls renderListBadges() again, a badge lost this way
+ * would otherwise stay gone until the next real detection event, not
+ * just for the few missing ticks it takes to notice.
+ *
+ * Self-heals instead: when the anchor no longer matches, this tries
+ * findPriceAnchor() again right away and re-parents the SAME badge
+ * element into whatever row shows that price now, rather than only
+ * counting down toward removal. A badge should come back within one
+ * verify tick of a re-render, not stay gone until the whole page's
+ * auctions are re-fetched. Only counts toward MAX_MISSING_TICKS (and
+ * eventual removal) when even a fresh search finds nothing - the row is
+ * genuinely gone, not just re-rendered.
  */
 function verifyBadge(entry) {
   const { anchorNode, priceText } = entry;
@@ -228,7 +238,20 @@ function verifyBadge(entry) {
     anchorNode.parentElement.isConnected &&
     anchorNode.nodeValue != null &&
     anchorNode.nodeValue.trim() === priceText;
-  entry.missingTicks = stillValid ? 0 : (entry.missingTicks || 0) + 1;
+  if (stillValid) {
+    entry.missingTicks = 0;
+    return;
+  }
+  const freshAnchor = findPriceAnchor(priceText);
+  if (freshAnchor) {
+    const row = findRowContainer(freshAnchor);
+    if (getComputedStyle(row).position === "static") row.style.position = "relative";
+    row.appendChild(entry.el);
+    entry.anchorNode = freshAnchor;
+    entry.missingTicks = 0;
+    return;
+  }
+  entry.missingTicks = (entry.missingTicks || 0) + 1;
 }
 
 function verifyAll() {
