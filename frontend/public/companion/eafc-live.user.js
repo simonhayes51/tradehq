@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EAFC Live Companion
 // @namespace    https://app.eafc.live/
-// @version      1.6.0
+// @version      1.6.1
 // @description  Read-only EAFC Live trading intelligence overlay for the EA SPORTS FC 26 Web App Transfer Market. Never buys, bids, lists, or automates anything - observation only.
 // @author       EAFC Live
 // @match        https://www.ea.com/*/ea-sports-fc/ultimate-team/web-app/*
@@ -606,13 +606,23 @@
     min-width: 0;
     color: #7fd8ff;
     cursor: pointer;
+    /* EA's own tabs are presumably real interactive elements (<button>/
+       <a>) - v1.4.0's clone worked because it inherited whatever made
+       those tappable. This is a plain <div> built from scratch instead
+       (needed to control its content directly - see the header comment
+       on why cloning broke sizing), so it can land inside a container
+       that sets pointer-events: none broadly and only re-enables it on
+       real interactive tags. Forced back on here, on both the tab and
+       its children, rather than assuming it's inherited correctly. */
+    pointer-events: auto;
   }
-  .eafc-live-nav-tab .eafc-live-nav-tab-icon { font-size: 18px; line-height: 1; }
+  .eafc-live-nav-tab .eafc-live-nav-tab-icon { font-size: 18px; line-height: 1; pointer-events: none; }
   .eafc-live-nav-tab .eafc-live-nav-tab-label {
     font-size: 9px;
     font-weight: 700;
     letter-spacing: 0.02em;
     white-space: nowrap;
+    pointer-events: none;
   }
   .eafc-live-nav-tab.eafc-live-tab-active { color: #fff; text-shadow: 0 0 8px rgba(127, 216, 255, 0.8); }
   .eafc-live-nav-tab:active { opacity: 0.7; }
