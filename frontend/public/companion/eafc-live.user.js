@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EAFC Live Companion
 // @namespace    https://app.eafc.live/
-// @version      1.5.2
+// @version      1.6.0
 // @description  Read-only EAFC Live trading intelligence overlay for the EA SPORTS FC 26 Web App Transfer Market. Never buys, bids, lists, or automates anything - observation only.
 // @author       EAFC Live
 // @match        https://www.ea.com/*/ea-sports-fc/ultimate-team/web-app/*
@@ -598,38 +598,30 @@
   }
   var TAB_CSS = `
   .eafc-live-nav-tab {
-    position: fixed;
-    width: 46px;
-    height: 46px;
-    border-radius: 50%;
-    background: radial-gradient(circle at 35% 30%, #1e2838, #0b0e14);
-    border: 2px solid #7fd8ff;
-    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.55), 0 0 0 4px #0b0e14, 0 0 14px rgba(127, 216, 255, 0.35);
     display: flex;
+    flex-direction: column;
     align-items: center;
     justify-content: center;
-    font-size: 22px;
-    line-height: 1;
+    gap: 2px;
+    min-width: 0;
     color: #7fd8ff;
-    z-index: 2147483645;
     cursor: pointer;
-    animation: eafc-live-tab-pulse 2.4s ease-in-out infinite;
   }
-  .eafc-live-nav-tab:active { transform: scale(0.94); }
-  .eafc-live-nav-tab.eafc-live-tab-active {
-    background: radial-gradient(circle at 35% 30%, #244059, #0b0e14);
-    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.55), 0 0 0 4px #0b0e14, 0 0 20px rgba(127, 216, 255, 0.6);
-    animation: none;
+  .eafc-live-nav-tab .eafc-live-nav-tab-icon { font-size: 18px; line-height: 1; }
+  .eafc-live-nav-tab .eafc-live-nav-tab-label {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
   }
-  @keyframes eafc-live-tab-pulse {
-    0%, 100% { box-shadow: 0 4px 14px rgba(0, 0, 0, 0.55), 0 0 0 4px #0b0e14, 0 0 10px rgba(127, 216, 255, 0.25); }
-    50% { box-shadow: 0 4px 14px rgba(0, 0, 0, 0.55), 0 0 0 4px #0b0e14, 0 0 18px rgba(127, 216, 255, 0.55); }
-  }
+  .eafc-live-nav-tab.eafc-live-tab-active { color: #fff; text-shadow: 0 0 8px rgba(127, 216, 255, 0.8); }
+  .eafc-live-nav-tab:active { opacity: 0.7; }
 `;
-  function positionTab(tab, navBar) {
-    const rect = navBar.getBoundingClientRect();
-    tab.style.top = `${Math.max(8, rect.top - 18)}px`;
-    tab.style.right = `${Math.max(8, window.innerWidth - rect.right + 10)}px`;
+  function equalizeTabWidths(navBar) {
+    for (const child of navBar.children) {
+      child.style.flex = "1 1 0%";
+      child.style.minWidth = "0";
+    }
   }
   function installNavTab() {
     if (injected) return true;
@@ -638,9 +630,12 @@
     injected = true;
     const tab = document.createElement("div");
     tab.className = "eafc-live-nav-tab";
-    tab.textContent = "\u26A1";
     tab.setAttribute("role", "button");
     tab.setAttribute("aria-label", "EAFC Live opportunities");
+    const icon = el("span", "eafc-live-nav-tab-icon", "\u26A1");
+    const label = el("span", "eafc-live-nav-tab-label", "LIVE");
+    tab.appendChild(icon);
+    tab.appendChild(label);
     const styleEl = document.createElement("style");
     styleEl.textContent = TAB_CSS;
     document.head.appendChild(styleEl);
@@ -663,11 +658,10 @@
       },
       { capture: true }
     );
-    positionTab(tab, navBar);
-    window.addEventListener("resize", () => positionTab(tab, navBar));
     tabEl = tab;
-    (document.body || document.documentElement).appendChild(tab);
-    log3("EAFC LIVE nav badge installed");
+    navBar.appendChild(tab);
+    equalizeTabWidths(navBar);
+    log3("EAFC LIVE nav tab installed");
     return true;
   }
 
