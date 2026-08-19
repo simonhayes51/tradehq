@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EAFC Live Companion
 // @namespace    https://app.eafc.live/
-// @version      1.8.2
+// @version      1.8.3
 // @description  Read-only EAFC Live trading intelligence overlay for the EA SPORTS FC 26 Web App Transfer Market. Never buys, bids, lists, or automates anything - observation only.
 // @author       EAFC Live
 // @match        https://www.ea.com/*/ea-sports-fc/ultimate-team/web-app/*
@@ -1157,7 +1157,20 @@
   function verifyBadge(entry) {
     const { anchorNode, priceText } = entry;
     const stillValid = anchorNode && anchorNode.parentElement && anchorNode.parentElement.isConnected && anchorNode.nodeValue != null && anchorNode.nodeValue.trim() === priceText;
-    entry.missingTicks = stillValid ? 0 : (entry.missingTicks || 0) + 1;
+    if (stillValid) {
+      entry.missingTicks = 0;
+      return;
+    }
+    const freshAnchor = findPriceAnchor(priceText);
+    if (freshAnchor) {
+      const row = findRowContainer(freshAnchor);
+      if (getComputedStyle(row).position === "static") row.style.position = "relative";
+      row.appendChild(entry.el);
+      entry.anchorNode = freshAnchor;
+      entry.missingTicks = 0;
+      return;
+    }
+    entry.missingTicks = (entry.missingTicks || 0) + 1;
   }
   function verifyAll() {
     for (const [key, entry] of badges) {
