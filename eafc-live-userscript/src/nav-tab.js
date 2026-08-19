@@ -135,12 +135,24 @@ let injected = false;
 let panelHostEl = null;
 let panelShadow = null;
 let tabEl = null;
+let cachedNavBar = null;
 
 const PANEL_STYLES = `
   :host { all: initial; }
   .eafc-live-full-panel {
     position: fixed;
-    inset: 0;
+    top: 0;
+    left: 0;
+    right: 0;
+    /* Bottom is set inline per-open (see openPanel()) to the real
+       measured height of EA's nav bar, not 0 - a full inset:0 panel
+       live-tested as covering the bar entirely, hiding this project's
+       own tab along with EA's, leaving only the in-panel close button
+       as a way back. Paletools' own panel (the explicit reference for
+       this feature) keeps the bar visible underneath its content for
+       exactly this reason. Falls back to a fixed guess if the bar
+       can't be measured, rather than 0. */
+    bottom: 64px;
     z-index: 2147483647;
     background: #0b0e14;
     color: #e8ecf1;
@@ -237,6 +249,13 @@ async function openPanel() {
   if (existing) existing.remove();
 
   const panel = el("div", "eafc-live-full-panel");
+  // Real measured bar height beats the CSS fallback whenever it's
+  // available - see PANEL_STYLES's comment on why this leaves a gap at
+  // all rather than covering the full viewport.
+  if (cachedNavBar) {
+    const barHeight = cachedNavBar.getBoundingClientRect().height;
+    if (barHeight > 0) panel.style.bottom = `${Math.round(barHeight)}px`;
+  }
   const header = el("div", "eafc-live-full-header");
   header.appendChild(el("span", "eafc-live-full-title", "EAFC LIVE OPPORTUNITIES"));
   const closeBtn = el("span", "eafc-live-full-close", "×");
@@ -417,6 +436,7 @@ export function installNavTab() {
   const navBar = findNavBar();
   if (!navBar) return false; // will be retried by main.js's pollForNavTab()
   injected = true;
+  cachedNavBar = navBar;
 
   const tab = document.createElement("div");
   tab.className = "eafc-live-nav-tab";
