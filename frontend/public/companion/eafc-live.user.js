@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EAFC Live Companion
 // @namespace    https://app.eafc.live/
-// @version      1.8.0
+// @version      1.8.1
 // @description  Read-only EAFC Live trading intelligence overlay for the EA SPORTS FC 26 Web App Transfer Market. Never buys, bids, lists, or automates anything - observation only.
 // @author       EAFC Live
 // @match        https://www.ea.com/*/ea-sports-fc/ultimate-team/web-app/*
@@ -1091,6 +1091,14 @@
     }
     return candidates[0];
   }
+  function findRowContainer(anchorNode) {
+    let el3 = anchorNode.parentElement;
+    for (let depth = 0; el3 && depth < 10; depth++, el3 = el3.parentElement) {
+      const text = el3.textContent || "";
+      if (/buy\s*now/i.test(text) && /start\s*price/i.test(text)) return el3;
+    }
+    return anchorNode.parentElement;
+  }
   function verdictFor(auction, intelligence) {
     if (!intelligence) return null;
     const combined = combineIntelligence([auction], intelligence);
@@ -1106,6 +1114,10 @@
     const fg = verdict.tone === "buy" ? "#5fd98a" : "#e5734a";
     const border = verdict.tone === "buy" ? "#5fd98a" : "#e5734a";
     el3.style.cssText = [
+      "position:absolute",
+      "top:6px",
+      "right:6px",
+      "z-index:2147483645",
       "display:inline-flex",
       "align-items:center",
       "pointer-events:auto",
@@ -1114,12 +1126,10 @@
       "font-weight:700",
       "letter-spacing:0.02em",
       "padding:3px 6px",
-      "margin:4px 0 0 6px",
       "border-radius:5px",
       "cursor:pointer",
       "line-height:1",
       "white-space:nowrap",
-      "vertical-align:middle",
       `background:${bg}`,
       `color:${fg}`,
       `border:1px solid ${border}`,
@@ -1186,8 +1196,10 @@
             log4("list-badges: no DOM match for price", priceText, "- skipping this row's badge");
             continue;
           }
+          const row = findRowContainer(anchorNode);
+          if (getComputedStyle(row).position === "static") row.style.position = "relative";
           const el3 = makeBadgeEl(verdict, () => openOverlayFor(auction, sameCardAuctions, intelligence));
-          anchorNode.parentElement.insertAdjacentElement("afterend", el3);
+          row.appendChild(el3);
           const entry = { el: el3, auction, anchorNode, priceText, verdict, missingTicks: 0 };
           badges.set(key, entry);
         }
