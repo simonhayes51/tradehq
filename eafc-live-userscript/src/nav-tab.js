@@ -58,6 +58,20 @@ function log(...args) {
   if (typeof window !== "undefined" && window.EAFC_LIVE_DEBUG) console.log("[EAFC Live]", ...args);
 }
 
+// Same shape as api-client.js's describeGmError() - kept as a separate
+// local copy rather than importing it, since this file's failure needs
+// (image fetch) and api-client.js's (JSON fetch) are otherwise unrelated.
+function describeError(err) {
+  if (!err) return "no error info given";
+  if (typeof err === "string") return err;
+  if (err.error || err.message || err.statusText) return String(err.error || err.message || err.statusText);
+  try {
+    return JSON.stringify(err).slice(0, 120);
+  } catch (_e) {
+    return String(err);
+  }
+}
+
 /**
  * Live test on v1.6.4: EVERY card image request failed (0/14 loaded, 14
  * failed), not just some - the same all-or-nothing pattern api-client.js's
@@ -87,33 +101,49 @@ function log(...args) {
  * backend/app/services/futgg_card_image_mirror.py's own upload_bytes()
  * call, since GM responses don't reliably expose response headers to
  * read the real content-type back out.
+ *
+ * Resolves `{ url, detail }` - url is null on any failure, and detail is
+ * a short always-on diagnostic string for WHY (mirrors api-client.js's
+ * callGM()/describeGmError() pattern, for the same reason: no console on
+ * the one device this keeps failing on). Both the blob AND arraybuffer
+ * responseType attempts resolved null for every card - two different
+ * decode strategies failing identically points more at the REQUEST
+ * itself being rejected (a manager permission/@connect gap, since the
+ * image host is only covered by this metadata's wildcard @connect - see
+ * metadata.js's header on why it can't name the host directly) than at
+ * a decode problem, but that's a guess without seeing this string.
  */
 function fetchImageAsObjectUrl(url) {
   return new Promise((resolve) => {
     const gmRequest = resolveGMRequest();
     if (!gmRequest) {
-      resolve(null);
+      resolve({ url: null, detail: "no GM_xmlhttpRequest / GM.xmlHttpRequest in this manager" });
       return;
     }
-    const toObjectUrl = (response) => {
+    const toResult = (response) => {
       const buffer = response && response.response;
-      if (!(buffer instanceof ArrayBuffer) || buffer.byteLength === 0) return null;
-      return URL.createObjectURL(new Blob([buffer], { type: "image/webp" }));
+      if (!(buffer instanceof ArrayBuffer)) {
+        return { url: null, detail: `response.response was not an ArrayBuffer (got ${typeof buffer})` };
+      }
+      if (buffer.byteLength === 0) return { url: null, detail: "response body was 0 bytes" };
+      return { url: URL.createObjectURL(new Blob([buffer], { type: "image/webp" })), detail: null };
     };
     try {
       const maybePromise = gmRequest({
         method: "GET",
         url,
         responseType: "arraybuffer",
-        onload: (response) => resolve(toObjectUrl(response)),
-        onerror: () => resolve(null),
-        ontimeout: () => resolve(null),
+        onload: (response) => resolve(toResult(response)),
+        onerror: (err) => resolve({ url: null, detail: `onerror: ${describeError(err)}` }),
+        ontimeout: () => resolve({ url: null, detail: "ontimeout fired" }),
       });
       if (maybePromise && typeof maybePromise.then === "function") {
-        maybePromise.then((response) => resolve(toObjectUrl(response))).catch(() => resolve(null));
+        maybePromise
+          .then((response) => resolve(toResult(response)))
+          .catch((err) => resolve({ url: null, detail: `promise rejected: ${describeError(err)}` }));
       }
-    } catch (_err) {
-      resolve(null);
+    } catch (err) {
+      resolve({ url: null, detail: `gmRequest() threw: ${describeError(err)}` });
     }
   });
 }
@@ -269,6 +299,7 @@ const PANEL_STYLES = `
   }
   .eafc-live-opp-signal.strong { background: rgba(127, 216, 255, 0.15); color: #7fd8ff; }
   .eafc-live-muted { color: #6b7484; font-size: 12px; text-align: center; padding: 24px 0; }
+  .eafc-live-debug { color: #4a90d9; font-size: 10px; text-align: center; font-family: monospace; padding: 0 16px 16px; word-break: break-word; }
   .eafc-live-spinner {
     width: 22px; height: 22px; margin: 24px auto 10px;
     border: 2px solid #2c3542; border-top-color: #7fd8ff; border-radius: 50%;
@@ -349,7 +380,7 @@ async function openPanel() {
   // cards" from "the URL was given but the image request itself failed
   // (e.g. EA's page CSP blocking a cross-origin <img> load)" without any
   // console access on the device this has to be diagnosed from.
-  const artStats = { withUrl: 0, loaded: 0, failed: 0, total: items.length };
+  const artStats = { withUrl: 0, loaded: 0, failed: 0, total: items.length, firstFailureDetail: null };
 
   items.forEach((item, index) => {
     const isStrong = item.signal === "strong_buy";
@@ -374,9 +405,10 @@ async function openPanel() {
       // a plain cross-origin <img> tag failed for every single card on
       // the last live test (EA's page CSP, the same restriction this
       // project already routes JSON around).
-      fetchImageAsObjectUrl(artUrl).then((objectUrl) => {
+      fetchImageAsObjectUrl(artUrl).then(({ url: objectUrl, detail }) => {
         if (!objectUrl) {
           artStats.failed++;
+          if (detail && !artStats.firstFailureDetail) artStats.firstFailureDetail = detail;
           return;
         }
         const img = document.createElement("img");
@@ -448,6 +480,9 @@ async function openPanel() {
           `Card art: ${artStats.loaded}/${artStats.withUrl} loaded, ${artStats.failed} failed to load.`
         )
       );
+      if (artStats.firstFailureDetail) {
+        body.appendChild(el("div", "eafc-live-debug", artStats.firstFailureDetail));
+      }
     }
   }, 4500);
 }
