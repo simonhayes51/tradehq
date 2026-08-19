@@ -284,6 +284,12 @@ export function render(state) {
           ? `${state.cardsChecked} card${state.cardsChecked === 1 ? "" : "s"} checked, ${state.badgeCount} flagged.`
           : `${state.cardsChecked} card${state.cardsChecked === 1 ? "" : "s"} checked, nothing actionable right now.`;
     body.appendChild(el("div", "eafc-live-muted", text));
+    // Same "no console access" reasoning as the nav-tab diagnostic below
+    // - only shown when at least one badge was actually attempted, since
+    // an empty page has nothing to report.
+    if (!collapsed && state.badgeDiagnostic && state.badgeCount > 0) {
+      body.appendChild(el("div", "eafc-live-debug", state.badgeDiagnostic));
+    }
     finish();
     return;
   }

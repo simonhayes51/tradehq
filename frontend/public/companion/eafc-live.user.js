@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EAFC Live Companion
 // @namespace    https://app.eafc.live/
-// @version      1.8.1
+// @version      1.8.2
 // @description  Read-only EAFC Live trading intelligence overlay for the EA SPORTS FC 26 Web App Transfer Market. Never buys, bids, lists, or automates anything - observation only.
 // @author       EAFC Live
 // @match        https://www.ea.com/*/ea-sports-fc/ultimate-team/web-app/*
@@ -1006,6 +1006,9 @@
     if (state.kind === "watching") {
       const text = state.cardsChecked == null ? "Watching this search." : state.badgeCount > 0 ? `${state.cardsChecked} card${state.cardsChecked === 1 ? "" : "s"} checked, ${state.badgeCount} flagged.` : `${state.cardsChecked} card${state.cardsChecked === 1 ? "" : "s"} checked, nothing actionable right now.`;
       body.appendChild(el2("div", "eafc-live-muted", text));
+      if (!collapsed && state.badgeDiagnostic && state.badgeCount > 0) {
+        body.appendChild(el2("div", "eafc-live-debug", state.badgeDiagnostic));
+      }
       finish();
       return;
     }
@@ -1066,8 +1069,12 @@
   var VERIFY_INTERVAL_MS = 500;
   var badges = /* @__PURE__ */ new Map();
   var verifyTimer = null;
+  var lastRowDiagnostic = "no badge inserted yet";
   function log4(...args) {
     if (typeof window !== "undefined" && window.EAFC_LIVE_DEBUG) console.log("[EAFC Live]", ...args);
+  }
+  function getListBadgesDiagnostic() {
+    return lastRowDiagnostic;
   }
   function auctionKey(auction) {
     return auction.tradeId != null ? `t:${auction.tradeId}` : `c:${auction.sourceCardId}:${auction.buyNowPrice}`;
@@ -1091,13 +1098,17 @@
     }
     return candidates[0];
   }
+  var MAX_PLAUSIBLE_ROW_HEIGHT_PX = 320;
   function findRowContainer(anchorNode) {
     let el3 = anchorNode.parentElement;
-    for (let depth = 0; el3 && depth < 10; depth++, el3 = el3.parentElement) {
-      const text = el3.textContent || "";
-      if (/buy\s*now/i.test(text) && /start\s*price/i.test(text)) return el3;
+    let best = el3;
+    for (let depth = 0; el3 && depth < 14; depth++, el3 = el3.parentElement) {
+      const rect = el3.getBoundingClientRect();
+      if (rect.height <= 0) continue;
+      if (rect.height > MAX_PLAUSIBLE_ROW_HEIGHT_PX) break;
+      best = el3;
     }
-    return anchorNode.parentElement;
+    return best;
   }
   function verdictFor(auction, intelligence) {
     if (!intelligence) return null;
@@ -1202,6 +1213,8 @@
           row.appendChild(el3);
           const entry = { el: el3, auction, anchorNode, priceText, verdict, missingTicks: 0 };
           badges.set(key, entry);
+          const rowRect = row.getBoundingClientRect();
+          lastRowDiagnostic = `row: ${Math.round(rowRect.width)}x${Math.round(rowRect.height)}px @(${Math.round(rowRect.left)},${Math.round(rowRect.top)})`;
         }
       })
     );
@@ -1237,7 +1250,8 @@
         kind: "watching",
         key: `watching:${auctions.length}`,
         cardsChecked: badges2 ? badges2.cardsChecked : null,
-        badgeCount: badges2 ? badges2.badgeCount : null
+        badgeCount: badges2 ? badges2.badgeCount : null,
+        badgeDiagnostic: getListBadgesDiagnostic()
       });
       return;
     }

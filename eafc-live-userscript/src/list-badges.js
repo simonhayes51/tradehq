@@ -64,9 +64,16 @@ const VERIFY_INTERVAL_MS = 500;
 // auctionKey -> { el, auction, anchorNode, priceText, verdict, missingTicks }
 const badges = new Map();
 let verifyTimer = null;
+let lastRowDiagnostic = "no badge inserted yet";
 
 function log(...args) {
   if (typeof window !== "undefined" && window.EAFC_LIVE_DEBUG) console.log("[EAFC Live]", ...args);
+}
+
+/** Short diagnostic string describing the last row container a badge
+ * was actually inserted into - see the assignment site's comment. */
+export function getListBadgesDiagnostic() {
+  return lastRowDiagnostic;
 }
 
 export function auctionKey(auction) {
@@ -106,21 +113,38 @@ function findPriceAnchor(priceText) {
   return candidates[0];
 }
 
+// A single row card in every screenshot seen so far tops out somewhere
+// around 150-200px tall (image + name + price/bid + time). Comfortably
+// generous ceiling for "still plausibly one row" before assuming an
+// ancestor has crossed into a container holding multiple rows.
+const MAX_PLAUSIBLE_ROW_HEIGHT_PX = 320;
+
 /**
- * Climbs from the matched price node up to the nearest ancestor whose
- * own text contains both "Buy Now" and "Start Price" - a proxy for "the
- * whole row card," not just the small element directly wrapping the
- * price. Falls back to the price's immediate parent if nothing in range
- * matches both (still degrades to a plausible position rather than
- * throwing), same tolerance-for-a-wrong-guess policy as findPriceAnchor.
+ * Climbs from the matched price node up to the LARGEST ancestor still
+ * under MAX_PLAUSIBLE_ROW_HEIGHT_PX tall - a proxy for "the whole row
+ * card," not just the small element directly wrapping the price.
+ *
+ * Replaced a text-content heuristic (climb until an ancestor's text
+ * contains both "Buy Now" and "Start Price") that live-tested as still
+ * invisible even though the flagged count went up - most likely because
+ * that condition can be satisfied by a container holding SEVERAL rows,
+ * not just one (every row repeats both labels), landing the badge at
+ * the corner of a shared wrapper instead of an individual card, quite
+ * possibly off-screen or overlapping unrelated content. Actual rendered
+ * geometry is a more reliable signal than hoping text boundaries line
+ * up with visual ones - a genuine row card is comfortably below this
+ * height ceiling, while a multi-row wrapper is not.
  */
 function findRowContainer(anchorNode) {
   let el = anchorNode.parentElement;
-  for (let depth = 0; el && depth < 10; depth++, el = el.parentElement) {
-    const text = el.textContent || "";
-    if (/buy\s*now/i.test(text) && /start\s*price/i.test(text)) return el;
+  let best = el;
+  for (let depth = 0; el && depth < 14; depth++, el = el.parentElement) {
+    const rect = el.getBoundingClientRect();
+    if (rect.height <= 0) continue;
+    if (rect.height > MAX_PLAUSIBLE_ROW_HEIGHT_PX) break;
+    best = el;
   }
-  return anchorNode.parentElement;
+  return best;
 }
 
 export function verdictFor(auction, intelligence) {
@@ -284,6 +308,12 @@ export async function renderListBadges(auctions) {
         row.appendChild(el);
         const entry = { el, auction, anchorNode, priceText, verdict, missingTicks: 0 };
         badges.set(key, entry);
+        // Two prior rounds both looked right in code but weren't visible
+        // live - this records concrete geometry from the LAST insertion
+        // (surfaced in main.js's "watching" overlay text) so the next
+        // round has a real number to react to instead of another guess.
+        const rowRect = row.getBoundingClientRect();
+        lastRowDiagnostic = `row: ${Math.round(rowRect.width)}x${Math.round(rowRect.height)}px @(${Math.round(rowRect.left)},${Math.round(rowRect.top)})`;
       }
     })
   );
