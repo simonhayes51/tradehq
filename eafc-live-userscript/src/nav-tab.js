@@ -270,7 +270,7 @@ async function openPanel() {
   // cards" from "the URL was given but the image request itself failed
   // (e.g. EA's page CSP blocking a cross-origin <img> load)" without any
   // console access on the device this has to be diagnosed from.
-  const artStats = { withUrl: 0, loaded: 0, failed: 0 };
+  const artStats = { withUrl: 0, loaded: 0, failed: 0, total: items.length };
 
   items.forEach((item, index) => {
     const isStrong = item.signal === "strong_buy";
@@ -335,7 +335,17 @@ async function openPanel() {
   // says nothing, same as the nav tab diagnostic's "found" case staying
   // out of the way).
   setTimeout(() => {
-    if (artStats.withUrl > 0 && artStats.failed > 0) {
+    // Two distinct gaps this tells apart, since "art didn't render" was
+    // reported live with zero images AND zero loaded/failed - which
+    // only happens when the backend didn't send a URL for any of these
+    // cards at all (a data gap), not a request/CSP failure (that would
+    // show up as failed > 0 with withUrl > 0, the case already handled
+    // above the "no URL" line).
+    if (artStats.withUrl === 0 && artStats.total > 0) {
+      body.appendChild(
+        el("div", "eafc-live-muted", `Card art: none of these ${artStats.total} cards had an image URL from the backend.`)
+      );
+    } else if (artStats.failed > 0) {
       body.appendChild(
         el(
           "div",
@@ -483,6 +493,28 @@ export function installNavTab() {
   tabEl = tab;
   navBar.appendChild(tab);
   equalizeTabWidths(navBar);
+
+  // EA's own SPA re-renders this bar on every route change (Home ->
+  // Squads -> ...), and its reconciler only knows about the six tabs
+  // IT put there - a foreign 7th node it doesn't track can end up
+  // reordered arbitrarily as it reinserts its own children around ours.
+  // Confirmed live: the tab's position drifted between screens even
+  // though appendChild only ever runs once, here, at install. A
+  // MutationObserver on navBar's childList re-pins it to the end
+  // whenever anything changes the bar's children - skipped when it's
+  // already last, both to avoid fighting a mutation we caused ourselves
+  // and to avoid an observer->mutate->observer loop.
+  const keepTabPinned = new MutationObserver(() => {
+    // appendChild() moves an already-attached node rather than erroring,
+    // so this re-pins it whether EA's reconciler merely reordered it or
+    // detached it from the bar outright.
+    if (navBar.lastElementChild !== tab) {
+      navBar.appendChild(tab);
+      equalizeTabWidths(navBar);
+    }
+  });
+  keepTabPinned.observe(navBar, { childList: true });
+
   log("EAFC LIVE nav tab installed");
   return true;
 }
