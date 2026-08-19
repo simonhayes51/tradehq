@@ -84,10 +84,12 @@ function describeError(err) {
  * are exempt from the page's CSP the same way they're exempt from its
  * CORS policy (see api-client.js's header), so this fetches the image
  * bytes through the same privileged channel and hands the <img> a local
- * blob: URL instead of the real cross-origin one - nothing about the
- * image ever goes through the page's own network stack. Resolves null
- * (never throws) on any failure, so a genuinely broken URL still falls
- * back to the placeholder glyph exactly as before.
+ * data: URI (see this function's own header further down for why data:
+ * specifically, not blob:) instead of the real cross-origin one -
+ * nothing about the image ever goes through the page's own network
+ * stack. Resolves null (never throws) on any failure, so a genuinely
+ * broken URL still falls back to the placeholder glyph exactly as
+ * before.
  *
  * Uses `responseType: "arraybuffer"`, not "blob" - a first attempt at
  * this used "blob" directly and every card still rendered an empty box
@@ -117,7 +119,29 @@ function describeError(err) {
  * a short always-on diagnostic string for WHY (mirrors api-client.js's
  * callGM()/describeGmError() pattern, for the same reason: no console on
  * the one device this keeps failing on).
+ *
+ * Builds a `data:` URI, NOT `URL.createObjectURL()` - the sniffed MIME
+ * type fix above didn't change the outcome (still "fetched OK but could
+ * not decode", now confirmed to be the DECODE-failure path specifically,
+ * meaning a Blob with a correctly-sniffed type was built and STILL
+ * refused). That points one level up: EA's page CSP may simply not list
+ * `blob:` in its img-src allowlist at all, which fails an <img src=
+ * "blob:..."> outright regardless of what's inside it. `data:` URIs are
+ * far more commonly allowlisted than `blob:` even under a strict CSP
+ * (no network fetch is even conceptually possible for one, unlike a
+ * blob object URL), so this encodes the bytes as base64 and hands the
+ * <img> a data: URI directly instead.
  */
+function arrayBufferToBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  const CHUNK = 0x8000; // String.fromCharCode.apply has an argument-count ceiling on some engines
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(binary);
+}
+
 function sniffImageMimeType(buffer) {
   const b = new Uint8Array(buffer, 0, Math.min(buffer.byteLength, 12));
   if (b.length >= 8 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return "image/png";
@@ -132,7 +156,7 @@ function sniffImageMimeType(buffer) {
   if (b.length >= 6 && b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46) return "image/gif";
   return null;
 }
-function fetchImageAsObjectUrl(url) {
+function fetchImageAsDataUrl(url) {
   return new Promise((resolve) => {
     const gmRequest = resolveGMRequest();
     if (!gmRequest) {
@@ -163,7 +187,7 @@ function fetchImageAsObjectUrl(url) {
       if (!mimeType) {
         return { url: null, detail: `fetched ${buffer.byteLength} bytes but none of PNG/JPEG/WEBP/GIF signatures matched` };
       }
-      return { url: URL.createObjectURL(new Blob([buffer], { type: mimeType })), detail: null };
+      return { url: `data:${mimeType};base64,${arrayBufferToBase64(buffer)}`, detail: null };
     };
     try {
       const maybePromise = gmRequest({
@@ -438,32 +462,29 @@ async function openPanel() {
     if (artUrl) {
       artStats.withUrl++;
       // Fetched as a blob through the privileged GM channel, not a
-      // direct <img src> - see fetchImageAsObjectUrl()'s header for why
+      // direct <img src> - see fetchImageAsDataUrl()'s header for why
       // a plain cross-origin <img> tag failed for every single card on
       // the last live test (EA's page CSP, the same restriction this
       // project already routes JSON around).
-      fetchImageAsObjectUrl(artUrl).then(({ url: objectUrl, detail }) => {
-        if (!objectUrl) {
+      fetchImageAsDataUrl(artUrl).then(({ url: dataUrl, detail }) => {
+        if (!dataUrl) {
           artStats.failed++;
           if (detail && !artStats.firstFailureDetail) artStats.firstFailureDetail = detail;
           return;
         }
         const img = document.createElement("img");
         img.className = "eafc-live-opp-art";
-        img.src = objectUrl;
+        img.src = dataUrl;
         img.alt = "";
         img.onload = () => artStats.loaded++;
         img.onerror = () => {
-          // Not just a failed fetch this time - the blob was retrieved
-          // but the browser couldn't decode it as an image. Swaps back
-          // to a fresh placeholder rather than leaving the broken <img>
-          // in the DOM, which live-tested as an empty box with no
-          // visible fallback at all.
+          // A correctly-typed data: URI failing to decode would mean the
+          // fetched bytes themselves are corrupt, not a labeling problem
+          // - still degrades to the placeholder rather than a blank box.
           artStats.failed++;
           if (!artStats.firstFailureDetail) {
-            artStats.firstFailureDetail = "fetched OK but the browser could not decode the response as an image";
+            artStats.firstFailureDetail = "fetched OK, correct MIME type, but the browser still could not decode it";
           }
-          URL.revokeObjectURL(objectUrl);
           img.replaceWith(el("div", "eafc-live-opp-art-placeholder", "⚽"));
         };
         artPlaceholder.replaceWith(img);
