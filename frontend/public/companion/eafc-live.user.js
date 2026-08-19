@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EAFC Live Companion
 // @namespace    https://app.eafc.live/
-// @version      1.6.1
+// @version      1.6.2
 // @description  Read-only EAFC Live trading intelligence overlay for the EA SPORTS FC 26 Web App Transfer Market. Never buys, bids, lists, or automates anything - observation only.
 // @author       EAFC Live
 // @match        https://www.ea.com/*/ea-sports-fc/ultimate-team/web-app/*
@@ -642,6 +642,7 @@
     tab.className = "eafc-live-nav-tab";
     tab.setAttribute("role", "button");
     tab.setAttribute("aria-label", "EAFC Live opportunities");
+    tab.style.pointerEvents = "auto";
     const icon = el("span", "eafc-live-nav-tab-icon", "\u26A1");
     const label = el("span", "eafc-live-nav-tab-label", "LIVE");
     tab.appendChild(icon);
@@ -650,12 +651,28 @@
     styleEl.textContent = TAB_CSS;
     document.head.appendChild(styleEl);
     let open = false;
-    tab.addEventListener("click", (event) => {
-      event.stopPropagation();
-      event.preventDefault();
+    let lastToggleAt = 0;
+    const toggle = () => {
+      const now = Date.now();
+      if (now - lastToggleAt < 400) return;
+      lastToggleAt = now;
       open = !open;
       if (open) openPanel();
       else closePanel();
+    };
+    tab.addEventListener(
+      "touchend",
+      (event) => {
+        event.stopPropagation();
+        event.preventDefault();
+        toggle();
+      },
+      { passive: false }
+    );
+    tab.addEventListener("click", (event) => {
+      event.stopPropagation();
+      event.preventDefault();
+      toggle();
     });
     navBar.addEventListener(
       "click",
