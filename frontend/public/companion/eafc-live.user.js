@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EAFC Live Companion
 // @namespace    https://app.eafc.live/
-// @version      1.6.2
+// @version      1.6.3
 // @description  Read-only EAFC Live trading intelligence overlay for the EA SPORTS FC 26 Web App Transfer Market. Never buys, bids, lists, or automates anything - observation only.
 // @author       EAFC Live
 // @match        https://www.ea.com/*/ea-sports-fc/ultimate-team/web-app/*
@@ -540,7 +540,7 @@
       body.appendChild(el("div", "eafc-live-muted", "No live buy signals right now."));
       return;
     }
-    const artStats = { withUrl: 0, loaded: 0, failed: 0 };
+    const artStats = { withUrl: 0, loaded: 0, failed: 0, total: items.length };
     items.forEach((item, index) => {
       const isStrong = item.signal === "strong_buy";
       const card = el("div", `eafc-live-opp-card${isStrong ? " strong" : ""}`);
@@ -585,7 +585,11 @@
       body.appendChild(card);
     });
     setTimeout(() => {
-      if (artStats.withUrl > 0 && artStats.failed > 0) {
+      if (artStats.withUrl === 0 && artStats.total > 0) {
+        body.appendChild(
+          el("div", "eafc-live-muted", `Card art: none of these ${artStats.total} cards had an image URL from the backend.`)
+        );
+      } else if (artStats.failed > 0) {
         body.appendChild(
           el(
             "div",
@@ -688,6 +692,13 @@
     tabEl = tab;
     navBar.appendChild(tab);
     equalizeTabWidths(navBar);
+    const keepTabPinned = new MutationObserver(() => {
+      if (navBar.lastElementChild !== tab) {
+        navBar.appendChild(tab);
+        equalizeTabWidths(navBar);
+      }
+    });
+    keepTabPinned.observe(navBar, { childList: true });
     log3("EAFC LIVE nav tab installed");
     return true;
   }
