@@ -121,11 +121,25 @@ function fetchImageAsObjectUrl(url) {
       return;
     }
     const toResult = (response) => {
+      // onload fires for ANY completed request regardless of HTTP status
+      // - a 403/404's error body (XML/HTML/JSON, not image bytes) still
+      // arrives here as a non-empty ArrayBuffer. Missing this status
+      // check was the actual bug behind "0/12 loaded, 12 failed" with no
+      // reason shown: every one of these was quietly building a Blob out
+      // of an error page, which the <img> then failed to DECODE - a
+      // different failure path (img.onerror below) that never recorded
+      // a detail string. Checked here so a bad status is reported by
+      // name instead of surfacing three steps later as an opaque decode
+      // failure.
+      const status = response && response.status;
+      if (typeof status === "number" && status !== 0 && !(status >= 200 && status < 300)) {
+        return { url: null, detail: `HTTP ${status} fetching image` };
+      }
       const buffer = response && response.response;
       if (!(buffer instanceof ArrayBuffer)) {
-        return { url: null, detail: `response.response was not an ArrayBuffer (got ${typeof buffer})` };
+        return { url: null, detail: `response.response was not an ArrayBuffer (got ${typeof buffer}, status ${status})` };
       }
-      if (buffer.byteLength === 0) return { url: null, detail: "response body was 0 bytes" };
+      if (buffer.byteLength === 0) return { url: null, detail: `response body was 0 bytes (status ${status})` };
       return { url: URL.createObjectURL(new Blob([buffer], { type: "image/webp" })), detail: null };
     };
     try {
@@ -423,6 +437,9 @@ async function openPanel() {
           // in the DOM, which live-tested as an empty box with no
           // visible fallback at all.
           artStats.failed++;
+          if (!artStats.firstFailureDetail) {
+            artStats.firstFailureDetail = "fetched OK but the browser could not decode the response as an image";
+          }
           URL.revokeObjectURL(objectUrl);
           img.replaceWith(el("div", "eafc-live-opp-art-placeholder", "⚽"));
         };
