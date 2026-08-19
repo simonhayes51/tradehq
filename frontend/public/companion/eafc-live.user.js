@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EAFC Live Companion
 // @namespace    https://app.eafc.live/
-// @version      1.7.3
+// @version      1.7.4
 // @description  Read-only EAFC Live trading intelligence overlay for the EA SPORTS FC 26 Web App Transfer Market. Never buys, bids, lists, or automates anything - observation only.
 // @author       EAFC Live
 // @match        https://www.ea.com/*/ea-sports-fc/ultimate-team/web-app/*
@@ -393,6 +393,16 @@
       return String(err);
     }
   }
+  function sniffImageMimeType(buffer) {
+    const b = new Uint8Array(buffer, 0, Math.min(buffer.byteLength, 12));
+    if (b.length >= 8 && b[0] === 137 && b[1] === 80 && b[2] === 78 && b[3] === 71) return "image/png";
+    if (b.length >= 3 && b[0] === 255 && b[1] === 216 && b[2] === 255) return "image/jpeg";
+    if (b.length >= 12 && b[0] === 82 && b[1] === 73 && b[2] === 70 && b[3] === 70 && b[8] === 87 && b[9] === 69 && b[10] === 66 && b[11] === 80) {
+      return "image/webp";
+    }
+    if (b.length >= 6 && b[0] === 71 && b[1] === 73 && b[2] === 70) return "image/gif";
+    return null;
+  }
   function fetchImageAsObjectUrl(url) {
     return new Promise((resolve) => {
       const gmRequest = resolveGMRequest();
@@ -410,7 +420,11 @@
           return { url: null, detail: `response.response was not an ArrayBuffer (got ${typeof buffer}, status ${status})` };
         }
         if (buffer.byteLength === 0) return { url: null, detail: `response body was 0 bytes (status ${status})` };
-        return { url: URL.createObjectURL(new Blob([buffer], { type: "image/webp" })), detail: null };
+        const mimeType = sniffImageMimeType(buffer);
+        if (!mimeType) {
+          return { url: null, detail: `fetched ${buffer.byteLength} bytes but none of PNG/JPEG/WEBP/GIF signatures matched` };
+        }
+        return { url: URL.createObjectURL(new Blob([buffer], { type: mimeType })), detail: null };
       };
       try {
         const maybePromise = gmRequest({

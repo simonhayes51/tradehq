@@ -97,22 +97,41 @@ function describeError(err) {
  * is a known rough edge across different GM implementations). arraybuffer
  * support is more universally solid, and building the Blob manually from
  * it here means this file controls the MIME type rather than trusting
- * whatever the manager inferred - defaults to image/webp, matching
- * backend/app/services/futgg_card_image_mirror.py's own upload_bytes()
- * call, since GM responses don't reliably expose response headers to
- * read the real content-type back out.
+ * whatever the manager inferred - the real bug behind v1.7.3's "fetched
+ * OK but the browser could not decode the response as an image": this
+ * hardcoded the Blob's type to image/webp regardless of what the bytes
+ * actually were. futgg_card_image_mirror.py mirrors whatever
+ * Content-Type FUT.GG's own response declared (see its fetch_and_mirror
+ * comment - only DEFAULTS to image/webp if that header was missing), so
+ * a card mirrored from a PNG or JPEG source got its real bytes correctly
+ * fetched here and then wrapped in a Blob lying about its own type.
+ * WebKit/Safari (the engine every device this has failed on is running)
+ * decodes a `blob:` URL by its Blob's DECLARED type, not by sniffing the
+ * bytes the way a normal network response can be - so a wrong type
+ * reliably fails to decode even though the bytes are perfectly valid,
+ * which is exactly the symptom reported. sniffImageMimeType() below
+ * reads the real magic-number signature out of the fetched bytes
+ * instead of trusting either the manager or a hardcoded guess.
  *
  * Resolves `{ url, detail }` - url is null on any failure, and detail is
  * a short always-on diagnostic string for WHY (mirrors api-client.js's
  * callGM()/describeGmError() pattern, for the same reason: no console on
- * the one device this keeps failing on). Both the blob AND arraybuffer
- * responseType attempts resolved null for every card - two different
- * decode strategies failing identically points more at the REQUEST
- * itself being rejected (a manager permission/@connect gap, since the
- * image host is only covered by this metadata's wildcard @connect - see
- * metadata.js's header on why it can't name the host directly) than at
- * a decode problem, but that's a guess without seeing this string.
+ * the one device this keeps failing on).
  */
+function sniffImageMimeType(buffer) {
+  const b = new Uint8Array(buffer, 0, Math.min(buffer.byteLength, 12));
+  if (b.length >= 8 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return "image/png";
+  if (b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return "image/jpeg";
+  if (
+    b.length >= 12 &&
+    b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 &&
+    b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50
+  ) {
+    return "image/webp";
+  }
+  if (b.length >= 6 && b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46) return "image/gif";
+  return null;
+}
 function fetchImageAsObjectUrl(url) {
   return new Promise((resolve) => {
     const gmRequest = resolveGMRequest();
@@ -140,7 +159,11 @@ function fetchImageAsObjectUrl(url) {
         return { url: null, detail: `response.response was not an ArrayBuffer (got ${typeof buffer}, status ${status})` };
       }
       if (buffer.byteLength === 0) return { url: null, detail: `response body was 0 bytes (status ${status})` };
-      return { url: URL.createObjectURL(new Blob([buffer], { type: "image/webp" })), detail: null };
+      const mimeType = sniffImageMimeType(buffer);
+      if (!mimeType) {
+        return { url: null, detail: `fetched ${buffer.byteLength} bytes but none of PNG/JPEG/WEBP/GIF signatures matched` };
+      }
+      return { url: URL.createObjectURL(new Blob([buffer], { type: mimeType })), detail: null };
     };
     try {
       const maybePromise = gmRequest({
