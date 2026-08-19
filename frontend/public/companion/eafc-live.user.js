@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EAFC Live Companion
 // @namespace    https://app.eafc.live/
-// @version      1.7.4
+// @version      1.7.5
 // @description  Read-only EAFC Live trading intelligence overlay for the EA SPORTS FC 26 Web App Transfer Market. Never buys, bids, lists, or automates anything - observation only.
 // @author       EAFC Live
 // @match        https://www.ea.com/*/ea-sports-fc/ultimate-team/web-app/*
@@ -393,6 +393,15 @@
       return String(err);
     }
   }
+  function arrayBufferToBase64(buffer) {
+    const bytes = new Uint8Array(buffer);
+    let binary = "";
+    const CHUNK = 32768;
+    for (let i = 0; i < bytes.length; i += CHUNK) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+    }
+    return btoa(binary);
+  }
   function sniffImageMimeType(buffer) {
     const b = new Uint8Array(buffer, 0, Math.min(buffer.byteLength, 12));
     if (b.length >= 8 && b[0] === 137 && b[1] === 80 && b[2] === 78 && b[3] === 71) return "image/png";
@@ -403,7 +412,7 @@
     if (b.length >= 6 && b[0] === 71 && b[1] === 73 && b[2] === 70) return "image/gif";
     return null;
   }
-  function fetchImageAsObjectUrl(url) {
+  function fetchImageAsDataUrl(url) {
     return new Promise((resolve) => {
       const gmRequest = resolveGMRequest();
       if (!gmRequest) {
@@ -424,7 +433,7 @@
         if (!mimeType) {
           return { url: null, detail: `fetched ${buffer.byteLength} bytes but none of PNG/JPEG/WEBP/GIF signatures matched` };
         }
-        return { url: URL.createObjectURL(new Blob([buffer], { type: mimeType })), detail: null };
+        return { url: `data:${mimeType};base64,${arrayBufferToBase64(buffer)}`, detail: null };
       };
       try {
         const maybePromise = gmRequest({
@@ -628,23 +637,22 @@
       card.appendChild(artPlaceholder);
       if (artUrl) {
         artStats.withUrl++;
-        fetchImageAsObjectUrl(artUrl).then(({ url: objectUrl, detail }) => {
-          if (!objectUrl) {
+        fetchImageAsDataUrl(artUrl).then(({ url: dataUrl, detail }) => {
+          if (!dataUrl) {
             artStats.failed++;
             if (detail && !artStats.firstFailureDetail) artStats.firstFailureDetail = detail;
             return;
           }
           const img = document.createElement("img");
           img.className = "eafc-live-opp-art";
-          img.src = objectUrl;
+          img.src = dataUrl;
           img.alt = "";
           img.onload = () => artStats.loaded++;
           img.onerror = () => {
             artStats.failed++;
             if (!artStats.firstFailureDetail) {
-              artStats.firstFailureDetail = "fetched OK but the browser could not decode the response as an image";
+              artStats.firstFailureDetail = "fetched OK, correct MIME type, but the browser still could not decode it";
             }
-            URL.revokeObjectURL(objectUrl);
             img.replaceWith(el("div", "eafc-live-opp-art-placeholder", "\u26BD"));
           };
           artPlaceholder.replaceWith(img);
