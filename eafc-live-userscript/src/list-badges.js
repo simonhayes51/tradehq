@@ -145,8 +145,24 @@ function makeBadgeEl(verdict, onClick) {
 const MAX_MISSING_TICKS = 8;
 
 function positionBadge(entry) {
-  const { el, anchorNode } = entry;
-  if (!anchorNode || !anchorNode.parentElement || !anchorNode.parentElement.isConnected) {
+  const { el, anchorNode, priceText } = entry;
+  // Re-verify the anchor still shows the price it matched, on EVERY
+  // tick - not just when first found. EA's results list almost
+  // certainly virtualizes/recycles row DOM nodes on scroll (a very
+  // common pattern for long lists), which silently repoints an existing
+  // text node at a DIFFERENT row's price without removing it from the
+  // document. Without this check, a badge just keeps tracking that
+  // node's new position forever - which is exactly what "floats around
+  // the screen randomly" looks like: a BUY badge drifting to wherever
+  // its originally-matched node happens to be reused next, no longer
+  // anywhere near the row it was actually about.
+  if (
+    !anchorNode ||
+    !anchorNode.parentElement ||
+    !anchorNode.parentElement.isConnected ||
+    anchorNode.nodeValue == null ||
+    anchorNode.nodeValue.trim() !== priceText
+  ) {
     el.style.display = "none";
     entry.missingTicks = (entry.missingTicks || 0) + 1;
     return;
@@ -235,7 +251,7 @@ export async function renderListBadges(auctions) {
 
         const el = makeBadgeEl(verdict, () => openOverlayFor(auction, sameCardAuctions, intelligence));
         ensureContainer().appendChild(el);
-        const entry = { el, auction, anchorNode, verdict };
+        const entry = { el, auction, anchorNode, priceText, verdict };
         badges.set(key, entry);
         positionBadge(entry);
       }
