@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EAFC Live Companion
 // @namespace    https://app.eafc.live/
-// @version      1.7.2
+// @version      1.7.3
 // @description  Read-only EAFC Live trading intelligence overlay for the EA SPORTS FC 26 Web App Transfer Market. Never buys, bids, lists, or automates anything - observation only.
 // @author       EAFC Live
 // @match        https://www.ea.com/*/ea-sports-fc/ultimate-team/web-app/*
@@ -401,11 +401,15 @@
         return;
       }
       const toResult = (response) => {
+        const status = response && response.status;
+        if (typeof status === "number" && status !== 0 && !(status >= 200 && status < 300)) {
+          return { url: null, detail: `HTTP ${status} fetching image` };
+        }
         const buffer = response && response.response;
         if (!(buffer instanceof ArrayBuffer)) {
-          return { url: null, detail: `response.response was not an ArrayBuffer (got ${typeof buffer})` };
+          return { url: null, detail: `response.response was not an ArrayBuffer (got ${typeof buffer}, status ${status})` };
         }
-        if (buffer.byteLength === 0) return { url: null, detail: "response body was 0 bytes" };
+        if (buffer.byteLength === 0) return { url: null, detail: `response body was 0 bytes (status ${status})` };
         return { url: URL.createObjectURL(new Blob([buffer], { type: "image/webp" })), detail: null };
       };
       try {
@@ -623,6 +627,9 @@
           img.onload = () => artStats.loaded++;
           img.onerror = () => {
             artStats.failed++;
+            if (!artStats.firstFailureDetail) {
+              artStats.firstFailureDetail = "fetched OK but the browser could not decode the response as an image";
+            }
             URL.revokeObjectURL(objectUrl);
             img.replaceWith(el("div", "eafc-live-opp-art-placeholder", "\u26BD"));
           };
