@@ -17,18 +17,30 @@
 // than inserting a broken/misplaced tab - the existing floating
 // indicator (overlay.js) still works as a fallback either way.
 //
-// WHY A FLOATING BADGE, NOT A CLONED FLEX SIBLING
+// WHY A FLOATING, BODY-LEVEL BADGE - NOT A CLONED FLEX SIBLING, NOT AN
+// ABSOLUTE CHILD OF THE BAR EITHER
 // -------------------------------------------------------------------
-// v1.4.0 cloned an existing tab item's DOM structure so it would
-// inherit EA's own current icon size/spacing for free. Live test: EA's
-// bar allots FIXED width per tab (not flex-grow that reflows), so
-// appending a real 7th child squeezed all seven into the space budgeted
-// for six - every icon shrank, including EA's own, and ours ended up
-// nearly invisible in the crush. Fixed by taking this out of the flex
-// flow entirely: the badge is `position: absolute` inside the bar (so
-// it still sits at the bar's z-index/safe-area position) but floats
-// above it rather than occupying a flex slot, so EA's six tabs go back
-// to their normal size regardless of what we add.
+// Two live-tested failures got here in order:
+//   v1.4.0 cloned an existing tab item's DOM structure to inherit EA's
+//   own icon size/spacing for free. EA's bar turned out to allot FIXED
+//   width per tab (not flex-grow that reflows), so a real 7th child
+//   squeezed all seven into the space budgeted for six - every icon
+//   shrank, including EA's own.
+//   v1.5.0 fixed that by taking the badge out of the flex flow with
+//   `position: absolute` - but still nested inside navBar. That broke
+//   two different ways on the next test: it rendered nowhere near the
+//   bar's visible box (the matched container's true bounding box isn't
+//   what the on-screen tab strip looks like), and taps didn't register
+//   (an absolutely-positioned descendant is confined to ITS OWN
+//   ancestor's stacking context regardless of z-index - a sibling page
+//   region painted later can still sit above it).
+// installNavTab() now appends the badge directly to <body> as
+// `position: fixed`, exactly like this file's own openPanel() panel and
+// overlay.js's panel already do - measured from the viewport, not an
+// unpredictable ancestor box, and always its own top-level stacking
+// context. findNavBar()'s match is still used, just only to read
+// getBoundingClientRect() off of - to place the badge next to the real
+// bar's on-screen position - not to host it.
 //
 // WHY THE PANEL IS OUR OWN OVERLAY, NOT REAL EA NAVIGATION
 // -------------------------------------------------------------------
@@ -309,9 +321,7 @@ async function openPanel() {
 
 const TAB_CSS = `
   .eafc-live-nav-tab {
-    position: absolute;
-    top: -18px;
-    right: 10px;
+    position: fixed;
     width: 46px;
     height: 46px;
     border-radius: 50%;
@@ -340,6 +350,12 @@ const TAB_CSS = `
   }
 `;
 
+function positionTab(tab, navBar) {
+  const rect = navBar.getBoundingClientRect();
+  tab.style.top = `${Math.max(8, rect.top - 18)}px`;
+  tab.style.right = `${Math.max(8, window.innerWidth - rect.right + 10)}px`;
+}
+
 /** Best-effort: injects the floating "EAFC LIVE" badge once EA's nav bar
  * can be found. Safe to call repeatedly (module-level `injected` guard) -
  * does nothing at all if the heuristic can't confidently locate the nav
@@ -349,16 +365,6 @@ export function installNavTab() {
   const navBar = findNavBar();
   if (!navBar) return false; // will be retried by main.js's pollForNavTab()
   injected = true;
-
-  // The badge is `position: absolute`, so it needs a positioned
-  // ancestor to anchor to - EA's own bar may already be one (most fixed
-  // bottom bars are), but this is set defensively rather than assumed,
-  // and only touches `position` (never touched at all if already
-  // anything other than the browser default `static`), so it cannot
-  // alter how EA's own six tabs are laid out.
-  if (getComputedStyle(navBar).position === "static") {
-    navBar.style.position = "relative";
-  }
 
   const tab = document.createElement("div");
   tab.className = "eafc-live-nav-tab";
@@ -396,8 +402,29 @@ export function installNavTab() {
     { capture: true }
   );
 
+  // Appended to document.body, NOT navBar - v1.5.0 nested the badge
+  // inside navBar as `position: absolute`, which live-tested broken two
+  // different ways: it rendered nowhere near the bar's own visible box
+  // (the matched "nav bar" container's true bounding box isn't what its
+  // on-screen tab strip looks like), and taps didn't reach it (an
+  // absolutely-positioned descendant is confined to ITS OWN ancestor's
+  // stacking context no matter how high its z-index is set - a sibling
+  // page region painted later can still sit above it, same as an
+  // overlay z-index only ever wins comparisons within one shared
+  // stacking context, not globally). Being a direct child of <body>,
+  // like overlay.js's and this file's own openPanel() panel already
+  // are, sidesteps both problems: position:fixed measures from the
+  // viewport, not an unpredictable ancestor box, and a body-level
+  // sibling is always its own top-level stacking context, immune to
+  // being buried under whatever EA happens to paint nearby.
+  // getBoundingClientRect() on the matched nav bar still supplies the
+  // real on-screen coordinates to sit next to - just without being
+  // physically inside it.
+  positionTab(tab, navBar);
+  window.addEventListener("resize", () => positionTab(tab, navBar));
+
   tabEl = tab;
-  navBar.appendChild(tab);
+  (document.body || document.documentElement).appendChild(tab);
   log("EAFC LIVE nav badge installed");
   return true;
 }

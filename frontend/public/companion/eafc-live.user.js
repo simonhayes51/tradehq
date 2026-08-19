@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EAFC Live Companion
 // @namespace    https://app.eafc.live/
-// @version      1.5.0
+// @version      1.5.1
 // @description  Read-only EAFC Live trading intelligence overlay for the EA SPORTS FC 26 Web App Transfer Market. Never buys, bids, lists, or automates anything - observation only.
 // @author       EAFC Live
 // @match        https://www.ea.com/*/ea-sports-fc/ultimate-team/web-app/*
@@ -581,9 +581,7 @@
   }
   var TAB_CSS = `
   .eafc-live-nav-tab {
-    position: absolute;
-    top: -18px;
-    right: 10px;
+    position: fixed;
     width: 46px;
     height: 46px;
     border-radius: 50%;
@@ -611,14 +609,16 @@
     50% { box-shadow: 0 4px 14px rgba(0, 0, 0, 0.55), 0 0 0 4px #0b0e14, 0 0 18px rgba(127, 216, 255, 0.55); }
   }
 `;
+  function positionTab(tab, navBar) {
+    const rect = navBar.getBoundingClientRect();
+    tab.style.top = `${Math.max(8, rect.top - 18)}px`;
+    tab.style.right = `${Math.max(8, window.innerWidth - rect.right + 10)}px`;
+  }
   function installNavTab() {
     if (injected) return true;
     const navBar = findNavBar();
     if (!navBar) return false;
     injected = true;
-    if (getComputedStyle(navBar).position === "static") {
-      navBar.style.position = "relative";
-    }
     const tab = document.createElement("div");
     tab.className = "eafc-live-nav-tab";
     tab.textContent = "\u26A1";
@@ -646,8 +646,10 @@
       },
       { capture: true }
     );
+    positionTab(tab, navBar);
+    window.addEventListener("resize", () => positionTab(tab, navBar));
     tabEl = tab;
-    navBar.appendChild(tab);
+    (document.body || document.documentElement).appendChild(tab);
     log3("EAFC LIVE nav badge installed");
     return true;
   }
