@@ -328,34 +328,39 @@ const PANEL_STYLES = `
   .eafc-live-full-close:active { background: rgba(255,255,255,0.06); }
   .eafc-live-full-body { flex: 1; overflow-y: auto; padding: 12px 16px max(16px, env(safe-area-inset-bottom)); }
   .eafc-live-opp-card {
-    display: flex; gap: 12px; align-items: center;
+    display: flex; gap: 14px; align-items: center;
     background: #14181f; border: 1px solid #2c3542; border-left: 3px solid #5fd98a;
-    border-radius: 10px; padding: 10px 12px; margin-bottom: 10px;
+    border-radius: 10px; padding: 12px; margin-bottom: 10px;
     animation: eafc-live-card-in 0.25s ease-out both;
   }
   .eafc-live-opp-card.strong { border-left-color: #7fd8ff; }
   @keyframes eafc-live-card-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+  /* Card art is portrait (FUT card proportions, not square) - a 54x54
+     square box squeezed it down further than it needed to be and left
+     a lot of empty padding around the actual card shape. Sized to the
+     real aspect ratio instead so it reads as a recognizable card, not
+     a thumbnail. */
   .eafc-live-opp-art {
-    flex: 0 0 auto; width: 54px; height: 54px; object-fit: contain;
+    flex: 0 0 auto; width: 68px; height: 92px; object-fit: contain;
     background: rgba(255,255,255,0.03); border-radius: 6px;
   }
   .eafc-live-opp-art-placeholder {
-    flex: 0 0 auto; width: 54px; height: 54px; border-radius: 6px;
+    flex: 0 0 auto; width: 68px; height: 92px; border-radius: 6px;
     background: rgba(255,255,255,0.04); display: flex; align-items: center;
-    justify-content: center; font-size: 20px; color: #3a4453;
+    justify-content: center; font-size: 22px; color: #3a4453;
   }
   .eafc-live-opp-main { flex: 1; min-width: 0; }
   .eafc-live-opp-name {
-    font-weight: 700; font-size: 13px; margin-bottom: 4px; white-space: nowrap;
-    overflow: hidden; text-overflow: ellipsis;
+    font-weight: 700; font-size: 14px; line-height: 1.25; margin-bottom: 6px;
+    display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden;
   }
-  .eafc-live-opp-row { display: flex; justify-content: space-between; font-size: 11.5px; color: #b7c0cf; padding: 1px 0; }
+  .eafc-live-opp-row { display: flex; justify-content: space-between; font-size: 12.5px; color: #b7c0cf; padding: 2px 0; }
   .eafc-live-opp-row .label { color: #8a94a6; }
   .eafc-live-opp-row .value { font-variant-numeric: tabular-nums; color: #e8ecf1; }
   .eafc-live-opp-row .value.profit { color: #5fd98a; font-weight: 600; }
   .eafc-live-opp-signal {
-    display: inline-block; margin-top: 5px; padding: 3px 8px; border-radius: 5px;
-    font-size: 10px; font-weight: 700; letter-spacing: 0.02em;
+    display: inline-block; margin-top: 7px; padding: 4px 9px; border-radius: 5px;
+    font-size: 10.5px; font-weight: 700; letter-spacing: 0.02em;
     background: rgba(95, 217, 138, 0.15); color: #5fd98a;
   }
   .eafc-live-opp-signal.strong { background: rgba(127, 216, 255, 0.15); color: #7fd8ff; }
