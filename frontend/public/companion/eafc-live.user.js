@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EAFC Live Companion
 // @namespace    https://app.eafc.live/
-// @version      1.7.6
+// @version      1.8.0
 // @description  Read-only EAFC Live trading intelligence overlay for the EA SPORTS FC 26 Web App Transfer Market. Never buys, bids, lists, or automates anything - observation only.
 // @author       EAFC Live
 // @match        https://www.ea.com/*/ea-sports-fc/ultimate-team/web-app/*
@@ -1063,20 +1063,11 @@
 
   // src/list-badges.js
   var NUMBER_FORMAT3 = new Intl.NumberFormat("en-US");
-  var REPOSITION_INTERVAL_MS = 250;
-  var containerEl = null;
+  var VERIFY_INTERVAL_MS = 500;
   var badges = /* @__PURE__ */ new Map();
-  var repositionTimer = null;
+  var verifyTimer = null;
   function log4(...args) {
     if (typeof window !== "undefined" && window.EAFC_LIVE_DEBUG) console.log("[EAFC Live]", ...args);
-  }
-  function ensureContainer() {
-    if (containerEl && containerEl.isConnected) return containerEl;
-    containerEl = document.createElement("div");
-    containerEl.id = "eafc-live-list-badges-root";
-    containerEl.style.cssText = "position:fixed;top:0;left:0;width:0;height:0;z-index:2147483646;";
-    (document.body || document.documentElement).appendChild(containerEl);
-    return containerEl;
   }
   function auctionKey(auction) {
     return auction.tradeId != null ? `t:${auction.tradeId}` : `c:${auction.sourceCardId}:${auction.buyNowPrice}`;
@@ -1089,10 +1080,7 @@
     });
     const candidates = [];
     let node;
-    while (node = walker.nextNode()) {
-      if (containerEl && containerEl.contains(node)) continue;
-      candidates.push(node);
-    }
+    while (node = walker.nextNode()) candidates.push(node);
     if (candidates.length === 0) return null;
     for (const candidate of candidates) {
       let el3 = candidate.parentElement;
@@ -1118,17 +1106,20 @@
     const fg = verdict.tone === "buy" ? "#5fd98a" : "#e5734a";
     const border = verdict.tone === "buy" ? "#5fd98a" : "#e5734a";
     el3.style.cssText = [
-      "position:fixed",
+      "display:inline-flex",
+      "align-items:center",
       "pointer-events:auto",
       "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif",
       "font-size:10px",
       "font-weight:700",
       "letter-spacing:0.02em",
       "padding:3px 6px",
+      "margin:4px 0 0 6px",
       "border-radius:5px",
       "cursor:pointer",
       "line-height:1",
       "white-space:nowrap",
+      "vertical-align:middle",
       `background:${bg}`,
       `color:${fg}`,
       `border:1px solid ${border}`,
@@ -1142,38 +1133,23 @@
     return el3;
   }
   var MAX_MISSING_TICKS = 8;
-  function positionBadge(entry) {
-    const { el: el3, anchorNode, priceText } = entry;
-    if (!anchorNode || !anchorNode.parentElement || !anchorNode.parentElement.isConnected || anchorNode.nodeValue == null || anchorNode.nodeValue.trim() !== priceText) {
-      el3.style.display = "none";
-      entry.missingTicks = (entry.missingTicks || 0) + 1;
-      return;
-    }
-    const range = document.createRange();
-    range.selectNodeContents(anchorNode);
-    const rect = range.getBoundingClientRect();
-    if (rect.width === 0 && rect.height === 0) {
-      el3.style.display = "none";
-      entry.missingTicks = (entry.missingTicks || 0) + 1;
-      return;
-    }
-    entry.missingTicks = 0;
-    el3.style.display = "";
-    el3.style.left = `${Math.max(4, rect.left)}px`;
-    el3.style.top = `${Math.max(4, rect.top - 20)}px`;
+  function verifyBadge(entry) {
+    const { anchorNode, priceText } = entry;
+    const stillValid = anchorNode && anchorNode.parentElement && anchorNode.parentElement.isConnected && anchorNode.nodeValue != null && anchorNode.nodeValue.trim() === priceText;
+    entry.missingTicks = stillValid ? 0 : (entry.missingTicks || 0) + 1;
   }
-  function repositionAll() {
+  function verifyAll() {
     for (const [key, entry] of badges) {
-      positionBadge(entry);
+      verifyBadge(entry);
       if (entry.missingTicks >= MAX_MISSING_TICKS) {
         entry.el.remove();
         badges.delete(key);
       }
     }
   }
-  function startRepositionLoop() {
-    if (repositionTimer) return;
-    repositionTimer = setInterval(repositionAll, REPOSITION_INTERVAL_MS);
+  function startVerifyLoop() {
+    if (verifyTimer) return;
+    verifyTimer = setInterval(verifyAll, VERIFY_INTERVAL_MS);
   }
   function openOverlayFor(auction, sameCardAuctions, intelligence) {
     const combined = combineIntelligence(sameCardAuctions, intelligence);
@@ -1187,8 +1163,7 @@
   }
   async function renderListBadges(auctions) {
     if (!Array.isArray(auctions) || auctions.length === 0) return { cardsChecked: 0, badgeCount: 0 };
-    ensureContainer();
-    startRepositionLoop();
+    startVerifyLoop();
     const byCard = /* @__PURE__ */ new Map();
     for (const auction of auctions) {
       if (!byCard.has(auction.sourceCardId)) byCard.set(auction.sourceCardId, []);
@@ -1212,10 +1187,9 @@
             continue;
           }
           const el3 = makeBadgeEl(verdict, () => openOverlayFor(auction, sameCardAuctions, intelligence));
-          ensureContainer().appendChild(el3);
-          const entry = { el: el3, auction, anchorNode, priceText, verdict };
+          anchorNode.parentElement.insertAdjacentElement("afterend", el3);
+          const entry = { el: el3, auction, anchorNode, priceText, verdict, missingTicks: 0 };
           badges.set(key, entry);
-          positionBadge(entry);
         }
       })
     );
