@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EAFC Live Companion
 // @namespace    https://app.eafc.live/
-// @version      1.7.1
+// @version      1.7.2
 // @description  Read-only EAFC Live trading intelligence overlay for the EA SPORTS FC 26 Web App Transfer Market. Never buys, bids, lists, or automates anything - observation only.
 // @author       EAFC Live
 // @match        https://www.ea.com/*/ea-sports-fc/ultimate-team/web-app/*
@@ -383,32 +383,45 @@
   function log3(...args) {
     if (typeof window !== "undefined" && window.EAFC_LIVE_DEBUG) console.log("[EAFC Live]", ...args);
   }
+  function describeError(err) {
+    if (!err) return "no error info given";
+    if (typeof err === "string") return err;
+    if (err.error || err.message || err.statusText) return String(err.error || err.message || err.statusText);
+    try {
+      return JSON.stringify(err).slice(0, 120);
+    } catch (_e) {
+      return String(err);
+    }
+  }
   function fetchImageAsObjectUrl(url) {
     return new Promise((resolve) => {
       const gmRequest = resolveGMRequest();
       if (!gmRequest) {
-        resolve(null);
+        resolve({ url: null, detail: "no GM_xmlhttpRequest / GM.xmlHttpRequest in this manager" });
         return;
       }
-      const toObjectUrl = (response) => {
+      const toResult = (response) => {
         const buffer = response && response.response;
-        if (!(buffer instanceof ArrayBuffer) || buffer.byteLength === 0) return null;
-        return URL.createObjectURL(new Blob([buffer], { type: "image/webp" }));
+        if (!(buffer instanceof ArrayBuffer)) {
+          return { url: null, detail: `response.response was not an ArrayBuffer (got ${typeof buffer})` };
+        }
+        if (buffer.byteLength === 0) return { url: null, detail: "response body was 0 bytes" };
+        return { url: URL.createObjectURL(new Blob([buffer], { type: "image/webp" })), detail: null };
       };
       try {
         const maybePromise = gmRequest({
           method: "GET",
           url,
           responseType: "arraybuffer",
-          onload: (response) => resolve(toObjectUrl(response)),
-          onerror: () => resolve(null),
-          ontimeout: () => resolve(null)
+          onload: (response) => resolve(toResult(response)),
+          onerror: (err) => resolve({ url: null, detail: `onerror: ${describeError(err)}` }),
+          ontimeout: () => resolve({ url: null, detail: "ontimeout fired" })
         });
         if (maybePromise && typeof maybePromise.then === "function") {
-          maybePromise.then((response) => resolve(toObjectUrl(response))).catch(() => resolve(null));
+          maybePromise.then((response) => resolve(toResult(response))).catch((err) => resolve({ url: null, detail: `promise rejected: ${describeError(err)}` }));
         }
-      } catch (_err) {
-        resolve(null);
+      } catch (err) {
+        resolve({ url: null, detail: `gmRequest() threw: ${describeError(err)}` });
       }
     });
   }
@@ -524,6 +537,7 @@
   }
   .eafc-live-opp-signal.strong { background: rgba(127, 216, 255, 0.15); color: #7fd8ff; }
   .eafc-live-muted { color: #6b7484; font-size: 12px; text-align: center; padding: 24px 0; }
+  .eafc-live-debug { color: #4a90d9; font-size: 10px; text-align: center; font-family: monospace; padding: 0 16px 16px; word-break: break-word; }
   .eafc-live-spinner {
     width: 22px; height: 22px; margin: 24px auto 10px;
     border: 2px solid #2c3542; border-top-color: #7fd8ff; border-radius: 50%;
@@ -586,7 +600,7 @@
       body.appendChild(el("div", "eafc-live-muted", "No live buy signals right now."));
       return;
     }
-    const artStats = { withUrl: 0, loaded: 0, failed: 0, total: items.length };
+    const artStats = { withUrl: 0, loaded: 0, failed: 0, total: items.length, firstFailureDetail: null };
     items.forEach((item, index) => {
       const isStrong = item.signal === "strong_buy";
       const card = el("div", `eafc-live-opp-card${isStrong ? " strong" : ""}`);
@@ -596,9 +610,10 @@
       card.appendChild(artPlaceholder);
       if (artUrl) {
         artStats.withUrl++;
-        fetchImageAsObjectUrl(artUrl).then((objectUrl) => {
+        fetchImageAsObjectUrl(artUrl).then(({ url: objectUrl, detail }) => {
           if (!objectUrl) {
             artStats.failed++;
+            if (detail && !artStats.firstFailureDetail) artStats.firstFailureDetail = detail;
             return;
           }
           const img = document.createElement("img");
@@ -649,6 +664,9 @@
             `Card art: ${artStats.loaded}/${artStats.withUrl} loaded, ${artStats.failed} failed to load.`
           )
         );
+        if (artStats.firstFailureDetail) {
+          body.appendChild(el("div", "eafc-live-debug", artStats.firstFailureDetail));
+        }
       }
     }, 4500);
   }
