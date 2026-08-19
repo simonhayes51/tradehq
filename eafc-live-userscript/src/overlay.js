@@ -24,6 +24,7 @@
 // (never "EA" alone) and uses its own colour language, not FUT's
 // gold/rare card styling.
 import { verdictLabel } from "./market-calc.js";
+import { getNavTabDiagnostic } from "./nav-tab.js";
 
 const NUMBER_FORMAT = new Intl.NumberFormat("en-US");
 function fmt(n) {
@@ -261,6 +262,20 @@ export function render(state) {
 
   const body = el("div", "eafc-live-body");
 
+  // Surfaces findNavBar()'s outcome (see nav-tab.js) on every expanded
+  // render, not just once - the nav tab's own failure mode is silent by
+  // design (no broken tab), so without this line there would be NO way
+  // to tell "not injected yet" from "will never match" on a device with
+  // no attached console. Only shown expanded, not on the collapsed dot,
+  // to avoid permanently cluttering the default resting state.
+  const finish = () => {
+    if (!collapsed) {
+      body.appendChild(el("div", "eafc-live-debug", `nav tab: ${getNavTabDiagnostic()}`));
+    }
+    panel.appendChild(body);
+    root.appendChild(panel);
+  };
+
   if (state.kind === "watching") {
     const text =
       state.cardsChecked == null
@@ -269,22 +284,19 @@ export function render(state) {
           ? `${state.cardsChecked} card${state.cardsChecked === 1 ? "" : "s"} checked, ${state.badgeCount} flagged.`
           : `${state.cardsChecked} card${state.cardsChecked === 1 ? "" : "s"} checked, nothing actionable right now.`;
     body.appendChild(el("div", "eafc-live-muted", text));
-    panel.appendChild(body);
-    root.appendChild(panel);
+    finish();
     return;
   }
 
   if (state.kind === "loading") {
     body.appendChild(el("div", "eafc-live-muted", "Loading…"));
-    panel.appendChild(body);
-    root.appendChild(panel);
+    finish();
     return;
   }
 
   if (state.kind === "no-intelligence") {
     body.appendChild(el("div", "eafc-live-muted", "No data for this card."));
-    panel.appendChild(body);
-    root.appendChild(panel);
+    finish();
     return;
   }
 
@@ -298,8 +310,7 @@ export function render(state) {
     if (state.detail) {
       body.appendChild(el("div", "eafc-live-debug", state.detail));
     }
-    panel.appendChild(body);
-    root.appendChild(panel);
+    finish();
     return;
   }
 
@@ -341,6 +352,5 @@ export function render(state) {
     body.appendChild(el("div", "eafc-live-debug", `source_card_id: ${intelligence.source_card_id}`));
   }
 
-  panel.appendChild(body);
-  root.appendChild(panel);
+  finish();
 }

@@ -17,7 +17,7 @@ import { getCardIntelligence } from "./api-client.js";
 import { combineIntelligence, cheapestBin } from "./market-calc.js";
 import { render as renderOverlay } from "./overlay.js";
 import { renderListBadges } from "./list-badges.js";
-import { installNavTab } from "./nav-tab.js";
+import { installNavTab, getNavTabDiagnostic } from "./nav-tab.js";
 import { initLifecycle } from "./lifecycle.js";
 
 function log(...args) {
