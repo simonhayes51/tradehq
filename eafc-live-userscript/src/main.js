@@ -16,7 +16,7 @@ import { onCardDetected, installMarketObserver } from "./market-observer.js";
 import { getCardIntelligence } from "./api-client.js";
 import { combineIntelligence, cheapestBin } from "./market-calc.js";
 import { render as renderOverlay } from "./overlay.js";
-import { renderListBadges } from "./list-badges.js";
+import { renderListBadges, getListBadgesDiagnostic } from "./list-badges.js";
 import { installNavTab, getNavTabDiagnostic } from "./nav-tab.js";
 import { initLifecycle } from "./lifecycle.js";
 
@@ -66,6 +66,7 @@ async function handleDetection(result) {
       key: `watching:${auctions.length}`,
       cardsChecked: badges ? badges.cardsChecked : null,
       badgeCount: badges ? badges.badgeCount : null,
+      badgeDiagnostic: getListBadgesDiagnostic(),
     });
     return;
   }
