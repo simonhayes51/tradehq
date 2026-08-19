@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EAFC Live Companion
 // @namespace    https://app.eafc.live/
-// @version      1.2.1
+// @version      1.2.2
 // @description  Read-only EAFC Live trading intelligence overlay for the EA SPORTS FC 26 Web App Transfer Market. Never buys, bids, lists, or automates anything - observation only.
 // @author       EAFC Live
 // @match        https://www.ea.com/*/ea-sports-fc/ultimate-team/web-app/*
@@ -388,17 +388,22 @@
   };
   var STYLES = `
   :host { all: initial; }
+  /* Bottom-anchored (any fixed corner, really) inevitably collides with
+     SOME EA control eventually - the bottom tab bar on a results
+     screen, a Reset/Search button on a filters screen, different things
+     on different screens we don't control the layout of. The vertical
+     middle of the right edge is the one spot that's consistently empty
+     across every EA screen actually seen live (search results, filters,
+     item detail) - anchoring there instead of chasing each individual
+     overlap. */
   .eafc-live-panel {
     position: fixed;
-    /* EA's own bottom tab bar (Home/Squads/SBC/Transfers/Store/Club) sits
-       roughly 64-72px tall on phone - a plain safe-area offset put this
-       panel underneath/behind it. Cleared with a fixed floor, not just
-       the safe-area inset. */
-    bottom: max(76px, calc(env(safe-area-inset-bottom) + 68px));
-    right: max(12px, env(safe-area-inset-right));
+    top: 50%;
+    transform: translateY(-50%);
+    right: max(10px, env(safe-area-inset-right));
     z-index: 2147483647;
     width: min(88vw, 270px);
-    max-height: 70vh;
+    max-height: 60vh;
     overflow-y: auto;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     font-size: 13px;
@@ -407,6 +412,16 @@
     border: 1px solid #2c3542;
     border-radius: 12px;
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  }
+  /* Collapsed: a small icon-only circle, not a full-width bar - even if
+     it does end up near a real EA control, it's small enough not to
+     cover it. This is the DEFAULT resting state, not just what "x"
+     leaves behind. */
+  .eafc-live-panel.collapsed {
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    overflow: visible;
   }
   .eafc-live-header {
     display: flex;
@@ -419,8 +434,19 @@
     cursor: pointer;
     user-select: none;
   }
-  .eafc-live-panel.collapsed .eafc-live-header { border-bottom: none; border-radius: 12px; }
+  .eafc-live-panel.collapsed .eafc-live-header {
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    border-bottom: none;
+    border-radius: 50%;
+    justify-content: center;
+  }
   .eafc-live-panel.collapsed .eafc-live-body { display: none; }
+  .eafc-live-panel.collapsed .eafc-live-controls { display: none; }
+  .eafc-live-collapsed-icon { display: none; font-size: 18px; }
+  .eafc-live-panel.collapsed .eafc-live-collapsed-icon { display: block; }
+  .eafc-live-panel.collapsed .eafc-live-brand { display: none; }
   .eafc-live-brand {
     font-weight: 700;
     letter-spacing: 0.04em;
@@ -504,9 +530,12 @@
     const panel = el("div", `eafc-live-panel${collapsed ? " collapsed" : ""}`);
     const header = el("div", "eafc-live-header");
     header.appendChild(el("span", "eafc-live-brand", "EAFC LIVE"));
-    const controls = el("div", "eafc-live-controls");
     const statusClass = state.kind === "result" ? "connected" : state.kind === "loading" ? "" : "error";
     const statusText = state.kind === "loading" ? "LOADING" : state.kind === "result" ? "CONNECTED" : "NO DATA";
+    const collapsedIcon = el("span", "eafc-live-collapsed-icon", "\u26A1");
+    collapsedIcon.style.color = statusClass === "connected" ? "#5fd98a" : statusClass === "error" ? "#e5734a" : "#8a94a6";
+    header.appendChild(collapsedIcon);
+    const controls = el("div", "eafc-live-controls");
     controls.appendChild(el("span", `eafc-live-status ${statusClass}`.trim(), statusText));
     const collapseBtn = el("span", "eafc-live-btn", collapsed ? "\u25B4" : "\u25BE");
     collapseBtn.addEventListener("click", (event) => {
