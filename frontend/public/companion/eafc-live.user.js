@@ -1,12 +1,13 @@
 // ==UserScript==
 // @name         EAFC Live Companion
 // @namespace    https://app.eafc.live/
-// @version      1.6.4
+// @version      1.7.0
 // @description  Read-only EAFC Live trading intelligence overlay for the EA SPORTS FC 26 Web App Transfer Market. Never buys, bids, lists, or automates anything - observation only.
 // @author       EAFC Live
 // @match        https://www.ea.com/*/ea-sports-fc/ultimate-team/web-app/*
 // @match        https://www.ea.com/ea-sports-fc/ultimate-team/web-app/*
 // @connect      api.eafc.live
+// @connect      *
 // @grant        GM_xmlhttpRequest
 // @grant        GM.xmlHttpRequest
 // @run-at       document-start
@@ -382,6 +383,36 @@
   function log3(...args) {
     if (typeof window !== "undefined" && window.EAFC_LIVE_DEBUG) console.log("[EAFC Live]", ...args);
   }
+  function fetchImageAsObjectUrl(url) {
+    return new Promise((resolve) => {
+      const gmRequest = resolveGMRequest();
+      if (!gmRequest) {
+        resolve(null);
+        return;
+      }
+      try {
+        const maybePromise = gmRequest({
+          method: "GET",
+          url,
+          responseType: "blob",
+          onload: (response) => {
+            const blob = response && response.response;
+            resolve(blob instanceof Blob ? URL.createObjectURL(blob) : null);
+          },
+          onerror: () => resolve(null),
+          ontimeout: () => resolve(null)
+        });
+        if (maybePromise && typeof maybePromise.then === "function") {
+          maybePromise.then((response) => {
+            const blob = response && response.response;
+            resolve(blob instanceof Blob ? URL.createObjectURL(blob) : null);
+          }).catch(() => resolve(null));
+        }
+      } catch (_err) {
+        resolve(null);
+      }
+    });
+  }
   var KNOWN_TAB_LABELS = ["home", "squads", "transfers"];
   function* allElements(root) {
     for (const el3 of root.querySelectorAll("*")) {
@@ -562,21 +593,26 @@
       const card = el("div", `eafc-live-opp-card${isStrong ? " strong" : ""}`);
       card.style.animationDelay = `${Math.min(index, 10) * 30}ms`;
       const artUrl = item.composited_image_url || item.image_url;
+      const artPlaceholder = el("div", "eafc-live-opp-art-placeholder", "\u26BD");
+      card.appendChild(artPlaceholder);
       if (artUrl) {
         artStats.withUrl++;
-        const img = document.createElement("img");
-        img.className = "eafc-live-opp-art";
-        img.src = artUrl;
-        img.loading = "lazy";
-        img.alt = "";
-        img.onload = () => artStats.loaded++;
-        img.onerror = () => {
-          artStats.failed++;
-          img.replaceWith(el("div", "eafc-live-opp-art-placeholder", "\u26BD"));
-        };
-        card.appendChild(img);
-      } else {
-        card.appendChild(el("div", "eafc-live-opp-art-placeholder", "\u26BD"));
+        fetchImageAsObjectUrl(artUrl).then((objectUrl) => {
+          if (!objectUrl) {
+            artStats.failed++;
+            return;
+          }
+          const img = document.createElement("img");
+          img.className = "eafc-live-opp-art";
+          img.src = objectUrl;
+          img.alt = "";
+          img.onload = () => artStats.loaded++;
+          img.onerror = () => {
+            artStats.failed++;
+            URL.revokeObjectURL(objectUrl);
+          };
+          artPlaceholder.replaceWith(img);
+        });
       }
       const main = el("div", "eafc-live-opp-main");
       main.appendChild(el("div", "eafc-live-opp-name", [item.name, item.rarity].filter(Boolean).join(" \u2014 ")));
@@ -695,17 +731,16 @@
       event.preventDefault();
       toggle();
     });
-    navBar.addEventListener(
-      "click",
-      (event) => {
-        if (event.target === tab || tab.contains(event.target)) return;
-        if (open) {
-          open = false;
-          closePanel();
-        }
-      },
-      { capture: true }
-    );
+    const maybeCloseOnOutsideTap = (event) => {
+      if (event.target === tab || tab.contains(event.target)) return;
+      if (panelHostEl && event.target === panelHostEl) return;
+      if (open) {
+        open = false;
+        closePanel();
+      }
+    };
+    document.addEventListener("touchend", maybeCloseOnOutsideTap, { capture: true });
+    document.addEventListener("click", maybeCloseOnOutsideTap, { capture: true });
     tabEl = tab;
     navBar.appendChild(tab);
     equalizeTabWidths(navBar);

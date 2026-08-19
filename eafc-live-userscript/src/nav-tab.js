@@ -47,7 +47,7 @@
 // completely (closed Shadow DOM, same as overlay.js), and tapping any
 // OTHER EA tab closes it - simulating "leaving the page" without ever
 // touching EA's real routing.
-import { getOpportunities } from "./api-client.js";
+import { getOpportunities, resolveGMRequest } from "./api-client.js";
 
 const NUMBER_FORMAT = new Intl.NumberFormat("en-US");
 function fmt(n) {
@@ -56,6 +56,57 @@ function fmt(n) {
 
 function log(...args) {
   if (typeof window !== "undefined" && window.EAFC_LIVE_DEBUG) console.log("[EAFC Live]", ...args);
+}
+
+/**
+ * Live test on v1.6.4: EVERY card image request failed (0/14 loaded, 14
+ * failed), not just some - the same all-or-nothing pattern api-client.js's
+ * header describes for api.eafc.live JSON calls, which is exactly why
+ * this project already uses GM_xmlhttpRequest instead of window.fetch()
+ * for those: a plain <img src> is a request made in the EA PAGE's own
+ * context, subject to whatever Content-Security-Policy that page sets -
+ * almost certainly missing our image host from its img-src allowlist,
+ * the same restriction a page fetch() would hit for JSON. GM requests
+ * are exempt from the page's CSP the same way they're exempt from its
+ * CORS policy (see api-client.js's header), so this fetches the image
+ * bytes as a blob through the same privileged channel and hands the
+ * <img> a local blob: URL instead of the real cross-origin one -
+ * nothing about the image ever goes through the page's own network
+ * stack. Resolves null (never throws) on any failure, so a genuinely
+ * broken URL still falls back to the placeholder glyph exactly as
+ * before.
+ */
+function fetchImageAsObjectUrl(url) {
+  return new Promise((resolve) => {
+    const gmRequest = resolveGMRequest();
+    if (!gmRequest) {
+      resolve(null);
+      return;
+    }
+    try {
+      const maybePromise = gmRequest({
+        method: "GET",
+        url,
+        responseType: "blob",
+        onload: (response) => {
+          const blob = response && response.response;
+          resolve(blob instanceof Blob ? URL.createObjectURL(blob) : null);
+        },
+        onerror: () => resolve(null),
+        ontimeout: () => resolve(null),
+      });
+      if (maybePromise && typeof maybePromise.then === "function") {
+        maybePromise
+          .then((response) => {
+            const blob = response && response.response;
+            resolve(blob instanceof Blob ? URL.createObjectURL(blob) : null);
+          })
+          .catch(() => resolve(null));
+      }
+    } catch (_err) {
+      resolve(null);
+    }
+  });
 }
 
 const KNOWN_TAB_LABELS = ["home", "squads", "transfers"];
@@ -305,21 +356,31 @@ async function openPanel() {
     // URL fails to load, so a broken image can never silently eat the
     // whole art column - see artStats above for surfacing WHY it failed.
     const artUrl = item.composited_image_url || item.image_url;
+    const artPlaceholder = el("div", "eafc-live-opp-art-placeholder", "⚽");
+    card.appendChild(artPlaceholder);
     if (artUrl) {
       artStats.withUrl++;
-      const img = document.createElement("img");
-      img.className = "eafc-live-opp-art";
-      img.src = artUrl;
-      img.loading = "lazy";
-      img.alt = "";
-      img.onload = () => artStats.loaded++;
-      img.onerror = () => {
-        artStats.failed++;
-        img.replaceWith(el("div", "eafc-live-opp-art-placeholder", "⚽"));
-      };
-      card.appendChild(img);
-    } else {
-      card.appendChild(el("div", "eafc-live-opp-art-placeholder", "⚽"));
+      // Fetched as a blob through the privileged GM channel, not a
+      // direct <img src> - see fetchImageAsObjectUrl()'s header for why
+      // a plain cross-origin <img> tag failed for every single card on
+      // the last live test (EA's page CSP, the same restriction this
+      // project already routes JSON around).
+      fetchImageAsObjectUrl(artUrl).then((objectUrl) => {
+        if (!objectUrl) {
+          artStats.failed++;
+          return;
+        }
+        const img = document.createElement("img");
+        img.className = "eafc-live-opp-art";
+        img.src = objectUrl;
+        img.alt = "";
+        img.onload = () => artStats.loaded++;
+        img.onerror = () => {
+          artStats.failed++;
+          URL.revokeObjectURL(objectUrl);
+        };
+        artPlaceholder.replaceWith(img);
+      });
     }
 
     const main = el("div", "eafc-live-opp-main");
@@ -493,22 +554,30 @@ export function installNavTab() {
     toggle();
   });
 
-  // Any OTHER tab in the same bar being tapped means the user is
-  // genuinely navigating away in EA's own app - close our panel rather
-  // than leaving it stuck on top of whatever page they went to. Capture
-  // phase so this observes the click before EA's own handler can
-  // possibly stop it from bubbling.
-  navBar.addEventListener(
-    "click",
-    (event) => {
-      if (event.target === tab || tab.contains(event.target)) return;
-      if (open) {
-        open = false;
-        closePanel();
-      }
-    },
-    { capture: true }
-  );
+  // Any tap OUTSIDE our own tab/panel means the user is genuinely
+  // navigating away in EA's own app - close our panel rather than
+  // leaving it stuck on top of whatever page they went to.
+  //
+  // Was scoped to navBar's own "click" event. Live test: tapping
+  // Transfers left the panel open. The same root cause the tab's own
+  // tap handling already hit (see the touchend comment above this tab's
+  // click listener) explains it - if this app suppresses the browser's
+  // synthesized click broadly, a listener that ONLY hears "click" would
+  // never fire for taps on EA's other tabs either, exactly matching
+  // what was reported. Listens on document (not just navBar - a tap
+  // could land on a route's own content, not only the bar) for both
+  // "touchend" and "click", capture phase so it observes the tap before
+  // any of EA's own handlers get a chance to stop it from bubbling.
+  const maybeCloseOnOutsideTap = (event) => {
+    if (event.target === tab || tab.contains(event.target)) return;
+    if (panelHostEl && event.target === panelHostEl) return; // tap inside our own panel
+    if (open) {
+      open = false;
+      closePanel();
+    }
+  };
+  document.addEventListener("touchend", maybeCloseOnOutsideTap, { capture: true });
+  document.addEventListener("click", maybeCloseOnOutsideTap, { capture: true });
 
   tabEl = tab;
   navBar.appendChild(tab);
