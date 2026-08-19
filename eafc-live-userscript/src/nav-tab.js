@@ -17,14 +17,18 @@
 // than inserting a broken/misplaced tab - the existing floating
 // indicator (overlay.js) still works as a fallback either way.
 //
-// WHY A CLONE OF EA'S OWN LAST TAB, NOT A HAND-STYLED BUTTON
+// WHY A FLOATING BADGE, NOT A CLONED FLEX SIBLING
 // -------------------------------------------------------------------
-// Cloning an existing tab item's DOM structure (cloneNode, which never
-// copies JS event listeners - only markup/CSS) means the new tab
-// automatically inherits EA's own current icon size, spacing, active/
-// inactive colors, and safe-area handling, without this file having to
-// guess or hand-maintain any of it. Only the label text and icon glyph
-// are replaced.
+// v1.4.0 cloned an existing tab item's DOM structure so it would
+// inherit EA's own current icon size/spacing for free. Live test: EA's
+// bar allots FIXED width per tab (not flex-grow that reflows), so
+// appending a real 7th child squeezed all seven into the space budgeted
+// for six - every icon shrank, including EA's own, and ours ended up
+// nearly invisible in the crush. Fixed by taking this out of the flex
+// flow entirely: the badge is `position: absolute` inside the bar (so
+// it still sits at the bar's z-index/safe-area position) but floats
+// above it rather than occupying a flex slot, so EA's six tabs go back
+// to their normal size regardless of what we add.
 //
 // WHY THE PANEL IS OUR OWN OVERLAY, NOT REAL EA NAVIGATION
 // -------------------------------------------------------------------
@@ -154,19 +158,44 @@ const PANEL_STYLES = `
   .eafc-live-full-close:active { background: rgba(255,255,255,0.06); }
   .eafc-live-full-body { flex: 1; overflow-y: auto; padding: 12px 16px max(16px, env(safe-area-inset-bottom)); }
   .eafc-live-opp-card {
-    background: #14181f; border: 1px solid #2c3542; border-radius: 10px;
-    padding: 12px; margin-bottom: 10px;
+    display: flex; gap: 12px; align-items: center;
+    background: #14181f; border: 1px solid #2c3542; border-left: 3px solid #5fd98a;
+    border-radius: 10px; padding: 10px 12px; margin-bottom: 10px;
+    animation: eafc-live-card-in 0.25s ease-out both;
   }
-  .eafc-live-opp-name { font-weight: 700; font-size: 14px; margin-bottom: 6px; }
-  .eafc-live-opp-row { display: flex; justify-content: space-between; font-size: 12px; color: #b7c0cf; padding: 2px 0; }
+  .eafc-live-opp-card.strong { border-left-color: #7fd8ff; }
+  @keyframes eafc-live-card-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+  .eafc-live-opp-art {
+    flex: 0 0 auto; width: 54px; height: 54px; object-fit: contain;
+    background: rgba(255,255,255,0.03); border-radius: 6px;
+  }
+  .eafc-live-opp-art-placeholder {
+    flex: 0 0 auto; width: 54px; height: 54px; border-radius: 6px;
+    background: rgba(255,255,255,0.04); display: flex; align-items: center;
+    justify-content: center; font-size: 20px; color: #3a4453;
+  }
+  .eafc-live-opp-main { flex: 1; min-width: 0; }
+  .eafc-live-opp-name {
+    font-weight: 700; font-size: 13px; margin-bottom: 4px; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis;
+  }
+  .eafc-live-opp-row { display: flex; justify-content: space-between; font-size: 11.5px; color: #b7c0cf; padding: 1px 0; }
   .eafc-live-opp-row .label { color: #8a94a6; }
   .eafc-live-opp-row .value { font-variant-numeric: tabular-nums; color: #e8ecf1; }
+  .eafc-live-opp-row .value.profit { color: #5fd98a; font-weight: 600; }
   .eafc-live-opp-signal {
-    display: inline-block; margin-top: 6px; padding: 3px 8px; border-radius: 5px;
+    display: inline-block; margin-top: 5px; padding: 3px 8px; border-radius: 5px;
     font-size: 10px; font-weight: 700; letter-spacing: 0.02em;
     background: rgba(95, 217, 138, 0.15); color: #5fd98a;
   }
+  .eafc-live-opp-signal.strong { background: rgba(127, 216, 255, 0.15); color: #7fd8ff; }
   .eafc-live-muted { color: #6b7484; font-size: 12px; text-align: center; padding: 24px 0; }
+  .eafc-live-spinner {
+    width: 22px; height: 22px; margin: 24px auto 10px;
+    border: 2px solid #2c3542; border-top-color: #7fd8ff; border-radius: 50%;
+    animation: eafc-live-spin 0.7s linear infinite;
+  }
+  @keyframes eafc-live-spin { to { transform: rotate(360deg); } }
 `;
 
 function el(tag, className, text) {
@@ -209,7 +238,8 @@ async function openPanel() {
   panel.appendChild(header);
 
   const body = el("div", "eafc-live-full-body");
-  body.appendChild(el("div", "eafc-live-muted", "Loading…"));
+  body.appendChild(el("div", "eafc-live-spinner"));
+  body.appendChild(el("div", "eafc-live-muted", "Loading live opportunities…"));
   panel.appendChild(body);
   shadow.appendChild(panel);
   if (tabEl) tabEl.classList.add("eafc-live-tab-active");
@@ -228,61 +258,113 @@ async function openPanel() {
     return;
   }
 
-  for (const item of items) {
-    const card = el("div", "eafc-live-opp-card");
-    card.appendChild(el("div", "eafc-live-opp-name", [item.name, item.rarity].filter(Boolean).join(" — ")));
-    const row = (label, value) => {
+  items.forEach((item, index) => {
+    const isStrong = item.signal === "strong_buy";
+    const card = el("div", `eafc-live-opp-card${isStrong ? " strong" : ""}`);
+    card.style.animationDelay = `${Math.min(index, 10) * 30}ms`;
+
+    // composited_image_url is FUT.GG's own pre-composited card render
+    // (background + cutout + rating/stats already baked in) mirrored to
+    // our storage - see futgg_market.py's _serialize_player() comment on
+    // why this field, specifically, is safe to drop straight into an
+    // <img> with nothing drawn on top of it. Falls back to a plain
+    // placeholder glyph rather than a broken image icon if neither this
+    // nor the cutout-only image_url is present for a card.
+    const artUrl = item.composited_image_url || item.image_url;
+    if (artUrl) {
+      const img = document.createElement("img");
+      img.className = "eafc-live-opp-art";
+      img.src = artUrl;
+      img.loading = "lazy";
+      img.alt = "";
+      img.onerror = () => img.remove();
+      card.appendChild(img);
+    } else {
+      card.appendChild(el("div", "eafc-live-opp-art-placeholder", "⚽"));
+    }
+
+    const main = el("div", "eafc-live-opp-main");
+    main.appendChild(el("div", "eafc-live-opp-name", [item.name, item.rarity].filter(Boolean).join(" — ")));
+    const row = (label, value, valueClass) => {
       const r = el("div", "eafc-live-opp-row");
       r.appendChild(el("span", "label", label));
-      r.appendChild(el("span", "value", value));
-      card.appendChild(r);
+      r.appendChild(el("span", `value${valueClass ? " " + valueClass : ""}`, value));
+      main.appendChild(r);
     };
     row("Current BIN", fmt(item.current_bin));
     row("Buy Below", fmt(item.recommended_buy_max ?? item.buy_below));
-    if (item.expected_profit_after_tax != null) row("Expected Profit", fmt(Math.round(item.expected_profit_after_tax)));
-    const signal = el("span", "eafc-live-opp-signal", String(item.signal || "buy").replace(/_/g, " ").toUpperCase());
-    card.appendChild(signal);
+    if (item.expected_profit_after_tax != null) {
+      row("Expected Profit", `+${fmt(Math.round(item.expected_profit_after_tax))}`, "profit");
+    }
+    const signal = el(
+      "span",
+      `eafc-live-opp-signal${isStrong ? " strong" : ""}`,
+      String(item.signal || "buy").replace(/_/g, " ").toUpperCase()
+    );
+    main.appendChild(signal);
+    card.appendChild(main);
     body.appendChild(card);
-  }
+  });
 }
 
 const TAB_CSS = `
-  .eafc-live-tab-active :is(span, div, p, svg, img) { color: #7fd8ff !important; }
+  .eafc-live-nav-tab {
+    position: absolute;
+    top: -18px;
+    right: 10px;
+    width: 46px;
+    height: 46px;
+    border-radius: 50%;
+    background: radial-gradient(circle at 35% 30%, #1e2838, #0b0e14);
+    border: 2px solid #7fd8ff;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.55), 0 0 0 4px #0b0e14, 0 0 14px rgba(127, 216, 255, 0.35);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 22px;
+    line-height: 1;
+    color: #7fd8ff;
+    z-index: 2147483645;
+    cursor: pointer;
+    animation: eafc-live-tab-pulse 2.4s ease-in-out infinite;
+  }
+  .eafc-live-nav-tab:active { transform: scale(0.94); }
+  .eafc-live-nav-tab.eafc-live-tab-active {
+    background: radial-gradient(circle at 35% 30%, #244059, #0b0e14);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.55), 0 0 0 4px #0b0e14, 0 0 20px rgba(127, 216, 255, 0.6);
+    animation: none;
+  }
+  @keyframes eafc-live-tab-pulse {
+    0%, 100% { box-shadow: 0 4px 14px rgba(0, 0, 0, 0.55), 0 0 0 4px #0b0e14, 0 0 10px rgba(127, 216, 255, 0.25); }
+    50% { box-shadow: 0 4px 14px rgba(0, 0, 0, 0.55), 0 0 0 4px #0b0e14, 0 0 18px rgba(127, 216, 255, 0.55); }
+  }
 `;
 
-/** Best-effort: injects the "EAFC LIVE" tab once EA's nav bar can be
- * found. Safe to call repeatedly (module-level `injected` guard) - does
- * nothing at all if the heuristic can't confidently locate the nav bar,
- * rather than inserting a broken tab. */
+/** Best-effort: injects the floating "EAFC LIVE" badge once EA's nav bar
+ * can be found. Safe to call repeatedly (module-level `injected` guard) -
+ * does nothing at all if the heuristic can't confidently locate the nav
+ * bar, rather than inserting a broken tab. */
 export function installNavTab() {
   if (injected) return true;
   const navBar = findNavBar();
   if (!navBar) return false; // will be retried by main.js's pollForNavTab()
   injected = true;
 
-  const templateTab = navBar.lastElementChild;
-  const tab = templateTab.cloneNode(true);
-  tab.removeAttribute("id");
-  tab.classList.add("eafc-live-nav-tab");
-
-  // Replace whatever text/icon the cloned template tab had with ours,
-  // touching only text nodes and any <svg>/<img> icon - never removing
-  // elements this project doesn't understand the purpose of, since the
-  // clone's structure (spacing, sizing, active-state wiring on the
-  // PARENT container which we don't touch) is what makes it look native.
-  const walker = document.createTreeWalker(tab, NodeFilter.SHOW_TEXT);
-  const textNodes = [];
-  let n;
-  while ((n = walker.nextNode())) textNodes.push(n);
-  if (textNodes.length > 0) {
-    textNodes[0].nodeValue = "EAFC LIVE";
-    for (let i = 1; i < textNodes.length; i++) textNodes[i].nodeValue = "";
+  // The badge is `position: absolute`, so it needs a positioned
+  // ancestor to anchor to - EA's own bar may already be one (most fixed
+  // bottom bars are), but this is set defensively rather than assumed,
+  // and only touches `position` (never touched at all if already
+  // anything other than the browser default `static`), so it cannot
+  // alter how EA's own six tabs are laid out.
+  if (getComputedStyle(navBar).position === "static") {
+    navBar.style.position = "relative";
   }
-  for (const icon of tab.querySelectorAll("svg, img")) icon.remove();
-  const iconSpan = document.createElement("span");
-  iconSpan.textContent = "⚡";
-  iconSpan.style.fontSize = "18px";
-  tab.insertBefore(iconSpan, tab.firstChild);
+
+  const tab = document.createElement("div");
+  tab.className = "eafc-live-nav-tab";
+  tab.textContent = "⚡";
+  tab.setAttribute("role", "button");
+  tab.setAttribute("aria-label", "EAFC Live opportunities");
 
   const styleEl = document.createElement("style");
   styleEl.textContent = TAB_CSS;
@@ -316,6 +398,6 @@ export function installNavTab() {
 
   tabEl = tab;
   navBar.appendChild(tab);
-  log("EAFC LIVE nav tab installed");
+  log("EAFC LIVE nav badge installed");
   return true;
 }

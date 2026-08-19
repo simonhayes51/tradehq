@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EAFC Live Companion
 // @namespace    https://app.eafc.live/
-// @version      1.4.1
+// @version      1.5.0
 // @description  Read-only EAFC Live trading intelligence overlay for the EA SPORTS FC 26 Web App Transfer Market. Never buys, bids, lists, or automates anything - observation only.
 // @author       EAFC Live
 // @match        https://www.ea.com/*/ea-sports-fc/ultimate-team/web-app/*
@@ -450,19 +450,44 @@
   .eafc-live-full-close:active { background: rgba(255,255,255,0.06); }
   .eafc-live-full-body { flex: 1; overflow-y: auto; padding: 12px 16px max(16px, env(safe-area-inset-bottom)); }
   .eafc-live-opp-card {
-    background: #14181f; border: 1px solid #2c3542; border-radius: 10px;
-    padding: 12px; margin-bottom: 10px;
+    display: flex; gap: 12px; align-items: center;
+    background: #14181f; border: 1px solid #2c3542; border-left: 3px solid #5fd98a;
+    border-radius: 10px; padding: 10px 12px; margin-bottom: 10px;
+    animation: eafc-live-card-in 0.25s ease-out both;
   }
-  .eafc-live-opp-name { font-weight: 700; font-size: 14px; margin-bottom: 6px; }
-  .eafc-live-opp-row { display: flex; justify-content: space-between; font-size: 12px; color: #b7c0cf; padding: 2px 0; }
+  .eafc-live-opp-card.strong { border-left-color: #7fd8ff; }
+  @keyframes eafc-live-card-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+  .eafc-live-opp-art {
+    flex: 0 0 auto; width: 54px; height: 54px; object-fit: contain;
+    background: rgba(255,255,255,0.03); border-radius: 6px;
+  }
+  .eafc-live-opp-art-placeholder {
+    flex: 0 0 auto; width: 54px; height: 54px; border-radius: 6px;
+    background: rgba(255,255,255,0.04); display: flex; align-items: center;
+    justify-content: center; font-size: 20px; color: #3a4453;
+  }
+  .eafc-live-opp-main { flex: 1; min-width: 0; }
+  .eafc-live-opp-name {
+    font-weight: 700; font-size: 13px; margin-bottom: 4px; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis;
+  }
+  .eafc-live-opp-row { display: flex; justify-content: space-between; font-size: 11.5px; color: #b7c0cf; padding: 1px 0; }
   .eafc-live-opp-row .label { color: #8a94a6; }
   .eafc-live-opp-row .value { font-variant-numeric: tabular-nums; color: #e8ecf1; }
+  .eafc-live-opp-row .value.profit { color: #5fd98a; font-weight: 600; }
   .eafc-live-opp-signal {
-    display: inline-block; margin-top: 6px; padding: 3px 8px; border-radius: 5px;
+    display: inline-block; margin-top: 5px; padding: 3px 8px; border-radius: 5px;
     font-size: 10px; font-weight: 700; letter-spacing: 0.02em;
     background: rgba(95, 217, 138, 0.15); color: #5fd98a;
   }
+  .eafc-live-opp-signal.strong { background: rgba(127, 216, 255, 0.15); color: #7fd8ff; }
   .eafc-live-muted { color: #6b7484; font-size: 12px; text-align: center; padding: 24px 0; }
+  .eafc-live-spinner {
+    width: 22px; height: 22px; margin: 24px auto 10px;
+    border: 2px solid #2c3542; border-top-color: #7fd8ff; border-radius: 50%;
+    animation: eafc-live-spin 0.7s linear infinite;
+  }
+  @keyframes eafc-live-spin { to { transform: rotate(360deg); } }
 `;
   function el(tag, className, text) {
     const node = document.createElement(tag);
@@ -499,7 +524,8 @@
     header.appendChild(closeBtn);
     panel.appendChild(header);
     const body = el("div", "eafc-live-full-body");
-    body.appendChild(el("div", "eafc-live-muted", "Loading\u2026"));
+    body.appendChild(el("div", "eafc-live-spinner"));
+    body.appendChild(el("div", "eafc-live-muted", "Loading live opportunities\u2026"));
     panel.appendChild(body);
     shadow2.appendChild(panel);
     if (tabEl) tabEl.classList.add("eafc-live-tab-active");
@@ -514,48 +540,90 @@
       body.appendChild(el("div", "eafc-live-muted", "No live buy signals right now."));
       return;
     }
-    for (const item of items) {
-      const card = el("div", "eafc-live-opp-card");
-      card.appendChild(el("div", "eafc-live-opp-name", [item.name, item.rarity].filter(Boolean).join(" \u2014 ")));
-      const row = (label, value) => {
+    items.forEach((item, index) => {
+      const isStrong = item.signal === "strong_buy";
+      const card = el("div", `eafc-live-opp-card${isStrong ? " strong" : ""}`);
+      card.style.animationDelay = `${Math.min(index, 10) * 30}ms`;
+      const artUrl = item.composited_image_url || item.image_url;
+      if (artUrl) {
+        const img = document.createElement("img");
+        img.className = "eafc-live-opp-art";
+        img.src = artUrl;
+        img.loading = "lazy";
+        img.alt = "";
+        img.onerror = () => img.remove();
+        card.appendChild(img);
+      } else {
+        card.appendChild(el("div", "eafc-live-opp-art-placeholder", "\u26BD"));
+      }
+      const main = el("div", "eafc-live-opp-main");
+      main.appendChild(el("div", "eafc-live-opp-name", [item.name, item.rarity].filter(Boolean).join(" \u2014 ")));
+      const row = (label, value, valueClass) => {
         const r = el("div", "eafc-live-opp-row");
         r.appendChild(el("span", "label", label));
-        r.appendChild(el("span", "value", value));
-        card.appendChild(r);
+        r.appendChild(el("span", `value${valueClass ? " " + valueClass : ""}`, value));
+        main.appendChild(r);
       };
       row("Current BIN", fmt(item.current_bin));
       row("Buy Below", fmt(item.recommended_buy_max ?? item.buy_below));
-      if (item.expected_profit_after_tax != null) row("Expected Profit", fmt(Math.round(item.expected_profit_after_tax)));
-      const signal = el("span", "eafc-live-opp-signal", String(item.signal || "buy").replace(/_/g, " ").toUpperCase());
-      card.appendChild(signal);
+      if (item.expected_profit_after_tax != null) {
+        row("Expected Profit", `+${fmt(Math.round(item.expected_profit_after_tax))}`, "profit");
+      }
+      const signal = el(
+        "span",
+        `eafc-live-opp-signal${isStrong ? " strong" : ""}`,
+        String(item.signal || "buy").replace(/_/g, " ").toUpperCase()
+      );
+      main.appendChild(signal);
+      card.appendChild(main);
       body.appendChild(card);
-    }
+    });
   }
   var TAB_CSS = `
-  .eafc-live-tab-active :is(span, div, p, svg, img) { color: #7fd8ff !important; }
+  .eafc-live-nav-tab {
+    position: absolute;
+    top: -18px;
+    right: 10px;
+    width: 46px;
+    height: 46px;
+    border-radius: 50%;
+    background: radial-gradient(circle at 35% 30%, #1e2838, #0b0e14);
+    border: 2px solid #7fd8ff;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.55), 0 0 0 4px #0b0e14, 0 0 14px rgba(127, 216, 255, 0.35);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 22px;
+    line-height: 1;
+    color: #7fd8ff;
+    z-index: 2147483645;
+    cursor: pointer;
+    animation: eafc-live-tab-pulse 2.4s ease-in-out infinite;
+  }
+  .eafc-live-nav-tab:active { transform: scale(0.94); }
+  .eafc-live-nav-tab.eafc-live-tab-active {
+    background: radial-gradient(circle at 35% 30%, #244059, #0b0e14);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.55), 0 0 0 4px #0b0e14, 0 0 20px rgba(127, 216, 255, 0.6);
+    animation: none;
+  }
+  @keyframes eafc-live-tab-pulse {
+    0%, 100% { box-shadow: 0 4px 14px rgba(0, 0, 0, 0.55), 0 0 0 4px #0b0e14, 0 0 10px rgba(127, 216, 255, 0.25); }
+    50% { box-shadow: 0 4px 14px rgba(0, 0, 0, 0.55), 0 0 0 4px #0b0e14, 0 0 18px rgba(127, 216, 255, 0.55); }
+  }
 `;
   function installNavTab() {
     if (injected) return true;
     const navBar = findNavBar();
     if (!navBar) return false;
     injected = true;
-    const templateTab = navBar.lastElementChild;
-    const tab = templateTab.cloneNode(true);
-    tab.removeAttribute("id");
-    tab.classList.add("eafc-live-nav-tab");
-    const walker = document.createTreeWalker(tab, NodeFilter.SHOW_TEXT);
-    const textNodes = [];
-    let n;
-    while (n = walker.nextNode()) textNodes.push(n);
-    if (textNodes.length > 0) {
-      textNodes[0].nodeValue = "EAFC LIVE";
-      for (let i = 1; i < textNodes.length; i++) textNodes[i].nodeValue = "";
+    if (getComputedStyle(navBar).position === "static") {
+      navBar.style.position = "relative";
     }
-    for (const icon of tab.querySelectorAll("svg, img")) icon.remove();
-    const iconSpan = document.createElement("span");
-    iconSpan.textContent = "\u26A1";
-    iconSpan.style.fontSize = "18px";
-    tab.insertBefore(iconSpan, tab.firstChild);
+    const tab = document.createElement("div");
+    tab.className = "eafc-live-nav-tab";
+    tab.textContent = "\u26A1";
+    tab.setAttribute("role", "button");
+    tab.setAttribute("aria-label", "EAFC Live opportunities");
     const styleEl = document.createElement("style");
     styleEl.textContent = TAB_CSS;
     document.head.appendChild(styleEl);
@@ -580,7 +648,7 @@
     );
     tabEl = tab;
     navBar.appendChild(tab);
-    log3("EAFC LIVE nav tab installed");
+    log3("EAFC LIVE nav badge installed");
     return true;
   }
 
