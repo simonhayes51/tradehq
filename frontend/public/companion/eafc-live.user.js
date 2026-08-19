@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EAFC Live Companion
 // @namespace    https://app.eafc.live/
-// @version      1.7.0
+// @version      1.7.1
 // @description  Read-only EAFC Live trading intelligence overlay for the EA SPORTS FC 26 Web App Transfer Market. Never buys, bids, lists, or automates anything - observation only.
 // @author       EAFC Live
 // @match        https://www.ea.com/*/ea-sports-fc/ultimate-team/web-app/*
@@ -390,23 +390,22 @@
         resolve(null);
         return;
       }
+      const toObjectUrl = (response) => {
+        const buffer = response && response.response;
+        if (!(buffer instanceof ArrayBuffer) || buffer.byteLength === 0) return null;
+        return URL.createObjectURL(new Blob([buffer], { type: "image/webp" }));
+      };
       try {
         const maybePromise = gmRequest({
           method: "GET",
           url,
-          responseType: "blob",
-          onload: (response) => {
-            const blob = response && response.response;
-            resolve(blob instanceof Blob ? URL.createObjectURL(blob) : null);
-          },
+          responseType: "arraybuffer",
+          onload: (response) => resolve(toObjectUrl(response)),
           onerror: () => resolve(null),
           ontimeout: () => resolve(null)
         });
         if (maybePromise && typeof maybePromise.then === "function") {
-          maybePromise.then((response) => {
-            const blob = response && response.response;
-            resolve(blob instanceof Blob ? URL.createObjectURL(blob) : null);
-          }).catch(() => resolve(null));
+          maybePromise.then((response) => resolve(toObjectUrl(response))).catch(() => resolve(null));
         }
       } catch (_err) {
         resolve(null);
@@ -610,6 +609,7 @@
           img.onerror = () => {
             artStats.failed++;
             URL.revokeObjectURL(objectUrl);
+            img.replaceWith(el("div", "eafc-live-opp-art-placeholder", "\u26BD"));
           };
           artPlaceholder.replaceWith(img);
         });
@@ -650,7 +650,7 @@
           )
         );
       }
-    }, 2500);
+    }, 4500);
   }
   var TAB_CSS = `
   .eafc-live-nav-tab {
