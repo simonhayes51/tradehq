@@ -270,6 +270,13 @@ async function openPanel() {
     return;
   }
 
+  // Tallies how art actually resolved, for the always-on footer line
+  // below - the only way to tell "backend never gave us a URL for these
+  // cards" from "the URL was given but the image request itself failed
+  // (e.g. EA's page CSP blocking a cross-origin <img> load)" without any
+  // console access on the device this has to be diagnosed from.
+  const artStats = { withUrl: 0, loaded: 0, failed: 0 };
+
   items.forEach((item, index) => {
     const isStrong = item.signal === "strong_buy";
     const card = el("div", `eafc-live-opp-card${isStrong ? " strong" : ""}`);
@@ -279,17 +286,23 @@ async function openPanel() {
     // (background + cutout + rating/stats already baked in) mirrored to
     // our storage - see futgg_market.py's _serialize_player() comment on
     // why this field, specifically, is safe to drop straight into an
-    // <img> with nothing drawn on top of it. Falls back to a plain
-    // placeholder glyph rather than a broken image icon if neither this
-    // nor the cutout-only image_url is present for a card.
+    // <img> with nothing drawn on top of it. Always reserves the art
+    // slot (image OR placeholder) rather than collapsing the row when a
+    // URL fails to load, so a broken image can never silently eat the
+    // whole art column - see artStats above for surfacing WHY it failed.
     const artUrl = item.composited_image_url || item.image_url;
     if (artUrl) {
+      artStats.withUrl++;
       const img = document.createElement("img");
       img.className = "eafc-live-opp-art";
       img.src = artUrl;
       img.loading = "lazy";
       img.alt = "";
-      img.onerror = () => img.remove();
+      img.onload = () => artStats.loaded++;
+      img.onerror = () => {
+        artStats.failed++;
+        img.replaceWith(el("div", "eafc-live-opp-art-placeholder", "⚽"));
+      };
       card.appendChild(img);
     } else {
       card.appendChild(el("div", "eafc-live-opp-art-placeholder", "⚽"));
@@ -317,6 +330,26 @@ async function openPanel() {
     card.appendChild(main);
     body.appendChild(card);
   });
+
+  // Image load/error events settle asynchronously after this function
+  // returns - a fixed delay is imprecise but good enough to answer the
+  // one question this exists for (see artStats above): is a missing
+  // card image a "backend gave no URL" gap or an "image request itself
+  // failed" gap. Only shown at all when at least one card had a URL to
+  // try, and only when something is actually off (a fully healthy page
+  // says nothing, same as the nav tab diagnostic's "found" case staying
+  // out of the way).
+  setTimeout(() => {
+    if (artStats.withUrl > 0 && artStats.failed > 0) {
+      body.appendChild(
+        el(
+          "div",
+          "eafc-live-muted",
+          `Card art: ${artStats.loaded}/${artStats.withUrl} loaded, ${artStats.failed} failed to load.`
+        )
+      );
+    }
+  }, 2500);
 }
 
 const TAB_CSS = `

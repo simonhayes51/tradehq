@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EAFC Live Companion
 // @namespace    https://app.eafc.live/
-// @version      1.5.1
+// @version      1.5.2
 // @description  Read-only EAFC Live trading intelligence overlay for the EA SPORTS FC 26 Web App Transfer Market. Never buys, bids, lists, or automates anything - observation only.
 // @author       EAFC Live
 // @match        https://www.ea.com/*/ea-sports-fc/ultimate-team/web-app/*
@@ -540,18 +540,24 @@
       body.appendChild(el("div", "eafc-live-muted", "No live buy signals right now."));
       return;
     }
+    const artStats = { withUrl: 0, loaded: 0, failed: 0 };
     items.forEach((item, index) => {
       const isStrong = item.signal === "strong_buy";
       const card = el("div", `eafc-live-opp-card${isStrong ? " strong" : ""}`);
       card.style.animationDelay = `${Math.min(index, 10) * 30}ms`;
       const artUrl = item.composited_image_url || item.image_url;
       if (artUrl) {
+        artStats.withUrl++;
         const img = document.createElement("img");
         img.className = "eafc-live-opp-art";
         img.src = artUrl;
         img.loading = "lazy";
         img.alt = "";
-        img.onerror = () => img.remove();
+        img.onload = () => artStats.loaded++;
+        img.onerror = () => {
+          artStats.failed++;
+          img.replaceWith(el("div", "eafc-live-opp-art-placeholder", "\u26BD"));
+        };
         card.appendChild(img);
       } else {
         card.appendChild(el("div", "eafc-live-opp-art-placeholder", "\u26BD"));
@@ -578,6 +584,17 @@
       card.appendChild(main);
       body.appendChild(card);
     });
+    setTimeout(() => {
+      if (artStats.withUrl > 0 && artStats.failed > 0) {
+        body.appendChild(
+          el(
+            "div",
+            "eafc-live-muted",
+            `Card art: ${artStats.loaded}/${artStats.withUrl} loaded, ${artStats.failed} failed to load.`
+          )
+        );
+      }
+    }, 2500);
   }
   var TAB_CSS = `
   .eafc-live-nav-tab {
