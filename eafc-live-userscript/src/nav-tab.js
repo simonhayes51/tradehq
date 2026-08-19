@@ -69,12 +69,24 @@ function log(...args) {
  * the same restriction a page fetch() would hit for JSON. GM requests
  * are exempt from the page's CSP the same way they're exempt from its
  * CORS policy (see api-client.js's header), so this fetches the image
- * bytes as a blob through the same privileged channel and hands the
- * <img> a local blob: URL instead of the real cross-origin one -
- * nothing about the image ever goes through the page's own network
- * stack. Resolves null (never throws) on any failure, so a genuinely
- * broken URL still falls back to the placeholder glyph exactly as
- * before.
+ * bytes through the same privileged channel and hands the <img> a local
+ * blob: URL instead of the real cross-origin one - nothing about the
+ * image ever goes through the page's own network stack. Resolves null
+ * (never throws) on any failure, so a genuinely broken URL still falls
+ * back to the placeholder glyph exactly as before.
+ *
+ * Uses `responseType: "arraybuffer"`, not "blob" - a first attempt at
+ * this used "blob" directly and every card still rendered an empty box
+ * (no visible placeholder OR image), which points at this specific
+ * manager returning something that satisfies `instanceof Blob` without
+ * actually being a decodable one (an empty/malformed blob support gap
+ * is a known rough edge across different GM implementations). arraybuffer
+ * support is more universally solid, and building the Blob manually from
+ * it here means this file controls the MIME type rather than trusting
+ * whatever the manager inferred - defaults to image/webp, matching
+ * backend/app/services/futgg_card_image_mirror.py's own upload_bytes()
+ * call, since GM responses don't reliably expose response headers to
+ * read the real content-type back out.
  */
 function fetchImageAsObjectUrl(url) {
   return new Promise((resolve) => {
@@ -83,25 +95,22 @@ function fetchImageAsObjectUrl(url) {
       resolve(null);
       return;
     }
+    const toObjectUrl = (response) => {
+      const buffer = response && response.response;
+      if (!(buffer instanceof ArrayBuffer) || buffer.byteLength === 0) return null;
+      return URL.createObjectURL(new Blob([buffer], { type: "image/webp" }));
+    };
     try {
       const maybePromise = gmRequest({
         method: "GET",
         url,
-        responseType: "blob",
-        onload: (response) => {
-          const blob = response && response.response;
-          resolve(blob instanceof Blob ? URL.createObjectURL(blob) : null);
-        },
+        responseType: "arraybuffer",
+        onload: (response) => resolve(toObjectUrl(response)),
         onerror: () => resolve(null),
         ontimeout: () => resolve(null),
       });
       if (maybePromise && typeof maybePromise.then === "function") {
-        maybePromise
-          .then((response) => {
-            const blob = response && response.response;
-            resolve(blob instanceof Blob ? URL.createObjectURL(blob) : null);
-          })
-          .catch(() => resolve(null));
+        maybePromise.then((response) => resolve(toObjectUrl(response))).catch(() => resolve(null));
       }
     } catch (_err) {
       resolve(null);
@@ -376,8 +385,14 @@ async function openPanel() {
         img.alt = "";
         img.onload = () => artStats.loaded++;
         img.onerror = () => {
+          // Not just a failed fetch this time - the blob was retrieved
+          // but the browser couldn't decode it as an image. Swaps back
+          // to a fresh placeholder rather than leaving the broken <img>
+          // in the DOM, which live-tested as an empty box with no
+          // visible fallback at all.
           artStats.failed++;
           URL.revokeObjectURL(objectUrl);
+          img.replaceWith(el("div", "eafc-live-opp-art-placeholder", "⚽"));
         };
         artPlaceholder.replaceWith(img);
       });
@@ -434,7 +449,7 @@ async function openPanel() {
         )
       );
     }
-  }, 2500);
+  }, 4500);
 }
 
 const TAB_CSS = `
