@@ -113,6 +113,15 @@ PORT = int(os.getenv("PORT", 8000))
 
 ENV = os.getenv("ENV", "production").lower()
 IS_PROD = ENV in ("prod", "production")
+# MUST be ".eafc.live" (leading dot) in production, not "eafc.live" or
+# "app.eafc.live" - now that eafc.live (public site) and app.eafc.live
+# (the app) are two separate origins sharing one session, the leading dot
+# is what makes the browser send this cookie to BOTH the apex and every
+# subdomain. Without it (or with it scoped to app.eafc.live only), a user
+# who authenticates would never appear "logged in" if they later loaded
+# anything on the bare eafc.live origin, and vice versa. This code cannot
+# verify the actual deployed value of the COOKIE_DOMAIN env var - confirm
+# it in the real environment before relying on cross-subdomain SSO.
 COOKIE_DOMAIN = os.getenv("COOKIE_DOMAIN") or (".futhub.co.uk" if IS_PROD else None)
 
 # JWT / Discord
@@ -734,6 +743,15 @@ async def get_entitlements_debug(request: Request):
 ALLOWED_ORIGINS = [
     "https://app.futhub.co.uk",
     "https://app.eafc.live",
+    # The public marketing site (bare apex, no subdomain) - added when
+    # eafc.live/app.eafc.live became two separate origins sharing one
+    # frontend build. ALLOWED_ORIGIN_REGEX below only matches a
+    # *subdomain* of eafc.live (requires a literal "." before it), so
+    # without this the apex's own live-opportunities-preview fetch would
+    # have failed CORS exactly like the app.eafc.live incident this same
+    # block already documents - silently, with no response object.
+    "https://eafc.live",
+    "https://www.eafc.live",
     "http://localhost:5173",
     "http://127.0.0.1:5173",
 ]

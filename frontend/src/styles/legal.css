@@ -1,0 +1,25 @@
+/* Shared by Privacy.jsx and Terms.jsx - imported directly by each so they
+   render correctly whether mounted under the public site's route tree or
+   the main app's (Billing links go straight to these on app.eafc.live). */
+.legal-page {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 48px 24px 80px;
+  color: #f0f0f0;
+  background: #101010;
+  min-height: 100vh;
+  font-family: Inter, system-ui, sans-serif;
+  line-height: 1.6;
+}
+.legal-page h1 { font-size: 28px; margin: 0 0 6px; }
+.legal-page h2 { font-size: 17px; margin: 32px 0 10px; color: #39ff8a; }
+.legal-page p { margin: 0 0 14px; color: #c2c2c2; font-size: 14px; }
+.legal-page ul { margin: 0 0 14px; padding-left: 20px; color: #c2c2c2; font-size: 14px; }
+.legal-page li { margin-bottom: 6px; }
+.legal-page code { background: #1d1d1d; padding: 1px 6px; border-radius: 3px; font-size: 12.5px; }
+.legal-updated { color: #8e8e8e !important; font-size: 12px !important; margin-bottom: 24px !important; }
+.legal-page strong { color: #fff; }
+@media (max-width: 480px) {
+  .legal-page { padding: 32px 16px 60px; }
+  .legal-page h1 { font-size: 24px; }
+}

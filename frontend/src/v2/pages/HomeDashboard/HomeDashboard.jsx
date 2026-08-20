@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { Activity, ArrowRight, Bell, ChevronRight, Search, Star, Target, X, Zap } from "lucide-react";
 import { useAuth } from "../../../context/AuthContext";
+import { isPublicHost, PUBLIC_HOSTNAME } from "../../../lib/domains";
 import { useDashboard } from "../../hooks/useDashboard";
 import { buildWhyText, sellingSpeedLabel } from "../../lib/tradeNarrative";
 import { formatCountdown } from "../../lib/format";
@@ -71,92 +72,21 @@ const STRATEGY_BLURBS={
   budget:"Good trades without needing a huge coin balance.",
 };
 
-// Shown only to signed-out visitors, above the live data - the dashboard
-// below is real and live on purpose (proof beats a marketing page for this
-// audience), but a first-time visitor still needs one sentence on what
-// they're looking at and why before the numbers mean anything to them.
-// cardsTracked comes from the same /market/freshness call the rest of
-// Home already makes - real or omitted, never a placeholder number.
-function IntroBanner({cardsTracked}){
-  const navigate=useNavigate();
-  const scrollToOpportunities=()=>document.getElementById("queue")?.scrollIntoView({behavior:"smooth",block:"start"});
-  return <section className="intro-banner">
-    <div className="intro-copy">
-      <span className="intro-eyebrow">EAFC LIVE</span>
-      <h1>Know what a card is really worth before you buy it.</h1>
-      <p>EAFC Live compares live prices against real completed sales to show which cards may be worth buying - and why. Free to browse. Create an account to save a watchlist and log trades.</p>
-      {cardsTracked?<p className="intro-proof">{count(cardsTracked)} cards tracked right now</p>:null}
-    </div>
-    <div className="intro-actions">
-      <button onClick={()=>navigate("/signup")}>Start free <ArrowRight size={16}/></button>
-      <button className="secondary" onClick={scrollToOpportunities}>See live opportunities</button>
-    </div>
-  </section>;
-}
-
-// Three-point trust section + 3-step "how it works" + free/premium split +
-// a small footer - only for signed-out visitors, placed after the real
-// live opportunities feed above (proof first, pitch second). Pricing
-// figures must match Billing.jsx exactly - duplicated here rather than
-// imported since Billing.jsx is a v1 page with unrelated checkout state.
-function PublicPitch(){
-  const navigate=useNavigate();
-  return <>
-    <section className="public-trust">
-      <div className="section-head compact"><div><span>WHY TRUST IT</span><h2>No guessing, no hype</h2></div></div>
-      <div className="public-trust-grid">
-        <div><strong>Real sales</strong><p>We use completed sales, not just what sellers are asking.</p></div>
-        <div><strong>No guessing</strong><p>If there isn't enough reliable data on a card, we say so instead of guessing.</p></div>
-        <div><strong>Simple answers</strong><p>BUY, WAIT or AVOID - with the reasoning underneath if you want it.</p></div>
-      </div>
-    </section>
-    <section className="public-how">
-      <div className="section-head compact"><div><span>HOW IT WORKS</span><h2>Three steps</h2></div></div>
-      <ol className="public-how-steps">
-        <li><b>1</b><div><strong>We track the market</strong><p>Prices, completed sales and movement, updated live.</p></div></li>
-        <li><b>2</b><div><strong>We compare the evidence</strong><p>EAFC Live checks whether a card looks cheap, fair or overpriced.</p></div></li>
-        <li><b>3</b><div><strong>You get the simple answer</strong><p>BUY, WAIT or AVOID - plus a target price and expected profit.</p></div></li>
-      </ol>
-    </section>
-    <section className="public-pricing">
-      <div className="section-head compact"><div><span>FREE VS PREMIUM</span><h2>Start free, upgrade if it's worth it</h2></div></div>
-      <div className="public-pricing-grid">
-        <div className="pricing-card">
-          <h3>Free</h3>
-          <ul>
-            <li>Player search &amp; current prices</li>
-            <li>Fair value on individual cards</li>
-            <li>Opportunity preview</li>
-            <li>Watchlist</li>
-            <li>Basic trade tracking</li>
-          </ul>
-          <button onClick={()=>navigate("/signup")}>Start free</button>
-        </div>
-        <div className="pricing-card featured">
-          <h3>Premium <span>£3/mo or £25/season</span></h3>
-          <ul>
-            <li>Full opportunities feed</li>
-            <li>Full Trade Finder</li>
-            <li>Unlimited watchlist &amp; price alerts</li>
-            <li>Full trade history &amp; performance</li>
-            <li>Premium Discord role</li>
-          </ul>
-          <button onClick={()=>navigate("/signup")}>Try Premium - 7 days free</button>
-        </div>
-      </div>
-    </section>
-    <footer className="public-footer">
-      <span>© {new Date().getFullYear()} EAFC Live</span>
-      <nav>
-        <Link to="/billing">Pricing</Link>
-        <a href="https://discord.gg/3sSpu3rDgn" target="_blank" rel="noreferrer">Discord</a>
-      </nav>
-    </footer>
-  </>;
-}
-
 export default function HomeDashboard(){
-  const {isAuthenticated}=useAuth();
+  const {isAuthenticated,isLoading:authLoading}=useAuth();
+  // Home is the trading app, not the marketing site - a signed-out
+  // visitor lands here only via a stale bookmark/redirect (the real
+  // public entry point is eafc.live, a separate lightweight page - see
+  // PublicSite.jsx). Bounce them there with a real cross-origin
+  // navigation rather than showing a stripped-down app shell with
+  // marketing bolted on. Deep links (a shared /v2/players/:id) are a
+  // different route entirely and are never touched by this - only
+  // Home itself redirects.
+  useEffect(()=>{
+    if(!authLoading&&!isAuthenticated&&!isPublicHost()){
+      window.location.href=`https://${PUBLIC_HOSTNAME}/`;
+    }
+  },[authLoading,isAuthenticated]);
   const dashboardQuery=useDashboard();
   const dashboard=dashboardQuery.data??EMPTY;
   const navigate=useNavigate();
@@ -231,10 +161,15 @@ export default function HomeDashboard(){
 
   async function watchItem(item){const id=String(item?.cardId||"");if(!item||watchStates[id]==="saving"||watchStates[id]==="saved")return;setWatchStates(current=>({...current,[id]:"saving"}));try{await addWatch({player_name:nameOf(item.player),card_id:id,version:item.player?.version??null,platform:"ps",source:item.source==="futgg"?"futgg":"futbin"});setWatchStates(current=>({...current,[id]:"saved"}))}catch(error){if(error?.response?.status===401)navigate(`/signup?from=${encodeURIComponent(pathname)}`);else if(error?.response?.status===409)setWatchStates(current=>({...current,[id]:"saved"}));else setWatchStates(current=>({...current,[id]:"error"}))}}
 
+  if(!authLoading&&!isAuthenticated&&!isPublicHost()){
+    // Redirect is already in flight (the effect above) - render nothing
+    // rather than flashing the full app shell first.
+    return null;
+  }
+
   return <div className="fut-dashboard-shell">
     <main className="fut-main home-in-shell">
       <header className="fut-topbar"><button className="fut-search" onClick={()=>navigate("/v2/players")}><Search size={19}/><span>Search player, card or price</span><kbd>/</kbd></button><div className="feed-live"><i/> LIVE</div><button className="bell-btn" onClick={()=>navigate("/v2/watchlist")} aria-label={dashboard.watchlistAlerts?.length?`${dashboard.watchlistAlerts.length} recent price alerts`:"Watchlist"}><Bell size={18}/>{dashboard.watchlistAlerts?.length?<span className="bell-badge">{dashboard.watchlistAlerts.length}</span>:null}</button></header>
-      {!isAuthenticated?<IntroBanner cardsTracked={freshnessQuery.data?.cards_priced}/>:null}
       <Ticker items={futggItems} events={dashboard.latestMarketEvents}/>
       <section className="decision-stage">
         <div className="lead-trade"><div className="lead-label"><Zap size={15}/> TOP CARD</div>{lead?<div className="lead-layout"><button className="lead-card player-open-button" onClick={()=>setSelected(lead)} aria-label={`Open ${nameOf(lead.player)} analysis`}><CardImage player={lead.player} featured/></button><div className="lead-copy"><div className="lead-head"><div><PlayerMeta player={lead.player} source={lead.source}/><h1>{nameOf(lead.player)}</h1></div><div className="lead-status"><b className={`call ${String(lead.recommendation).toLowerCase()}`}>{lead.recommendation}</b><ConfidenceRing value={lead.confidence}/></div></div>{lead.source==="futgg"?<MarketFreshness priceAgeSeconds={lead.priceAgeSeconds} capturedAt={lead.updatedAt}/>:null}<p>{reason(lead)}</p><div className="lead-numbers"><Metric label="Buy below" value={<CoinValue value={lead.entryPrice??lead.currentBin}/>} sub="Maximum entry" tone="entry"/><Metric label="Expected profit" value={<CoinValue value={expectedProfit(lead)} signed/>} sub="After EA tax" tone="positive"/><Metric label="Risk level" value={lead.risk||"Unknown"} sub={`${sellingSpeedLabel(lead.liquidityScore)} selling speed`}/></div><div className="lead-actions"><button onClick={()=>setSelected(lead)}>View move <ArrowRight size={17}/></button><button className="secondary" onClick={()=>watchItem(lead)} aria-label="Add top card to watchlist"><Star size={16} fill={watchStates[String(lead.cardId)]==="saved"?"currentColor":"none"}/>{watchStates[String(lead.cardId)]==="saved"?"Watching":"Watch"}</button></div></div></div>:<EmptyState compact text="No clean trade has passed the filters yet."/>}</div>
@@ -245,7 +180,6 @@ export default function HomeDashboard(){
       <section className="lower-grid"><div className="market-map"><div className="section-head compact"><div><span>MARKET MAP</span><h2>Where coins are moving</h2></div></div><div className="map-bars">{futggItems.length?futggItems.slice(0,7).map(item=><button key={item.cardId} onClick={()=>setSelected(item)}><span>{nameOf(item.player)}</span><i><b style={{width:`${Math.min(100,Math.max(8,Math.abs(Number(item.expectedRoi||0))*4))}%`}}/></i><strong>{roi(item)}</strong></button>):<EmptyState compact text="Still building live market data - check back as more cards get priced."/>}</div></div><div className="activity-feed"><div className="section-head compact"><div><span>YOUR FEED</span><h2>Alerts & content</h2></div><Link to="/v2/watchlist">Open</Link></div>{[...(dashboard.watchlistAlerts||[]).slice(0,3),...(dashboard.latestSbcImpact||[]).slice(0,3)].slice(0,5).map((x,index)=><div className="feed-row" key={x.id||x.eventId||index}><i/><div><strong>{x.title||x.message||"Market update"}</strong><span>{x.message||x.estimatedMarketImpact?`${percent(x.estimatedMarketImpact)} estimated impact`:"New market activity"}</span></div></div>)}{!dashboard.watchlistAlerts?.length&&!dashboard.latestSbcImpact?.length?<EmptyState compact text={dashboard.watchedCount>0?"No price alerts yet. We'll let you know when a watched card hits one of your alert conditions.":"Nothing on your watchlist yet. Add a card and we'll track its price for you."}/>:null}</div></section>
       <section className="strategy-section"><div className="section-head"><div><span>STRATEGY FINDER</span><h2>Find a different angle</h2></div></div><div className="strategy-tabs">{STRATEGIES.map(([key,label])=><button key={key} className={strategy===key?"active":""} onClick={()=>setStrategy(key)}>{label}</button>)}</div><p className="strategy-blurb">{STRATEGY_BLURBS[strategy]}</p><div className="strategy-grid">{strategyQuery.isLoading?<EmptyState compact text="Scanning this strategy…"/>:strategyItems.length?strategyItems.map(item=><StrategyCard key={item.cardId} item={item} onOpen={setSelected} onWatch={watchItem} watchState={watchStates[String(item.cardId)]}/>):<EmptyState compact text="No cards qualify for this strategy right now."/>}</div></section>
       <p className="fut-disclaimer">Recent sales and live listings are used to estimate opportunities. Profit is never guaranteed and EA charges 5% on sales.</p>
-      {!isAuthenticated?<PublicPitch/>:null}
     </main>
     {selected&&<AnalysisModal item={selected} onClose={()=>setSelected(null)} navigate={navigate} onWatch={watchItem} watchState={watchStates[String(selected.cardId)]}/>}
   </div>;

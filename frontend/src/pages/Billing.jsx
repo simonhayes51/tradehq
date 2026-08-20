@@ -1,6 +1,6 @@
 // src/pages/Billing.jsx - Complete with 7-day trial and correct season pricing
 import React, { useState, useEffect } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useSearchParams, Link } from "react-router-dom";
 import {
   Crown, Star, Check, Zap, ArrowRight, CreditCard, Shield, Clock,
   AlertTriangle, MessageCircle, ExternalLink, Users, Gift
@@ -712,7 +712,9 @@ export default function Billing() {
           </div>
           
           <p className="text-xs text-gray-500 mt-4">
-            By subscribing, you agree to our Terms of Service and Privacy Policy
+            By subscribing, you agree to our{" "}
+            <Link to="/terms" className="underline hover:text-gray-300">Terms of Service</Link> and{" "}
+            <Link to="/privacy" className="underline hover:text-gray-300">Privacy Policy</Link>
           </p>
         </div>
       </div>

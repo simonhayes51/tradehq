@@ -13,12 +13,16 @@ import Layout from "./components/Layout";
 import Loading from "./components/Loading";
 import PrivateRoute from "./components/PrivateRoute";
 import PremiumRoute from "./components/PremiumRoute";
+import PublicSite from "./PublicSite";
+import { isPublicHost } from "./lib/domains";
 
 // Eager pages
 import SquadBuilder from "./pages/SquadBuilder";
 
 // Lazy pages
 const Signup         = lazy(() => import("./pages/Signup"));
+const Privacy        = lazy(() => import("./pages/Privacy"));
+const Terms          = lazy(() => import("./pages/Terms"));
 const AddTrade      = lazy(() => import("./pages/AddTrade"));
 const Trades        = lazy(() => import("./pages/Trades"));
 const Profile       = lazy(() => import("./pages/Profile"));
@@ -65,6 +69,15 @@ const MarketSentiment = lazy(() => import("./pages/MarketSentiment"));
 const MarketMaker = lazy(() => import("./pages/MarketMaker"));
 
 function App() {
+  // eafc.live (the public marketing site) and app.eafc.live (the trading
+  // app) are the SAME build/deploy - see lib/domains.js - branching here,
+  // before AuthProvider/Router even mount, keeps PublicSite fully
+  // independent of the app's auth/routing machinery rather than trying
+  // to thread a "public mode" flag through it.
+  if (isPublicHost()) {
+    return <PublicSite />;
+  }
+
   return (
     <ErrorBoundary>
       <AuthProvider>
@@ -81,6 +94,11 @@ function App() {
                   {/* Public routes */}
                   <Route path="/login" element={<Login />} />
                   <Route path="/signup" element={<Signup />} />
+                  {/* Also reachable directly on app.eafc.live (not just
+                      eafc.live/PublicSite) so Billing's links don't need
+                      a cross-domain hop for something this simple. */}
+                  <Route path="/privacy" element={<Privacy />} />
+                  <Route path="/terms" element={<Terms />} />
                   <Route path="/access-denied" element={<AccessDenied />} />
                   {/* Investor/buyer-facing read-only data pipeline demo -
                       public on purpose, must not sit behind PrivateRoute */}
