@@ -83,7 +83,7 @@ export default function Watchlist() {
           <div className="v2-watch-head-actions">
             <button type="button" className="v2-alerts-toggle" onClick={() => setAlertsOpen((v) => !v)}>
               <Bell size={16} />
-              Alerts
+              Alert rules
               {alerts.length > 0 && <span className="v2-alerts-count">{alerts.length}</span>}
             </button>
             <Link className="v2-primary-link" to="/v2/players">Add a player</Link>
@@ -93,19 +93,20 @@ export default function Watchlist() {
 
       {alertsOpen && (
         <section className="v2-alerts-panel">
-          <h2>Your Alerts</h2>
+          <h2>Your alert rules</h2>
+          <p className="muted v2-alerts-panel-sub">What we'll watch for. Fired notifications show up on Home.</p>
           {alerts.length === 0 ? (
-            <p className="muted">No alerts yet. Click the bell on a watched card to set a price or liquidity threshold.</p>
+            <p className="muted">No alert rules yet. Click "Alert" on a watched card to get notified on a price move.</p>
           ) : (
             <ul>
               {alerts.map((a) => (
                 <li key={a.id}>
                   <div>
-                    <strong>Card {a.card_id}</strong>
-                    <span className="muted"> ({String(a.platform || "ps").toUpperCase()} • {a.metric === "liquidity" ? "liquidity" : "price"})</span>
+                    <strong>{a.player_name || `Card ${a.card_id}`}</strong>
+                    <span className="muted"> ({String(a.platform || "ps").toUpperCase()})</span>
                     <div className="v2-alert-detail">
-                      Rise ≥{Number(a.rise_pct).toFixed(1)}% or fall ≥{Number(a.fall_pct).toFixed(1)}% from ref • cooloff {a.cooloff_minutes}m
-                      {a.last_alert_at && ` • last fired ${new Date(a.last_alert_at).toLocaleString()}`}
+                      Notify on a {a.metric === "liquidity" ? "sales activity" : "price"} move of {Number(a.rise_pct).toFixed(0)}% up or {Number(a.fall_pct).toFixed(0)}% down
+                      {a.last_alert_at && ` • last notified ${new Date(a.last_alert_at).toLocaleString()}`}
                     </div>
                   </div>
                   <button type="button" className="danger" disabled={busyAlert} onClick={() => handleDeleteAlert(a.id)}>
@@ -151,34 +152,35 @@ export default function Watchlist() {
               <button type="button" className="v2-modal-close" onClick={() => setAlertTarget(null)} aria-label="Close">✕</button>
             </div>
             <form onSubmit={handleCreateAlert}>
-              <label>
-                Metric
-                <select value={alertForm.metric} onChange={(e) => setAlertForm((f) => ({ ...f, metric: e.target.value }))}>
-                  <option value="price">Price</option>
-                  <option value="liquidity">Liquidity (sales/hour)</option>
-                </select>
-                <small className="muted">
-                  {alertForm.metric === "liquidity"
-                    ? "Baseline is the current sales/hour for this card, snapshotted now."
-                    : "Baseline is the card's last known price."}
-                </small>
-              </label>
+              <p className="muted v2-alert-modal-intro">
+                Notify me when this card{alertTarget.current_price != null ? <> (reference: <strong>{Number(alertTarget.current_price).toLocaleString()}</strong> coins)</> : null}:
+              </p>
               <div className="v2-modal-grid">
                 <label>
-                  Alert if rises ≥ %
+                  Rises by (%)
                   <input type="number" min="0" step="0.5" value={alertForm.rise_pct} onChange={(e) => setAlertForm((f) => ({ ...f, rise_pct: e.target.value }))} />
                 </label>
                 <label>
-                  Alert if falls ≥ %
+                  Drops by (%)
                   <input type="number" min="0" step="0.5" value={alertForm.fall_pct} onChange={(e) => setAlertForm((f) => ({ ...f, fall_pct: e.target.value }))} />
                 </label>
               </div>
-              <label>
-                Cooloff (minutes between alerts)
-                <input type="number" min="1" value={alertForm.cooloff_minutes} onChange={(e) => setAlertForm((f) => ({ ...f, cooloff_minutes: e.target.value }))} />
-              </label>
+              <details className="v2-alert-advanced">
+                <summary>Advanced settings</summary>
+                <label>
+                  What to track
+                  <select value={alertForm.metric} onChange={(e) => setAlertForm((f) => ({ ...f, metric: e.target.value }))}>
+                    <option value="price">Price</option>
+                    <option value="liquidity">Sales activity (sales/hour)</option>
+                  </select>
+                </label>
+                <label>
+                  Minimum time between notifications (minutes)
+                  <input type="number" min="1" value={alertForm.cooloff_minutes} onChange={(e) => setAlertForm((f) => ({ ...f, cooloff_minutes: e.target.value }))} />
+                </label>
+              </details>
               <button type="submit" className="v2-modal-submit" disabled={busyAlert}>
-                {busyAlert ? "Saving…" : "Create Alert"}
+                {busyAlert ? "Saving…" : "Save alert"}
               </button>
             </form>
           </div>

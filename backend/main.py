@@ -985,13 +985,27 @@ def require_extension_jwt(request: Request):
         raise HTTPException(status_code=403, detail="Insufficient scope")
     return SimpleNamespace(discord_id=payload.get("sub"))
 
-# fetch_price() was called from three places (_poll_pair_once,
-# test_alert_endpoint, deal_confidence) but never actually defined anywhere
-# in the codebase - the alert poll loop crashed with NameError every time
-# it ran, so watchlist price alerts have never fired. Reads the daily-synced
-# fut_players.price_num rather than a live FUTBIN fetch, since this runs
-# across every distinct watched card/platform on a poll loop.
-async def fetch_price(card_id: int, platform: str = "ps") -> Dict[str, Any]:
+# source-aware: card_id is only meaningful within its own catalogue -
+# FUT.GG's source_card_id and the legacy FUTBIN card_id are two unrelated
+# id spaces (see migration 039's comment). A watchlist_alerts row created
+# for a FUT.GG card but priced here against fut_players (a FUTBIN-only,
+# daily-synced table) either read a stale value or, more often, matched no
+# row at all - fetch_price() silently returned {"price": None}, which
+# _poll_pair_once() treats as "skip this pass", so a FUT.GG-sourced rule
+# could never fire regardless of how far the real price moved. See
+# migration 054 for the `source` column this now switches on.
+async def fetch_price(card_id: int, platform: str = "ps", source: str = "futbin") -> Dict[str, Any]:
+    if source == "futgg":
+        try:
+            core = await get_core_pool()
+            async with core.acquire() as c:
+                val = await c.fetchval(
+                    "SELECT current_bin FROM futgg_market_snapshot WHERE source_card_id = $1",
+                    card_id,
+                )
+            return {"price": int(val) if val else None, "isExtinct": val is None}
+        except Exception:
+            return {"price": None, "isExtinct": True}
     try:
         async with player_pool.acquire() as p:
             val = await p.fetchval(
@@ -1002,23 +1016,32 @@ async def fetch_price(card_id: int, platform: str = "ps") -> Dict[str, Any]:
         return {"price": None, "isExtinct": True}
 
 
-# Real liquidity (sales/hour, trailing 24h) for a card, from sales_history -
-# the second alert metric alongside price, computed the same way as
-# /api/players/{id}/market-metrics.
-async def fetch_liquidity(card_id: int) -> Dict[str, Any]:
-    try:
-        async with player_pool.acquire() as p:
-            n = await p.fetchval(
-                """
-                SELECT COUNT(*) FROM sales_history
-                WHERE player_id = $1 AND sold_at >= NOW() - INTERVAL '24 hours'
-                """,
-                card_id,
-            )
-        n = n or 0
-        return {"price": round(n / 24.0, 2), "isExtinct": n == 0}
-    except Exception:
-        return {"price": None, "isExtinct": True}
+# Real liquidity (sales/hour), the second alert metric alongside price.
+# `sales_history` (the legacy table this used to read) has no writer
+# anywhere in the current codebase - see event_impact.py's own dead-table
+# finding - so the legacy branch below always returned 0 real sales, not
+# "no liquidity", regardless of the card. FUT.GG-sourced cards route to
+# futgg_market_snapshot's own sales_count/window instead, the same fields
+# futgg_intelligence._compute_liquidity_score uses.
+async def fetch_liquidity(card_id: int, source: str = "futbin") -> Dict[str, Any]:
+    if source == "futgg":
+        try:
+            core = await get_core_pool()
+            async with core.acquire() as c:
+                row = await c.fetchrow(
+                    "SELECT sales_count, sales_window_span_minutes FROM futgg_market_snapshot WHERE source_card_id = $1",
+                    card_id,
+                )
+            if not row or not row["sales_count"]:
+                return {"price": 0, "isExtinct": True}
+            span_minutes = float(row["sales_window_span_minutes"] or 60.0) or 60.0
+            per_hour = row["sales_count"] / (span_minutes / 60.0)
+            return {"price": round(per_hour, 2), "isExtinct": False}
+        except Exception:
+            return {"price": None, "isExtinct": True}
+    # No live legacy sales pipeline exists - honestly unavailable rather
+    # than a fabricated 0.
+    return {"price": None, "isExtinct": True}
 
 
 ext_router = APIRouter()
@@ -1918,7 +1941,17 @@ async def _ref_price_for_alert(row: asyncpg.Record) -> Optional[float]:
     mode = row["ref_mode"]
     if mode == "fixed" and row["ref_price"]:
         return float(row["ref_price"])
-    if mode == "started_price":
+    source = row["source"] if "source" in row.keys() else "futbin"
+    # "last_close" (the default) falls through to get_price_history(),
+    # which only resolves a legacy FUTBIN card_id (see its own module
+    # comment) - for a FUT.GG-sourced card that lookup always misses,
+    # returning None, which _eval_alerts_for_pair treats as "skip this
+    # rule". started_price (captured when the card was watched, and what
+    # the Watchlist UI already shows as "When added") is the only
+    # reliable FUT.GG-sourced reference available without a larger
+    # price-history build-out, so FUT.GG rules use it regardless of
+    # ref_mode rather than silently never firing.
+    if mode == "started_price" or source == "futgg":
         async with watchlist_pool.acquire() as w:
             r = await w.fetchrow(
                 "SELECT started_price FROM watchlist WHERE user_id=$1 AND card_id=$2 AND platform=$3",
@@ -1937,7 +1970,22 @@ async def _ref_price_for_alert(row: asyncpg.Record) -> Optional[float]:
         return None
     return None
 
-async def _resolve_player_name(card_id: int) -> str:
+async def _resolve_player_name(card_id: int, source: str = "futbin") -> str:
+    if source == "futgg":
+        try:
+            core = await get_core_pool()
+            async with core.acquire() as c:
+                r = await c.fetchrow(
+                    "SELECT name, rating, rarity FROM futgg_market_snapshot WHERE source_card_id = $1",
+                    card_id,
+                )
+            if r and r["name"]:
+                if r["rating"] and r["rarity"]:
+                    return f"{r['name']} ({r['rating']} {str(r['rarity']).replace('_', ' ').title()})"
+                return r["name"]
+            return f"Card {card_id}"
+        except Exception:
+            return f"Card {card_id}"
     try:
         async with player_pool.acquire() as p:
             r = await p.fetchrow(
@@ -1960,7 +2008,7 @@ async def _eval_alerts_for_pair(card_id: int, platform: str, price_now: float, m
     if not rows:
         return 0
 
-    name = await _resolve_player_name(card_id)
+    name = await _resolve_player_name(card_id, rows[0]["source"] if "source" in rows[0].keys() else "futbin")
     for row in rows:
         try:
             if row["quiet_start"] or row["quiet_end"]:
@@ -2027,10 +2075,10 @@ async def _alerts_poll_loop():
         try:
             async with watchlist_pool.acquire() as w:
                 pairs = await w.fetch(
-                    "SELECT DISTINCT card_id, platform, metric FROM watchlist_alerts"
+                    "SELECT DISTINCT card_id, platform, metric, source FROM watchlist_alerts"
                 )
             tasks = [
-                _poll_pair_once(int(rec["card_id"]), rec["platform"], rec["metric"])
+                _poll_pair_once(int(rec["card_id"]), rec["platform"], rec["metric"], rec["source"])
                 for rec in pairs
             ]
             if tasks:
@@ -2039,9 +2087,9 @@ async def _alerts_poll_loop():
             logging.warning("poll loop error: %s", e)
         await asyncio.sleep(WATCHLIST_POLL_INTERVAL)
 
-async def _poll_pair_once(card_id: int, platform: str, metric: str = "price"):
+async def _poll_pair_once(card_id: int, platform: str, metric: str = "price", source: str = "futbin"):
     try:
-        live = await (fetch_liquidity(card_id) if metric == "liquidity" else fetch_price(card_id, platform))
+        live = await (fetch_liquidity(card_id, source) if metric == "liquidity" else fetch_price(card_id, platform, source))
         value = live.get("price")
         if not isinstance(value, (int, float)):
             return
@@ -2058,7 +2106,16 @@ async def list_watchlist_alerts(user_id: str = Depends(get_current_user)):
             "SELECT * FROM watchlist_alerts WHERE user_id=$1 ORDER BY created_at DESC",
             user_id,
         )
-    return {"items": [dict(r) for r in rows]}
+    # A raw card_id is developer UI, not something a normal user should
+    # ever see (see section 15 of the alerts investigation) - resolve the
+    # real player name here so every consumer of this endpoint gets it for
+    # free, rather than each frontend screen re-deriving it.
+    items = []
+    for r in rows:
+        d = dict(r)
+        d["player_name"] = await _resolve_player_name(d["card_id"], d.get("source") or "futbin")
+        items.append(d)
+    return {"items": items}
 
 @app.post("/api/watchlist-alerts")
 async def create_watchlist_alert(
@@ -2085,31 +2142,61 @@ async def create_watchlist_alert(
     ref_mode = payload.ref_mode or "last_close"
     ref_price = payload.ref_price
 
+    # Which catalogue this card_id belongs to - looked up from the matching
+    # watchlist row rather than trusted from the caller, since the whole
+    # point is that a FUT.GG-sourced rule must be evaluated against FUT.GG
+    # data (see migration 054). Defaults to 'futbin' only when no matching
+    # watchlist row exists yet, matching that column's own default.
+    async with watchlist_pool.acquire() as w:
+        watch_row = await w.fetchrow(
+            "SELECT source FROM watchlist WHERE user_id=$1 AND card_id=$2 AND platform=$3",
+            user_id, int(payload.card_id), plat,
+        )
+    source = watch_row["source"] if watch_row else "futbin"
+
     if metric == "liquidity":
         # No price-history concept applies to liquidity - always a fixed
         # snapshot, auto-taken now if the caller didn't supply one.
         ref_mode = "fixed"
         if ref_price is None:
-            live = await fetch_liquidity(int(payload.card_id))
+            live = await fetch_liquidity(int(payload.card_id), source)
             ref_price = live.get("price")
         if ref_price is None:
             raise HTTPException(400, "No sales data yet to set a liquidity baseline for this card")
 
+    # Upsert on (user_id, card_id, platform, metric) - see migration 055.
+    # A resubmission (double-click, or the user genuinely editing their
+    # threshold) now replaces the existing rule instead of creating a
+    # second identical row, and last_alert_at resets so an edited rule
+    # isn't held back by a cooldown timer from its previous configuration.
     async with watchlist_pool.acquire() as w:
         await w.execute(
             """
             INSERT INTO watchlist_alerts (
-                user_id, user_discord_id, card_id, platform, metric, ref_mode, ref_price,
+                user_id, user_discord_id, card_id, platform, metric, source, ref_mode, ref_price,
                 rise_pct, fall_pct, cooloff_minutes, quiet_start, quiet_end,
                 prefer_dm, fallback_channel_id
             )
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+            ON CONFLICT (user_id, card_id, platform, metric) DO UPDATE SET
+                source = EXCLUDED.source,
+                ref_mode = EXCLUDED.ref_mode,
+                ref_price = EXCLUDED.ref_price,
+                rise_pct = EXCLUDED.rise_pct,
+                fall_pct = EXCLUDED.fall_pct,
+                cooloff_minutes = EXCLUDED.cooloff_minutes,
+                quiet_start = EXCLUDED.quiet_start,
+                quiet_end = EXCLUDED.quiet_end,
+                prefer_dm = EXCLUDED.prefer_dm,
+                fallback_channel_id = EXCLUDED.fallback_channel_id,
+                last_alert_at = NULL
             """,
             user_id,
             user_id,  # DM by default to the same Discord ID (if used)
             int(payload.card_id),
             plat,
             metric,
+            source,
             ref_mode,
             ref_price,
             payload.rise_pct or 5,
@@ -2144,8 +2231,14 @@ async def test_alert_endpoint(
 ):
     plat = (platform or "ps").lower()
     metric = metric if metric in ("price", "liquidity") else "price"
+    async with watchlist_pool.acquire() as w:
+        watch_row = await w.fetchrow(
+            "SELECT source FROM watchlist WHERE user_id=$1 AND card_id=$2 AND platform=$3",
+            user_id, card_id, plat,
+        )
+    source = watch_row["source"] if watch_row else "futbin"
     if price is None:
-        live = await (fetch_liquidity(card_id) if metric == "liquidity" else fetch_price(card_id, plat))
+        live = await (fetch_liquidity(card_id, source) if metric == "liquidity" else fetch_price(card_id, plat, source))
         price = live.get("price")
     if not isinstance(price, (int, float)):
         raise HTTPException(400, "No data available")

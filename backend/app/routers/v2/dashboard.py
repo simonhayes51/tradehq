@@ -736,20 +736,59 @@ async def get_dashboard(request: Request) -> Dict[str, Any]:
     # a differently-named watchlist_items table that nothing ever writes
     # to (see that module's own header comment). ---
     watchlist_alerts: List[Dict[str, Any]] = []
+    # Distinguishes "you have nothing watched yet" from "you're watching
+    # something but nothing has triggered yet" - two different empty
+    # states the frontend can't tell apart from an empty alerts array
+    # alone (see section 19 of the alerts investigation: showing the same
+    # "No alerts yet" copy for both reads as a bug when alert rules
+    # visibly exist on the Watchlist page).
+    watched_count = 0
     uid = request.session.get("user_id")
     if uid:
         try:
             async for wdb in get_watchlist_db():
                 rows = await wdb.fetch(
-                    "SELECT direction, pct, price, sent_at FROM alerts_log WHERE user_id = $1 ORDER BY sent_at DESC LIMIT 5",
+                    """
+                    SELECT al.direction, al.pct, al.price, al.sent_at, al.card_id, al.ref_price,
+                           w.source
+                    FROM alerts_log al
+                    LEFT JOIN watchlist w ON w.user_id = al.user_id AND w.card_id = al.card_id
+                    WHERE al.user_id = $1
+                    ORDER BY al.sent_at DESC LIMIT 5
+                    """,
                     str(uid),
                 )
                 for r in rows:
+                    # Never a raw card_id in user-facing text - resolve the
+                    # real name the same way main.py's alert evaluator does,
+                    # source-aware (see migration 054's comment on why a
+                    # FUT.GG card_id must not be looked up in fut_players).
+                    name = f"Card {r['card_id']}"
+                    try:
+                        if r["source"] == "futgg":
+                            async with core_pool.acquire() as c:
+                                nr = await c.fetchrow(
+                                    "SELECT name FROM futgg_market_snapshot WHERE source_card_id = $1", r["card_id"]
+                                )
+                        else:
+                            async with player_pool.acquire() as c:
+                                nr = await c.fetchrow(
+                                    "SELECT name FROM fut_players WHERE card_id = $1::text", str(r["card_id"])
+                                )
+                        if nr and nr["name"]:
+                            name = nr["name"]
+                    except Exception:
+                        pass
+                    direction_word = "up" if r["direction"] == "rise" else "down"
                     watchlist_alerts.append({
                         "severity": "high" if abs(float(r["pct"])) >= 15 else "medium",
-                        "title": f"{'Price rising' if r['direction'] == 'rise' else 'Price falling'} {abs(float(r['pct'])):.1f}%",
-                        "message": f"Now {int(r['price']):,} coins",
+                        "title": f"{name} is {direction_word} {abs(float(r['pct'])):.0f}%",
+                        "message": f"{int(r['ref_price']):,} when you added it → {int(r['price']):,} now" if r["ref_price"] else f"Now {int(r['price']):,} coins",
+                        "cardId": r["card_id"],
                     })
+                watched_count = await wdb.fetchval(
+                    "SELECT COUNT(*) FROM watchlist WHERE user_id = $1", str(uid)
+                ) or 0
                 break
         except Exception:
             watchlist_alerts = []
@@ -826,6 +865,7 @@ async def get_dashboard(request: Request) -> Dict[str, Any]:
         "biggestMovers": mover_cards,
         "recentAiPredictions": recent_predictions,
         "watchlistAlerts": watchlist_alerts,
+        "watchedCount": watched_count,
         "nextPromo": next_promo,
         "latestMarketEvents": latest_market_events,
         "latestSbcImpact": latest_sbc_impact,

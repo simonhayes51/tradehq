@@ -382,6 +382,43 @@ class TestSegmentedCandidateScan:
         assert provider.search_calls[-1]["order_by"] == "sales_count DESC NULLS LAST"
 
 
+class TestStrategyFinderParams:
+    """Trade Finder params added for the Strategy Finder redesign -
+    require_executable (excludes 'watch' for strategies that mean 'do
+    this now') and meaningful_profit (a price-relative profit floor so a
+    trivial coin move on a cheap card can't rank as a headline pick)."""
+
+    def test_meaningful_profit_filters_trivial_absolute_gain(self):
+        # A cheap card with a large ROI% but a tiny absolute profit -
+        # exactly the "200 -> +85 = 42.5% ROI" shape the redesign exists
+        # to stop surfacing as a "Budget Picks"/"Quick Flips" headline.
+        tiny_row = _row(source_card_id=42, current_bin=200, sales_median=290,
+                         sales_trimmed_mean=290, latest_sale_price=290, sales_count=30)
+        app = FastAPI()
+        app.include_router(futgg_router, prefix="/api/v2")
+        provider = FakeProvider([tiny_row])
+        app.dependency_overrides[get_provider] = lambda: provider
+        client = TestClient(app)
+        resp = client.get("/api/v2/trade-finder?sort_by=budget&meaningful_profit=true")
+        assert resp.status_code == 200
+        assert resp.json()["items"] == []
+
+    def test_require_executable_excludes_watch(self):
+        # current_bin far above the sales median -> not executable right
+        # now (signal="watch"), the exact case Opportunities already
+        # excludes and Quick Flips/Big Profit should too, per the redesign.
+        watch_row = _row(source_card_id=43, current_bin=90000, sales_median=52000,
+                          sales_trimmed_mean=52000, latest_sale_price=52000, sales_count=30)
+        app = FastAPI()
+        app.include_router(futgg_router, prefix="/api/v2")
+        provider = FakeProvider([watch_row])
+        app.dependency_overrides[get_provider] = lambda: provider
+        client = TestClient(app)
+        resp = client.get("/api/v2/trade-finder?require_executable=true")
+        assert resp.status_code == 200
+        assert resp.json()["items"] == []
+
+
 class TestTradeFinderNewestSortDoesNotCrash:
     """Regression test for a live 500: sort_by=newest sorted on
     `row.get("price_updated_at") or ""` - the moment the candidate set had
