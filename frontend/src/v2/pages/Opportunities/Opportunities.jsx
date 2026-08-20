@@ -12,6 +12,7 @@ import CoinValue from "../../components/CoinValue";
 import EmptyState from "../../components/EmptyState";
 import MarketFreshness from "../../components/MarketFreshness";
 import { useFutggOpportunities } from "../../hooks/useFutggMarket";
+import { buildWhyText, sellingSpeedLabel } from "../../lib/tradeNarrative";
 import { PageHead } from "../Players/Players";
 import "../TradeFinder/trade-finder.css";
 import "./opportunities.css";
@@ -106,9 +107,13 @@ export default function Opportunities() {
 function OpportunityCard({ item }) {
   const cardId = item.card_id ?? item.source_card_id;
   const confidence = item.confidence_score != null ? Math.round(Number(item.confidence_score) * 100) : null;
-  const liquidity = item.liquidity_score != null ? Math.round(Number(item.liquidity_score) * 100) : null;
+  const liquidityPct = item.liquidity_score != null ? Math.round(Number(item.liquidity_score) * 100) : null;
   const roi = item.expected_roi != null ? Number(item.expected_roi) * 100 : null;
-  const reasons = Array.isArray(item.signal_reasons) ? item.signal_reasons : [];
+  // The simple layer says "Good"/"Slow" selling speed, not a raw percentage
+  // - the exact number lives one click away on the player's own Advanced
+  // rationale panel, matching the same split there.
+  const sellingSpeed = sellingSpeedLabel(item.liquidity_score);
+  const why = buildWhyText(item);
 
   return (
     <Link className="finder-card opp-card" to={`/v2/players/${cardId}`} state={{ from: "opportunities" }}>
@@ -135,14 +140,10 @@ function OpportunityCard({ item }) {
       <div className="opp-targets">
         <div><span>Buy max</span><CoinValue value={item.recommended_buy_max} /></div>
         <div><span>Sell target</span><CoinValue value={item.recommended_sell_target} /></div>
-        <div><span>Liquidity</span><b>{liquidity == null ? "—" : `${liquidity}%`}</b></div>
+        <div><span>Selling speed</span><b title={liquidityPct == null ? undefined : `${liquidityPct}% liquidity`}>{sellingSpeed}</b></div>
       </div>
 
-      {reasons.length ? (
-        <ul className="opp-reasons">
-          {reasons.slice(0, 3).map((reason, index) => <li key={index}>{reason}</li>)}
-        </ul>
-      ) : null}
+      {why ? <p className="opp-why">{why}</p> : null}
 
       <div className="finder-card-foot">
         <span className={`risk-${String(item.risk_level || "unknown").toLowerCase()}`}>{item.risk_level || "unknown"} risk</span>

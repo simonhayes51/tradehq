@@ -29,6 +29,7 @@
    reliably wide enough for at font-weight:900 - the label overflowed the
    button's own border on real content instead of just the placeholder
    text this was originally eyeballed against. */
+.dash-modal-advanced{margin-top:14px;padding-top:14px;border-top:1px solid #2c2c2c}
 .dash-modal-actions{display:grid;grid-template-columns:1fr;gap:9px;margin-top:auto;padding-top:16px}.dash-modal-actions button{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:44px;padding:0 14px;border:1px solid #39ff8a;border-radius:3px;background:#39ff8a;color:#101010;font-weight:900;cursor:pointer;white-space:nowrap}.dash-modal-actions .secondary{border-color:#3e3e3e;background:#1c1c1c;color:#fff}@keyframes dashModalIn{from{opacity:0;transform:scale(.985)}to{opacity:1;transform:scale(1)}}
 /* Player Page (variant="page") layout - normal in-flow content instead
    of a fixed viewport-centred overlay, so it respects the sidebar and
