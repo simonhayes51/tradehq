@@ -10,7 +10,7 @@ export default function Account() {
   const { isPremium, isAdmin, features, limits } = useEntitlements();
   const navigate = useNavigate();
   const tier = isAdmin || features.includes("opportunity_feed") ? "ELITE" : isPremium ? "PRO" : "FREE";
-  const name = user?.global_name || user?.username || "FutHub member";
+  const name = user?.global_name || user?.username || "EAFC Live member";
 
   async function signOut() {
     await logout();
@@ -22,7 +22,7 @@ export default function Account() {
     <section className="v2-account-grid">
       <article className="v2-account-hero">
         <div className="v2-account-avatar">{user?.avatar_url ? <img src={user.avatar_url} alt=""/> : <User/>}</div>
-        <div><span>CURRENT PLAN</span><h2>{tier}</h2><p>{isPremium || isAdmin ? "Full access to FutHub’s calculated trading tools." : "Core tools with a smaller watchlist allowance."}</p></div>
+        <div><span>CURRENT PLAN</span><h2>{tier}</h2><p>{isPremium || isAdmin ? "Full access to EAFC Live’s calculated trading tools." : "Core tools with a smaller watchlist allowance."}</p></div>
       </article>
       <article className="v2-account-panel">
         <span>ACCOUNT DETAILS</span>

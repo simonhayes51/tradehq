@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { Activity, ArrowRight, Bell, ChevronRight, Search, Star, Target, X, Zap } from "lucide-react";
+import { useAuth } from "../../../context/AuthContext";
 import { useDashboard } from "../../hooks/useDashboard";
 import { useFutggMarketFreshness, useFutggOpportunities, useFutggTradeFinder } from "../../hooks/useFutggMarket";
 import { useGeneratedCardImages } from "../../hooks/useRecommendationFeeds";
@@ -34,7 +35,27 @@ const STRATEGY_PARAMS={
   confidence:{sort_by:"confidence"},
 };
 
+// Shown only to signed-out visitors, above the live data - the dashboard
+// below is real and live on purpose (proof beats a marketing page for this
+// audience), but a first-time visitor still needs one sentence on what
+// they're looking at and why before the numbers mean anything to them.
+function IntroBanner(){
+  const navigate=useNavigate();
+  return <section className="intro-banner">
+    <div className="intro-copy">
+      <span className="intro-eyebrow">EAFC LIVE</span>
+      <h1>Trading intelligence for EA FC Ultimate Team.</h1>
+      <p>Everything below is live: real completed sales, fair value on every card, and opportunities ranked by profit, liquidity and risk - not just the cheapest listing. Free to browse. Create an account to save a watchlist and log trades.</p>
+    </div>
+    <div className="intro-actions">
+      <button onClick={()=>navigate("/login")}>Create free account <ArrowRight size={16}/></button>
+      <button className="secondary" onClick={()=>navigate("/login")}>Log in</button>
+    </div>
+  </section>;
+}
+
 export default function HomeDashboard(){
+  const {isAuthenticated}=useAuth();
   const dashboardQuery=useDashboard();
   const dashboard=dashboardQuery.data??EMPTY;
   const navigate=useNavigate();
@@ -100,6 +121,7 @@ export default function HomeDashboard(){
   return <div className="fut-dashboard-shell">
     <main className="fut-main home-in-shell">
       <header className="fut-topbar"><button className="fut-search" onClick={()=>navigate("/v2/players")}><Search size={19}/><span>Search player, card or price</span><kbd>/</kbd></button><div className="feed-live"><i/> LIVE</div><button className="bell-btn" onClick={()=>navigate("/v2/watchlist")}><Bell size={18}/></button></header>
+      {!isAuthenticated?<IntroBanner/>:null}
       <Ticker items={futggItems} events={dashboard.latestMarketEvents}/>
       <section className="decision-stage">
         <div className="lead-trade"><div className="lead-label"><Zap size={15}/> TOP CARD</div>{lead?<div className="lead-layout"><button className="lead-card player-open-button" onClick={()=>setSelected(lead)} aria-label={`Open ${nameOf(lead.player)} analysis`}><CardImage player={lead.player} featured/></button><div className="lead-copy"><div className="lead-head"><div><PlayerMeta player={lead.player} source={lead.source}/><h1>{nameOf(lead.player)}</h1></div><div className="lead-status"><b className={`call ${String(lead.recommendation).toLowerCase()}`}>{lead.recommendation}</b><ConfidenceRing value={lead.confidence}/></div></div>{lead.source==="futgg"?<MarketFreshness priceAgeSeconds={lead.priceAgeSeconds} capturedAt={lead.updatedAt}/>:null}<p>{reason(lead)}</p><div className="lead-numbers"><Metric label="Buy below" value={<CoinValue value={lead.entryPrice??lead.currentBin}/>} sub="Maximum entry" tone="entry"/><Metric label="Expected profit" value={<CoinValue value={expectedProfit(lead)} signed/>} sub="After EA tax" tone="positive"/><Metric label="Risk level" value={lead.risk||"Unknown"} sub={hold(lead.holdingPeriod)}/></div><div className="lead-actions"><button onClick={()=>setSelected(lead)}>View move <ArrowRight size={17}/></button><button className="secondary" onClick={()=>watchItem(lead)} aria-label="Add top card to watchlist"><Star size={16} fill={watchStates[String(lead.cardId)]==="saved"?"currentColor":"none"}/>{watchStates[String(lead.cardId)]==="saved"?"Watching":"Watch"}</button></div></div></div>:<EmptyState compact text="No clean trade has passed the filters yet."/>}</div>

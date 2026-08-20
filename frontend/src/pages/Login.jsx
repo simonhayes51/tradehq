@@ -20,9 +20,9 @@ const Login = () => {
   return (
     <div className="min-h-screen bg-black text-white flex items-center justify-center">
       <div className="text-center">
-        <h1 className="text-4xl font-bold mb-8">FUT Trading Dashboard</h1>
+        <h1 className="text-4xl font-bold mb-8">EAFC Live</h1>
         <p className="text-gray-400 mb-8">
-          Track your FIFA Ultimate Team trades and profits
+          Sign in to track your EA FC Ultimate Team trades and profits
         </p>
         <button
           onClick={login}

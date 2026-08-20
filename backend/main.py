@@ -825,6 +825,9 @@ app.add_middleware(
 
 app.add_middleware(CatchExceptionsMiddleware)
 
+from app.middleware.rate_limit import RateLimitMiddleware
+app.add_middleware(RateLimitMiddleware)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
