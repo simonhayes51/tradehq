@@ -1,8 +1,7 @@
-import { Navigate, Routes, Route } from "react-router-dom";
+import { Navigate, Routes, Route, Link } from "react-router-dom";
 import "./styles/tokens.css";
 import "./styles/mobile-polish.css";
 import Nav from "./components/Nav";
-import HealthCheck from "./pages/HealthCheck";
 import HomeDashboard from "./pages/HomeDashboard/HomeDashboard";
 import PlayerPage from "./pages/PlayerPage/PlayerPage";
 import AdminSbcImports from "./pages/AdminSbcImports/AdminSbcImports";
@@ -25,7 +24,6 @@ export default function V2App() {
       <Route path="opportunities" element={<ShellLayout><Opportunities /></ShellLayout>} />
       <Route path="trade-finder" element={<ShellLayout><TradeFinder /></ShellLayout>} />
       <Route path="players" element={<ShellLayout><Players /></ShellLayout>} />
-      <Route path="health" element={<ShellLayout><HealthCheck /></ShellLayout>} />
       <Route path="players/:cardId" element={<ShellLayout><PlayerPage /></ShellLayout>} />
       <Route path="market" element={<Navigate to="/v2/trade-finder" replace />} />
       <Route path="chat" element={<ShellLayout><Chat /></ShellLayout>} />
@@ -35,7 +33,23 @@ export default function V2App() {
       <Route path="club" element={<ShellLayout><ClubRoute /></ShellLayout>} />
       <Route path="admin" element={<ShellLayout><Admin /></ShellLayout>} />
       <Route path="admin/sbc-imports" element={<ShellLayout><AdminSbcImports /></ShellLayout>} />
+      {/* No catch-all previously existed - an unmatched /v2/* path (a
+          stale bookmark, a typo, a removed route) rendered nothing at
+          all inside these <Routes>, i.e. a blank page with the sidebar
+          still up. */}
+      <Route path="*" element={<ShellLayout><NotFound /></ShellLayout>} />
     </Routes>
+  );
+}
+
+function NotFound() {
+  return (
+    <main className="v2-destination">
+      <div className="v2-page-state">
+        <p>We couldn't find that page.</p>
+        <Link to="/v2" className="v2-icon-action">Back to Home</Link>
+      </div>
+    </main>
   );
 }
 

@@ -1,9 +1,9 @@
 {
-  "name": "FUT Trading Dashboard",
-  "short_name": "FUT Dashboard", 
-  "description": "Track your FIFA Ultimate Team trades and profits",
-  "theme_color": "#8B5CF6",
-  "background_color": "#111827",
+  "name": "FUT Hub",
+  "short_name": "FUT Hub",
+  "description": "Trade smarter with real completed sale prices, fair value on every card, and a live opportunities feed.",
+  "theme_color": "#91db32",
+  "background_color": "#08090a",
   "display": "standalone",
   "orientation": "portrait",
   "scope": "/",
@@ -50,19 +50,5 @@
       "type": "image/png"
     }
   ],
-  "categories": ["finance", "productivity", "games"],
-  "screenshots": [
-    {
-      "src": "/screenshots/desktop-1.png",
-      "sizes": "1280x720",
-      "type": "image/png",
-      "form_factor": "wide"
-    },
-    {
-      "src": "/screenshots/mobile-1.png", 
-      "sizes": "390x844",
-      "type": "image/png",
-      "form_factor": "narrow"
-    }
-  ]
+  "categories": ["finance", "productivity", "games"]
 }

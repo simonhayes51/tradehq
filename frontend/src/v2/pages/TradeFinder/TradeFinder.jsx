@@ -60,7 +60,7 @@ export default function TradeFinder() {
   const notDeployed = query.isError && [404, undefined].includes(query.error?.response?.status);
 
   return <main className="v2-destination trade-finder-page">
-    <PageHead eyebrow="TRADE FINDER" title="Search every trade, your way" copy="Set your budget, minimum return, risk, position, rarity and sort order — every current FUT.GG-priced trade is in scope here, not just the pre-filtered buy signals. Just want today's top picks with no setup? Try Opportunities." />
+    <PageHead eyebrow="TRADE FINDER" title="Search every trade, your way" copy="Set your budget, minimum return, risk, position, rarity and sort order — every current live-priced trade is in scope here, not just the pre-filtered buy signals. Just want today's top picks with no setup? Try Opportunities." />
 
     <Link className="opp-crosslink" to="/v2/opportunities">
       <TrendingUp size={15} /> Just want the shortlist? Open Opportunities <ArrowRight size={14} />
@@ -132,14 +132,14 @@ export default function TradeFinder() {
     </section>
 
     <div className="finder-result-head">
-      <div><SlidersHorizontal size={16}/><strong>{query.isLoading ? "Scanning FUT.GG trades…" : `${items.length} matching ${items.length === 1 ? "trade" : "trades"}`}</strong></div>
+      <div><SlidersHorizontal size={16}/><strong>{query.isLoading ? "Scanning for trades…" : `${items.length} matching ${items.length === 1 ? "trade" : "trades"}`}</strong></div>
       {filtersActive ? <button onClick={() => setFilters(DEFAULTS)}><RotateCcw size={14}/> Reset filters</button> : null}
     </div>
 
     {query.isLoading ? (
-      <EmptyState icon={<SlidersHorizontal size={25}/>} text="Checking the latest FUT.GG trade opportunities…" />
+      <EmptyState icon={<SlidersHorizontal size={25}/>} text="Checking the latest trade opportunities…" />
     ) : notDeployed ? (
-      <EmptyState icon={<ShieldAlert size={25}/>} error text="The FUT.GG trade finder feed isn't live yet — this endpoint hasn't been deployed on the backend." action={<button onClick={() => query.refetch()}>Try again</button>} />
+      <EmptyState icon={<ShieldAlert size={25}/>} error text="Trade Finder isn't available right now. Please check back shortly." action={<button onClick={() => query.refetch()}>Try again</button>} />
     ) : query.isError ? (
       <EmptyState icon={<ShieldAlert size={25}/>} error text="Trade Finder could not load the opportunity feed." action={<button onClick={() => query.refetch()}>Try again</button>} />
     ) : items.length ? (

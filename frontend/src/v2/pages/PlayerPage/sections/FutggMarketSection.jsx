@@ -66,7 +66,7 @@ export function saleTitle(sale) {
   if (sale.approximate_sold_at) {
     parts.push(`Approximate: ${new Date(sale.approximate_sold_at).toLocaleString()}`);
   }
-  if (sale.age_text) parts.push(`FUT.GG said "${sale.age_text}" when this sale was scraped`);
+  if (sale.age_text) parts.push(`Recorded as "${sale.age_text}" at the time of capture`);
   return parts.length ? parts.join(" · ") : undefined;
 }
 
@@ -104,7 +104,7 @@ export default function FutggMarketSection({ cardId }) {
 
   if (playerQuery.isLoading) {
     return (
-      <SectionCard title="FUT.GG live market" subtitle="Loading FUT.GG price and sales data…">
+      <SectionCard title="Live market" subtitle="Loading price and sales data…">
         <p className="text-xs text-[var(--v2-muted)]">Loading…</p>
       </SectionCard>
     );
@@ -112,11 +112,11 @@ export default function FutggMarketSection({ cardId }) {
 
   if (notDeployedOrMissing) {
     return (
-      <SectionCard title="FUT.GG live market" subtitle="FUT.GG-backed pricing for this card">
+      <SectionCard title="Live market" subtitle="Live pricing for this card">
         <p className="text-xs text-[var(--v2-muted)]">
           {playerQuery.error?.response?.status === 404
-            ? "No FUT.GG market data is available for this card yet."
-            : "FUT.GG live market data could not be loaded right now."}
+            ? "No market data is available for this card yet."
+            : "Live market data could not be loaded right now."}
         </p>
       </SectionCard>
     );
@@ -141,7 +141,7 @@ export default function FutggMarketSection({ cardId }) {
 
   return (
     <div className="grid grid-cols-1 gap-4">
-      <SectionCard title="FUT.GG live market" subtitle="Source: FUT.GG · card and price data">
+      <SectionCard title="Live market" subtitle="Card and price data">
         <div className="mb-4"><MarketFreshness priceAgeSeconds={card.price_age_seconds} capturedAt={card.current_bin_captured_at} /></div>
 
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
@@ -186,11 +186,11 @@ export default function FutggMarketSection({ cardId }) {
         ) : null}
       </SectionCard>
 
-      <SectionCard title="BIN price history" subtitle="Live FUT.GG lowest-BIN snapshots">
+      <SectionCard title="BIN price history" subtitle="Live lowest-BIN snapshots">
         {pricesQuery.isLoading ? (
           <p className="text-xs text-[var(--v2-muted)]">Loading…</p>
         ) : chartData.length === 0 ? (
-          <p className="text-xs text-[var(--v2-muted)]">No FUT.GG price history for this card yet.</p>
+          <p className="text-xs text-[var(--v2-muted)]">No price history for this card yet.</p>
         ) : (
           <ResponsiveContainer width="100%" height={220}>
             <AreaChart data={chartData}>
@@ -209,7 +209,7 @@ export default function FutggMarketSection({ cardId }) {
         )}
       </SectionCard>
 
-      <SectionCard title="Recent sales" subtitle="Completed FUT.GG sales — sale times are approximate">
+      <SectionCard title="Recent sales" subtitle="Completed sales — sale times are approximate">
         {salesQuery.isLoading ? (
           <p className="text-xs text-[var(--v2-muted)]">Loading…</p>
         ) : sales.length === 0 ? (
@@ -247,7 +247,7 @@ export default function FutggMarketSection({ cardId }) {
       </SectionCard>
 
       <p className="text-[11px] text-[var(--v2-muted)]">
-        Data source: <a href="https://www.fut.gg" target="_blank" rel="noreferrer" className="underline">FUT.GG</a>. Sale timestamps shown above are approximate.
+        Sale timestamps shown above are approximate.
       </p>
     </div>
   );

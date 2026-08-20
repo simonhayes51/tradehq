@@ -63,7 +63,7 @@ export default function Players() {
             return (
               <Link className="v2-player-result" key={cardId} to={`/v2/players/${cardId}`} state={{ from: "players", player }}>
                 <img src={player.composited_image_url || player.image_url || "/img/card-placeholder.png"} alt="" />
-                <div className="v2-player-result-copy"><strong>{player.name}</strong><div className="v2-meta-pills"><span>{player.rating ?? "—"} OVR</span><span>{player.position || "—"}</span><span>{player.rarity || "Card"}</span><span>FUT.GG</span></div><MarketFreshness priceAgeSeconds={player.price_age_seconds} capturedAt={player.current_bin_captured_at} compact /></div>
+                <div className="v2-player-result-copy"><strong>{player.name}</strong><div className="v2-meta-pills"><span>{player.rating ?? "—"} OVR</span><span>{player.position || "—"}</span><span>{player.rarity || "Card"}</span></div><MarketFreshness priceAgeSeconds={player.price_age_seconds} capturedAt={player.current_bin_captured_at} compact /></div>
                 <div className="v2-result-price"><small>LIVE PRICE</small><CoinValue value={player.current_bin} /></div>
               </Link>
             );

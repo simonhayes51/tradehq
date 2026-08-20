@@ -58,7 +58,7 @@ export default function MarketFreshness({ priceAgeSeconds, capturedAt, staleThre
           ? known
             ? `Last market update ${ageText} — live pricing may be unavailable`
             : "Market update time unknown — live pricing may be unavailable"
-          : `Live market source: FUT.GG · Updated ${ageText}`}
+          : `Live market data · Updated ${ageText}`}
       </span>
     </div>
   );
