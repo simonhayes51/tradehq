@@ -122,10 +122,6 @@ export default function FutggMarketSection({ cardId }) {
     );
   }
 
-  const roi = card.expected_roi != null ? Number(card.expected_roi) * 100 : null;
-  const confidence = card.confidence_score != null ? Math.round(Number(card.confidence_score) * 100) : null;
-  const liquidity = card.liquidity_score != null ? Math.round(Number(card.liquidity_score) * 100) : null;
-
   const priceHistory = Array.isArray(pricesQuery.data) ? pricesQuery.data : pricesQuery.data?.items || [];
   const chartData = priceHistory.map((p) => ({
     time: p.captured_at ? new Date(p.captured_at).toLocaleString() : "",
@@ -142,20 +138,14 @@ export default function FutggMarketSection({ cardId }) {
   return (
     <div className="grid grid-cols-1 gap-4">
       <SectionCard title="Live market" subtitle="Card and price data">
+        {/* The numbers behind this card (fair value, confidence, liquidity,
+            sales median, recent movement...) live in the Advanced
+            rationale panel above (AnalysisModal, via AdvancedRationale) -
+            duplicating that same 8-stat grid here just repeated it a
+            second time on the same page. This section keeps only what's
+            unique to it: freshness, the risk/signal badges, watching,
+            and the chart/table evidence below. */}
         <div className="mb-4"><MarketFreshness priceAgeSeconds={card.price_age_seconds} capturedAt={card.current_bin_captured_at} /></div>
-
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
-          <Stat label="Current BIN" value={<CoinValue value={card.current_bin} />} />
-          <Stat label="Fair value" value={<CoinValue value={card.fair_value} />} />
-          <Stat label="Buy max" value={<CoinValue value={card.recommended_buy_max} />} />
-          <Stat label="Sell target" value={<CoinValue value={card.recommended_sell_target} />} />
-        </div>
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
-          <Stat label="Expected profit" value={<CoinValue value={card.expected_profit_after_tax} signed />} sub="After EA tax" />
-          <Stat label="Expected ROI" value={roi == null ? "—" : `${roi > 0 ? "+" : ""}${roi.toFixed(1)}%`} />
-          <Stat label="Confidence" value={confidence == null ? "—" : `${confidence}%`} />
-          <Stat label="Liquidity" value={liquidity == null ? "—" : `${liquidity}%`} />
-        </div>
 
         <div className="flex items-center gap-3 flex-wrap mb-4">
           <span className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-bold border ${riskBadgeClasses(card.risk_level)}`}>
@@ -176,14 +166,6 @@ export default function FutggMarketSection({ cardId }) {
             {watchState === "saved" ? "Watching" : watchState === "saving" ? "Saving…" : "Add to watchlist"}
           </button>
         </div>
-
-        {Array.isArray(card.signal_reasons) && card.signal_reasons.length > 0 ? (
-          <ul className="text-xs text-[var(--v2-muted)] grid gap-1 mb-1">
-            {card.signal_reasons.map((reason, index) => (
-              <li key={index} className="flex gap-2"><span className="text-[var(--v2-accent)]">•</span>{reason}</li>
-            ))}
-          </ul>
-        ) : null}
       </SectionCard>
 
       <SectionCard title="BIN price history" subtitle="Live lowest-BIN snapshots">
@@ -270,14 +252,4 @@ function signalBadgeClasses(signal) {
   if (s === "strong_buy" || s === "buy") return "border-[rgba(57,255,138,0.4)] bg-[rgba(57,255,138,0.1)] text-[var(--v2-accent)]";
   if (s === "sell" || s === "avoid") return "border-[rgba(255,92,92,0.4)] bg-[rgba(255,92,92,0.1)] text-[var(--v2-negative)]";
   return "border-[var(--v2-border)] bg-[var(--v2-elevated)] text-[var(--v2-muted)]";
-}
-
-function Stat({ label, value, sub }) {
-  return (
-    <div className="rounded-[var(--v2-radius)] border border-[var(--v2-border)] bg-[var(--v2-elevated)] p-3">
-      <div className="text-[9px] font-bold tracking-wider uppercase text-[var(--v2-muted)] mb-1.5">{label}</div>
-      <div className="text-sm font-bold text-[var(--v2-text)]">{value}</div>
-      {sub ? <div className="text-[10px] text-[var(--v2-muted)] mt-0.5">{sub}</div> : null}
-    </div>
-  );
 }

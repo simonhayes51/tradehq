@@ -104,6 +104,12 @@ function toFutggAnalysisItem(raw, cardId) {
     // which fed the "Wait for a better entry below X" verdict text and
     // the chart's BUY reference line directly, bypassing that fix.
     entryPrice: raw.recommended_buy_max ?? null,
+    // Kept for AdvancedRationale (Layer 2), which reads the raw FUT.GG
+    // field names directly rather than duplicating them onto this shape -
+    // see HomeDashboard.jsx's normaliseFutgg for the same pattern.
+    raw,
+    liquidityScore: raw.liquidity_score,
+    trendDescription: raw.trend_description,
     // AnalysisModal's "Buy Below" TILE reads item.buyBelow/
     // item.recommendedBuyMax/item.expectedProfitBasis (its own `ceiling`/
     // `basis` computation), a SEPARATE field path from entryPrice above

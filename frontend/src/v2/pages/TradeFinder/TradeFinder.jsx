@@ -13,6 +13,7 @@ import CoinValue from "../../components/CoinValue";
 import EmptyState from "../../components/EmptyState";
 import MarketFreshness from "../../components/MarketFreshness";
 import { useFutggTradeFinder } from "../../hooks/useFutggMarket";
+import { buildWhyText } from "../../lib/tradeNarrative";
 import { PageHead } from "../Players/Players";
 import "./trade-finder.css";
 
@@ -151,7 +152,7 @@ export default function TradeFinder() {
           return <Link className="finder-card" key={cardId} to={`/v2/players/${cardId}`} state={{ from: "trade-finder" }}>
             <div className="finder-card-top">
               <img src={item.composited_image_url || item.image_url || "/img/card-placeholder.png"} alt="" />
-              <div><h2>{item.name || "Unknown player"}</h2><div className="v2-meta-pills"><span>{item.rating ?? "—"} OVR</span><span>{item.position || "—"}</span><span>{item.rarity || "Card"}</span></div><p>{(item.signal_reasons || [])[0] || "Current price and completed sales support this move."}</p></div>
+              <div><h2>{item.name || "Unknown player"}</h2><div className="v2-meta-pills"><span>{item.rating ?? "—"} OVR</span><span>{item.position || "—"}</span><span>{item.rarity || "Card"}</span></div><p>{buildWhyText(item)}</p></div>
               <span className="finder-confidence">{confidence == null ? "—" : `${confidence}%`}<small>CONFIDENCE</small></span>
             </div>
             <div className="finder-signals">
