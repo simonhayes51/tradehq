@@ -3007,6 +3007,81 @@ async def delete_all_user_data(
         logging.error(f"Delete all data error: {e}")
         raise HTTPException(status_code=500, detail="Failed to delete data")
 
+
+@app.delete("/api/account")
+async def delete_account(
+    request: Request,
+    confirm: bool = Query(False),
+    user_id: str = Depends(get_current_user),
+    conn=Depends(get_db),
+):
+    """Full account deletion, not just the trading data /api/data/delete-all
+    already covers. Same confirm=true pattern as that endpoint - this one
+    is more destructive (it also unlinks the Discord profile and ends the
+    session), so it requires the same explicit step, not a lesser one.
+
+    subscriptions.user_id is the ONLY foreign key anywhere in this schema
+    that REFERENCES user_profiles(user_id) (migration 010) - a user who
+    has ever subscribed cannot have their user_profiles row hard-deleted
+    without either violating that constraint or deleting the billing
+    history that constraint protects, and billing/accounting records are
+    explicitly not something this endpoint is allowed to remove. So:
+    no subscription history ever -> the profile row itself is deleted.
+    Any subscription history (even cancelled/expired) -> the row stays
+    (so the Stripe-linked accounting trail stays valid) but every
+    identifying field on it is scrubbed - this is what "delete the
+    profile link where safe" means when it genuinely isn't fully safe.
+    """
+    if not confirm:
+        raise HTTPException(status_code=400, detail="Confirmation required. Add ?confirm=true")
+
+    try:
+        async with conn.transaction():
+            await conn.execute("DELETE FROM trades WHERE user_id=$1", user_id)
+            await conn.execute("DELETE FROM trading_goals WHERE user_id=$1", user_id)
+            await conn.execute("DELETE FROM portfolio WHERE user_id=$1", user_id)
+            await conn.execute("DELETE FROM usersettings WHERE user_id=$1", user_id)
+
+            has_billing_history = await conn.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM subscriptions WHERE user_id=$1)", user_id
+            )
+            if has_billing_history:
+                await conn.execute(
+                    """
+                    UPDATE user_profiles
+                    SET username='Deleted user', avatar_url=NULL, global_name=NULL, updated_at=NOW()
+                    WHERE user_id=$1
+                    """,
+                    user_id,
+                )
+                profile_deleted = False
+            else:
+                await conn.execute("DELETE FROM user_profiles WHERE user_id=$1", user_id)
+                profile_deleted = True
+
+        # Watchlist/alerts live on a separate database (WATCHLIST_DATABASE_URL,
+        # possibly a different physical DB - see lifespan) so they can't
+        # share the transaction above; best-effort, logged if it fails
+        # rather than leaving the user unable to delete their account at
+        # all because of an unrelated pool hiccup.
+        try:
+            async with watchlist_pool.acquire() as w:
+                await w.execute("DELETE FROM watchlist_alerts WHERE user_id=$1", user_id)
+                await w.execute("DELETE FROM watchlist WHERE user_id=$1", user_id)
+        except Exception:
+            logging.warning("account deletion: watchlist cleanup failed for %s", user_id, exc_info=True)
+
+        request.session.clear()
+
+        return {
+            "message": "Account deleted" if profile_deleted else "Account deleted; billing history retained as required for accounting",
+            "profile_deleted": profile_deleted,
+            "timestamp": datetime.now().isoformat(),
+        }
+    except Exception as e:
+        logging.error(f"Account deletion error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delete account")
+
 @app.get("/api/data/summary")
 async def get_data_summary(
     user_id: str = Depends(get_current_user),
