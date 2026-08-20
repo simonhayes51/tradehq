@@ -9,19 +9,22 @@
    into that fixed-left column (below it, it's a bottom bar, so no
    inset needed). */
 .dash-analysis-backdrop{position:fixed;inset:0;z-index:1000;display:grid;place-items:center;padding:18px;background:rgba(2,7,12,.8);backdrop-filter:blur(10px);animation:dashModalIn .16s ease-out}
-@media(min-width:801px){.dash-analysis-backdrop{padding-left:228px}}.dash-analysis-modal{position:relative;display:grid;grid-template-columns:250px minmax(0,1fr);align-items:start;gap:24px;width:min(1080px,calc(100vw - 28px));max-height:calc(100vh - 28px);overflow:hidden;padding:24px;border:1px solid #464646;border-radius:6px;background:linear-gradient(145deg,#171717,#141414 70%,#1c1c1c);box-shadow:0 32px 100px rgba(0,0,0,.65)}.dash-modal-close{position:absolute;top:14px;right:14px;z-index:2;display:grid;place-items:center;width:38px;height:38px;border:1px solid #3e3e3e;border-radius:50%;background:#1c1c1c;color:#fff;cursor:pointer}
-/* Card image column. In the popup modal (no `extra`) this is a short,
-   non-scrolling box, so sticky is a no-op - centered once, stays put.
-   On the standalone Player Page (`extra` = the full FutggMarketSection,
-   often several screens tall), .dash-analysis-modal.has-extra below
-   becomes the scroll container, and align-items:start on the grid above
-   stops this column being stretched to match that huge height. Without
-   both fixes together, this box used to stretch to the full scrollable
+@media(min-width:801px){.dash-analysis-backdrop{padding-left:228px}}.dash-analysis-modal{position:relative;display:grid;grid-template-columns:250px minmax(0,1fr);align-items:start;gap:24px;width:min(1080px,calc(100vw - 28px));max-height:calc(100vh - 28px);overflow-y:auto;overflow-x:hidden;padding:24px;border:1px solid #464646;border-radius:6px;background:linear-gradient(145deg,#171717,#141414 70%,#1c1c1c);box-shadow:0 32px 100px rgba(0,0,0,.65)}.dash-modal-close{position:absolute;top:14px;right:14px;z-index:2;display:grid;place-items:center;width:38px;height:38px;border:1px solid #3e3e3e;border-radius:50%;background:#1c1c1c;color:#fff;cursor:pointer}
+/* Card image column. `.dash-analysis-modal` itself is the scroll
+   container whenever its content (verdict + numbers + chart + summary,
+   now also AdvancedRationale) exceeds the viewport - true for the
+   standalone Player Page's `extra` content, and, since
+   AdvancedRationale shipped, sometimes true for the plain popup too, so
+   this can no longer assume "the popup is always short enough to need
+   no scrolling". align-items:start on the grid above stops this column
+   being stretched to match the taller (scrollable) copy column's
+   height - without it, this box used to stretch to the full scrollable
    height and place-items:center then centered the card art in the
-   middle of ALL that content - on a long page, "the card art" rendered
-   far down / off-screen, with nothing next to the actual page content
-   sitting above it. Sticky keeps the art visible next to whatever part
-   of the writeup you're currently reading instead. */
+   middle of ALL that content, rendering it far down / off-screen with
+   nothing next to the actual content sitting above it. Sticky keeps the
+   art visible next to whatever part you're currently scrolled to
+   instead - a no-op when the modal is short enough not to scroll at
+   all, and a real pin when it is. */
 .dash-modal-card{position:sticky;top:0;align-self:start;display:grid;place-items:center;min-height:0;border-radius:5px;background:radial-gradient(circle at 50% 45%,rgba(156,255,59,.16),transparent 58%),rgba(255,255,255,.02)}.dash-modal-card .ft-card-img.featured{width:220px;max-height:390px}.dash-modal-card .player-card-art.featured{width:220px!important;max-height:390px}.dash-modal-copy{display:grid;align-content:center;min-width:0}.dash-modal-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding-right:42px}.dash-modal-heading span{color:#989898;font-size:12px}.dash-modal-heading h2{margin:4px 0 0;font-size:clamp(34px,4vw,54px);line-height:.96;letter-spacing:-.045em}.dash-modal-freshness{margin:12px 0 0}.dash-modal-verdict{margin:12px 0 14px;color:#e0e0e0;font-size:17px;line-height:1.4}.dash-modal-numbers{display:grid;grid-template-columns:repeat(3,1fr);border:1px solid #373737;border-radius:4px;overflow:hidden}.dash-modal-numbers .metric{padding:13px 15px}.dash-modal-numbers .metric strong{font-size:23px}.dash-modal-lower{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(230px,.8fr);align-items:start;gap:14px;margin-top:14px;min-height:0}.dash-modal-lower>*{min-width:0}.dash-modal-summary{display:flex;flex-direction:column;padding:15px;border:1px solid #373737;border-radius:4px;background:#141414}.dash-confidence>div{display:flex;align-items:center;justify-content:space-between;color:#aeaeae;font-size:12px;font-weight:800}.dash-confidence>div strong{color:#fff;font-size:16px}.dash-confidence>i{display:block;height:9px;margin-top:8px;border-radius:999px;background:#282828;overflow:hidden}.dash-confidence>i b{display:block;height:100%;border-radius:inherit;background:linear-gradient(90deg,#54d498,#39ff8a)}.dash-analysis-modal ul{display:grid;gap:9px;margin:16px 0 0;padding:0;list-style:none}.dash-analysis-modal li{display:flex;align-items:flex-start;gap:9px;color:#c6c6c6;font-size:13px;line-height:1.35}.dash-analysis-modal li span{display:grid;place-items:center;flex:0 0 21px;width:21px;height:21px;border-radius:50%;background:rgba(156,255,59,.12);color:#39ff8a;font-weight:900}/* Stacked full-width, not side-by-side (grid-template-columns:1fr auto) -
    the side-by-side layout sized the secondary button to fit "ADD TO
    WATCHLIST" via an auto-sized grid track, which the confidence panel

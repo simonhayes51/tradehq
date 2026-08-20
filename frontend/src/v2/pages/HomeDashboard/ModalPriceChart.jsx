@@ -61,6 +61,24 @@ export default function ModalPriceChart({ cardId, entryPrice, targetPrice, fairV
   // into an unreadable smear.
   const spanMs = points.length > 1 ? points[points.length - 1].time - points[0].time : 0;
   const formatTick = spanMs > 0 && spanMs < 36 * 3600 * 1000 ? formatClock : formatDay;
+  // Explicit tick positions rather than trusting recharts'
+  // interval="preserveStartEnd" + minTickGap to thin a dense, irregularly-
+  // spaced completed-sales series on its own: on a card with sales
+  // bursty enough (many points within a short span, e.g. a cluster of 40
+  // sales in ten minutes), that combination still emitted far more labels
+  // than minTickGap should have allowed, overprinting into an unreadable
+  // wall of digits - the same failure shape the "Thu 6" comment above
+  // already fixed once for a different cause. A fixed, small number of
+  // evenly-spaced ticks can't overcrowd regardless of how the underlying
+  // points are distributed.
+  const axisTicks = useMemo(() => {
+    if (points.length < 2) return undefined;
+    const first = points[0].time;
+    const last = points[points.length - 1].time;
+    if (first === last) return [first];
+    const TICK_COUNT = 5;
+    return Array.from({ length: TICK_COUNT }, (_, i) => Math.round(first + ((last - first) * i) / (TICK_COUNT - 1)));
+  }, [points]);
 
   // "7d selected but the card only has six hours of history" is a real,
   // common state that otherwise reads as a broken toggle.
@@ -116,9 +134,10 @@ export default function ModalPriceChart({ cardId, entryPrice, targetPrice, fairV
                 a label per data point and overprinting them into a smear. */}
             <XAxis
               dataKey="time" type="number" domain={["dataMin", "dataMax"]} scale="time"
+              ticks={axisTicks}
               tickFormatter={formatTick} tick={{ fill: "#909090", fontSize: 10 }}
               axisLine={false} tickLine={false}
-              interval="preserveStartEnd" minTickGap={56} tickMargin={8}
+              tickMargin={8}
             />
             <YAxis domain={["auto", "auto"]} width={55} tickFormatter={compactCoins} tick={{ fill: "#909090", fontSize: 10 }} axisLine={false} tickLine={false}/>
             <Tooltip

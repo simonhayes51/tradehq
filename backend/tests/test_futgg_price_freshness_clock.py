@@ -11,7 +11,7 @@ per card - only advances when a price MOVES or when a per-card heartbeat
 falls due at FUTGG_BULK_HEARTBEAT_MINUTES + (card_id % that): up to 29
 minutes at the default settings.
 
-futgg_config.max_price_age_minutes_by_tier gives special-tier cards 20
+futgg_config.max_price_age_minutes_by_tier gave special-tier cards 20
 minutes. So every special-tier card whose price was merely stable failed
 the gate, despite the bulk feed confirming that exact price every six
 minutes. Production logged the result for hours, unchanged:
@@ -26,6 +26,18 @@ on the new one.
 
 Migration 052 adds the second clock as bin_checked_at. These tests pin
 the preference order, the fallback, and the actual gate outcome.
+
+SECOND ROUND: reading the right clock was not enough on its own. The
+heartbeat itself only guarantees bin_checked_at is refreshed within
+HEARTBEAT_MINUTES + (card_id % that) - up to 29 minutes at the 15-minute
+default - so a genuinely stable, correctly-tracked special card can sit
+at a real bin_checked_at age of up to 29 minutes, which still exceeded
+the original 20-minute special-tier limit outright, regardless of which
+clock was read. Special-tier cards went back to disappearing from
+recommendations/opportunities near-permanently. futgg_config.py raised
+the limit to 40 to clear that worst case with margin; the tests below
+cover the previously-untested pessimistic case (bin_checked_at itself at
+its own worst-case age), not just the optimistic one.
 """
 from __future__ import annotations
 
@@ -105,7 +117,10 @@ class TestWhichClockIsRead:
 class TestTheGateOutcome:
     """The behaviour that actually cost recommendations, end to end."""
 
-    STALE_CAPTURED = NOW - timedelta(minutes=25)
+    # Comfortably beyond the 40-minute special-tier limit, so this still
+    # represents a genuinely stale bin_captured_at regardless of that
+    # limit's exact value.
+    STALE_CAPTURED = NOW - timedelta(minutes=50)
     FRESH_CHECKED = NOW - timedelta(minutes=3)
 
     def test_a_stable_special_card_is_no_longer_rejected_as_stale(self):
@@ -129,7 +144,7 @@ class TestTheGateOutcome:
             as_of=NOW,
             sales=_sales(),
         )
-        assert ci.price_age_minutes == 25
+        assert ci.price_age_minutes == 50
         assert "stale_market" in (ci.blocking_codes or [])
         assert ci.signal == "insufficient_data"
 
@@ -153,12 +168,11 @@ class TestTheGateOutcome:
     def test_the_worst_case_heartbeat_lag_clears_every_tier_limit(self, tier):
         """The specific arithmetic that broke: the bulk sync's heartbeat
         can leave bin_captured_at up to HEARTBEAT_MINUTES + (card_id %
-        HEARTBEAT_MINUTES) old - 29 minutes at the 15-minute default -
-        which exceeds the 20-minute special-tier limit outright. Against
-        bin_checked_at the age is one bulk cycle, and every tier passes."""
+        HEARTBEAT_MINUTES) old - 29 minutes at the 15-minute default.
+        Against bin_checked_at (here a fresh, optimistic one bulk cycle),
+        every tier passes regardless of how stale bin_captured_at is."""
         worst_case_heartbeat_lag = 29
         one_bulk_cycle = 6
-        assert worst_case_heartbeat_lag > ENGINE_CONFIG.max_price_age_for_tier("special")
 
         ci = evaluate_card(
             _snapshot(
@@ -170,6 +184,29 @@ class TestTheGateOutcome:
             sales=_sales(),
         )
         assert "stale_market" not in (ci.blocking_codes or [])
+
+    def test_bin_checked_at_itself_at_its_own_worst_case_age_still_clears_special(self):
+        """The pessimistic case the test above did not cover, and the one
+        that actually broke special-tier cards a second time: bin_checked_at
+        is what the heartbeat writes, so IT can also legitimately sit at
+        up to 29 minutes old for a card whose heartbeat interval landed
+        near the top of the HEARTBEAT_MINUTES + (card_id % that) range -
+        not just bin_captured_at. A 20-minute special-tier limit rejected
+        this outright even though the feed was confirming the price
+        exactly on its own schedule. 40 must clear it with margin."""
+        worst_case_heartbeat_lag = 29
+        assert worst_case_heartbeat_lag < ENGINE_CONFIG.max_price_age_for_tier("special")
+
+        ci = evaluate_card(
+            _snapshot(
+                bin_captured_at=NOW - timedelta(minutes=worst_case_heartbeat_lag),
+                bin_checked_at=NOW - timedelta(minutes=worst_case_heartbeat_lag),
+            ),
+            as_of=NOW,
+            sales=_sales(),
+        )
+        assert "stale_market" not in (ci.blocking_codes or [])
+        assert ci.signal != "insufficient_data"
 
 
 class TestTheColumnListActuallyReachesTheEngine:

@@ -100,10 +100,27 @@ class EngineConfig:
     # ---- Staleness ----------------------------------------------------
     # Per-tier acceptable price age. Roughly a third of each tier's own
     # re-price interval in futgg_price_sync.py, so "acceptable" is always
-    # meaningfully tighter than the worst realistic gap between scrapes.
+    # meaningfully tighter than the worst realistic gap between scrapes -
+    # EXCEPT special, which must stay above the bulk price sync's own
+    # worst-case confirmation gap or it structurally fails regardless of
+    # real market conditions. futgg_bulk_price_sync.py's change-only-writes
+    # heartbeat (added to cut DB write volume) only guarantees a stable
+    # card's bin_checked_at is refreshed within
+    # FUTGG_BULK_HEARTBEAT_MINUTES + (card_id % that) - up to 29 minutes at
+    # the 15-minute default - regardless of how current the price actually
+    # is. This was 20 until special-tier cards started disappearing from
+    # recommendations/opportunities near-permanently: whenever a card's
+    # own heartbeat interval landed above 20 (roughly two thirds of
+    # card_ids do, by the modulo above), it would spend part of every cycle
+    # legitimately exceeding this gate despite the feed confirming its
+    # price on schedule. See test_futgg_price_freshness_clock.py's
+    # test_the_worst_case_heartbeat_lag_clears_every_tier_limit. 40 keeps a
+    # real margin above the 29-minute worst case even if
+    # FUTGG_BULK_HEARTBEAT_MINUTES is raised somewhat in production
+    # without a matching code change.
     max_price_age_minutes_by_tier: Mapping[str, int] = field(
         default_factory=lambda: {
-            "special": 20,
+            "special": 40,
             "gold_rare": 45,
             "gold_common": 180,
             "silver": 480,
