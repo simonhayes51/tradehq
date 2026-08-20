@@ -471,3 +471,82 @@ def test_sales_endpoint_refuses_a_window_wider_than_the_sales_history_itself():
     # futgg_market_snapshot's sales window stops at 14 days, so a wider
     # range would promise data that structurally cannot exist.
     assert _client().get("/api/v2/players/1/sales?days=30").status_code == 422
+
+
+class TestPublicOpportunityPreview:
+    """/api/v2/opportunities/preview is the ONLY thing the public
+    homepage (eafc.live, no account) is allowed to call - it must never
+    leak an actionable number. Real security here means the JSON itself
+    never contains these fields, not that the frontend chooses not to
+    render them - anyone can read the raw response in devtools."""
+
+    _FORBIDDEN_KEYS = {
+        "recommended_buy_max", "theoretical_max_buy", "current_executable_buy",
+        "break_even_price", "recommended_sell_target", "buy_below",
+        "expected_profit_after_tax", "expected_profit_basis", "expected_roi",
+        "confidence_score", "liquidity_score", "signal_reasons", "reasons",
+        "reason_codes", "blocking_codes", "current_bin", "fair_value",
+        "sales_median", "sales_count", "trend_features",
+    }
+
+    # A clear buy/strong_buy signal - mirrors test_opportunities_only_
+    # returns_buy_signals's "strong_row" above, since the plain _row()
+    # default (current_bin only slightly under sales_median) doesn't
+    # reliably clear the engine's own ROI gate.
+    @staticmethod
+    def _buy_row(**overrides):
+        base = dict(current_bin=40000, sales_median=55000, sales_trimmed_mean=55000, sales_count=40)
+        base.update(overrides)
+        return _row(**base)
+
+    def test_preview_never_contains_actionable_fields(self):
+        app = FastAPI()
+        app.include_router(futgg_router, prefix="/api/v2")
+        provider = FakeProvider([self._buy_row()])
+        app.dependency_overrides[get_provider] = lambda: provider
+        client = TestClient(app)
+        resp = client.get("/api/v2/opportunities/preview")
+        assert resp.status_code == 200
+        item = resp.json()["item"]
+        assert item is not None
+        leaked = self._FORBIDDEN_KEYS & item.keys()
+        assert not leaked, f"public preview leaked actionable fields: {leaked}"
+
+    def test_preview_price_is_rounded_not_exact(self):
+        app = FastAPI()
+        app.include_router(futgg_router, prefix="/api/v2")
+        provider = FakeProvider([self._buy_row(current_bin=40123)])
+        app.dependency_overrides[get_provider] = lambda: provider
+        client = TestClient(app)
+        item = client.get("/api/v2/opportunities/preview").json()["item"]
+        assert item["current_bin_approx"] == 40000
+        assert item["current_bin_approx"] != 40123
+
+    def test_preview_returns_at_most_one_card(self):
+        app = FastAPI()
+        app.include_router(futgg_router, prefix="/api/v2")
+        provider = FakeProvider([self._buy_row(source_card_id=1), self._buy_row(source_card_id=2, name="Second Card")])
+        app.dependency_overrides[get_provider] = lambda: provider
+        client = TestClient(app)
+        body = client.get("/api/v2/opportunities/preview").json()
+        assert "items" not in body
+        assert isinstance(body["item"], dict)
+
+    def test_preview_uses_segmented_scan_not_the_narrow_one(self):
+        app = FastAPI()
+        app.include_router(futgg_router, prefix="/api/v2")
+        provider = FakeProvider([_row()])
+        app.dependency_overrides[get_provider] = lambda: provider
+        client = TestClient(app)
+        client.get("/api/v2/opportunities/preview")
+        assert provider.segment_scan_calls == 1
+        assert not provider.search_calls
+
+    def test_preview_is_null_when_nothing_qualifies(self):
+        app = FastAPI()
+        app.include_router(futgg_router, prefix="/api/v2")
+        # No sales at all -> evaluate_card can't produce a buy/strong_buy signal.
+        provider = FakeProvider([_row(sales_count=0, latest_sale_price=None, latest_sale_at=None)])
+        app.dependency_overrides[get_provider] = lambda: provider
+        client = TestClient(app)
+        assert client.get("/api/v2/opportunities/preview").json()["item"] is None

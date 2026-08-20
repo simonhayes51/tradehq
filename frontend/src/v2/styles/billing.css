@@ -1,0 +1,83 @@
+/* v2 Billing page - same tokens/cards/spacing as the rest of the app,
+   deliberately no purple/gradient v1 styling. */
+.billing-v2 { max-width: 720px; margin: 0 auto; padding: 32px 20px 60px; }
+.billing-v2-inner { display: flex; flex-direction: column; gap: 18px; }
+
+.billing-v2-head { text-align: center; padding: 12px 0 4px; }
+.billing-v2-context { display: inline-block; margin-bottom: 12px; padding: 6px 14px; border-radius: 999px; background: rgba(57,255,138,.1); border: 1px solid rgba(57,255,138,.3); color: var(--v2-accent); font-size: 12.5px; font-weight: 700; }
+.billing-v2-badge { display: inline-flex; align-items: center; gap: 6px; margin-bottom: 12px; padding: 6px 14px; border-radius: 999px; background: rgba(57,255,138,.12); border: 1px solid rgba(57,255,138,.35); color: var(--v2-accent); font-size: 11.5px; font-weight: 900; letter-spacing: .06em; }
+.billing-v2-head h1 { font-size: 28px; margin: 0 0 8px; color: var(--v2-text); }
+.billing-v2-head p { color: var(--v2-muted); font-size: 14px; margin: 0; }
+
+.billing-v2-msg { border-radius: var(--v2-radius); padding: 12px 16px; font-size: 13.5px; text-align: center; }
+.billing-v2-msg.ok { background: rgba(57,255,138,.1); border: 1px solid rgba(57,255,138,.3); color: var(--v2-accent); }
+.billing-v2-msg.err { display: flex; align-items: center; justify-content: center; gap: 6px; background: rgba(255,80,80,.1); border: 1px solid rgba(255,80,80,.3); color: #ff8080; }
+
+.billing-v2-toggle { display: flex; align-self: center; background: var(--v2-elevated); border: 1px solid var(--v2-border); border-radius: var(--v2-radius); padding: 4px; gap: 4px; }
+.billing-v2-toggle button { position: relative; padding: 9px 20px; border-radius: 3px; border: none; background: transparent; color: var(--v2-muted); font-weight: 700; font-size: 13.5px; cursor: pointer; }
+.billing-v2-toggle button.active { background: var(--v2-card); color: var(--v2-text); border: 1px solid var(--v2-border); }
+.billing-v2-save-pill { display: inline-block; margin-left: 6px; padding: 2px 8px; border-radius: 999px; background: var(--v2-accent); color: #06120a; font-size: 10.5px; font-weight: 900; }
+.billing-v2-save-pill.standalone { margin: 10px 0 0; }
+
+.billing-v2-price-card { text-align: center; }
+.billing-v2-price { display: flex; align-items: baseline; justify-content: center; gap: 6px; }
+.billing-v2-price .amount { font-size: 44px; font-weight: 900; color: var(--v2-text); }
+.billing-v2-price .period { color: var(--v2-muted); font-size: 14px; }
+.billing-v2-price-total { color: var(--v2-muted); font-size: 12.5px; margin: 4px 0 0; }
+.billing-v2-trial { display: flex; align-items: center; justify-content: center; gap: 8px; margin: 16px 0; padding: 12px; background: var(--v2-elevated); border: 1px solid var(--v2-border); border-radius: var(--v2-radius); color: var(--v2-muted); font-size: 12.5px; }
+.billing-v2-trial svg { color: var(--v2-accent); flex: none; }
+
+.billing-v2-btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px; padding: 0 18px; border-radius: var(--v2-radius); font-weight: 800; font-size: 13.5px; cursor: pointer; border: 1px solid transparent; text-decoration: none; }
+.billing-v2-btn.primary { background: var(--v2-accent); color: #06120a; }
+.billing-v2-btn.primary:disabled { opacity: .6; cursor: default; }
+.billing-v2-btn.secondary { background: var(--v2-elevated); border-color: var(--v2-border); color: var(--v2-text); }
+.billing-v2-btn.ghost { background: transparent; border-color: var(--v2-border); color: var(--v2-muted); }
+.billing-v2-btn.full { width: 100%; margin-top: 4px; }
+.billing-v2-secure { display: flex; align-items: center; justify-content: center; gap: 6px; margin-top: 10px; color: var(--v2-muted); font-size: 11.5px; }
+
+.billing-v2-feature-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+.billing-v2-feature { display: flex; gap: 10px; align-items: flex-start; }
+.billing-v2-feature svg { color: var(--v2-accent); flex: none; margin-top: 2px; }
+.billing-v2-feature strong { display: block; font-size: 13px; color: var(--v2-text); }
+.billing-v2-feature p { margin: 2px 0 0; font-size: 12px; color: var(--v2-muted); }
+
+.billing-v2-compare { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.billing-v2-compare h4 { display: flex; align-items: center; gap: 6px; margin: 0 0 10px; font-size: 13.5px; color: var(--v2-text); }
+.billing-v2-compare ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.billing-v2-compare li { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--v2-text); }
+.billing-v2-compare li svg { flex: none; color: var(--v2-accent); }
+.billing-v2-compare li.off { color: var(--v2-muted); }
+.billing-v2-compare li.off svg { color: var(--v2-muted); }
+.billing-v2-compare .featured { border-left: 1px solid var(--v2-border); padding-left: 14px; }
+.billing-v2-compare .featured h4 svg { color: var(--v2-accent); }
+
+.billing-v2-plan-row { display: flex; justify-content: space-between; align-items: flex-start; }
+.billing-v2-plan-row strong { font-size: 16px; color: var(--v2-text); }
+.billing-v2-plan-row p { margin: 4px 0 0; font-size: 12.5px; color: var(--v2-muted); }
+.billing-v2-actions { display: flex; gap: 10px; margin-top: 16px; flex-wrap: wrap; }
+
+.billing-v2-discord { display: flex; align-items: center; gap: 12px; padding: 16px; border: 1px solid var(--v2-border); border-radius: var(--v2-radius); background: var(--v2-card); }
+.billing-v2-discord svg { color: var(--v2-accent); flex: none; }
+.billing-v2-discord strong { display: block; font-size: 13px; color: var(--v2-text); }
+.billing-v2-discord p { margin: 2px 0 0; font-size: 12px; color: var(--v2-muted); }
+.billing-v2-discord .billing-v2-btn { margin-left: auto; flex: none; }
+
+.billing-v2-cancel-note { display: flex; align-items: flex-start; gap: 8px; color: var(--v2-muted); font-size: 12px; text-align: left; padding: 0 4px; }
+.billing-v2-cancel-note svg { flex: none; margin-top: 2px; }
+
+.billing-v2-legal { text-align: center; color: var(--v2-muted); font-size: 11.5px; margin-top: 8px; }
+.billing-v2-legal a { color: var(--v2-accent); text-decoration: none; }
+
+@media (max-width: 720px) {
+  .billing-v2-feature-grid, .billing-v2-compare { grid-template-columns: 1fr; }
+  .billing-v2-compare .featured { border-left: none; padding-left: 0; border-top: 1px solid var(--v2-border); padding-top: 14px; }
+}
+@media (max-width: 480px) {
+  .billing-v2 { padding: 20px 14px 48px; }
+  .billing-v2-head h1 { font-size: 22px; }
+  .billing-v2-price .amount { font-size: 36px; }
+  .billing-v2-discord { flex-wrap: wrap; }
+  .billing-v2-discord .billing-v2-btn { margin-left: 0; width: 100%; }
+  .billing-v2-actions { flex-direction: column; }
+  .billing-v2-actions .billing-v2-btn { width: 100%; }
+}

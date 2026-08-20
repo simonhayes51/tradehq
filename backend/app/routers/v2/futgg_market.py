@@ -613,6 +613,77 @@ async def list_opportunities(
     return {"items": items, "page": page, "page_size": page_size, "total": total}
 
 
+# The public homepage (eafc.live, no account) may show a card exists and
+# what the engine's verdict is - never the actionable numbers behind it.
+# Exact buy/sell targets, profit, ROI, and the reason-code/rationale
+# lists are deliberately excluded. This is enforced here, server-side,
+# not left to the frontend to hide with CSS: the full /opportunities
+# response above contains every one of those fields in plain JSON, so a
+# preview built by only *styling* a locked box over that same response
+# would still leak the real numbers to anyone opening devtools. This
+# endpoint reuses the exact same candidate scan and evaluate_card()
+# scoring as /opportunities - no ranking/engine logic is duplicated or
+# changed - it only narrows what gets serialised.
+def _redact_for_public_preview(item: Dict[str, Any]) -> Dict[str, Any]:
+    # item is _item_with_intelligence's flat shape (player-row columns +
+    # intelligence fields merged onto one dict) - the same shape
+    # /opportunities and /trade-finder already return, not the nested
+    # "player": {...} shape dashboard.py's adapter produces.
+    return {
+        "source_card_id": item.get("source_card_id"),
+        "name": item.get("name"),
+        "rating": item.get("rating"),
+        "primary_position": item.get("primary_position"),
+        "player_image_url": item.get("player_image_url"),
+        "card_design_image_url": item.get("card_design_image_url"),
+        "composited_image_url": item.get("composited_image_url"),
+        # Rounded to the nearest 1,000 and labelled as approximate -
+        # enough to show "this is a real, live card" without handing over
+        # the exact current_bin an anonymous visitor could otherwise buy
+        # against with a full trade plan built from this response alone.
+        "current_bin_approx": (
+            round(item["current_bin"] / 1000) * 1000 if item.get("current_bin") is not None else None
+        ),
+        "signal": item.get("signal"),  # BUY/WATCH etc - the verdict itself is fine to show
+        "risk_level": item.get("risk_level"),
+        # A short, non-numeric reason only - never signal_reasons/reasons/
+        # reason_codes/blocking_codes, which can spell out the exact
+        # thresholds the engine used.
+        "headline_reason": (item.get("signal_reasons") or [None])[0],
+    }
+
+
+@router.get("/opportunities/preview")
+async def opportunities_preview(
+    provider: FutggMarketDataProvider = ProviderDep,
+) -> Dict[str, Any]:
+    """Public, unauthenticated preview for the marketing homepage. Returns
+    at most ONE real opportunity with only the fields in
+    _redact_for_public_preview - deliberately no buy/sell target, no
+    profit/ROI figure, no advanced rationale. See that function's
+    docstring for why this is a separate, narrower serialisation rather
+    than the same /opportunities payload with fields hidden client-side."""
+    rows = await _segmented_candidates(provider)
+    scored = _score_and_filter(
+        rows, signals={"buy", "strong_buy"},
+        sales_by_card=await _sales_for_rows(provider, rows),
+    )
+    scored.sort(
+        key=lambda pair: (
+            0 if pair[1].signal == "strong_buy" else 1,
+            -(float(pair[1].expected_roi) if pair[1].expected_roi is not None else 0.0),
+            -(float(pair[1].expected_profit_after_tax) if pair[1].expected_profit_after_tax is not None else 0.0),
+            -(pair[1].confidence_score or 0.0),
+            int(pair[0]["source_card_id"]),
+        )
+    )
+    if not scored:
+        return {"item": None}
+    row, ci = scored[0]
+    full = _item_with_intelligence(row, ci)
+    return {"item": _redact_for_public_preview(full)}
+
+
 _SORT_ALIASES = {"best": "best_opportunity"}
 
 # Every sort key ends in source_card_id: Python's sort is stable, but the

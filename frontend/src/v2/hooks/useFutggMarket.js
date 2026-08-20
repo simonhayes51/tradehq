@@ -102,6 +102,22 @@ export function useFutggOpportunities(params = {}) {
   });
 }
 
+// GET /api/v2/opportunities/preview - the ONLY opportunities call the
+// public homepage (eafc.live, no account) is allowed to make. Returns at
+// most one card with the actionable fields already stripped server-side
+// (see futgg_market.py's _redact_for_public_preview) - never fetch
+// useFutggOpportunities() for a signed-out visitor instead of this, that
+// endpoint returns full buy/sell targets and profit to anyone.
+export function useFutggOpportunityPreview() {
+  return useQuery({
+    queryKey: ["v2", "futgg", "opportunities", "preview"],
+    queryFn: async ({ signal }) =>
+      (await api.get("/api/v2/opportunities/preview", { signal, ...REQUEST_OPTS })).data,
+    retry: false,
+    staleTime: 30_000,
+  });
+}
+
 // GET /api/v2/trade-finder - broader filter/sort set than /opportunities.
 export function useFutggTradeFinder(params = {}) {
   const clean = cleanParams(params);
