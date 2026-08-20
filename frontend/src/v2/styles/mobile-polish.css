@@ -374,9 +374,17 @@
     letter-spacing: .08em;
   }
   .queue-reason > span {
+    /* Two lines, not one: buildWhyText() leads with the specific,
+       numeric "why buy this" fact and only appends the broader trend
+       sentence after it - see tradeNarrative.js - but a single-line
+       ellipsis was still cutting most cards off mid-word, and on a
+       narrow card even the FIRST fact didn't always fit on one line. */
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
     overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    white-space: normal;
+    line-height: 1.35;
   }
   .queue-card > .queue-watch {
     grid-area: watch;
@@ -663,7 +671,7 @@
     grid-area: reason;
     display: grid;
     grid-template-columns: auto minmax(0,1fr);
-    align-items: center;
+    align-items: start;
     gap: 9px;
     margin: 0 !important;
     padding: 10px 11px;
@@ -672,8 +680,6 @@
     background: rgba(255,255,255,.025);
     color: #bcbcbc;
     font-size: 11px;
-    white-space: nowrap;
-    overflow: hidden;
   }
   .queue-reason > b {
     display: block;
@@ -682,8 +688,11 @@
     letter-spacing: .09em;
   }
   .queue-reason > span {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
     overflow: hidden;
-    text-overflow: ellipsis;
+    line-height: 1.35;
   }
   .queue-signals {
     position: relative;
