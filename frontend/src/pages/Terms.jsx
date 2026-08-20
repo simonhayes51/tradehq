@@ -3,18 +3,21 @@
 // Same rule as Privacy.jsx: claims are either sourced from this codebase
 // or explicitly supplied by the operator. Billing behaviour described
 // here (cancel_at_period_end, trial handling) is read directly from the
-// Stripe integration in backend/main.py, not assumed.
+// Stripe integration in backend/main.py, not assumed. "EAFC Live" is the
+// supplied operator name only - no legal structure (company, sole
+// trader, etc.) is stated or implied since none has been confirmed.
 import "../styles/legal.css";
 
 export default function Terms() {
   return (
     <div className="legal-page">
       <h1>Terms of Service</h1>
-      <p className="legal-updated">Last updated: [NEEDS INPUT — date this is published]</p>
+      <p className="legal-updated">Last updated: 20 August 2026</p>
 
       <p>
-        These terms are between you and <strong>[NEEDS INPUT: legal entity / operator name]</strong>
-        {" "}("EAFC Live", "we", "us"), and are governed by the law of England and Wales.
+        These terms are between you and <strong>EAFC Live</strong> ("we", "us"), of{" "}
+        <span className="legal-address">Collingwood Buildings, 38 Collingwood Street, Newcastle upon Tyne, NE1 1JF, United Kingdom</span>,
+        and are governed by the law of England and Wales.
       </p>
 
       <h2>The service</h2>
@@ -55,7 +58,12 @@ export default function Terms() {
       </p>
 
       <h2>Acceptable use</h2>
-      <p>[NEEDS INPUT: any specific prohibited-use terms you want stated here — e.g. no automated scraping of the app, no reselling access to your account.]</p>
+      <p>Your account is for your own use. Please don't:</p>
+      <ul>
+        <li>share or sell access to your account;</li>
+        <li>use bots, scrapers or automated tools against EAFC Live outside of what we provide ourselves;</li>
+        <li>try to disrupt or interfere with the service, or access it in a way not intended by these terms.</li>
+      </ul>
 
       <h2>Ending your account</h2>
       <p>
@@ -75,7 +83,7 @@ export default function Terms() {
       <p>We may update these terms from time to time. Continued use of EAFC Live after a change means you accept the update.</p>
 
       <h2>Contact</h2>
-      <p>Questions about these terms: <strong>[NEEDS INPUT: support/contact email]</strong>.</p>
+      <p>Questions about these terms: <a href="mailto:support@eafc.live">support@eafc.live</a>.</p>
     </div>
   );
 }

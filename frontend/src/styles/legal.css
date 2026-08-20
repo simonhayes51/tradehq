@@ -19,6 +19,11 @@
 .legal-page code { background: #1d1d1d; padding: 1px 6px; border-radius: 3px; font-size: 12.5px; }
 .legal-updated { color: #8e8e8e !important; font-size: 12px !important; margin-bottom: 24px !important; }
 .legal-page strong { color: #fff; }
+.legal-page a { color: #39ff8a; }
+/* Address/contact block: wraps naturally at any width rather than
+   trying to force line breaks that would look wrong on a narrow phone
+   screen or waste space on desktop. */
+.legal-address { color: #e4e4e4; }
 @media (max-width: 480px) {
   .legal-page { padding: 32px 16px 60px; }
   .legal-page h1 { font-size: 24px; }
