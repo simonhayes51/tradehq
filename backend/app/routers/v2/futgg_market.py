@@ -91,6 +91,77 @@ CANDIDATE_SCAN_LIMIT = 500
 CANDIDATE_SCAN_ORDER_BY = "sales_count DESC NULLS LAST"
 
 
+async def _segmented_candidates(provider: "FutggMarketDataProvider") -> List[Dict[str, Any]]:
+    """De-duplicated union of every candidate segment (see
+    app/services/futgg_candidate_segments.py), the same source
+    app/services/futgg_scanner.py's background evaluation pass already
+    scans every 10 minutes into futgg_recommendation_snapshots.
+
+    Replaces the single `ORDER BY sales_count DESC LIMIT 500` scan that
+    /opportunities, /trade-finder and /dashboard used to run themselves:
+    that single query structurally excluded any card outside the 500
+    most-traded-by-count (a low-volume-but-high-value icon/SBC card, for
+    example) from ever being scored at all, regardless of how strong its
+    signal was - the exact gap that let a card evaluate to STRONG BUY on
+    its own /players/{card_id} detail lookup (which fetches the row
+    directly, not via this scan) while being structurally invisible to
+    every list surface. Segmented selection was already built and running
+    for the background scan; the live-request endpoints just never
+    switched over to it. No engine/threshold logic changes here - same
+    evaluate_card(), same gates, only a larger and fairer candidate pool.
+    """
+    by_segment = await provider.select_candidates_by_segment()
+    unique_rows: Dict[int, Dict[str, Any]] = {}
+    for rows in by_segment.values():
+        for row in rows:
+            card_id = int(row["source_card_id"])
+            if card_id not in unique_rows:
+                unique_rows[card_id] = row
+    return list(unique_rows.values())
+
+
+def _apply_filters_in_python(rows: List[Dict[str, Any]], f: "PlayerFilters") -> List[Dict[str, Any]]:
+    """Same predicates as _apply_common_filters's SQL WHERE clause, applied
+    in Python - the segmented candidate scan's SEGMENTS list (see
+    futgg_candidate_segments.py) is a static, reviewed whitelist of
+    where/order_by fragments and deliberately does not accept a caller-
+    supplied filter set, so /opportunities and /trade-finder's optional
+    query filters are applied here instead, after the segmented fetch."""
+    out = rows
+    if f.tradeable_only:
+        out = [r for r in out if r.get("is_tradeable") is not False]
+    if f.rating_min is not None:
+        out = [r for r in out if r.get("rating") is not None and r["rating"] >= f.rating_min]
+    if f.rating_max is not None:
+        out = [r for r in out if r.get("rating") is not None and r["rating"] <= f.rating_max]
+    if f.position:
+        out = [r for r in out if r.get("primary_position") == f.position or f.position in (r.get("alternate_positions") or [])]
+    if f.rarity:
+        out = [r for r in out if r.get("rarity") == f.rarity]
+    if f.club:
+        out = [r for r in out if r.get("club") == f.club]
+    if f.league:
+        out = [r for r in out if r.get("league") == f.league]
+    if f.nation:
+        out = [r for r in out if r.get("nation") == f.nation]
+    if f.max_price is not None:
+        out = [r for r in out if r.get("current_bin") is not None and r["current_bin"] <= f.max_price]
+    if f.min_price is not None:
+        out = [r for r in out if r.get("current_bin") is not None and r["current_bin"] >= f.min_price]
+    if f.max_price_age_minutes is not None:
+        now = datetime.now(timezone.utc)
+        def _age_ok(r: Dict[str, Any]) -> bool:
+            observed = r.get("bin_checked_at") or r.get("bin_captured_at")
+            if observed is None:
+                return False
+            return (now - observed).total_seconds() / 60.0 <= f.max_price_age_minutes
+        out = [r for r in out if _age_ok(r)]
+    if f.search:
+        term = f.search.strip().lower()
+        out = [r for r in out if term in (r.get("name") or "").lower()]
+    return out
+
+
 async def get_provider() -> FutggMarketDataProvider:
     """FastAPI dependency - lazily creates (and caches, via
     app.db.get_core_pool()'s own module-level cache) the shared asyncpg
@@ -511,18 +582,29 @@ async def list_opportunities(
         None, rating_min, rating_max, position, rarity, club, league, nation,
         max_price, min_price, max_price_age_minutes,
     )
-    rows = await provider.search_players(filters, limit=CANDIDATE_SCAN_LIMIT, offset=0, order_by=CANDIDATE_SCAN_ORDER_BY)
+    rows = _apply_filters_in_python(await _segmented_candidates(provider), filters)
     scored = _score_and_filter(
         rows, risk=risk, min_expected_profit=min_profit, min_roi=min_roi,
         min_confidence=min_confidence, min_liquidity=min_liquidity,
         signals={"buy", "strong_buy"},
         sales_by_card=await _sales_for_rows(provider, rows),
     )
-    # Sort by opportunity strength: strong_buy first, then by expected ROI.
+    # Sort by opportunity strength: strong_buy first, then by expected ROI,
+    # then expected profit and confidence as further tiebreakers, then
+    # card_id as a final deterministic tiebreak. Every sort in this file
+    # ends in card_id for the same reason: two candidates that score
+    # identically on every real field used to fall back to whatever order
+    # Postgres happened to return them in for ties on the live "ORDER BY
+    # sales_count DESC" scan - not a stable order across requests - which
+    # is why the same page could show a different #1 on every refresh
+    # with no underlying data change at all.
     scored.sort(
         key=lambda pair: (
             0 if pair[1].signal == "strong_buy" else 1,
             -(float(pair[1].expected_roi) if pair[1].expected_roi is not None else 0.0),
+            -(float(pair[1].expected_profit_after_tax) if pair[1].expected_profit_after_tax is not None else 0.0),
+            -(pair[1].confidence_score or 0.0),
+            int(pair[0]["source_card_id"]),
         )
     )
     total = len(scored)
@@ -533,17 +615,23 @@ async def list_opportunities(
 
 _SORT_ALIASES = {"best": "best_opportunity"}
 
+# Every sort key ends in source_card_id: Python's sort is stable, but the
+# INPUT order (the segmented candidate union) is not guaranteed stable
+# across requests, so without a final deterministic tiebreak, any two
+# candidates tied on every real field above it could swap #1 on every
+# refresh with no underlying data change - this was Top Buy's actual bug.
 _TRADE_FINDER_SORTS = {
     "best_opportunity": lambda row_ci: (
         0 if row_ci[1].signal == "strong_buy" else (1 if row_ci[1].signal == "buy" else 2),
         -(row_ci[1].confidence_score or 0.0) * float(row_ci[1].expected_roi or 0),
+        int(row_ci[0]["source_card_id"]),
     ),
-    "profit": lambda row_ci: -(float(row_ci[1].expected_profit_after_tax) if row_ci[1].expected_profit_after_tax is not None else 0.0),
-    "roi": lambda row_ci: -(float(row_ci[1].expected_roi) if row_ci[1].expected_roi is not None else 0.0),
-    "confidence": lambda row_ci: -(row_ci[1].confidence_score or 0.0),
-    "liquidity": lambda row_ci: -(row_ci[1].liquidity_score or 0.0),
-    "newest": lambda row_ci: row_ci[0].get("price_updated_at") is None,  # placeholder tiebreak, refined below
-    "freshest": lambda row_ci: (row_ci[1].price_age_minutes if row_ci[1].price_age_minutes is not None else float("inf")),
+    "profit": lambda row_ci: (-(float(row_ci[1].expected_profit_after_tax) if row_ci[1].expected_profit_after_tax is not None else 0.0), int(row_ci[0]["source_card_id"])),
+    "roi": lambda row_ci: (-(float(row_ci[1].expected_roi) if row_ci[1].expected_roi is not None else 0.0), int(row_ci[0]["source_card_id"])),
+    "confidence": lambda row_ci: (-(row_ci[1].confidence_score or 0.0), int(row_ci[0]["source_card_id"])),
+    "liquidity": lambda row_ci: (-(row_ci[1].liquidity_score or 0.0), int(row_ci[0]["source_card_id"])),
+    "newest": lambda row_ci: (row_ci[0].get("price_updated_at") is None, int(row_ci[0]["source_card_id"])),  # placeholder tiebreak, refined below
+    "freshest": lambda row_ci: (row_ci[1].price_age_minutes if row_ci[1].price_age_minutes is not None else float("inf"), int(row_ci[0]["source_card_id"])),
 }
 
 
@@ -581,7 +669,12 @@ async def trade_finder(
         None, rating_min, rating_max, position, rarity, None, None, None,
         budget, None, max_price_age_minutes,
     )
-    rows = await provider.search_players(filters, limit=CANDIDATE_SCAN_LIMIT, offset=0, order_by=CANDIDATE_SCAN_ORDER_BY)
+    # Finder searches the full segmented candidate union (see
+    # _segmented_candidates), not a single top-500-by-sales_count scan -
+    # Finder is the broad power-search tool over the whole eligible
+    # universe, not a filtered view of the same narrow shortlist
+    # Opportunities and Home draw from.
+    rows = _apply_filters_in_python(await _segmented_candidates(provider), filters)
 
     risk_order = {"low": 0, "medium": 1, "high": 2, "avoid": 3}
     max_risk_rank = risk_order.get(risk_tolerance, 2) if risk_tolerance else None
@@ -615,8 +708,10 @@ async def trade_finder(
         # position instead, which is also the semantically correct
         # "least new" ordering for reverse=True.
         scored.sort(
-            key=lambda pair: pair[0].get("price_updated_at") or datetime.min.replace(tzinfo=timezone.utc),
-            reverse=True,
+            key=lambda pair: (
+                -(pair[0].get("price_updated_at") or datetime.min.replace(tzinfo=timezone.utc)).timestamp(),
+                int(pair[0]["source_card_id"]),
+            ),
         )
     else:
         scored.sort(key=_TRADE_FINDER_SORTS[sort_by])
