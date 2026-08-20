@@ -3279,19 +3279,40 @@ async def player_compare(
 
 @app.get("/api/events/next")
 async def next_event(request: Request):
+    """Next Promo calendar row (events table, admin-entered via
+    POST /api/events - see that route's own comment). No fake fallback:
+    this used to invent a "Daily Content Drop" at the next 18:00 London
+    slot whenever no real row existed, which is exactly the fabricated-
+    looking filler the v2 Home dashboard is meant to never show. Keeps
+    the existing flat response shape (src/widgets/NextPromoWidget.jsx
+    reads data.name/start_at/confidence/kind directly) - just with
+    every field honestly null instead of populated with an invented
+    event when nothing has actually been scheduled."""
     async with request.app.state.pool.acquire() as conn:
         row = await conn.fetchrow(
             "SELECT name, kind, start_at, confidence FROM events WHERE start_at > $1 ORDER BY start_at ASC LIMIT 1",
             now_utc()
         )
-    if row:
-        return {"name": row["name"], "kind": row["kind"], "start_at": row["start_at"].isoformat(), "confidence": row["confidence"] or "heuristic"}
-    nxt = next_daily_london_hour(18)
-    return {"name": "Daily Content Drop", "kind": "promo", "start_at": nxt.isoformat(), "confidence": "heuristic"}
+    if not row:
+        return {"name": None, "kind": None, "start_at": None, "confidence": None}
+    return {"name": row["name"], "kind": row["kind"], "start_at": row["start_at"].isoformat(), "confidence": row["confidence"] or "heuristic"}
 
 @app.post("/api/events")
 async def create_event(request: Request, conn=Depends(get_db)):
-    """Create a new event"""
+    """Create a new event (Next Promo calendar row) - admin only.
+
+    This had no auth check at all - anyone who found the route could
+    write arbitrary rows into the events table that GET /api/events/next
+    then serves to every visitor as "the next promo". Same require_admin
+    check app/routers/admin.py uses, inlined here since compute_entitlements
+    is already imported at module scope and importing admin_router's
+    require_admin this early risks the same load-order issue that keeps
+    that whole router's import deliberately late (see its mount below)."""
+    ent = await compute_entitlements(request)
+    if not ent.get("user_id"):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    if not ent.get("is_admin"):
+        raise HTTPException(status_code=403, detail="Admin only")
     try:
         data = await request.json()
 

@@ -18,6 +18,7 @@ import { useAdminPipelineHealth } from "../../hooks/useAdminPipelineHealth";
 import PipelineHealthTab from "./tabs/PipelineHealthTab";
 import CollectorStatusTab from "./tabs/CollectorStatusTab";
 import MarketEventsTab from "./tabs/MarketEventsTab";
+import NextPromoTab from "./tabs/NextPromoTab";
 import SubscriptionsTab from "./tabs/SubscriptionsTab";
 import ApiUsageTab from "./tabs/ApiUsageTab";
 import PlayerCardsTab from "./tabs/PlayerCardsTab";
@@ -29,6 +30,7 @@ const TABS = [
   { key: "sbc-imports", label: "SBC Imports", Component: AdminSbcImports },
   { key: "player-cards", label: "Player Cards", Component: PlayerCardsTab },
   { key: "market-events", label: "Market Events", Component: MarketEventsTab },
+  { key: "next-promo", label: "Next Promo", Component: NextPromoTab },
   { key: "subscriptions", label: "Subscriptions", Component: SubscriptionsTab },
   { key: "api-usage", label: "API Usage", Component: ApiUsageTab },
 ];

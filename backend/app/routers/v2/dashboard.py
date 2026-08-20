@@ -739,6 +739,12 @@ async def get_dashboard(request: Request) -> Dict[str, Any]:
         event_rows = await conn.fetch(
             "SELECT id, kind, source, title, starts_at, ends_at, first_seen_at FROM market_events ORDER BY first_seen_at DESC LIMIT 6"
         )
+        # HAVING gates out noise, not just low sample size: an SBC with a
+        # real, measured price effect on the cards it draws on is worth
+        # surfacing; one that measured out at +0.4% on two cards is not a
+        # market signal, it's rounding error dressed up as one. Both bars
+        # (n and |avg_impact|) exist because either alone lets the other
+        # through - a huge swing on one card, or a trivial swing on ten.
         impact_rows = await conn.fetch(
             """
             SELECT e.id AS event_id, e.title, e.fingerprint,
@@ -747,10 +753,28 @@ async def get_dashboard(request: Request) -> Dict[str, Any]:
             JOIN market_events e ON e.id = i.event_id
             WHERE e.kind = 'sbc'
             GROUP BY e.id, e.title, e.fingerprint
+            HAVING COUNT(*) >= 2 AND ABS(AVG(i.price_change_pct)) >= 3
             ORDER BY MAX(i.computed_at) DESC
             LIMIT 5
             """
         )
+
+    # --- Next Promo (events table, core DB - see main.py's /api/events/next
+    # for the same query and its own comment on why this never fabricates
+    # a placeholder event when nothing's been scheduled) ---
+    async with core_pool.acquire() as conn:
+        next_promo_row = await conn.fetchrow(
+            "SELECT name, kind, start_at, confidence FROM events WHERE start_at > now() ORDER BY start_at ASC LIMIT 1"
+        )
+    next_promo = (
+        {
+            "name": next_promo_row["name"],
+            "kind": next_promo_row["kind"],
+            "startAt": next_promo_row["start_at"].isoformat(),
+            "confidence": next_promo_row["confidence"] or "heuristic",
+        }
+        if next_promo_row else None
+    )
 
     latest_market_events = [
         {
@@ -782,6 +806,7 @@ async def get_dashboard(request: Request) -> Dict[str, Any]:
         "biggestMovers": mover_cards,
         "recentAiPredictions": recent_predictions,
         "watchlistAlerts": watchlist_alerts,
+        "nextPromo": next_promo,
         "latestMarketEvents": latest_market_events,
         "latestSbcImpact": latest_sbc_impact,
         "locked": {
