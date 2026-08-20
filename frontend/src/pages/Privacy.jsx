@@ -2,22 +2,23 @@
 //
 // Every claim here is either (a) sourced directly from this codebase -
 // see the delivery report for file:line citations - or (b) a value the
-// operator explicitly supplied. The three fields still marked
-// [NEEDS INPUT] are the ones nobody has supplied yet; do not fill them
-// in with a guess.
+// operator explicitly supplied. "EAFC Live" is the supplied operator
+// name only - this page must not state or imply a specific legal
+// structure (company, partnership, sole trader, etc.) since neither the
+// repository nor the operator has confirmed one.
 import "../styles/legal.css";
 
 export default function Privacy() {
   return (
     <div className="legal-page">
       <h1>Privacy Policy</h1>
-      <p className="legal-updated">Last updated: [NEEDS INPUT — date this is published]</p>
+      <p className="legal-updated">Last updated: 20 August 2026</p>
 
       <p>
-        EAFC Live is operated by <strong>[NEEDS INPUT: legal entity / operator name]</strong>,
-        {" "}<strong>[NEEDS INPUT: business/contact address]</strong>. This policy explains what
-        information we collect when you use EAFC Live and why. This policy is governed by the
-        law of England and Wales.
+        EAFC Live is operated by <strong>EAFC Live</strong>, of{" "}
+        <span className="legal-address">Collingwood Buildings, 38 Collingwood Street, Newcastle upon Tyne, NE1 1JF, United Kingdom</span>.
+        This policy explains what information we collect when you use EAFC Live and why. This
+        policy is governed by the law of England and Wales.
       </p>
 
       <h2>How you sign in</h2>
@@ -103,8 +104,9 @@ export default function Privacy() {
       </p>
 
       <h2>Contact</h2>
-      <p>For any questions about this policy or your data, contact us at{" "}
-        <strong>[NEEDS INPUT: support/contact email]</strong>.
+      <p>
+        For any questions about this policy or your data, contact us at{" "}
+        <a href="mailto:support@eafc.live">support@eafc.live</a>, or by post at the address above.
       </p>
     </div>
   );
