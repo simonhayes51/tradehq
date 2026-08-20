@@ -172,8 +172,14 @@ export default function PublicSite() {
             <a href={`${APP_ORIGIN}/#/billing`}>Pricing</a>
             <a href={`${APP_ORIGIN}/#/login`}>Log in</a>
             <a href="https://discord.gg/3sSpu3rDgn" target="_blank" rel="noreferrer">Discord</a>
-            <Link to="/privacy">Privacy</Link>
-            <Link to="/terms">Terms</Link>
+            {/* Privacy/Terms deliberately NOT linked from the public
+                footer yet - both pages still carry real [NEEDS INPUT]
+                placeholders (operator name, address, contact email).
+                The routes themselves stay live (Billing's links and
+                direct visits still work) so they can be reviewed, but a
+                launch-facing footer shouldn't point at a page that says
+                "NEEDS INPUT" on screen. Add these two links back once
+                Privacy.jsx/Terms.jsx have no [NEEDS INPUT] markers left. */}
           </nav>
         </footer>
       </div>

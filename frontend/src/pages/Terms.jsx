@@ -1,9 +1,9 @@
 // src/pages/Terms.jsx
 //
-// Same rule as Privacy.jsx: only facts traceable to this codebase, every
-// other field marked [NEEDS INPUT]. Do not fill these in with guessed or
-// generic SaaS boilerplate - a wrong cancellation/refund term is worse
-// than an honest placeholder.
+// Same rule as Privacy.jsx: claims are either sourced from this codebase
+// or explicitly supplied by the operator. Billing behaviour described
+// here (cancel_at_period_end, trial handling) is read directly from the
+// Stripe integration in backend/main.py, not assumed.
 import "../styles/legal.css";
 
 export default function Terms() {
@@ -12,25 +12,70 @@ export default function Terms() {
       <h1>Terms of Service</h1>
       <p className="legal-updated">Last updated: [NEEDS INPUT — date this is published]</p>
 
-      <p><strong>[NEEDS INPUT: the legal entity offering this service, and the jurisdiction whose law governs these terms.]</strong></p>
+      <p>
+        These terms are between you and <strong>[NEEDS INPUT: legal entity / operator name]</strong>
+        {" "}("EAFC Live", "we", "us"), and are governed by the law of England and Wales.
+      </p>
 
       <h2>The service</h2>
-      <p>EAFC Live provides EA FC Ultimate Team market data, price analysis and trading tools. Prices and recommendations are based on real completed sales and live listings, but nothing here guarantees a profit — the market can and does move against a call.</p>
+      <p>
+        EAFC Live provides EA Sports FC Ultimate Team market data, price analysis and trading
+        tools, based on live prices and completed sales. Our BUY/WAIT/AVOID calls and expected-profit
+        figures are estimates based on recent market data — they are not guarantees, and the
+        market can move against a call after we make it. Trading Ultimate Team cards carries risk,
+        and you're responsible for your own trading decisions.
+      </p>
 
-      <h2>Accounts</h2>
-      <p>You sign in with Discord. You're responsible for your Discord account's security; we authenticate you through it but never see your Discord password.</p>
+      <h2>Your account</h2>
+      <p>
+        You sign in with Discord. You're responsible for keeping your Discord account secure —
+        we authenticate you through Discord and never see or store your Discord password.
+      </p>
 
       <h2>Premium subscription</h2>
-      <p>Premium is currently £3/month or £25/season (12 months), with a 7-day free trial. [NEEDS INPUT: confirm exact cancellation mechanics (self-serve in-app vs. contact required), refund policy, and what happens to trial users who don't cancel — the app has a cancel-subscription flow, but its exact terms (proration, effective date) need confirming before stating them here as a promise.]</p>
+      <p>Current pricing: £3/month or £25/season, with a 7-day free trial on eligible sign-ups.</p>
+      <ul>
+        <li>You can cancel at any time from the Billing page.</li>
+        <li>Cancelling during your free trial stops it from renewing into a paid subscription.</li>
+        <li>Cancelling an active paid subscription stops the next renewal — it does not end your
+          Premium access immediately.</li>
+        <li>If you cancel, your Premium access continues until the end of the billing period
+          you've already paid for.</li>
+      </ul>
+      <p>
+        We don't offer blanket refunds for time already used on a subscription. If you're a
+        consumer in the UK, you have statutory rights under the Consumer Rights Act 2015 and
+        consumer protection law that these terms don't remove or reduce — nothing here is meant
+        to override those rights, and if anything above conflicts with them, your statutory
+        rights take priority.
+      </p>
+      <p>
+        Payment is processed by Stripe. We don't receive or store your card details — Stripe
+        handles that directly.
+      </p>
 
       <h2>Acceptable use</h2>
-      <p>[NEEDS INPUT: any specific prohibited-use terms you want stated (e.g. no automated scraping of the app, no reselling access).]</p>
+      <p>[NEEDS INPUT: any specific prohibited-use terms you want stated here — e.g. no automated scraping of the app, no reselling access to your account.]</p>
+
+      <h2>Ending your account</h2>
+      <p>
+        You can delete your EAFC Live account at any time from the Account page. See our{" "}
+        <a href="/#/privacy">Privacy Policy</a> for exactly what that does and doesn't remove.
+        We may suspend or terminate an account that misuses the service.
+      </p>
 
       <h2>Disclaimer</h2>
-      <p>Trading Ultimate Team cards carries risk. EAFC Live's BUY/WAIT/AVOID calls and expected-profit figures are estimates based on recent market data, not guarantees. We are not responsible for trading losses.</p>
+      <p>
+        EAFC Live is provided "as is". We do our best to keep pricing data accurate and current,
+        but we don't guarantee it's error-free or uninterrupted, and we're not responsible for
+        trading losses arising from your use of the service.
+      </p>
+
+      <h2>Changes to these terms</h2>
+      <p>We may update these terms from time to time. Continued use of EAFC Live after a change means you accept the update.</p>
 
       <h2>Contact</h2>
-      <p>[NEEDS INPUT: a real contact email or address for legal/terms questions.]</p>
+      <p>Questions about these terms: <strong>[NEEDS INPUT: support/contact email]</strong>.</p>
     </div>
   );
 }

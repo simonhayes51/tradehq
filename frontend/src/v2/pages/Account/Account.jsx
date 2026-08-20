@@ -1,7 +1,9 @@
+import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { Briefcase, LogOut, Star, User, Wrench } from "lucide-react";
+import { Briefcase, LogOut, Star, Trash2, User, Wrench } from "lucide-react";
 import { useAuth } from "../../../context/AuthContext";
 import { useEntitlements } from "../../../context/EntitlementsContext";
+import { deleteAccount } from "../../../api/account";
 import { PageHead } from "../Players/Players";
 import "./account.css";
 
@@ -11,10 +13,29 @@ export default function Account() {
   const navigate = useNavigate();
   const tier = isAdmin || features.includes("opportunity_feed") ? "ELITE" : isPremium ? "PREMIUM" : "FREE";
   const name = user?.global_name || user?.username || "EAFC Live member";
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState(null);
 
   async function signOut() {
     await logout();
     navigate("/v2", { replace: true });
+  }
+
+  async function confirmDeleteAccount() {
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await deleteAccount();
+      // The backend already cleared the session server-side - navigate
+      // to a fresh, fully signed-out load rather than a client-side
+      // route change, so nothing stale from AuthContext/EntitlementsContext
+      // lingers in memory after an account that no longer exists.
+      window.location.href = "/v2";
+    } catch (e) {
+      setDeleting(false);
+      setDeleteError(e?.response?.data?.detail || "Couldn't delete your account - try again, or contact support if this keeps happening.");
+    }
   }
 
   return <main className="v2-destination v2-account-page">
@@ -40,5 +61,28 @@ export default function Account() {
       <Link to="/add-trade"><Wrench/><div><strong>More tools</strong><span>Smart Buy, Portfolio Optimizer, Trade Copilot and more</span></div></Link>
     </section>
     {isAuthenticated ? <button className="v2-sign-out" onClick={signOut}><LogOut size={17}/> Sign out</button> : null}
+    {isAuthenticated ? (
+      <section className="v2-account-danger">
+        <span>DANGER ZONE</span>
+        {!confirmingDelete ? (
+          <button className="v2-delete-account" onClick={() => setConfirmingDelete(true)}>
+            <Trash2 size={16}/> Delete EAFC Live account
+          </button>
+        ) : (
+          <div className="v2-delete-confirm">
+            <p>This removes your watchlist, alerts, trade history and profile. It can't be undone. Are you sure?</p>
+            {deleteError ? <p className="v2-delete-error">{deleteError}</p> : null}
+            <div className="v2-delete-actions">
+              <button className="v2-delete-account confirm" onClick={confirmDeleteAccount} disabled={deleting}>
+                {deleting ? "Deleting…" : "Yes, delete my account"}
+              </button>
+              <button className="v2-delete-cancel" onClick={() => { setConfirmingDelete(false); setDeleteError(null); }} disabled={deleting}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+      </section>
+    ) : null}
   </main>;
 }
