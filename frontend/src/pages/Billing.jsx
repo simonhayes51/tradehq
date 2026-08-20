@@ -49,7 +49,7 @@ export default function Billing() {
     {
       icon: <Users className="w-5 h-5" />,
       title: "Add Trade Chrome Extension",
-      description: "Automatically add all of your trades from the Fut Web App",
+      description: "Automatically add all of your trades from the EA FC Web App",
       premium: true
     },
     {
@@ -294,7 +294,7 @@ export default function Billing() {
               </div>
               
               <a
-                href="https://discord.gg/your-server"
+                href="https://discord.gg/3sSpu3rDgn"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="inline-flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 rounded-lg text-white text-sm font-medium transition-all"
@@ -419,7 +419,7 @@ export default function Billing() {
             >
               Season
               <span className="absolute -top-2 -right-2 bg-green-500 text-black text-xs px-2 py-0.5 rounded-full font-bold">
-                42% OFF
+                30% OFF
               </span>
             </button>
           </div>
@@ -658,25 +658,10 @@ export default function Billing() {
               <div className="inline-flex items-center justify-center w-12 h-12 bg-purple-500 rounded-lg mb-4">
                 <MessageCircle className="w-6 h-6 text-white" />
               </div>
-              <h3 className="text-2xl font-bold mb-2">Join Our Premium Discord Community</h3>
+              <h3 className="text-2xl font-bold mb-2">Join the EAFC Live Discord</h3>
               <p className="text-gray-400">
-                Get access to exclusive channels, trading signals, and connect with successful FUT traders
+                Get access to the premium channel, talk trades with other members, and hear about new features first
               </p>
-            </div>
-            
-            <div className="grid md:grid-cols-3 gap-4 text-center">
-              <div className="p-4 bg-black/30 rounded-xl">
-                <div className="text-2xl font-bold text-purple-400 mb-1">100+</div>
-                <div className="text-sm text-gray-400">Premium Members</div>
-              </div>
-              <div className="p-4 bg-black/30 rounded-xl">
-                <div className="text-2xl font-bold text-blue-400 mb-1">24/7</div>
-                <div className="text-sm text-gray-400">Trading Discussions</div>
-              </div>
-              <div className="p-4 bg-black/30 rounded-xl">
-                <div className="text-2xl font-bold text-green-400 mb-1">Daily</div>
-                <div className="text-sm text-gray-400">AI Trade Signals</div>
-              </div>
             </div>
           </div>
         </div>
@@ -684,7 +669,7 @@ export default function Billing() {
         {/* Bottom CTA */}
         <div className="text-center pt-8 border-t border-gray-800">
           <p className="text-gray-400 mb-4">
-            Join thousands of profitable FUT traders
+            Trade smarter with real completed sales, not guesswork
           </p>
           
           <div className="flex flex-col sm:flex-row items-center justify-center gap-4">

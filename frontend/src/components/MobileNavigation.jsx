@@ -25,7 +25,7 @@ const NAV_H = 72;
 const LIME = "#91db32";
 
 const MORE_LINKS = [
-  { to: "/undervalued", label: "Undervalued 🔥", icon: TrendingUp },
+  { to: "/undervalued", label: "Undervalued", icon: TrendingUp },
   { to: "/trending", label: "Trending", icon: Target },
   { to: "/squad", label: "Squad Builder", icon: Users },
   { to: "/player-compare", label: "Compare Players", icon: ArrowLeftRight },

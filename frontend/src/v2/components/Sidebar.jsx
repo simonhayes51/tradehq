@@ -22,10 +22,10 @@ export default function Sidebar() {
   const { pathname } = useLocation();
   const navigate = useNavigate();
   const { isPremium, isAdmin, features } = useEntitlements();
-  const tier = isAdmin || features.includes("opportunity_feed") ? "ELITE" : isPremium ? "PRO" : "FREE";
+  const tier = isAdmin || features.includes("opportunity_feed") ? "ELITE" : isPremium ? "PREMIUM" : "FREE";
 
   return <aside className="fut-side v2-global-nav">
-    <Link className="fut-brand" to="/v2"><span className="brand-mark">FT</span><strong>FUT <b>Hub</b></strong></Link>
+    <Link className="fut-brand" to="/v2"><span className="brand-mark">EL</span><strong>EAFC <b>Live</b></strong></Link>
     <nav aria-label="Main">
       {ITEMS.map((item) => {
         const active = item.match(pathname);

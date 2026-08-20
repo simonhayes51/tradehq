@@ -43,7 +43,7 @@ export default function ScoresSection({ cardScores }) {
   const { scores } = cardScores;
 
   return (
-    <SectionCard title="Analytics" subtitle="rule_v1 engine">
+    <SectionCard title="Analytics" subtitle="Free tier scoring">
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
         {Object.entries(SCORE_LABELS).map(([key, label]) => (
           <StatTile
