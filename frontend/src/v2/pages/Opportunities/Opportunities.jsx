@@ -82,14 +82,14 @@ export default function Opportunities() {
       </section>
 
       <div className="finder-result-head">
-        <div><TrendingUp size={16} /><strong>{query.isLoading ? "Scanning FUT.GG opportunities…" : `${items.length} matching ${items.length === 1 ? "opportunity" : "opportunities"}`}</strong></div>
+        <div><TrendingUp size={16} /><strong>{query.isLoading ? "Scanning for opportunities…" : `${items.length} matching ${items.length === 1 ? "opportunity" : "opportunities"}`}</strong></div>
         {filtersActive ? <button onClick={() => setFilters(DEFAULTS)}><RotateCcw size={14} /> Reset filters</button> : null}
       </div>
 
       {query.isLoading ? (
-        <EmptyState icon={<TrendingUp size={25} />} text="Checking the latest FUT.GG opportunities…" />
+        <EmptyState icon={<TrendingUp size={25} />} text="Checking the latest opportunities…" />
       ) : notDeployed ? (
-        <EmptyState icon={<ShieldAlert size={25} />} error text="The FUT.GG opportunities feed isn't live yet — this endpoint hasn't been deployed on the backend." action={<button onClick={() => query.refetch()}>Try again</button>} />
+        <EmptyState icon={<ShieldAlert size={25} />} error text="Opportunities aren't available right now. Please check back shortly." action={<button onClick={() => query.refetch()}>Try again</button>} />
       ) : query.isError ? (
         <EmptyState icon={<ShieldAlert size={25} />} error text="Opportunities could not be loaded." action={<button onClick={() => query.refetch()}>Try again</button>} />
       ) : items.length ? (

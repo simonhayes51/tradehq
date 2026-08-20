@@ -1,5 +1,5 @@
 import { Link, useNavigate } from "react-router-dom";
-import { Briefcase, LogOut, Star, User } from "lucide-react";
+import { Briefcase, LogOut, Star, User, Wrench } from "lucide-react";
 import { useAuth } from "../../../context/AuthContext";
 import { useEntitlements } from "../../../context/EntitlementsContext";
 import { PageHead } from "../Players/Players";
@@ -18,7 +18,7 @@ export default function Account() {
   }
 
   return <main className="v2-destination v2-account-page">
-    <PageHead eyebrow="YOUR ACCOUNT" title={name} copy="Your v2 membership, saved cards and trading record in one place." />
+    <PageHead eyebrow="YOUR ACCOUNT" title={name} copy="Your membership, saved cards and trading record in one place." />
     <section className="v2-account-grid">
       <article className="v2-account-hero">
         <div className="v2-account-avatar">{user?.avatar_url ? <img src={user.avatar_url} alt=""/> : <User/>}</div>
@@ -32,6 +32,12 @@ export default function Account() {
     <section className="v2-account-links">
       <Link to="/v2/watchlist"><Star/><div><strong>Watchlist</strong><span>Review cards you’re tracking</span></div></Link>
       <Link to="/v2/portfolio"><Briefcase/><div><strong>Portfolio</strong><span>See open and completed trades</span></div></Link>
+      {/* Smart Buy AI, Portfolio Optimizer, Trade Copilot, Market
+          Sentiment, Market Maker, Leaderboard, Referrals and Squad
+          Builder haven't been rebuilt here yet - this is the only way
+          into that sidebar now that "/" and "/dashboard" both redirect
+          straight into this app instead of the old one. */}
+      <Link to="/add-trade"><Wrench/><div><strong>More tools</strong><span>Smart Buy, Portfolio Optimizer, Trade Copilot and more</span></div></Link>
     </section>
     {isAuthenticated ? <button className="v2-sign-out" onClick={signOut}><LogOut size={17}/> Sign out</button> : null}
   </main>;

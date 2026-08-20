@@ -53,13 +53,13 @@ describe("saleAgeLabel", () => {
 });
 
 describe("saleTitle", () => {
-  it("keeps the scraper's own wording as a detail, attributed to FUT.GG", () => {
+  it("keeps the scraper's own wording as a detail", () => {
     const title = saleTitle({
       age_text: "2 minutes ago",
       approximate_sold_at: "2026-08-08T02:11:00.000Z",
     });
     expect(title).toContain("Approximate:");
-    expect(title).toContain('FUT.GG said "2 minutes ago"');
+    expect(title).toContain('Recorded as "2 minutes ago"');
   });
 
   it("is undefined when there is nothing to say", () => {

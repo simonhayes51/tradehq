@@ -128,7 +128,7 @@ function toFutggAnalysisItem(raw, cardId) {
     psPcBinGapPct: null,
     risk,
     holdingPeriod: "Flexible",
-    reasoning: reasons[0] || "FUT.GG market signal",
+    reasoning: reasons[0] || "Market signal",
     updatedAt: raw.current_bin_captured_at,
     priceAgeSeconds: raw.price_age_seconds,
     player: {
