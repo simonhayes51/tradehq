@@ -283,20 +283,23 @@ class TestTierAwareStaleness:
     own, much tighter, threshold."""
 
     def test_special_tier_flags_stale_well_before_default_threshold(self):
-        # 30 minutes old: well within the old flat 120-minute cutoff, but
-        # beyond special's own 20-minute threshold.
+        # 45 minutes old: well within the old flat 120-minute cutoff, but
+        # beyond special's own 40-minute threshold (raised from 20 - see
+        # futgg_config.py's comment and test_futgg_price_freshness_clock.py -
+        # to clear the bulk price sync's own worst-case heartbeat gap of up
+        # to 29 minutes for a genuinely stable, correctly-tracked price).
         ci = evaluate_card(
-            _snapshot(price_tier="special", bin_captured_at=AS_OF - timedelta(minutes=30)),
+            _snapshot(price_tier="special", bin_captured_at=AS_OF - timedelta(minutes=45)),
             as_of=AS_OF,
         )
         assert ci.signal == "insufficient_data"
         assert any("special-tier" in r for r in ci.signal_reasons)
 
     def test_bronze_tier_tolerates_an_age_that_would_flag_special(self):
-        # Same 30-minute age a special-tier card was flagged stale at -
+        # Same 45-minute age a special-tier card was flagged stale at -
         # bronze's much longer market cadence tolerates this fine.
         ci = evaluate_card(
-            _snapshot(price_tier="bronze", bin_captured_at=AS_OF - timedelta(minutes=30)),
+            _snapshot(price_tier="bronze", bin_captured_at=AS_OF - timedelta(minutes=45)),
             as_of=AS_OF,
         )
         assert ci.signal != "insufficient_data"
