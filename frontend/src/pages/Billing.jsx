@@ -1,13 +1,20 @@
 // src/pages/Billing.jsx - Complete with 7-day trial and correct season pricing
 import React, { useState, useEffect } from "react";
-import { 
-  Crown, Star, Check, Zap, ArrowRight, CreditCard, Shield, Clock, 
+import { useSearchParams } from "react-router-dom";
+import {
+  Crown, Star, Check, Zap, ArrowRight, CreditCard, Shield, Clock,
   AlertTriangle, MessageCircle, ExternalLink, Users, Gift
 } from "lucide-react";
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
 
 export default function Billing() {
+  // Set by PremiumGate/LockedPreviewCard so this page can name the exact
+  // thing that sent the user here ("Unlock the full Opportunities feed")
+  // instead of a generic "Welcome to Premium" that feels disconnected
+  // from whatever they were just looking at.
+  const [searchParams] = useSearchParams();
+  const unlockContext = searchParams.get("unlock");
   const [user, setUser] = useState(null);
   const [isPremium, setIsPremium] = useState(false);
   const [billingCycle, setBillingCycle] = useState("yearly"); // Default to season
@@ -379,10 +386,15 @@ export default function Billing() {
       <div className="relative z-10 container mx-auto px-6 py-12 max-w-4xl">
         {/* Header */}
         <div className="text-center mb-12">
+          {unlockContext ? (
+            <p className="inline-block mb-4 px-4 py-2 rounded-lg bg-[#91db32]/10 border border-[#91db32]/30 text-[#91db32] text-sm font-semibold">
+              Unlock {unlockContext}
+            </p>
+          ) : null}
           <div className="inline-flex items-center justify-center w-16 h-16 bg-gradient-to-br from-yellow-400 to-orange-500 rounded-full mb-6">
             <Crown className="w-8 h-8 text-black" />
           </div>
-          
+
           <h1 className="text-4xl md:text-5xl font-black mb-4 bg-gradient-to-r from-yellow-400 via-orange-500 to-red-500 bg-clip-text text-transparent">
             Go Premium
           </h1>

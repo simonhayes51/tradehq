@@ -15,10 +15,10 @@ import PrivateRoute from "./components/PrivateRoute";
 import PremiumRoute from "./components/PremiumRoute";
 
 // Eager pages
-import Landing from "./pages/Landing";
 import SquadBuilder from "./pages/SquadBuilder";
 
 // Lazy pages
+const Signup         = lazy(() => import("./pages/Signup"));
 const AddTrade      = lazy(() => import("./pages/AddTrade"));
 const Trades        = lazy(() => import("./pages/Trades"));
 const Profile       = lazy(() => import("./pages/Profile"));
@@ -80,8 +80,8 @@ function App() {
                 <Routes>
                   {/* Public routes */}
                   <Route path="/login" element={<Login />} />
+                  <Route path="/signup" element={<Signup />} />
                   <Route path="/access-denied" element={<AccessDenied />} />
-                  <Route path="/landing" element={<Landing />} />
                   {/* Investor/buyer-facing read-only data pipeline demo -
                       public on purpose, must not sit behind PrivateRoute */}
                   <Route path="/demo" element={<Demo />} />

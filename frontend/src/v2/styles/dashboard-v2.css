@@ -132,10 +132,71 @@
   white-space: nowrap;
 }
 .intro-actions .secondary { border-color: var(--line); background: transparent; color: #fff; }
+.intro-proof { color: var(--green) !important; font-size: 12px !important; font-weight: 700; margin-top: 12px !important; }
 @media (max-width: 800px) {
   .intro-banner { flex-direction: column; align-items: flex-start; }
   .intro-actions { flex-direction: row; width: 100%; }
   .intro-actions button { flex: 1; }
+}
+
+/* Signed-out sidebar footer (Sidebar.jsx's auth-chip-pair) - reuses
+   .account-chip's box but needs its own content layout, and must stay
+   visible on mobile unlike the signed-in chip (which is redundant there
+   since Account has its own bottom-bar tab). */
+.account-chip.auth-chip-pair { display: flex; gap: 8px; padding: 8px; }
+.account-chip.auth-chip-pair button { flex: 1; min-height: 36px; border: 1px solid var(--line); border-radius: 3px; background: transparent; color: #fff; font-weight: 800; font-size: 12px; }
+.account-chip.auth-chip-pair button.primary { border-color: var(--green); background: var(--green); color: #101010; }
+@media (max-width: 800px) {
+  .account-chip.auth-chip-pair { display: flex; position: fixed; inset: auto 0 68px; padding: 8px 12px; border-top: 1px solid var(--line); border-radius: 0; background: #07111a; }
+}
+
+/* Public pitch (PublicPitch) - trust / how-it-works / pricing / footer,
+   signed-out only, rendered after the real live opportunities feed. */
+.public-trust, .public-how, .public-pricing { margin-top: 28px; }
+.public-trust-grid, .public-pricing-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+}
+.public-pricing-grid { grid-template-columns: repeat(2, 1fr); max-width: 720px; }
+.public-trust-grid > div {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 16px;
+}
+.public-trust-grid strong { display: block; margin-bottom: 6px; font-size: 14px; }
+.public-trust-grid p { margin: 0; font-size: 12.5px; color: #a9a9a9; line-height: 1.5; }
+.public-how-steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.public-how-steps li { display: flex; align-items: flex-start; gap: 12px; border: 1px solid var(--line); border-radius: 4px; padding: 14px 16px; }
+.public-how-steps b { display: grid; place-items: center; width: 26px; height: 26px; flex: none; border-radius: 50%; background: var(--green); color: #101010; font-weight: 900; font-size: 13px; }
+.public-how-steps strong { display: block; font-size: 13.5px; margin-bottom: 2px; }
+.public-how-steps p { margin: 0; font-size: 12.5px; color: #a9a9a9; }
+.pricing-card { border: 1px solid var(--line); border-radius: 4px; padding: 18px; display: flex; flex-direction: column; gap: 10px; }
+.pricing-card.featured { border-color: var(--green); background: linear-gradient(135deg, #122b1f, #171717 70%); }
+.pricing-card h3 { margin: 0; font-size: 16px; display: flex; align-items: baseline; gap: 8px; }
+.pricing-card h3 span { font-size: 12px; font-weight: 600; color: var(--green); }
+.pricing-card ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.pricing-card li { font-size: 12.5px; color: #c2c2c2; padding-left: 16px; position: relative; }
+.pricing-card li::before { content: "✓"; position: absolute; left: 0; color: var(--green); }
+.pricing-card button { margin-top: 8px; min-height: 40px; border-radius: 3px; border: 1px solid var(--green); background: var(--green); color: #101010; font-weight: 900; font-size: 12.5px; }
+.pricing-card:not(.featured) button { background: transparent; color: #fff; }
+.public-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 32px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+  color: #8e8e8e;
+  font-size: 12px;
+}
+.public-footer nav { display: flex; gap: 16px; }
+.public-footer a { color: #8e8e8e; }
+.public-footer a:hover { color: #fff; }
+@media (max-width: 800px) {
+  .public-trust-grid, .public-pricing-grid { grid-template-columns: 1fr; }
+  .public-footer { flex-direction: column; align-items: flex-start; gap: 8px; }
 }
 
 /* Bell notification badge - real count of recent triggered price alerts

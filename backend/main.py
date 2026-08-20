@@ -85,6 +85,7 @@ from app.db import get_core_pool
 from app.services.futgg_scanner import refresher_loop as futgg_scanner_refresher_loop
 from app.services.futgg_outcome_grader import refresher_loop as futgg_outcome_grader_refresher_loop
 from app.services.priority_recompute import refresher_loop as priority_recompute_refresher_loop
+from app.services.oauth_return import safe_return_to
 from app.services.futgg_card_image_mirror import mirror_loop as futgg_card_image_mirror_loop
 
 
@@ -1303,8 +1304,12 @@ async def _establish_dashboard_session(
     request.session["roles"] = await get_member_role_names(discord_id)
 
 
+_safe_return_to = safe_return_to  # see app/services/oauth_return.py
+
+
 @app.get("/api/login")
-async def login(request: Request):
+async def login(request: Request, return_to: Optional[str] = None):
+    return_to = _safe_return_to(return_to)
     if DISABLE_DISCORD_AUTH:
         # See DISABLE_DISCORD_AUTH's definition near the top of the file -
         # skips Discord entirely and logs in as a fixed dev identity.
@@ -1314,10 +1319,10 @@ async def login(request: Request):
         )
         avatar_url = f"https://cdn.discordapp.com/embed/avatars/{DEV_DISCORD_ID % 5}.png"
         await _establish_dashboard_session(request, DEV_DISCORD_ID, DEV_USERNAME, avatar_url, DEV_USERNAME)
-        return RedirectResponse(f"{FRONTEND_URL}/#/")
+        return RedirectResponse(f"{FRONTEND_URL}/#{return_to}")
 
     state = secrets.token_urlsafe(24)
-    OAUTH_STATE[state] = {"flow": "dashboard", "ts": time.time()}
+    OAUTH_STATE[state] = {"flow": "dashboard", "ts": time.time(), "return_to": return_to}
     params = {
         "client_id": DISCORD_CLIENT_ID,
         "redirect_uri": DISCORD_REDIRECT_URI,
@@ -1431,7 +1436,7 @@ async def callback(request: Request):
 
         await _establish_dashboard_session(request, discord_id, username, avatar_url, global_name)
 
-        return RedirectResponse(f"{FRONTEND_URL}/#/")
+        return RedirectResponse(f"{FRONTEND_URL}/#{_safe_return_to(state_meta.get('return_to'))}")
 
 
 

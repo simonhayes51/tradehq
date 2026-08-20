@@ -15,8 +15,11 @@ const PrivateRoute = ({ children }) => {
   }
 
   if (!isAuthenticated) {
-    // Use hash routing for login
-    window.location.hash = '/login';
+    // Preserve where the user was headed (e.g. a shared /v2/players/:id
+    // link) so login() can send them back there instead of stranding
+    // them on Home after auth - see AuthContext.login's returnTo.
+    const current = window.location.hash.slice(1) || '/';
+    window.location.hash = `/login?from=${encodeURIComponent(current)}`;
     return null;
   }
 
