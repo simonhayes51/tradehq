@@ -43,11 +43,19 @@ export function buildWhyText(item) {
   const topReason = typeof item?.reasoning === "string" ? item.reasoning : reasons[0];
 
   if (trend && trend !== GENERIC_TREND_TEXT) {
-    // Only append the top signal reason when it adds something the trend
+    // Only prepend the top signal reason when it adds something the trend
     // sentence doesn't already say - avoids "X. X." on cards where both
     // ultimately describe the same discount-to-median fact.
     if (topReason && !trend.toLowerCase().startsWith(topReason.toLowerCase().slice(0, 16))) {
-      return `${trend} ${topReason}`;
+      // topReason FIRST: it's the specific, numeric "why buy this" fact
+      // (e.g. "Current BIN is 42.9% below the median of 50 recent
+      // sales") - trend is a broader, often-shared scenario label like
+      // "The price has been broadly flat across this sales window."
+      // Every card list truncates this string to one line, and with
+      // trend leading, that boilerplate sentence alone is what showed -
+      // identically - on nearly every card, with the actual reason
+      // clipped off before it ever rendered.
+      return `${topReason} ${trend}`;
     }
     return trend;
   }

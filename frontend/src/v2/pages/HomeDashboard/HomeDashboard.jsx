@@ -104,7 +104,15 @@ export default function HomeDashboard(){
   // fixed or retired - better an honest "still building" empty state
   // than presenting broken legacy numbers as live market data.
   const futggItems=items.filter(x=>x.source==="futgg");
-  const opportunities=futggItems.filter(x=>x.recommendation==="BUY");
+  // Ranked by expected profit, not left in whatever order the feed
+  // returned them - that order was confidence/discount-led, so a 92%-
+  // confidence flip worth 85 coins could sit ahead of a 78%-confidence
+  // one worth 12,000+. Every item here already cleared the BUY bar, so
+  // confidence is already accounted for; profit is what actually makes
+  // one BUY a better feature than another. TOP CARD and the "Next best
+  // moves" queue both use this order, so the queue stops burying its
+  // biggest wins at #4/#5 behind smaller ones at #2/#3.
+  const opportunities=futggItems.filter(x=>x.recommendation==="BUY").slice().sort((a,b)=>(expectedProfit(b)??-Infinity)-(expectedProfit(a)??-Infinity));
   const lead=opportunities[0]??null;
   const queue=opportunities.filter(x=>String(x.cardId)!==String(lead?.cardId)).slice(0,6);
   const shown=new Set([lead,...queue].filter(Boolean).map(x=>String(x.cardId)));
