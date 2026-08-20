@@ -13,6 +13,7 @@ import TradeFinder from "./pages/TradeFinder/TradeFinder";
 import Opportunities from "./pages/Opportunities/Opportunities";
 import Account from "./pages/Account/Account";
 import Chat from "./pages/Chat/Chat";
+import Billing from "./pages/Billing/Billing";
 
 export default function V2App() {
   return (
@@ -30,6 +31,13 @@ export default function V2App() {
       <Route path="watchlist" element={<ShellLayout><Watchlist /></ShellLayout>} />
       <Route path="portfolio" element={<ShellLayout><ClubRoute /></ShellLayout>} />
       <Route path="account" element={<ShellLayout><Account /></ShellLayout>} />
+      {/* The one Billing users are ever sent to now - see Billing.jsx's
+          header comment. The old v1 /billing (purple styling, "Smart Buy
+          AI"/"Sharpe ratio" copy that doesn't describe v2) is left in
+          place at its own URL for now (nothing deletes it), but every
+          in-app link (PremiumGate, LockedPreviewCard, this public site)
+          points here instead. */}
+      <Route path="billing" element={<ShellLayout><Billing /></ShellLayout>} />
       <Route path="club" element={<ShellLayout><ClubRoute /></ShellLayout>} />
       <Route path="admin" element={<ShellLayout><Admin /></ShellLayout>} />
       <Route path="admin/sbc-imports" element={<ShellLayout><AdminSbcImports /></ShellLayout>} />

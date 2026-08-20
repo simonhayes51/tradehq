@@ -35,7 +35,6 @@ const Login         = lazy(() => import("./pages/Login"));
 const AccessDenied  = lazy(() => import("./pages/AccessDenied"));
 const NotFound      = lazy(() => import("./pages/NotFound"));
 const PlayerCompare = lazy(() => import("./pages/PlayerCompare"));
-const Billing       = lazy(() => import("./pages/Billing"));
 
 // NEW pages
 const UndervaluedBoard = lazy(() => import("./pages/UndervaluedBoard"));
@@ -165,12 +164,16 @@ function App() {
                     <Route path="analytics" element={<ProfitGraph />} />
                     <Route path="pricecheck" element={<PriceCheck />} />
                     <Route path="squad" element={<SquadBuilder />} />
-                    <Route path="billing" element={<Billing />} />
-                    {/* PricingTiers (3-tier plan) was removed - it described a pricing
-                        model that never matched the app's real one (a single flat
-                        Premium tier sold on Billing.jsx), and its checkout call sent a
-                        payload the backend didn't understand. Old links redirect here. */}
-                    <Route path="pricing" element={<Navigate to="/billing" replace />} />
+                    {/* v1 Billing (purple gradients, "Smart Buy AI"/"Sharpe
+                        ratio" copy that doesn't describe what v2 actually
+                        ships) is no longer part of the launch funnel - both
+                        this and /pricing now redirect to the real v2
+                        Billing page. The old <Billing/> import/component
+                        file is left in place (nothing deletes it) in case
+                        anything outside this app still deep-links here,
+                        but no in-app path leads to it any more. */}
+                    <Route path="billing" element={<Navigate to="/v2/billing" replace />} />
+                    <Route path="pricing" element={<Navigate to="/v2/billing" replace />} />
                     <Route path="profit-calculator" element={<ProfitCalculator />} />
                     <Route path="leaderboard" element={<Leaderboard />} />
                     <Route path="referrals" element={<ReferralProgram />} />
