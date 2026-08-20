@@ -13,6 +13,7 @@ import { useEffect, useState } from "react";
 import { useSearchParams, Link } from "react-router-dom";
 import { Crown, Check, X, CreditCard, Shield, Clock, AlertTriangle, MessageCircle, ExternalLink, Gift } from "lucide-react";
 import SectionCard from "../../components/SectionCard";
+import { DISCORD_INVITE_URL } from "../../../lib/domains";
 import "../../styles/billing.css";
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
@@ -235,7 +236,7 @@ export default function Billing() {
                 <strong>Premium Discord access is live on your account</strong>
                 <p>Join the server to reach the premium channel.</p>
               </div>
-              <a href="https://discord.gg/3sSpu3rDgn" target="_blank" rel="noreferrer" className="billing-v2-btn secondary">
+              <a href={DISCORD_INVITE_URL} target="_blank" rel="noreferrer" className="billing-v2-btn secondary">
                 Open Discord <ExternalLink size={13} />
               </a>
             </div>

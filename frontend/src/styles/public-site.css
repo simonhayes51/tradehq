@@ -6,8 +6,9 @@
 .pub-brand { color: #fff; font-weight: 900; font-size: 18px; text-decoration: none; letter-spacing: -.01em; }
 .pub-brand b { color: #39ff8a; }
 .pub-nav nav { display: flex; align-items: center; gap: 22px; }
-.pub-nav nav a { color: #a7a7ac; text-decoration: none; font-weight: 600; font-size: 13.5px; }
-.pub-nav nav a:hover { color: #fff; }
+.pub-nav nav a,.pub-nav nav button.pub-nav-extra { color: #a7a7ac; text-decoration: none; font-weight: 600; font-size: 13.5px; }
+.pub-nav nav button.pub-nav-extra { padding: 0; border: 0; background: transparent; cursor: pointer; font-family: inherit; }
+.pub-nav nav a:hover,.pub-nav nav button.pub-nav-extra:hover { color: #fff; }
 .pub-nav nav a.pub-cta { color: #06120a; background: #39ff8a; padding: 10px 18px; border-radius: 4px; font-weight: 900; }
 
 .pub-main { max-width: 1120px; margin: 0 auto; padding: 0 32px 60px; }
@@ -117,7 +118,8 @@ button.pub-secondary:hover { border-color: #4a4b52; }
   .pub-hero-card { max-width: 100%; }
   .pub-opp-grid, .pub-trust-grid, .pub-pricing-grid { grid-template-columns: 1fr; }
   .pub-hero-copy h1 { font-size: 30px; }
-  .pub-nav-pricing, .pub-nav-extra { display: none; }
+  .pub-nav-pricing, .pub-nav-discord { display: none; }
+  .pub-nav nav { gap: 14px; }
 }
 @media (max-width: 480px) {
   .pub-nav { padding: 14px 16px; }

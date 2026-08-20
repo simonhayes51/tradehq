@@ -20,7 +20,8 @@ import { useEffect, useRef } from "react";
 import { HashRouter, Routes, Route, Link } from "react-router-dom";
 import { ArrowRight, Lock, TrendingUp, ShieldCheck, Zap, ChevronRight } from "lucide-react";
 import { useFutggOpportunityPreview, useFutggMarketFreshness } from "./v2/hooks/useFutggMarket";
-import { APP_ORIGIN } from "./lib/domains";
+import api from "./axios";
+import { APP_ORIGIN, DISCORD_INVITE_URL } from "./lib/domains";
 import Privacy from "./pages/Privacy";
 import Terms from "./pages/Terms";
 import "./v2/styles/tokens.css";
@@ -36,13 +37,21 @@ function coins(n) {
   return Number.isFinite(v) ? v.toLocaleString("en-GB") : "—";
 }
 
+export function scrollToPublicSection(sectionId) {
+  const section = document.getElementById(sectionId);
+  if (!section) return false;
+  section.scrollIntoView({ behavior: "smooth", block: "start" });
+  return true;
+}
+
 function PublicNav() {
   return (
     <header className="pub-nav">
       <Link to="/" className="pub-brand">EAFC <b>Live</b></Link>
       <nav>
-        <a href="#how" className="pub-nav-extra">How it works</a>
+        <button type="button" className="pub-nav-extra" onClick={() => scrollToPublicSection("how")}>How it works</button>
         <a href={`${APP_ORIGIN}/#/v2/billing`} className="pub-nav-pricing">Pricing</a>
+        <a href={DISCORD_INVITE_URL} className="pub-nav-discord" target="_blank" rel="noreferrer">Discord</a>
         <a href={`${APP_ORIGIN}/#/login`} className="pub-nav-login">Log in</a>
         <a href={`${APP_ORIGIN}/#/signup`} className="pub-cta">Start free</a>
       </nav>
@@ -126,10 +135,7 @@ function PublicHome() {
   // - it used to silently send visitors into the app-forwarding catch-
   // all route instead of scrolling anywhere. scrollIntoView avoids the
   // router entirely.
-  const scrollToPreview = (e) => {
-    e.preventDefault();
-    oppRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-  };
+  const scrollToPreview = () => oppRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
 
   return (
     <main className="pub-main">
@@ -263,6 +269,16 @@ function ForwardToApp() {
 }
 
 export default function PublicSite() {
+  useEffect(() => {
+    const match = window.location.pathname.match(/^\/r\/([A-Za-z0-9_-]{3,64})\/?$/);
+    const queryCode = new URLSearchParams(window.location.search).get("ref");
+    const code = match?.[1] || queryCode;
+    if (!code) return;
+    api.post(`/api/referrals/track-click?code=${encodeURIComponent(code)}`, null, { __skipAuthRedirect: true })
+      .catch(() => null);
+    if (match) window.history.replaceState({}, "", "/");
+  }, []);
+
   return (
     <HashRouter>
       <div className="pub-root">
@@ -278,7 +294,7 @@ export default function PublicSite() {
           <nav>
             <a href={`${APP_ORIGIN}/#/v2/billing`}>Pricing</a>
             <a href={`${APP_ORIGIN}/#/login`}>Log in</a>
-            <a href="https://discord.gg/3sSpu3rDgn" target="_blank" rel="noreferrer">Discord</a>
+            <a href={DISCORD_INVITE_URL} target="_blank" rel="noreferrer">Discord</a>
             <Link to="/privacy">Privacy</Link>
             <Link to="/terms">Terms</Link>
             <a href="mailto:support@eafc.live">support@eafc.live</a>

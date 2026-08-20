@@ -6,7 +6,7 @@ from app.db import get_db
 from app.auth.entitlements import compute_entitlements
 import secrets
 import string
-from datetime import datetime
+from datetime import datetime, timezone
 
 router = APIRouter(prefix="/api/referrals", tags=["Referrals"])
 
@@ -94,6 +94,18 @@ async def get_referral_stats(
             referral_code
         ) or 0
 
+        active_subscriptions = await db.fetchval(
+            """
+            SELECT COUNT(DISTINCT u.id)
+            FROM users u
+            JOIN subscriptions s ON s.user_id=u.id
+            WHERE u.referred_by=$1
+              AND s.status IN ('active', 'trialing', 'trial', 'past_due')
+              AND (s.current_period_end IS NULL OR s.current_period_end > NOW())
+            """,
+            referral_code,
+        ) or 0
+
         # Calculate rewards
         # Reward structure: 100 coins per conversion (can be adjusted)
         reward_per_conversion = 100
@@ -126,6 +138,7 @@ async def get_referral_stats(
                 "total_clicks": clicks,
                 "unique_clicks": unique_clicks,
                 "conversions": conversions,
+                "active_subscriptions": active_subscriptions,
                 "conversion_rate": round((conversions / unique_clicks * 100) if unique_clicks > 0 else 0, 2)
             },
             "rewards": {
@@ -134,7 +147,7 @@ async def get_referral_stats(
                 "currency": "coins"
             },
             "recent_referrals": referral_list,
-            "share_url": f"https://app.futhub.co.uk?ref={referral_code}"
+            "share_url": f"https://eafc.live/r/{referral_code}"
         }
 
     except HTTPException:
@@ -152,6 +165,12 @@ async def track_referral_click(
 ) -> Dict[str, Any]:
     """Track a referral click"""
     try:
+        valid = await db.fetchrow(
+            "SELECT user_id FROM referral_codes WHERE code=$1", code
+        )
+        if not valid:
+            raise HTTPException(status_code=404, detail="Unknown referral code")
+
         # Get IP address from request
         ip_address = req.client.host if req.client else "unknown"
         user_agent = req.headers.get("user-agent", "")
@@ -165,8 +184,16 @@ async def track_referral_click(
             code, ip_address, user_agent, datetime.utcnow()
         )
 
+        # Starlette's signed session cookie is server-validated and survives
+        # the Discord OAuth round trip. The account callback consumes this
+        # value once and writes users.referred_by only when it is still NULL.
+        req.session["referral_code"] = code
+        req.session["referral_recorded_at"] = datetime.now(timezone.utc).isoformat()
+
         return {"ok": True, "message": "Click tracked"}
 
+    except HTTPException:
+        raise
     except Exception as e:
         import logging
         logging.error(f"track-click error: {e}")

@@ -51,7 +51,13 @@ from app.routers.trade_finder import router as trade_finder_router
 from app.routers.auth_me import router as auth_me_router
 from app.routers.auth_email import router as auth_email_router
 from app.routers.trending import router as trending_router
-from discord_manager import discord_manager
+from app.routers.discord import router as discord_router
+from app.services.discord_integration import (
+    claim_stripe_event,
+    discord_worker_loop,
+    enqueue_role_sync,
+    entitlement_is_active,
+)
 from app.routers.market import router as market_router
 from app.routers.ai_engine import router as ai_router
 from app.routers.players import router as players_router
@@ -108,7 +114,7 @@ DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID")
 DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET")
 DISCORD_REDIRECT_URI = os.getenv("DISCORD_REDIRECT_URI")
 SECRET_KEY = os.getenv("SECRET_KEY")
-FRONTEND_URL = os.getenv("FRONTEND_URL", "https://app.futhub.co.uk").rstrip("/")
+FRONTEND_URL = os.getenv("FRONTEND_URL", "https://app.eafc.live").rstrip("/")
 PORT = int(os.getenv("PORT", 8000))
 
 ENV = os.getenv("ENV", "production").lower()
@@ -122,7 +128,7 @@ IS_PROD = ENV in ("prod", "production")
 # anything on the bare eafc.live origin, and vice versa. This code cannot
 # verify the actual deployed value of the COOKIE_DOMAIN env var - confirm
 # it in the real environment before relying on cross-subdomain SSO.
-COOKIE_DOMAIN = os.getenv("COOKIE_DOMAIN") or (".futhub.co.uk" if IS_PROD else None)
+COOKIE_DOMAIN = os.getenv("COOKIE_DOMAIN") or (".eafc.live" if IS_PROD else None)
 
 # JWT / Discord
 JWT_PRIVATE_KEY = os.getenv("JWT_PRIVATE_KEY", "dev-secret-change-me")
@@ -136,14 +142,12 @@ DISCORD_OAUTH_AUTHORIZE = "https://discord.com/api/oauth2/authorize"
 DISCORD_OAUTH_TOKEN = "https://discord.com/api/oauth2/token"
 DISCORD_USERS_ME = "https://discord.com/api/users/@me"
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
-DISCORD_SERVER_ID = os.getenv("DISCORD_SERVER_ID")
+DISCORD_SERVER_ID = os.getenv("DISCORD_GUILD_ID") or os.getenv("DISCORD_SERVER_ID")
 
-# TEMPORARY: skips the whole Discord OAuth round-trip (no client
-# id/secret/bot token needed) and every membership/permission gate that
-# depends on it, logging in as a fixed fake identity instead. Deliberately
-# allowed in production - flip DISABLE_DISCORD_AUTH back to unset/"0" to
-# restore normal Discord login once this is no longer needed.
+# Development-only escape hatch for local work without Discord OAuth.
 DISABLE_DISCORD_AUTH = os.getenv("DISABLE_DISCORD_AUTH", "0") == "1"
+if IS_PROD and DISABLE_DISCORD_AUTH:
+    raise ValueError("DISABLE_DISCORD_AUTH cannot be enabled in production")
 if DISABLE_DISCORD_AUTH:
     logging.warning(
         "DISABLE_DISCORD_AUTH is set - Discord login and all membership/"
@@ -660,6 +664,12 @@ async def lifespan(app: FastAPI):
     )
     logging.info("✅ FUT.GG card image mirror started (poll every %ss, batch %s)", card_image_mirror_poll, card_image_mirror_batch)
 
+    discord_poll = int(os.getenv("DISCORD_RECONCILE_INTERVAL_SECONDS", "60"))
+    app.state.discord_integration_task = asyncio.create_task(
+        discord_worker_loop(pool, discord_poll)
+    )
+    logging.info("Discord integration worker started (poll every %ss)", discord_poll)
+
     # The "social trading features" users-table ALTER/index block that used
     # to run here is now part of migrations/015_consolidate_core_bootstrap.sql
     # (same columns/indexes, applied once via run_on_boot() above).
@@ -682,6 +692,7 @@ async def lifespan(app: FastAPI):
             "futgg_scanner_task", "futgg_outcome_grader_task",
             "held_position_refresher_task", "futgg_market_snapshot_task",
             "priority_recompute_task", "futgg_card_image_mirror_task",
+            "discord_integration_task",
         ):
             task = getattr(app.state, task_attr, None)
             if task:
@@ -900,72 +911,11 @@ async def _table_exists(conn: asyncpg.Connection, table_name: str) -> bool:
     )
 
 async def get_discord_user_info(access_token: str):
-    async with aiohttp.ClientSession() as session:
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=8)) as session:
         async with session.get(DISCORD_USERS_ME, headers={"Authorization": f"Bearer {access_token}"}) as resp:
             if resp.status != 200:
                 return None
             return await resp.json()
-
-async def get_member_role_names(discord_user_id: str) -> list[str]:
-    if DISABLE_DISCORD_AUTH:
-        return []
-    if not (DISCORD_BOT_TOKEN and DISCORD_SERVER_ID):
-        return []
-    try:
-        async with aiohttp.ClientSession(headers={"Authorization": f"Bot {DISCORD_BOT_TOKEN}"}) as s:
-            # Member -> role ids
-            async with s.get(f"https://discord.com/api/guilds/{DISCORD_SERVER_ID}/members/{discord_user_id}") as r:
-                if r.status != 200:
-                    return []
-                member = await r.json()
-                role_ids = set(str(x) for x in (member.get("roles") or []))
-
-            # Guild roles -> map id->name
-            async with s.get(f"https://discord.com/api/guilds/{DISCORD_SERVER_ID}/roles") as r2:
-                if r2.status != 200:
-                    return []
-                roles_meta = await r2.json()
-                id_to_name = {str(rr["id"]): rr["name"] for rr in roles_meta}
-
-        return [id_to_name.get(rid, rid) for rid in role_ids]
-    except Exception:
-        return []
-
-
-# --- Premium by Discord Role ---
-DISCORD_PREMIUM_ROLE_ID = os.getenv("DISCORD_PREMIUM_ROLE_ID")
-
-_ROLE_CACHE: dict[str, dict] = {}
-ROLE_CACHE_TTL = 300  # 5 minutes
-
-async def user_has_premium_role(user_id: str) -> bool:
-    """Return True if the member has the Premium role in your guild (cached)."""
-    if not (DISCORD_BOT_TOKEN and DISCORD_SERVER_ID and DISCORD_PREMIUM_ROLE_ID):
-        return False
-
-    now = time.time()
-    hit = _ROLE_CACHE.get(user_id)
-    if hit and (now - hit["at"] < ROLE_CACHE_TTL):
-        return bool(hit["ok"])
-
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                f"https://discord.com/api/v10/guilds/{DISCORD_SERVER_ID}/members/{user_id}",
-                headers={"Authorization": f"Bot {DISCORD_BOT_TOKEN}"}
-            ) as resp:
-                if resp.status != 200:
-                    ok = False
-                else:
-                    js = await resp.json()
-                    roles = js.get("roles") or []
-                    ok = DISCORD_PREMIUM_ROLE_ID in roles
-    except Exception:
-        ok = False
-
-    _ROLE_CACHE[user_id] = {"ok": ok, "at": now}
-    return ok
-
 
 async def check_server_membership(discord_id: int | str) -> bool:
     if DISABLE_DISCORD_AUTH:
@@ -975,12 +925,17 @@ async def check_server_membership(discord_id: int | str) -> bool:
 
     try:
         discord_id = str(discord_id)  # ensure URL-safe
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
             async with session.get(
                 f"https://discord.com/api/guilds/{DISCORD_SERVER_ID}/members/{discord_id}",
                 headers={"Authorization": f"Bot {DISCORD_BOT_TOKEN}"}
             ) as resp:
-                return resp.status == 200
+                if resp.status == 200:
+                    return True
+                if resp.status == 404:
+                    return False
+                logging.warning("Discord membership check returned %s; skipping enforcement", resp.status)
+                return True
     except Exception as exc:
         logging.warning("Discord membership check failed; skipping enforcement: %s", exc)
         return True
@@ -1141,6 +1096,7 @@ app.include_router(players_router)
 app.include_router(portfolio_router)        # /api/ai/optimize-portfolio
 app.include_router(leaderboard_router)      # /api/leaderboard/*
 app.include_router(referrals_router)        # /api/referrals/*
+app.include_router(discord_router)          # /api/discord/*
 app.include_router(trades_router)           # /api/trades/*
 
 # Public/paid historical-data API
@@ -1286,6 +1242,24 @@ async def _establish_dashboard_session(
 
             app_user_id = str(user_row["id"])
 
+            referral_code = request.session.pop("referral_code", None)
+            request.session.pop("referral_recorded_at", None)
+            if referral_code:
+                await conn.execute(
+                    """
+                    UPDATE users u
+                    SET referred_by=$2
+                    WHERE u.id=$1
+                      AND u.referred_by IS NULL
+                      AND EXISTS (
+                          SELECT 1 FROM referral_codes rc
+                          WHERE rc.code=$2 AND rc.user_id <> u.id
+                      )
+                    """,
+                    app_user_id,
+                    referral_code,
+                )
+
             if await _table_exists(conn, "user_profiles"):
                 await conn.execute(
                     """
@@ -1318,8 +1292,14 @@ async def _establish_dashboard_session(
         else None,
     }
 
-    # Discord roles lookup uses discord_id
-    request.session["roles"] = await get_member_role_names(discord_id)
+    # Login must not wait on Discord guild availability. The durable worker
+    # reconciles the server role from EAFC Live's billing state instead.
+    request.session["roles"] = []
+    try:
+        async with request.app.state.pool.acquire() as conn:
+            await enqueue_role_sync(conn, app_user_id)
+    except Exception:
+        logging.warning("Could not queue Discord role reconciliation after login", exc_info=True)
 
 
 _safe_return_to = safe_return_to  # see app/services/oauth_return.py
@@ -2279,17 +2259,10 @@ async def get_current_user_info(request: Request, conn=Depends(get_db)):
         print("❌ Missing user_id or discord_id in session")
         return {"authenticated": False}
 
-    # RE-CHECK membership using DISCORD ID (NOT UUID)
-    print(f"🔍 Re-checking membership for discord user {discord_id}")
-    is_member = await check_server_membership(int(discord_id))
-    if not is_member:
-        print(f"❌ Discord user {discord_id} no longer a member - clearing session")
-        request.session.clear()
-        return {
-            "authenticated": False,
-            "error": "membership_revoked",
-            "message": "Discord server membership required"
-        }
+    # Guild membership is not an account requirement. Discord complements
+    # EAFC Live; leaving the community must not sign a customer out of the
+    # paid website. The optional callback gate remains available only when
+    # REQUIRE_GUILD_MEMBERSHIP=1 is deliberately configured.
 
     # Get user profile using UUID (with account_type from users table)
     if not await _table_exists(conn, "user_profiles"):
@@ -2366,7 +2339,7 @@ async def get_current_user_info(request: Request, conn=Depends(get_db)):
         SELECT current_period_end, status, cancel_at_period_end
         FROM subscriptions
         WHERE user_id = $1
-          AND status IN ('active', 'trialing', 'trial')
+          AND status IN ('active', 'trialing', 'trial', 'past_due')
         ORDER BY created_at DESC
         LIMIT 1
         """,
@@ -2375,9 +2348,10 @@ async def get_current_user_info(request: Request, conn=Depends(get_db)):
 
     if active_subscription:
         current_period_end = active_subscription["current_period_end"]
-        now = datetime.now(timezone.utc)
-
-        if current_period_end and current_period_end > now:
+        if entitlement_is_active(
+            status=active_subscription["status"],
+            current_period_end=current_period_end,
+        ):
             is_premium = True
             premium_until = current_period_end
         else:
@@ -2389,11 +2363,7 @@ async def get_current_user_info(request: Request, conn=Depends(get_db)):
                 """,
                 user_id
             )
-            try:
-                # Remove premium role using DISCORD ID
-                await discord_manager.remove_premium_role(int(discord_id))
-            except Exception as e:
-                logging.warning(f"Failed to remove Discord role for expired discord_id {discord_id}: {e}")
+            await enqueue_role_sync(conn, user_id, discord_user_id=str(discord_id), desired=False)
 
     response_data = {
         "authenticated": True,
@@ -3037,6 +3007,18 @@ async def delete_account(
 
     try:
         async with conn.transaction():
+            # The queue deliberately has no users FK, so the removal survives
+            # account deletion and can be retried after Discord downtime.
+            discord_user_id = await conn.fetchval(
+                "SELECT discord_id::text FROM users WHERE id=$1", user_id
+            )
+            if discord_user_id:
+                await enqueue_role_sync(
+                    conn,
+                    user_id,
+                    discord_user_id=discord_user_id,
+                    desired=False,
+                )
             await conn.execute("DELETE FROM trades WHERE user_id=$1", user_id)
             await conn.execute("DELETE FROM trading_goals WHERE user_id=$1", user_id)
             await conn.execute("DELETE FROM portfolio WHERE user_id=$1", user_id)
@@ -3650,7 +3632,7 @@ async def get_subscription_status(user_id: str = Depends(get_current_user), conn
             SELECT s.*, up.is_premium, up.premium_until
             FROM subscriptions s
             LEFT JOIN user_profiles up ON s.user_id = up.user_id
-            WHERE s.user_id = $1 AND s.status = 'active'
+            WHERE s.user_id = $1 AND s.status IN ('active', 'trialing', 'trial', 'past_due')
             ORDER BY s.created_at DESC
             LIMIT 1
             """,
@@ -3726,13 +3708,15 @@ async def create_checkout_session(
             cancel_url=data.get("cancelUrl", os.getenv("BILLING_CANCEL_URL")),
             metadata={
                 'user_id': user_id,
-                'billing_cycle': billing_cycle
+                'billing_cycle': billing_cycle,
+                'referral_code': (await conn.fetchval("SELECT referred_by FROM users WHERE id=$1", user_id)) or ''
             },
             subscription_data={
                 'trial_period_days': data.get('trialDays', 7),
                 'metadata': {
                     'user_id': user_id,
-                    'discord_id': user_id
+                    'discord_id': user_id,
+                    'referral_code': (await conn.fetchval("SELECT referred_by FROM users WHERE id=$1", user_id)) or ''
                 }
             }
         )
@@ -3746,7 +3730,7 @@ async def cancel_subscription(user_id: str = Depends(get_current_user), conn=Dep
     """Cancel user's subscription"""
     try:
         subscription = await conn.fetchrow(
-            "SELECT * FROM subscriptions WHERE user_id = $1 AND status = 'active'",
+            "SELECT * FROM subscriptions WHERE user_id = $1 AND status IN ('active', 'trialing', 'trial', 'past_due')",
             user_id
         )
         if not subscription:
@@ -3772,14 +3756,14 @@ async def update_payment_method(user_id: str = Depends(get_current_user), conn=D
     """Create customer portal session for payment method updates"""
     try:
         subscription = await conn.fetchrow(
-            "SELECT * FROM subscriptions WHERE user_id = $1 AND status = 'active'",
+            "SELECT * FROM subscriptions WHERE user_id = $1 AND status IN ('active', 'trialing', 'trial', 'past_due')",
             user_id
         )
         if not subscription or not subscription["stripe_customer_id"]:
             raise HTTPException(status_code=404, detail="No active subscription found")
         portal_session = stripe.billing_portal.Session.create(
             customer=subscription["stripe_customer_id"],
-            return_url=f"{FRONTEND_URL}/billing"
+            return_url=f"{FRONTEND_URL}/#/v2/billing"
         )
         return {"portalUrl": portal_session.url}
     except Exception as e:
@@ -3802,24 +3786,20 @@ async def stripe_webhook(request: Request, conn=Depends(get_db)):
     except stripe.error.SignatureVerificationError:
         raise HTTPException(status_code=400, detail="Invalid signature")
 
-    # Idempotency: Stripe retries webhooks, and handle_subscription_created
-    # does a plain INSERT - process each event id exactly once.
+    # Claim the event. A failed attempt remains retryable; a completed event
+    # is acknowledged without replaying its database or Discord side effects.
+    stripe_event_table_ready = True
     try:
-        inserted = await conn.fetchval(
-            """
-            INSERT INTO stripe_events (event_id, event_type)
-            VALUES ($1, $2)
-            ON CONFLICT (event_id) DO NOTHING
-            RETURNING event_id
-            """,
-            event['id'], event['type'],
-        )
-        if inserted is None:
+        claim_status = await claim_stripe_event(conn, event['id'], event['type'])
+        if claim_status == "processed":
             return {"received": True, "duplicate": True}
+        if claim_status == "processing":
+            return {"received": True, "duplicate": True, "processing": True}
     except asyncpg_exceptions.UndefinedTableError:
         # Table missing (migration 010 not applied yet) - process anyway
         # rather than dropping billing events on the floor.
         logging.warning("stripe_events table missing - webhook idempotency disabled")
+        stripe_event_table_ready = False
 
     try:
         if event['type'] == 'checkout.session.completed':
@@ -3834,8 +3814,19 @@ async def stripe_webhook(request: Request, conn=Depends(get_db)):
             await handle_payment_succeeded(event['data']['object'], conn)
         elif event['type'] == 'invoice.payment_failed':
             await handle_payment_failed(event['data']['object'], conn)
+        if stripe_event_table_ready:
+            await conn.execute(
+                "UPDATE stripe_events SET processed_at=NOW(), processing_started_at=NULL, processing_error=NULL WHERE event_id=$1",
+                event['id'],
+            )
         return {"received": True}
     except Exception as e:
+        if stripe_event_table_ready:
+            await conn.execute(
+                "UPDATE stripe_events SET processing_started_at=NULL, processing_error=$2 WHERE event_id=$1",
+                event['id'],
+                type(e).__name__,
+            )
         logger.error(f"Webhook processing error: {e}")
         raise HTTPException(status_code=500, detail="Webhook processing failed")
 
@@ -3845,8 +3836,8 @@ async def handle_checkout_completed(session, conn):
     user_id = session.get('metadata', {}).get('user_id')
 
     if user_id:
-        # Assign Discord role immediately (for platform subscriptions)
-        await discord_manager.assign_premium_role(user_id)
+        # The subscription.created/updated event carries the canonical
+        # entitlement. Checkout completion alone must not grant access.
         invalidate_entitlements_cache(user_id)
 
 async def handle_subscription_created(subscription, conn):
@@ -3868,14 +3859,27 @@ async def handle_subscription_created(subscription, conn):
         # For trials, use trial_end as the period end
         current_period_end = datetime.fromtimestamp(subscription['trial_end'], tz=timezone.utc)
 
-    # Save subscription to database
+    is_entitled = entitlement_is_active(
+        status=subscription.get('status'), current_period_end=current_period_end
+    )
+    # Save subscription idempotently. Stripe may retry or deliver an update
+    # close to the create event.
     await conn.execute(
         """
         INSERT INTO subscriptions (
             user_id, stripe_subscription_id, stripe_customer_id, status,
-            plan_id, current_period_start, current_period_end
+            plan_id, current_period_start, current_period_end, cancel_at_period_end
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        ON CONFLICT (stripe_subscription_id) DO UPDATE SET
+            user_id=EXCLUDED.user_id,
+            stripe_customer_id=EXCLUDED.stripe_customer_id,
+            status=EXCLUDED.status,
+            plan_id=EXCLUDED.plan_id,
+            current_period_start=EXCLUDED.current_period_start,
+            current_period_end=EXCLUDED.current_period_end,
+            cancel_at_period_end=EXCLUDED.cancel_at_period_end,
+            updated_at=NOW()
         """,
         user_id,
         subscription['id'],
@@ -3883,35 +3887,40 @@ async def handle_subscription_created(subscription, conn):
         subscription['status'],
         subscription['items']['data'][0]['price']['id'],
         current_period_start,
-        current_period_end
+        current_period_end,
+        subscription.get('cancel_at_period_end', False),
     )
     # Update user profile
     await conn.execute(
         """
-        UPDATE user_profiles SET is_premium = TRUE, premium_until = $2, updated_at = NOW()
+        UPDATE user_profiles SET is_premium = $2, premium_until = $3, updated_at = NOW()
         WHERE user_id = $1
         """,
         user_id,
-        datetime.fromtimestamp(subscription.get('current_period_end'), tz=timezone.utc) if subscription.get('current_period_end') else None
+        is_entitled,
+        current_period_end if is_entitled else None,
     )
-    # Assign Discord role and log
-    await discord_manager.assign_premium_role(user_id)
+    await enqueue_role_sync(conn, user_id)
     invalidate_entitlements_cache(user_id)
-    await conn.execute(
-        """
-        INSERT INTO discord_roles (user_id, discord_user_id, role_id, expires_at)
-        VALUES ($1, $2, $3, $4)
-        """,
-        user_id,
-        user_id,
-        os.getenv("DISCORD_PREMIUM_ROLE_ID"),
-        datetime.fromtimestamp(subscription.get('current_period_end'), tz=timezone.utc) if subscription.get('current_period_end') else None
-    )
 
 async def handle_subscription_updated(subscription, conn):
     """Handle subscription updates"""
     user_id = (subscription.get('metadata') or {}).get('user_id')
     if not user_id:
+        user_id = await conn.fetchval(
+            "SELECT user_id FROM subscriptions WHERE stripe_subscription_id=$1",
+            subscription.get('id'),
+        )
+    if not user_id:
+        return
+    exists = await conn.fetchval(
+        "SELECT EXISTS(SELECT 1 FROM subscriptions WHERE stripe_subscription_id=$1)",
+        subscription.get('id'),
+    )
+    if not exists:
+        normalized = dict(subscription)
+        normalized["metadata"] = {**(subscription.get("metadata") or {}), "user_id": user_id}
+        await handle_subscription_created(normalized, conn)
         return
     await conn.execute(
         """
@@ -3924,7 +3933,10 @@ async def handle_subscription_updated(subscription, conn):
         datetime.fromtimestamp(subscription.get('current_period_end'), tz=timezone.utc) if subscription.get('current_period_end') else None,
         subscription.get('cancel_at_period_end', False)
     )
-    is_active = subscription.get('status') == 'active'
+    period_end = datetime.fromtimestamp(subscription.get('current_period_end'), tz=timezone.utc) if subscription.get('current_period_end') else None
+    is_active = entitlement_is_active(
+        status=subscription.get('status'), current_period_end=period_end
+    )
     await conn.execute(
         """
         UPDATE user_profiles
@@ -3933,13 +3945,19 @@ async def handle_subscription_updated(subscription, conn):
         """,
         user_id,
         is_active,
-        datetime.fromtimestamp(subscription.get('current_period_end'), tz=timezone.utc) if is_active and subscription.get('current_period_end') else None
+        period_end if is_active else None,
     )
+    await enqueue_role_sync(conn, user_id)
     invalidate_entitlements_cache(user_id)
 
 async def handle_subscription_deleted(subscription, conn):
     """Handle subscription cancellation"""
     user_id = (subscription.get('metadata') or {}).get('user_id')
+    if not user_id:
+        user_id = await conn.fetchval(
+            "SELECT user_id FROM subscriptions WHERE stripe_subscription_id=$1",
+            subscription.get('id'),
+        )
     if not user_id:
         return
     await conn.execute(
@@ -3954,7 +3972,12 @@ async def handle_subscription_deleted(subscription, conn):
         """,
         user_id
     )
-    await discord_manager.remove_premium_role(user_id)
+    discord_user_id = await conn.fetchval(
+        "SELECT discord_id::text FROM users WHERE id=$1", user_id
+    )
+    await enqueue_role_sync(
+        conn, user_id, discord_user_id=discord_user_id, desired=False
+    )
     invalidate_entitlements_cache(user_id)
 
 async def handle_payment_succeeded(invoice, conn):
@@ -3970,6 +3993,8 @@ async def handle_payment_succeeded(invoice, conn):
                 """
                 INSERT INTO payments (user_id, stripe_payment_intent_id, amount, currency, status)
                 VALUES ($1, $2, $3, $4, $5)
+                ON CONFLICT (stripe_payment_intent_id) WHERE stripe_payment_intent_id IS NOT NULL
+                DO UPDATE SET status=EXCLUDED.status, amount=EXCLUDED.amount
                 """,
                 subscription['user_id'],
                 invoice.get('payment_intent'),
@@ -3991,6 +4016,8 @@ async def handle_payment_failed(invoice, conn):
                 """
                 INSERT INTO payments (user_id, stripe_payment_intent_id, amount, currency, status)
                 VALUES ($1, $2, $3, $4, $5)
+                ON CONFLICT (stripe_payment_intent_id) WHERE stripe_payment_intent_id IS NOT NULL
+                DO UPDATE SET status=EXCLUDED.status, amount=EXCLUDED.amount
                 """,
                 subscription['user_id'],
                 invoice.get('payment_intent'),

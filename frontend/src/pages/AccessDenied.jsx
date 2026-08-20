@@ -1,5 +1,6 @@
 // src/pages/AccessDenied.jsx 
 import React from "react";
+import { DISCORD_INVITE_URL } from "../lib/domains";
 
 const AccessDenied = () => {
   return (
@@ -70,7 +71,7 @@ const AccessDenied = () => {
 
             {/* Join Server Button */}
             <a
-              href="https://discord.gg/3sSpu3rDgn"
+              href={DISCORD_INVITE_URL}
               target="_blank"
               rel="noopener noreferrer"
               className="inline-flex items-center space-x-2 bg-indigo-600 hover:bg-indigo-700 text-white font-medium py-3 px-6 rounded-lg transition-colors mb-4"

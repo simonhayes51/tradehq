@@ -5,12 +5,11 @@ Entitlements: the single place that decides what a user can do.
 
 This module previously granted every feature to any logged-in user and
 require_feature() was a no-op — the paywall did not exist (review issue C1).
-It now computes a real tier from, in priority order:
+It now computes a real tier from EAFC Live's own account and billing data:
 
   1. users.plan ('elite' | 'pro' | 'premium' | anything else -> free)
   2. users.premium_until / user_profiles.is_premium + premium_until
-  3. An 'active' or 'trialing' row in subscriptions (Stripe-synced)
-  4. The Discord "Premium" role (legacy grandfathering, cached 5 min)
+  3. An entitled Stripe-synced subscriptions row
 
 and gates features through FEATURE_MATRIX. require_feature() raises
 HTTP 402 (payment required) when the caller's tier doesn't include the
@@ -24,7 +23,6 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Set, Literal
 
-import aiohttp
 import asyncpg
 from fastapi import HTTPException, Request
 
@@ -130,11 +128,6 @@ FEATURE_MATRIX: Dict[Feature, Dict[str, Any]] = {
     f: {"min_tier": t} for f, t in FEATURE_MIN_TIER.items()
 }
 
-# ---- Discord legacy-role fallback (optional) --------------------------------
-DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
-DISCORD_SERVER_ID = os.getenv("DISCORD_SERVER_ID")
-DISCORD_PREMIUM_ROLE_ID = os.getenv("DISCORD_PREMIUM_ROLE_ID")
-
 # ---- Admins ------------------------------------------------------------------
 # Server-side admin was previously nonexistent - "admin" only lived in the
 # frontend's VITE_ADMIN_IDS cosmetic check. Admins are now: any id listed in
@@ -143,9 +136,6 @@ DISCORD_PREMIUM_ROLE_ID = os.getenv("DISCORD_PREMIUM_ROLE_ID")
 ADMIN_DISCORD_IDS = {
     s.strip() for s in os.getenv("ADMIN_DISCORD_IDS", "").split(",") if s.strip()
 }
-
-_ROLE_CACHE: dict[str, dict] = {}
-ROLE_CACHE_TTL = 300  # seconds
 
 # Short cache of computed entitlements so hot endpoints don't re-query the DB
 # on every request. Keyed by user_id.
@@ -180,35 +170,6 @@ def _parse_roles(raw: Any) -> Set[str]:
     if isinstance(raw, (list, tuple, set)):
         return {str(r) for r in raw}
     return set()
-
-
-async def user_has_premium_role(discord_user_id: str) -> bool:
-    """Legacy grandfathering: True if the member holds the Premium role."""
-    if not (DISCORD_BOT_TOKEN and DISCORD_SERVER_ID and DISCORD_PREMIUM_ROLE_ID):
-        return False
-
-    now = time.time()
-    hit = _ROLE_CACHE.get(discord_user_id)
-    if hit and (now - hit["at"] < ROLE_CACHE_TTL):
-        return bool(hit["ok"])
-
-    ok = False
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                f"https://discord.com/api/v10/guilds/{DISCORD_SERVER_ID}/members/{discord_user_id}",
-                headers={"Authorization": f"Bot {DISCORD_BOT_TOKEN}"},
-                timeout=aiohttp.ClientTimeout(total=10),
-            ) as resp:
-                if resp.status == 200:
-                    js = await resp.json()
-                    roles = set(str(r) for r in (js.get("roles") or []))
-                    ok = DISCORD_PREMIUM_ROLE_ID in roles
-    except Exception:
-        ok = False
-
-    _ROLE_CACHE[discord_user_id] = {"ok": ok, "at": now}
-    return ok
 
 
 async def _load_billing_state(pool: asyncpg.Pool, user_id: str) -> Dict[str, Any]:
@@ -263,7 +224,7 @@ async def _load_billing_state(pool: asyncpg.Pool, user_id: str) -> Dict[str, Any
             """
             SELECT 1 FROM subscriptions
             WHERE user_id = $1
-              AND status IN ('active', 'trialing')
+              AND status IN ('active', 'trialing', 'trial', 'past_due')
               AND (current_period_end IS NULL OR current_period_end > NOW())
             LIMIT 1
             """,
@@ -285,7 +246,7 @@ def _is_admin(state: Dict[str, Any], user_id: str, discord_id: Optional[str]) ->
     return bool(ids & ADMIN_DISCORD_IDS)
 
 
-def _resolve_tier(state: Dict[str, Any], has_discord_premium: bool) -> Tier:
+def _resolve_tier(state: Dict[str, Any]) -> Tier:
     plan = (state.get("plan") or "").lower()
     # users.tier is honored as a manual-grant channel: an admin running
     # UPDATE users SET tier='elite' WHERE ... should just work, without
@@ -302,15 +263,6 @@ def _resolve_tier(state: Dict[str, Any], has_discord_premium: bool) -> Tier:
         or tier_col in {"pro", "premium"}
         or state.get("active_subscription")
         or (state.get("premium_until") and state["premium_until"] > now)
-        or (
-            state.get("profile_premium")
-            and (
-                state.get("profile_premium_until") is None
-                or state["profile_premium_until"] > now
-            )
-        )
-        or "Premium" in (state.get("roles") or set())
-        or has_discord_premium
     )
     return "pro" if paid else "free"
 
@@ -367,20 +319,13 @@ async def compute_entitlements(req: Request) -> Dict[str, Any]:
     roles: Set[str] = set(sess.get("roles") or []) | set(state.get("roles") or set())
     discord_id = sess.get("discord_id") or user_id
 
-    has_discord_premium = "Premium" in roles
-    if not has_discord_premium:
-        try:
-            has_discord_premium = await user_has_premium_role(str(discord_id))
-            if has_discord_premium:
-                roles.add("Premium")
-        except Exception:
-            has_discord_premium = False
-
     is_admin = _is_admin(state, str(user_id), str(discord_id) if discord_id else None)
-    tier = "elite" if is_admin else _resolve_tier(state, has_discord_premium)
+    tier = "elite" if is_admin else _resolve_tier(state)
     is_premium = tier in ("pro", "elite")
 
-    premium_until = state.get("premium_until") or state.get("profile_premium_until")
+    premium_until = state.get("premium_until") or (
+        state.get("profile_premium_until") if state.get("active_subscription") else None
+    )
 
     ent = {
         "user_id": str(user_id),
@@ -404,8 +349,7 @@ def invalidate_entitlements_cache(user_id: str) -> None:
 
 async def explain_entitlements(req: Request) -> Dict[str, Any]:
     """Self-serve diagnosis: every raw signal the tier decision reads, plus
-    whether the Discord env is even configured. Answers 'why am I not
-    premium?' without anyone having to read server logs. Exposed (for the
+    Answers 'why am I not premium?' without anyone having to read server logs. Exposed (for the
     logged-in user only) at /api/entitlements/debug."""
     sess = req.session or {}
     user_id = sess.get("user_id") or (sess.get("user") or {}).get("id")
@@ -414,16 +358,6 @@ async def explain_entitlements(req: Request) -> Dict[str, Any]:
 
     pool: asyncpg.Pool = req.app.state.pool
     state = await _load_billing_state(pool, str(user_id))
-    discord_id = sess.get("discord_id") or user_id
-
-    discord_env_ready = bool(DISCORD_BOT_TOKEN and DISCORD_SERVER_ID and DISCORD_PREMIUM_ROLE_ID)
-    has_discord_premium = False
-    if discord_env_ready:
-        try:
-            has_discord_premium = await user_has_premium_role(str(discord_id))
-        except Exception:
-            has_discord_premium = False
-
     # Bypass the cache so this always reflects the live DB.
     invalidate_entitlements_cache(str(user_id))
     ent = await compute_entitlements(req)
@@ -438,19 +372,16 @@ async def explain_entitlements(req: Request) -> Dict[str, Any]:
             "users.roles": sorted(state.get("roles") or []),
             "user_profiles.is_premium": state.get("profile_premium"),
             "user_profiles.premium_until": state["profile_premium_until"].isoformat() if state.get("profile_premium_until") else None,
-            "subscriptions.active_or_trialing": state.get("active_subscription"),
-            "discord.premium_role": has_discord_premium,
+            "subscriptions.entitled": state.get("active_subscription"),
             "admin.matched": ent["is_admin"],
         },
         "config": {
-            "discord_role_check_configured": discord_env_ready,
             "admin_ids_configured": bool(ADMIN_DISCORD_IDS),
         },
         "hint": (
             "Premium comes from ANY of: users.plan in (pro/premium/elite), users.tier in "
-            "(pro/elite), an active/trialing subscriptions row, unexpired premium_until on "
-            "users or user_profiles, the Discord Premium role (needs "
-            "DISCORD_BOT_TOKEN/DISCORD_SERVER_ID/DISCORD_PREMIUM_ROLE_ID set), or admin "
+            "(pro/elite), an active/trialing/past_due subscriptions row with remaining "
+            "entitlement time, unexpired users.premium_until, or admin "
             "(ADMIN_DISCORD_IDS / account_type='admin')."
         ),
     }

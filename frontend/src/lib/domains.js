@@ -8,6 +8,8 @@
 // on what "the public host" means.
 export const PUBLIC_HOSTNAME = "eafc.live";
 export const APP_ORIGIN = "https://app.eafc.live";
+export const DISCORD_INVITE_URL =
+  import.meta.env.VITE_DISCORD_INVITE_URL || "https://discord.gg/3sSpu3rDgn";
 
 export function isPublicHost(hostname = window.location.hostname) {
   return hostname === PUBLIC_HOSTNAME || hostname === `www.${PUBLIC_HOSTNAME}`;
