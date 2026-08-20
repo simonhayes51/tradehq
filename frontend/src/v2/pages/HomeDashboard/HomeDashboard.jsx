@@ -113,7 +113,11 @@ export default function HomeDashboard(){
   // one BUY a better feature than another. TOP CARD and the "Next best
   // moves" queue both use this order, so the queue stops burying its
   // biggest wins at #4/#5 behind smaller ones at #2/#3.
-  const opportunities=futggItems.filter(x=>x.recommendation==="BUY").slice().sort((a,b)=>(expectedProfit(b)??-Infinity)-(expectedProfit(a)??-Infinity));
+  // cardId as a final tiebreak: two items tied on expected profit used to
+  // fall back to array order, which could differ between fetches even
+  // with no real market change (the backend candidate pool order is not
+  // guaranteed stable), making Top Card appear to flip at random.
+  const opportunities=futggItems.filter(x=>x.recommendation==="BUY").slice().sort((a,b)=>(expectedProfit(b)??-Infinity)-(expectedProfit(a)??-Infinity)||String(a.cardId).localeCompare(String(b.cardId)));
   const lead=opportunities[0]??null;
   const queue=opportunities.filter(x=>String(x.cardId)!==String(lead?.cardId)).slice(0,6);
   const shown=new Set([lead,...queue].filter(Boolean).map(x=>String(x.cardId)));

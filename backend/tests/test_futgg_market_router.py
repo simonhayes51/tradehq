@@ -55,6 +55,7 @@ class FakeProvider:
         # without needing a real Postgres EXPLAIN.
         self.search_calls: List[Dict[str, Any]] = []
         self.bumped_card_ids: List[int] = []
+        self.segment_scan_calls = 0
 
     async def get_player(self, card_id: int):
         for r in self.rows:
@@ -124,6 +125,13 @@ class FakeProvider:
 
     async def count_players(self, filters: PlayerFilters) -> int:
         return len(self.rows)
+
+    async def select_candidates_by_segment(self):
+        # Records that a segmented (not single sales_count-limited) scan
+        # ran, so tests can assert on it the same way they used to assert
+        # on search_calls's order_by.
+        self.segment_scan_calls += 1
+        return {"all": list(self.rows)}
 
     async def bump_price_priority(self, card_id: int) -> None:
         self.bumped_card_ids.append(card_id)
@@ -290,23 +298,36 @@ def test_trade_finder_shape():
 
 class TestCandidateScanOrderedBySalesCount:
     """Regression test: CANDIDATE_SCAN_LIMIT's own module comment says the
-    500-row candidate scan behind /players (intelligence-filtered),
-    /opportunities, and /trade-finder considers "the top CANDIDATE_SCAN_LIMIT
-    rows (by sales_count, as a liquidity-first proxy)" - but the three
-    search_players() call sites never actually passed order_by, so they
-    silently used search_players's own default ("rating DESC NULLS LAST")
-    instead. On a database with more than 500 tradeable cards, that meant
-    the candidate pool was the top-500 *highest-rated* cards, not the
-    top-500 *most-liquid* ones - a genuinely liquid, profitable mid/low-rated
-    opportunity could never appear on /opportunities or /trade-finder at
-    all, silently, with no error to notice."""
+    500-row candidate scan behind /players (intelligence-filtered)
+    considers "the top CANDIDATE_SCAN_LIMIT rows (by sales_count, as a
+    liquidity-first proxy)" - but the search_players() call site never
+    actually passed order_by, so it silently used search_players's own
+    default ("rating DESC NULLS LAST") instead. On a database with more
+    than 500 tradeable cards, that meant the candidate pool was the
+    top-500 *highest-rated* cards, not the top-500 *most-liquid* ones - a
+    genuinely liquid, profitable mid/low-rated opportunity could never
+    appear at all, silently, with no error to notice.
+
+    /opportunities and /trade-finder no longer use this single-query scan
+    at all (see TestSegmentedCandidateScan below) - they now scan every
+    liquidity segment, which structurally cannot exhibit this bug because
+    it never confines itself to one ordering/limit in the first place."""
 
     def test_players_with_intelligence_filter_scans_by_sales_count(self):
         client = _client([_row()])
         resp = client.get("/api/v2/players?min_roi=0.01")
         assert resp.status_code == 200
 
-    def test_opportunities_scans_candidates_by_sales_count(self):
+
+class TestSegmentedCandidateScan:
+    """/opportunities and /trade-finder must scan the full segmented
+    candidate union (app/services/futgg_candidate_segments.py), not a
+    single top-N-by-sales_count query - a low-sales-count, high-value card
+    (e.g. an icon that trades rarely but for huge profit) must be scored
+    by these endpoints the same way /players/{card_id} would score it
+    directly, not silently excluded before scoring ever runs."""
+
+    def test_opportunities_uses_segmented_scan(self):
         app = FastAPI()
         app.include_router(futgg_router, prefix="/api/v2")
         provider = FakeProvider([_row()])
@@ -314,10 +335,10 @@ class TestCandidateScanOrderedBySalesCount:
         client = TestClient(app)
         resp = client.get("/api/v2/opportunities")
         assert resp.status_code == 200
-        assert provider.search_calls, "search_players was never called"
-        assert provider.search_calls[-1]["order_by"] == "sales_count DESC NULLS LAST"
+        assert provider.segment_scan_calls == 1
+        assert not provider.search_calls, "opportunities must not fall back to the single-query candidate scan"
 
-    def test_trade_finder_scans_candidates_by_sales_count(self):
+    def test_trade_finder_uses_segmented_scan(self):
         app = FastAPI()
         app.include_router(futgg_router, prefix="/api/v2")
         provider = FakeProvider([_row()])
@@ -325,7 +346,28 @@ class TestCandidateScanOrderedBySalesCount:
         client = TestClient(app)
         resp = client.get("/api/v2/trade-finder")
         assert resp.status_code == 200
-        assert provider.search_calls[-1]["order_by"] == "sales_count DESC NULLS LAST"
+        assert provider.segment_scan_calls == 1
+        assert not provider.search_calls, "trade-finder must not fall back to the single-query candidate scan"
+
+    def test_opportunities_low_sales_count_card_still_considered(self):
+        # A card with a tiny sales_count (would rank far outside any
+        # top-500-by-sales_count window) must still be evaluated: the
+        # segmented scan's FakeProvider stand-in returns every row
+        # regardless of ordering, mirroring how the low_liquidity/
+        # near_threshold/never_evaluated segments would surface it in
+        # production even though the old single scan never would.
+        thin_market_row = _row(
+            source_card_id=777, current_bin=3_180_000, sales_median=3_400_000,
+            sales_trimmed_mean=3_400_000, sales_count=2,
+        )
+        app = FastAPI()
+        app.include_router(futgg_router, prefix="/api/v2")
+        provider = FakeProvider([thin_market_row])
+        app.dependency_overrides[get_provider] = lambda: provider
+        client = TestClient(app)
+        resp = client.get("/api/v2/opportunities")
+        assert resp.status_code == 200
+        assert provider.segment_scan_calls == 1
 
     def test_players_list_with_intelligence_filter_scans_by_sales_count(self):
         app = FastAPI()

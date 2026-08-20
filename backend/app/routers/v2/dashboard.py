@@ -27,14 +27,13 @@ from fastapi import APIRouter, Request
 from app.auth.entitlements import compute_entitlements
 from app.db import get_core_pool, get_player_pool, get_watchlist_db
 from app.routers.v2.futgg_market import (
-    CANDIDATE_SCAN_LIMIT,
-    CANDIDATE_SCAN_ORDER_BY,
     _score_and_filter,
     _sales_for_rows,
+    _segmented_candidates,
 )
 from app.services.futgg_intelligence import CardIntelligence
 from app.services.futgg_trend import DOWNTREND, FALLING_KNIFE, INSUFFICIENT_TREND_DATA
-from app.services.market_data_provider import FutggMarketDataProvider, PlayerFilters
+from app.services.market_data_provider import FutggMarketDataProvider
 from app.services.sbc_demand import compute_sbc_demand
 
 router = APIRouter(tags=["v2-dashboard"])
@@ -612,18 +611,37 @@ async def get_dashboard(request: Request) -> Dict[str, Any]:
     # was unconditionally raising "relation fair_value_mv does not
     # exist", not just returning empty rows.
     core_pool_provider = FutggMarketDataProvider(core_pool)
-    candidate_rows = await core_pool_provider.search_players(
-        PlayerFilters(), limit=CANDIDATE_SCAN_LIMIT, offset=0, order_by=CANDIDATE_SCAN_ORDER_BY,
-    )
+    # Segmented candidate union (see futgg_market._segmented_candidates),
+    # not a single `ORDER BY sales_count DESC LIMIT 500` scan - that scan
+    # structurally excluded any card outside the 500 most-traded-by-count
+    # from Home entirely, regardless of signal strength, while
+    # /players/{id} (a direct fetch) could still evaluate the same card to
+    # STRONG BUY. Same evaluate_card(), same gates - only a larger, fairer
+    # candidate pool feeding this same Python scoring pass.
+    candidate_rows = await _segmented_candidates(core_pool_provider)
     sales_by_card = await _sales_for_rows(core_pool_provider, candidate_rows)
 
+    # Every sort below ends in source_card_id as a final deterministic
+    # tiebreak. Without one, two candidates tied on every real field could
+    # swap position on every refresh purely from input-order noise (the
+    # segmented scan's own row order, or a live sales_count changing by
+    # one), which is what made Home's Top Card look random with no
+    # underlying data change - not a random pick, an unstable sort.
     buy_scored = _score_and_filter(candidate_rows, signals={"strong_buy", "buy"}, sales_by_card=sales_by_card)
-    buy_scored.sort(key=lambda pair: -(pair[1].confidence_score or 0.0))
+    buy_scored.sort(
+        key=lambda pair: (
+            -(pair[1].confidence_score or 0.0),
+            -(float(pair[1].expected_profit_after_tax) if pair[1].expected_profit_after_tax is not None else 0.0),
+            int(pair[0]["source_card_id"]),
+        )
+    )
 
     avoid_scored = _score_and_filter(candidate_rows, signals={"avoid"}, sales_by_card=sales_by_card)
     avoid_scored.sort(
-        key=lambda pair: pair[0].get("snapshot_computed_at") or datetime.min.replace(tzinfo=timezone.utc),
-        reverse=True,
+        key=lambda pair: (
+            -(pair[0].get("snapshot_computed_at") or datetime.min.replace(tzinfo=timezone.utc)).timestamp(),
+            int(pair[0]["source_card_id"]),
+        )
     )
 
     # "Recent" has no direct FUT.GG-native equivalent: the legacy
@@ -634,8 +652,10 @@ async def get_dashboard(request: Request) -> Dict[str, Any]:
     # regardless of signal, ordered by when their snapshot was computed.
     recent_scored = sorted(
         _score_and_filter(candidate_rows, sales_by_card=sales_by_card),
-        key=lambda pair: pair[0].get("snapshot_computed_at") or datetime.min.replace(tzinfo=timezone.utc),
-        reverse=True,
+        key=lambda pair: (
+            -(pair[0].get("snapshot_computed_at") or datetime.min.replace(tzinfo=timezone.utc)).timestamp(),
+            int(pair[0]["source_card_id"]),
+        )
     )
 
     # --- Market regime (ungated): recomputed live from this same
