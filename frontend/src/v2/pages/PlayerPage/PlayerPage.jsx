@@ -51,7 +51,10 @@ export default function PlayerPage() {
       setWatchState("saved");
     } catch (requestError) {
       if (requestError?.response?.status === 409) setWatchState("saved");
-      else if (requestError?.response?.status === 401) navigate("/login");
+      // A shared player-page link is the acquisition loop: a friend
+      // clicks Watch while signed out, signs up, and should land back on
+      // this exact card, not Home - see AuthContext.login's returnTo.
+      else if (requestError?.response?.status === 401) navigate(`/signup?from=${encodeURIComponent(`/v2/players/${cardId}`)}`);
       else setWatchState("error");
     }
   }

@@ -71,8 +71,14 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
-  const login = () => {
-    window.location.href = `${api.defaults.baseURL}/api/login`;
+  // returnTo: a same-app hash-route path ("/v2/players/34567") to send the
+  // user back to once Discord OAuth completes, so clicking "Watch" on a
+  // shared card while signed out doesn't strand them on Home afterwards.
+  // Defaults to wherever they currently are. Backend re-validates this
+  // (_safe_return_to in main.py) rather than trusting it blindly.
+  const login = (returnTo) => {
+    const path = returnTo || window.location.hash.slice(1) || "/";
+    window.location.href = `${api.defaults.baseURL}/api/login?return_to=${encodeURIComponent(path)}`;
   };
 
   const logout = async () => {

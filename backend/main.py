@@ -85,6 +85,7 @@ from app.db import get_core_pool
 from app.services.futgg_scanner import refresher_loop as futgg_scanner_refresher_loop
 from app.services.futgg_outcome_grader import refresher_loop as futgg_outcome_grader_refresher_loop
 from app.services.priority_recompute import refresher_loop as priority_recompute_refresher_loop
+from app.services.oauth_return import safe_return_to
 from app.services.futgg_card_image_mirror import mirror_loop as futgg_card_image_mirror_loop
 
 
@@ -112,6 +113,15 @@ PORT = int(os.getenv("PORT", 8000))
 
 ENV = os.getenv("ENV", "production").lower()
 IS_PROD = ENV in ("prod", "production")
+# MUST be ".eafc.live" (leading dot) in production, not "eafc.live" or
+# "app.eafc.live" - now that eafc.live (public site) and app.eafc.live
+# (the app) are two separate origins sharing one session, the leading dot
+# is what makes the browser send this cookie to BOTH the apex and every
+# subdomain. Without it (or with it scoped to app.eafc.live only), a user
+# who authenticates would never appear "logged in" if they later loaded
+# anything on the bare eafc.live origin, and vice versa. This code cannot
+# verify the actual deployed value of the COOKIE_DOMAIN env var - confirm
+# it in the real environment before relying on cross-subdomain SSO.
 COOKIE_DOMAIN = os.getenv("COOKIE_DOMAIN") or (".futhub.co.uk" if IS_PROD else None)
 
 # JWT / Discord
@@ -733,6 +743,15 @@ async def get_entitlements_debug(request: Request):
 ALLOWED_ORIGINS = [
     "https://app.futhub.co.uk",
     "https://app.eafc.live",
+    # The public marketing site (bare apex, no subdomain) - added when
+    # eafc.live/app.eafc.live became two separate origins sharing one
+    # frontend build. ALLOWED_ORIGIN_REGEX below only matches a
+    # *subdomain* of eafc.live (requires a literal "." before it), so
+    # without this the apex's own live-opportunities-preview fetch would
+    # have failed CORS exactly like the app.eafc.live incident this same
+    # block already documents - silently, with no response object.
+    "https://eafc.live",
+    "https://www.eafc.live",
     "http://localhost:5173",
     "http://127.0.0.1:5173",
 ]
@@ -1303,8 +1322,12 @@ async def _establish_dashboard_session(
     request.session["roles"] = await get_member_role_names(discord_id)
 
 
+_safe_return_to = safe_return_to  # see app/services/oauth_return.py
+
+
 @app.get("/api/login")
-async def login(request: Request):
+async def login(request: Request, return_to: Optional[str] = None):
+    return_to = _safe_return_to(return_to)
     if DISABLE_DISCORD_AUTH:
         # See DISABLE_DISCORD_AUTH's definition near the top of the file -
         # skips Discord entirely and logs in as a fixed dev identity.
@@ -1314,10 +1337,10 @@ async def login(request: Request):
         )
         avatar_url = f"https://cdn.discordapp.com/embed/avatars/{DEV_DISCORD_ID % 5}.png"
         await _establish_dashboard_session(request, DEV_DISCORD_ID, DEV_USERNAME, avatar_url, DEV_USERNAME)
-        return RedirectResponse(f"{FRONTEND_URL}/#/")
+        return RedirectResponse(f"{FRONTEND_URL}/#{return_to}")
 
     state = secrets.token_urlsafe(24)
-    OAUTH_STATE[state] = {"flow": "dashboard", "ts": time.time()}
+    OAUTH_STATE[state] = {"flow": "dashboard", "ts": time.time(), "return_to": return_to}
     params = {
         "client_id": DISCORD_CLIENT_ID,
         "redirect_uri": DISCORD_REDIRECT_URI,
@@ -1431,7 +1454,7 @@ async def callback(request: Request):
 
         await _establish_dashboard_session(request, discord_id, username, avatar_url, global_name)
 
-        return RedirectResponse(f"{FRONTEND_URL}/#/")
+        return RedirectResponse(f"{FRONTEND_URL}/#{_safe_return_to(state_meta.get('return_to'))}")
 
 
 

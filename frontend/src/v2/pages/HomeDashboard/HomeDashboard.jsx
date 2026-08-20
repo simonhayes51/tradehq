@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { Activity, ArrowRight, Bell, ChevronRight, Search, Star, Target, X, Zap } from "lucide-react";
 import { useAuth } from "../../../context/AuthContext";
+import { isPublicHost, PUBLIC_HOSTNAME } from "../../../lib/domains";
 import { useDashboard } from "../../hooks/useDashboard";
 import { buildWhyText, sellingSpeedLabel } from "../../lib/tradeNarrative";
 import { formatCountdown } from "../../lib/format";
@@ -71,27 +72,21 @@ const STRATEGY_BLURBS={
   budget:"Good trades without needing a huge coin balance.",
 };
 
-// Shown only to signed-out visitors, above the live data - the dashboard
-// below is real and live on purpose (proof beats a marketing page for this
-// audience), but a first-time visitor still needs one sentence on what
-// they're looking at and why before the numbers mean anything to them.
-function IntroBanner(){
-  const navigate=useNavigate();
-  return <section className="intro-banner">
-    <div className="intro-copy">
-      <span className="intro-eyebrow">EAFC LIVE</span>
-      <h1>Trading intelligence for EA FC Ultimate Team.</h1>
-      <p>Everything below is live: real completed sales, fair value on every card, and opportunities ranked by profit, liquidity and risk - not just the cheapest listing. Free to browse. Create an account to save a watchlist and log trades.</p>
-    </div>
-    <div className="intro-actions">
-      <button onClick={()=>navigate("/login")}>Create free account <ArrowRight size={16}/></button>
-      <button className="secondary" onClick={()=>navigate("/login")}>Log in</button>
-    </div>
-  </section>;
-}
-
 export default function HomeDashboard(){
-  const {isAuthenticated}=useAuth();
+  const {isAuthenticated,isLoading:authLoading}=useAuth();
+  // Home is the trading app, not the marketing site - a signed-out
+  // visitor lands here only via a stale bookmark/redirect (the real
+  // public entry point is eafc.live, a separate lightweight page - see
+  // PublicSite.jsx). Bounce them there with a real cross-origin
+  // navigation rather than showing a stripped-down app shell with
+  // marketing bolted on. Deep links (a shared /v2/players/:id) are a
+  // different route entirely and are never touched by this - only
+  // Home itself redirects.
+  useEffect(()=>{
+    if(!authLoading&&!isAuthenticated&&!isPublicHost()){
+      window.location.href=`https://${PUBLIC_HOSTNAME}/`;
+    }
+  },[authLoading,isAuthenticated]);
   const dashboardQuery=useDashboard();
   const dashboard=dashboardQuery.data??EMPTY;
   const navigate=useNavigate();
@@ -164,12 +159,17 @@ export default function HomeDashboard(){
 
   useEffect(()=>{if(pathname!=="/v2/opportunities")return;const timer=setTimeout(()=>document.getElementById("queue")?.scrollIntoView({behavior:"smooth",block:"start"}),50);return()=>clearTimeout(timer)},[pathname]);
 
-  async function watchItem(item){const id=String(item?.cardId||"");if(!item||watchStates[id]==="saving"||watchStates[id]==="saved")return;setWatchStates(current=>({...current,[id]:"saving"}));try{await addWatch({player_name:nameOf(item.player),card_id:id,version:item.player?.version??null,platform:"ps",source:item.source==="futgg"?"futgg":"futbin"});setWatchStates(current=>({...current,[id]:"saved"}))}catch(error){if(error?.response?.status===401)navigate("/login");else if(error?.response?.status===409)setWatchStates(current=>({...current,[id]:"saved"}));else setWatchStates(current=>({...current,[id]:"error"}))}}
+  async function watchItem(item){const id=String(item?.cardId||"");if(!item||watchStates[id]==="saving"||watchStates[id]==="saved")return;setWatchStates(current=>({...current,[id]:"saving"}));try{await addWatch({player_name:nameOf(item.player),card_id:id,version:item.player?.version??null,platform:"ps",source:item.source==="futgg"?"futgg":"futbin"});setWatchStates(current=>({...current,[id]:"saved"}))}catch(error){if(error?.response?.status===401)navigate(`/signup?from=${encodeURIComponent(pathname)}`);else if(error?.response?.status===409)setWatchStates(current=>({...current,[id]:"saved"}));else setWatchStates(current=>({...current,[id]:"error"}))}}
+
+  if(!authLoading&&!isAuthenticated&&!isPublicHost()){
+    // Redirect is already in flight (the effect above) - render nothing
+    // rather than flashing the full app shell first.
+    return null;
+  }
 
   return <div className="fut-dashboard-shell">
     <main className="fut-main home-in-shell">
       <header className="fut-topbar"><button className="fut-search" onClick={()=>navigate("/v2/players")}><Search size={19}/><span>Search player, card or price</span><kbd>/</kbd></button><div className="feed-live"><i/> LIVE</div><button className="bell-btn" onClick={()=>navigate("/v2/watchlist")} aria-label={dashboard.watchlistAlerts?.length?`${dashboard.watchlistAlerts.length} recent price alerts`:"Watchlist"}><Bell size={18}/>{dashboard.watchlistAlerts?.length?<span className="bell-badge">{dashboard.watchlistAlerts.length}</span>:null}</button></header>
-      {!isAuthenticated?<IntroBanner/>:null}
       <Ticker items={futggItems} events={dashboard.latestMarketEvents}/>
       <section className="decision-stage">
         <div className="lead-trade"><div className="lead-label"><Zap size={15}/> TOP CARD</div>{lead?<div className="lead-layout"><button className="lead-card player-open-button" onClick={()=>setSelected(lead)} aria-label={`Open ${nameOf(lead.player)} analysis`}><CardImage player={lead.player} featured/></button><div className="lead-copy"><div className="lead-head"><div><PlayerMeta player={lead.player} source={lead.source}/><h1>{nameOf(lead.player)}</h1></div><div className="lead-status"><b className={`call ${String(lead.recommendation).toLowerCase()}`}>{lead.recommendation}</b><ConfidenceRing value={lead.confidence}/></div></div>{lead.source==="futgg"?<MarketFreshness priceAgeSeconds={lead.priceAgeSeconds} capturedAt={lead.updatedAt}/>:null}<p>{reason(lead)}</p><div className="lead-numbers"><Metric label="Buy below" value={<CoinValue value={lead.entryPrice??lead.currentBin}/>} sub="Maximum entry" tone="entry"/><Metric label="Expected profit" value={<CoinValue value={expectedProfit(lead)} signed/>} sub="After EA tax" tone="positive"/><Metric label="Risk level" value={lead.risk||"Unknown"} sub={`${sellingSpeedLabel(lead.liquidityScore)} selling speed`}/></div><div className="lead-actions"><button onClick={()=>setSelected(lead)}>View move <ArrowRight size={17}/></button><button className="secondary" onClick={()=>watchItem(lead)} aria-label="Add top card to watchlist"><Star size={16} fill={watchStates[String(lead.cardId)]==="saved"?"currentColor":"none"}/>{watchStates[String(lead.cardId)]==="saved"?"Watching":"Watch"}</button></div></div></div>:<EmptyState compact text="No clean trade has passed the filters yet."/>}</div>
@@ -271,7 +271,7 @@ function PulseFooter({nextPromo,sbcImpact}){
 }
 function Metric({label,value,sub,tone}){return <div className={`metric ${tone||""}`}><span>{label}</span><strong>{value}</strong>{sub?<small>{sub}</small>:null}</div>}
 function ConfidenceRing({value,compact=false}){const score=value==null?null:Math.max(0,Math.min(100,Math.round(Number(value))));return <div className={`confidence-ring ${compact?"compact":""}${score==null?" no-data":""}`} style={{"--confidence":`${(score??0)*3.6}deg`}}><span>{score==null?"—":score}{score==null?null:<small>%</small>}</span></div>}
-function LockedPreviewCard({count,navigate}){return <button className="queue-card locked-preview" onClick={()=>navigate("/billing")}><div className="locked-preview-copy"><strong>{count} more {count===1?"opportunity":"opportunities"} today</strong><span>Upgrade to see the full live feed, updated as the market moves.</span></div><ChevronRight className="queue-arrow" size={18}/></button>}
+function LockedPreviewCard({count,navigate}){return <button className="queue-card locked-preview" onClick={()=>navigate(`/billing?unlock=${encodeURIComponent("the full Opportunities feed")}`)}><div className="locked-preview-copy"><strong>{count} more {count===1?"opportunity":"opportunities"} today</strong><span>Upgrade to see the full live feed, updated as the market moves.</span></div><ChevronRight className="queue-arrow" size={18}/></button>}
 function QueueCard({item,rank,onOpen,onWatch,watchState}){const open=()=>onOpen(item);return <div className="queue-card" role="button" tabIndex={0} onClick={open} onKeyDown={event=>(event.key==="Enter"||event.key===" ")&&open()}><span className="rank">#{rank}</span><div className="queue-art"><CardImage player={item.player} compact/></div><div className="queue-name"><strong>{nameOf(item.player)}</strong><PlayerMeta player={item.player} source={item.source}/><small>{reason(item)}</small>{item.source==="futgg"?<MarketFreshness priceAgeSeconds={item.priceAgeSeconds} capturedAt={item.updatedAt} compact/>:null}</div><button className={`queue-watch ${watchState==="saved"?"saved":""}`} onClick={event=>{event.stopPropagation();onWatch(item)}} aria-label={watchState==="saved"?`${nameOf(item.player)} is on your watchlist`:`Add ${nameOf(item.player)} to watchlist`}><Star size={17} fill={watchState==="saved"?"currentColor":"none"}/></button><div className="queue-reason"><b>WHY THIS MOVE</b><span>{reason(item)}</span></div><div className="queue-signals"><TradeSignal label="BUY BELOW" value={item.entryPrice??item.currentBin} tone="entry"/><TradeSignal label="EXPECTED PROFIT" value={expectedProfit(item)} tone="profit" signed sub={`${roi(item)} after tax`}/></div><ConfidenceRing value={item.confidence} compact/><ChevronRight className="queue-arrow" size={18}/></div>}
 function StrategyCard({item,onOpen,onWatch,watchState}){const open=()=>onOpen(item);return <div className="strategy-card-new" role="button" tabIndex={0} onClick={open} onKeyDown={event=>(event.key==="Enter"||event.key===" ")&&open()}><div className="strategy-card-art"><CardImage player={item.player} compact/></div><div className="strategy-card-copy"><div className="strategy-card-title"><strong>{nameOf(item.player)}</strong><button className={`queue-watch ${watchState==="saved"?"saved":""}`} onClick={event=>{event.stopPropagation();onWatch(item)}} aria-label={`Add ${nameOf(item.player)} to watchlist`}><Star size={16} fill={watchState==="saved"?"currentColor":"none"}/></button></div><PlayerMeta player={item.player} source={item.source}/><p>{item.risk||"Unknown"} risk · {sellingSpeedLabel(item.liquidityScore)} selling speed</p>{item.source==="futgg"?<MarketFreshness priceAgeSeconds={item.priceAgeSeconds} capturedAt={item.updatedAt} compact/>:null}</div><div className="strategy-trade"><TradeSignal label="BUY BELOW" value={item.entryPrice??item.currentBin} tone="entry"/><TradeSignal label="EXPECTED PROFIT" value={expectedProfit(item)} tone="profit" signed sub={`${roi(item)} after tax`}/></div><ChevronRight className="strategy-arrow" size={18}/></div>}
 function TradeSignal({label,value,tone,signed=false,sub}){return <div className={`trade-signal ${tone}`}><span>{label}</span><strong><CoinValue value={value} signed={signed}/></strong>{sub?<small>{sub}</small>:null}</div>}

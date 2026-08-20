@@ -1,0 +1,85 @@
+/* Public marketing site (eafc.live) - reuses v2 tokens.css design
+   language (dark/green/cards) but with its own simple nav/footer instead
+   of the app's sidebar shell. No app-only colours introduced. */
+.pub-root { min-height: 100vh; background: #101010; color: #f8f8f8; font-family: Inter, system-ui, sans-serif; }
+.pub-nav { display: flex; align-items: center; justify-content: space-between; padding: 18px 24px; border-bottom: 1px solid #333; }
+.pub-brand { color: #fff; font-weight: 900; font-size: 18px; text-decoration: none; }
+.pub-brand b { color: #39ff8a; }
+.pub-nav nav { display: flex; align-items: center; gap: 18px; }
+.pub-nav nav a { color: #b0b0b0; text-decoration: none; font-weight: 600; font-size: 14px; }
+.pub-nav nav a.pub-cta { color: #101010; background: #39ff8a; padding: 9px 16px; border-radius: 3px; font-weight: 900; }
+
+.pub-main { max-width: 1080px; margin: 0 auto; padding: 0 24px 60px; }
+.pub-hero { padding: 56px 0 40px; max-width: 640px; }
+.pub-eyebrow { display: block; color: #39ff8a; font-size: 11px; font-weight: 900; letter-spacing: .12em; margin-bottom: 10px; }
+.pub-hero h1 { font-size: 38px; line-height: 1.15; letter-spacing: -.02em; margin: 0 0 16px; }
+.pub-hero p { color: #c2c2c2; font-size: 15px; line-height: 1.6; margin: 0 0 8px; }
+.pub-proof { color: #39ff8a !important; font-size: 13px !important; font-weight: 700; margin: 12px 0 0 !important; }
+.pub-hero-actions { display: flex; gap: 12px; margin-top: 26px; flex-wrap: wrap; }
+a.pub-cta { display: inline-flex; align-items: center; gap: 8px; min-height: 46px; padding: 0 20px; border-radius: 3px; background: #39ff8a; color: #101010; font-weight: 900; text-decoration: none; }
+a.pub-secondary { display: inline-flex; align-items: center; min-height: 46px; padding: 0 20px; border-radius: 3px; border: 1px solid #333; color: #fff; text-decoration: none; font-weight: 700; }
+
+.pub-section { margin-top: 44px; }
+.pub-section-head span { display: block; color: #a0a0a0; font-size: 11px; font-weight: 900; letter-spacing: .1em; }
+.pub-section-head h2 { margin: 6px 0 0; font-size: 24px; }
+
+.pub-opp-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 18px; }
+.pub-opp-card { display: flex; gap: 12px; align-items: center; padding: 14px; border: 1px solid #333; border-radius: 4px; background: #171717; text-decoration: none; color: #fff; }
+.pub-opp-card:hover { border-color: #5e5e5e; }
+.pub-opp-card img { width: 44px; height: 52px; object-fit: contain; flex: none; }
+.pub-opp-noimg { width: 44px; height: 52px; flex: none; border-radius: 3px; background: #232323; }
+.pub-opp-copy { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.pub-opp-copy strong { font-size: 13.5px; }
+.pub-opp-copy span { font-size: 12px; color: #a9a9a9; }
+.pub-opp-profit { color: #39ff8a !important; font-weight: 700; }
+.pub-see-all { display: inline-flex; align-items: center; gap: 6px; margin-top: 16px; color: #b2b2b2; text-decoration: none; font-size: 13.5px; }
+.pub-empty { color: #8e8e8e; font-size: 13px; margin-top: 18px; }
+
+.pub-trust-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-top: 18px; }
+.pub-trust-grid > div { border: 1px solid #333; border-radius: 4px; padding: 16px; }
+.pub-trust-grid strong { display: block; margin-bottom: 6px; font-size: 14px; }
+.pub-trust-grid p { margin: 0; font-size: 12.5px; color: #a9a9a9; line-height: 1.5; }
+
+.pub-how-steps { list-style: none; margin: 18px 0 0; padding: 0; display: grid; gap: 10px; }
+.pub-how-steps li { display: flex; align-items: flex-start; gap: 12px; border: 1px solid #333; border-radius: 4px; padding: 14px 16px; }
+.pub-how-steps b { display: grid; place-items: center; width: 26px; height: 26px; flex: none; border-radius: 50%; background: #39ff8a; color: #101010; font-weight: 900; font-size: 13px; }
+.pub-how-steps strong { display: block; font-size: 13.5px; margin-bottom: 2px; }
+.pub-how-steps p { margin: 0; font-size: 12.5px; color: #a9a9a9; }
+
+.pub-pricing-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; margin-top: 18px; max-width: 640px; }
+.pub-pricing-card { border: 1px solid #333; border-radius: 4px; padding: 18px; display: flex; flex-direction: column; gap: 10px; }
+.pub-pricing-card.pub-featured { border-color: #39ff8a; background: linear-gradient(135deg, #122b1f, #171717 70%); }
+.pub-pricing-card h3 { margin: 0; font-size: 16px; display: flex; align-items: baseline; gap: 8px; }
+.pub-pricing-card h3 span { font-size: 12px; font-weight: 600; color: #39ff8a; }
+.pub-pricing-card ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.pub-pricing-card li { font-size: 12.5px; color: #c2c2c2; padding-left: 16px; position: relative; }
+.pub-pricing-card li::before { content: "✓"; position: absolute; left: 0; color: #39ff8a; }
+.pub-pricing-card a { margin-top: 8px; display: block; text-align: center; min-height: 40px; line-height: 40px; border-radius: 3px; border: 1px solid #39ff8a; background: #39ff8a; color: #101010; font-weight: 900; font-size: 12.5px; text-decoration: none; }
+.pub-pricing-card:not(.pub-featured) a { background: transparent; color: #fff; }
+
+.pub-disclaimer { text-align: center; color: #707070; font-size: 11px; margin-top: 50px; }
+
+.pub-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 20px 24px; border-top: 1px solid #333; color: #8e8e8e; font-size: 12px; max-width: 1080px; margin: 0 auto; }
+.pub-footer nav { display: flex; gap: 16px; flex-wrap: wrap; }
+.pub-footer a { color: #8e8e8e; text-decoration: none; }
+.pub-footer a:hover { color: #fff; }
+
+@media (max-width: 800px) {
+  .pub-opp-grid, .pub-trust-grid { grid-template-columns: 1fr; }
+  .pub-pricing-grid { grid-template-columns: 1fr; }
+  .pub-hero h1 { font-size: 28px; }
+  /* Pricing drops off the mobile nav (already reachable via the footer
+     and the pricing section on the page itself) - Log in stays, it's the
+     only way back in for an existing user on a phone and has no other
+     visible entry point up here. */
+  .pub-nav-pricing { display: none; }
+}
+@media (max-width: 480px) {
+  .pub-nav { padding: 14px 16px; }
+  .pub-main { padding: 0 16px 40px; }
+  .pub-hero { padding: 36px 0 28px; }
+  .pub-hero h1 { font-size: 24px; }
+  .pub-hero-actions { flex-direction: column; }
+  .pub-hero-actions a { width: 100%; justify-content: center; }
+  .pub-footer { flex-direction: column; align-items: flex-start; gap: 10px; padding: 16px; }
+}
