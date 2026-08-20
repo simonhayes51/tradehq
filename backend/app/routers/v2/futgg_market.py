@@ -586,10 +586,18 @@ async def trade_finder(
     risk_order = {"low": 0, "medium": 1, "high": 2, "avoid": 3}
     max_risk_rank = risk_order.get(risk_tolerance, 2) if risk_tolerance else None
 
+    # Trade Finder is the broad power-search tool, not a second copy of
+    # the curated Opportunities shortlist - it also surfaces "watch"
+    # (a card the engine has genuinely evaluated and is tracking, just
+    # not executable at a sensible price yet), which Opportunities
+    # deliberately excludes. Never "avoid" or "insufficient_data": those
+    # aren't a looser opportunity, they're the engine saying this card
+    # isn't one right now, and section 18's "never show AVOID as an
+    # opportunity" applies here as much as to the curated feed.
     scored = _score_and_filter(
         rows, min_expected_profit=min_profit, min_roi=min_roi,
         min_confidence=min_confidence, min_liquidity=min_liquidity,
-        signals={"buy", "strong_buy"},
+        signals={"buy", "strong_buy", "watch"},
         sales_by_card=await _sales_for_rows(provider, rows),
     )
     if max_risk_rank is not None:
