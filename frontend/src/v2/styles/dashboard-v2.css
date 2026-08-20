@@ -137,3 +137,28 @@
   .intro-actions { flex-direction: row; width: 100%; }
   .intro-actions button { flex: 1; }
 }
+
+/* Bell notification badge - real count of recent triggered price alerts
+   (dashboard.watchlistAlerts), not decorative. See HomeDashboard.jsx. */
+.bell-btn { position: relative; }
+.bell-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 99px;
+  background: var(--red, #ff5c5c);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 900;
+  line-height: 16px;
+  text-align: center;
+}
+
+.strategy-blurb {
+  margin: 10px 0 0;
+  color: var(--muted, #9e9e9e);
+  font-size: 12px;
+}

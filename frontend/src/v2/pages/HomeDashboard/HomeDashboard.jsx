@@ -20,7 +20,7 @@ import "../../styles/dashboard-v2.css";
 import "../../styles/dashboard-analysis-modal.css";
 import "../../styles/mobile-polish.css";
 
-const EMPTY={marketRegime:{label:"Unknown",confidence:0,summary:"",metrics:{}},todaysOpportunities:[],highConfidenceInvestments:[],cardsToAvoid:[],biggestMovers:[],watchlistAlerts:[],nextPromo:null,latestMarketEvents:[],latestSbcImpact:[],locked:{opportunityFeed:false,previewCount:0}};
+const EMPTY={marketRegime:{label:"Unknown",confidence:0,summary:"",metrics:{}},todaysOpportunities:[],highConfidenceInvestments:[],cardsToAvoid:[],biggestMovers:[],watchlistAlerts:[],watchedCount:0,nextPromo:null,latestMarketEvents:[],latestSbcImpact:[],locked:{opportunityFeed:false,previewCount:0}};
 // Strategy Finder used to hit the legacy FUTBIN engine's
 // /api/v2/recommendations/strategy/{name} - that pipeline's fair_value_mv
 // is broken (see the comment above baseItems below), so every tab always
@@ -29,13 +29,46 @@ const EMPTY={marketRegime:{label:"Unknown",confidence:0,summary:"",metrics:{}},t
 // what trade-finder can actually answer honestly - it has no holding-
 // period or SBC-relevance signal, so "2-3 days"/"Long hold"/"SBC plays"
 // were dropped rather than faked onto an unrelated sort.
-const STRATEGIES=[["best_opportunity","For you"],["liquidity","Quick flips"],["low_risk","Low risk"],["roi","Best ROI"],["confidence","Most confident"]];
+//
+// Redesigned from the original 5 (For you/Quick flips/Low risk/Best
+// ROI/Most confident) after investigation showed: "For you" carried no
+// user-specific signal at all (same params for every visitor, signed in
+// or not) - renamed rather than left misleading. "Low risk" and "Most
+// confident" shared the exact same sort key and differed only by a risk
+// filter, making "Most confident" a near-superset of "Low risk" - merged
+// into one axis, replaced with "Big profit" (a genuinely different
+// need: sort by absolute profit, not confidence, still gated on
+// confidence/risk so it can't surface a reckless outlier). "Best ROI"
+// had no absolute-profit floor, so an 85-coin flip at 42% ROI ranked
+// beside a 60,000-coin one at the same percentage - replaced with
+// "Budget picks" (cheapest entry among trades already clearing a
+// meaningful, price-relative profit floor - see meaningful_profit on
+// the backend). "Quick flips" now requires that same meaningful-profit
+// floor and excludes "watch" (not buyable at a sensible price right
+// now) so it means "do this now", not "keep an eye on it".
+const STRATEGIES=[
+  ["best_opportunity","Best overall"],
+  ["quick_flips","Quick flips"],
+  ["low_risk","Low risk"],
+  ["big_profit","Big profit"],
+  ["budget","Budget picks"],
+];
 const STRATEGY_PARAMS={
   best_opportunity:{sort_by:"best_opportunity"},
-  liquidity:{sort_by:"liquidity"},
-  low_risk:{risk_tolerance:"low",sort_by:"confidence"},
-  roi:{sort_by:"roi"},
-  confidence:{sort_by:"confidence"},
+  quick_flips:{sort_by:"liquidity",require_executable:true,meaningful_profit:true,min_confidence:0.45},
+  low_risk:{risk_tolerance:"low",sort_by:"confidence",min_confidence:0.55},
+  big_profit:{sort_by:"profit",risk_tolerance:"medium",require_executable:true,min_confidence:0.45},
+  budget:{sort_by:"budget",require_executable:true,meaningful_profit:true,min_roi:0.03},
+};
+// Short, plain-language purpose shown under the active tab - no finance
+// jargon, no internal metric names (confidence/liquidity/ROI stay inside
+// Advanced Rationale, not here).
+const STRATEGY_BLURBS={
+  best_opportunity:"The strongest all-round mix of profit, value and confidence right now.",
+  quick_flips:"Cards selling regularly with enough room for a worthwhile flip.",
+  low_risk:"More stable prices and strong sales data, so you're less likely to get caught in a drop.",
+  big_profit:"The biggest coin gains, still limited to trades we trust.",
+  budget:"Good trades without needing a huge coin balance.",
 };
 
 // Shown only to signed-out visitors, above the live data - the dashboard
@@ -135,7 +168,7 @@ export default function HomeDashboard(){
 
   return <div className="fut-dashboard-shell">
     <main className="fut-main home-in-shell">
-      <header className="fut-topbar"><button className="fut-search" onClick={()=>navigate("/v2/players")}><Search size={19}/><span>Search player, card or price</span><kbd>/</kbd></button><div className="feed-live"><i/> LIVE</div><button className="bell-btn" onClick={()=>navigate("/v2/watchlist")}><Bell size={18}/></button></header>
+      <header className="fut-topbar"><button className="fut-search" onClick={()=>navigate("/v2/players")}><Search size={19}/><span>Search player, card or price</span><kbd>/</kbd></button><div className="feed-live"><i/> LIVE</div><button className="bell-btn" onClick={()=>navigate("/v2/watchlist")} aria-label={dashboard.watchlistAlerts?.length?`${dashboard.watchlistAlerts.length} recent price alerts`:"Watchlist"}><Bell size={18}/>{dashboard.watchlistAlerts?.length?<span className="bell-badge">{dashboard.watchlistAlerts.length}</span>:null}</button></header>
       {!isAuthenticated?<IntroBanner/>:null}
       <Ticker items={futggItems} events={dashboard.latestMarketEvents}/>
       <section className="decision-stage">
@@ -144,8 +177,8 @@ export default function HomeDashboard(){
       </section>
       <TrackRecordPanel/>
       <section className="queue-section" id="queue"><div className="section-head"><div><span>LIVE OPPORTUNITIES</span><h2>Next best moves</h2></div><Link to="/v2/players">Find a player <ArrowRight size={15}/></Link></div><div className="queue-grid">{queue.length?queue.map((item,index)=><QueueCard key={item.cardId} item={item} rank={index+2} onOpen={setSelected} onWatch={watchItem} watchState={watchStates[String(item.cardId)]}/>):<EmptyState compact text="No additional opportunities right now."/>}{dashboard.locked?.opportunityFeed&&dashboard.locked?.previewCount>0?<LockedPreviewCard count={dashboard.locked.previewCount} navigate={navigate}/>:null}</div></section>
-      <section className="lower-grid"><div className="market-map"><div className="section-head compact"><div><span>MARKET MAP</span><h2>Where coins are moving</h2></div></div><div className="map-bars">{futggItems.length?futggItems.slice(0,7).map(item=><button key={item.cardId} onClick={()=>setSelected(item)}><span>{nameOf(item.player)}</span><i><b style={{width:`${Math.min(100,Math.max(8,Math.abs(Number(item.expectedRoi||0))*4))}%`}}/></i><strong>{roi(item)}</strong></button>):<EmptyState compact text="Still building live market data - check back as more cards get priced."/>}</div></div><div className="activity-feed"><div className="section-head compact"><div><span>YOUR FEED</span><h2>Alerts & content</h2></div><Link to="/v2/watchlist">Open</Link></div>{[...(dashboard.watchlistAlerts||[]).slice(0,3),...(dashboard.latestSbcImpact||[]).slice(0,3)].slice(0,5).map((x,index)=><div className="feed-row" key={x.id||x.eventId||index}><i/><div><strong>{x.title||x.message||"Market update"}</strong><span>{x.message||x.estimatedMarketImpact?`${percent(x.estimatedMarketImpact)} estimated impact`:"New market activity"}</span></div></div>)}{!dashboard.watchlistAlerts?.length&&!dashboard.latestSbcImpact?.length?<EmptyState compact text="No alerts yet. Add players to your watchlist."/>:null}</div></section>
-      <section className="strategy-section"><div className="section-head"><div><span>STRATEGY FINDER</span><h2>Find a different angle</h2></div></div><div className="strategy-tabs">{STRATEGIES.map(([key,label])=><button key={key} className={strategy===key?"active":""} onClick={()=>setStrategy(key)}>{label}</button>)}</div><div className="strategy-grid">{strategyQuery.isLoading?<EmptyState compact text="Scanning this strategy…"/>:strategyItems.length?strategyItems.map(item=><StrategyCard key={item.cardId} item={item} onOpen={setSelected} onWatch={watchItem} watchState={watchStates[String(item.cardId)]}/>):<EmptyState compact text="No different cards qualify for this strategy right now."/>}</div></section>
+      <section className="lower-grid"><div className="market-map"><div className="section-head compact"><div><span>MARKET MAP</span><h2>Where coins are moving</h2></div></div><div className="map-bars">{futggItems.length?futggItems.slice(0,7).map(item=><button key={item.cardId} onClick={()=>setSelected(item)}><span>{nameOf(item.player)}</span><i><b style={{width:`${Math.min(100,Math.max(8,Math.abs(Number(item.expectedRoi||0))*4))}%`}}/></i><strong>{roi(item)}</strong></button>):<EmptyState compact text="Still building live market data - check back as more cards get priced."/>}</div></div><div className="activity-feed"><div className="section-head compact"><div><span>YOUR FEED</span><h2>Alerts & content</h2></div><Link to="/v2/watchlist">Open</Link></div>{[...(dashboard.watchlistAlerts||[]).slice(0,3),...(dashboard.latestSbcImpact||[]).slice(0,3)].slice(0,5).map((x,index)=><div className="feed-row" key={x.id||x.eventId||index}><i/><div><strong>{x.title||x.message||"Market update"}</strong><span>{x.message||x.estimatedMarketImpact?`${percent(x.estimatedMarketImpact)} estimated impact`:"New market activity"}</span></div></div>)}{!dashboard.watchlistAlerts?.length&&!dashboard.latestSbcImpact?.length?<EmptyState compact text={dashboard.watchedCount>0?"No price alerts yet. We'll let you know when a watched card hits one of your alert conditions.":"Nothing on your watchlist yet. Add a card and we'll track its price for you."}/>:null}</div></section>
+      <section className="strategy-section"><div className="section-head"><div><span>STRATEGY FINDER</span><h2>Find a different angle</h2></div></div><div className="strategy-tabs">{STRATEGIES.map(([key,label])=><button key={key} className={strategy===key?"active":""} onClick={()=>setStrategy(key)}>{label}</button>)}</div><p className="strategy-blurb">{STRATEGY_BLURBS[strategy]}</p><div className="strategy-grid">{strategyQuery.isLoading?<EmptyState compact text="Scanning this strategy…"/>:strategyItems.length?strategyItems.map(item=><StrategyCard key={item.cardId} item={item} onOpen={setSelected} onWatch={watchItem} watchState={watchStates[String(item.cardId)]}/>):<EmptyState compact text="No cards qualify for this strategy right now."/>}</div></section>
       <p className="fut-disclaimer">Recent sales and live listings are used to estimate opportunities. Profit is never guaranteed and EA charges 5% on sales.</p>
     </main>
     {selected&&<AnalysisModal item={selected} onClose={()=>setSelected(null)} navigate={navigate} onWatch={watchItem} watchState={watchStates[String(selected.cardId)]}/>}

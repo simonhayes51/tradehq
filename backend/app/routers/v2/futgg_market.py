@@ -632,7 +632,34 @@ _TRADE_FINDER_SORTS = {
     "liquidity": lambda row_ci: (-(row_ci[1].liquidity_score or 0.0), int(row_ci[0]["source_card_id"])),
     "newest": lambda row_ci: (row_ci[0].get("price_updated_at") is None, int(row_ci[0]["source_card_id"])),  # placeholder tiebreak, refined below
     "freshest": lambda row_ci: (row_ci[1].price_age_minutes if row_ci[1].price_age_minutes is not None else float("inf"), int(row_ci[0]["source_card_id"])),
+    # "Budget picks" (Strategy Finder): cheapest entry first among
+    # candidates that already cleared the normal buy/strong_buy bar and
+    # whatever min_roi/min_profit floor the caller set - "good trades
+    # without needing a huge coin balance" per the redesign, not "cheapest
+    # card regardless of how thin the edge is".
+    "budget": lambda row_ci: (
+        0 if row_ci[1].signal == "strong_buy" else 1,
+        row_ci[0].get("current_bin") if row_ci[0].get("current_bin") is not None else float("inf"),
+        -(float(row_ci[1].expected_roi) if row_ci[1].expected_roi is not None else 0.0),
+        int(row_ci[0]["source_card_id"]),
+    ),
 }
+
+# "Meaningful profit" floor for strategies where a trivial coin move
+# shouldn't rank prominently (Quick Flips, Budget Picks) - relative to
+# price rather than one flat number, per the redesign: a 200-coin card
+# clearing 3% ROI nets ~6 coins and should not compete with a 50,000-coin
+# card clearing the same 3%. Deliberately conservative placeholders, not
+# derived from real trade outcome data (no production database access at
+# design time) - flagged for calibration against actual data post-launch,
+# not a substitute for it.
+MEANINGFUL_PROFIT_ABS_FLOOR = 300
+MEANINGFUL_PROFIT_PCT_OF_PRICE = 0.015
+
+
+def _meaningful_profit_floor(current_bin: Optional[int]) -> float:
+    price_based = (current_bin or 0) * MEANINGFUL_PROFIT_PCT_OF_PRICE
+    return max(MEANINGFUL_PROFIT_ABS_FLOOR, price_based)
 
 
 @router.get("/trade-finder")
@@ -651,8 +678,10 @@ async def trade_finder(
     min_liquidity: Optional[float] = Query(None, ge=0, le=1),
     max_price_age_minutes: Optional[int] = Query(None, ge=0),
     max_price_age: Optional[int] = Query(None, ge=0, description="Alias for max_price_age_minutes"),
-    sort_by: str = Query("best_opportunity", description="best_opportunity|profit|roi|confidence|liquidity|newest|freshest"),
+    sort_by: str = Query("best_opportunity", description="best_opportunity|profit|roi|confidence|liquidity|newest|freshest|budget"),
     sort: Optional[str] = Query(None, description="Alias for sort_by; also accepts 'best' for 'best_opportunity'"),
+    require_executable: bool = Query(False, description="Exclude 'watch' (not buyable at a sensible price right now) - for strategies that mean 'do this now', not 'keep an eye on it'"),
+    meaningful_profit: bool = Query(False, description="Apply a profit floor relative to price, not just an ROI%, so a trivial coin move on a cheap card can't rank as a headline opportunity"),
     page: int = Query(1, ge=1),
     page_size: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
     provider: FutggMarketDataProvider = ProviderDep,
@@ -690,11 +719,17 @@ async def trade_finder(
     scored = _score_and_filter(
         rows, min_expected_profit=min_profit, min_roi=min_roi,
         min_confidence=min_confidence, min_liquidity=min_liquidity,
-        signals={"buy", "strong_buy", "watch"},
+        signals={"buy", "strong_buy"} if require_executable else {"buy", "strong_buy", "watch"},
         sales_by_card=await _sales_for_rows(provider, rows),
     )
     if max_risk_rank is not None:
         scored = [(row, ci) for row, ci in scored if risk_order.get(ci.risk_level, 3) <= max_risk_rank]
+    if meaningful_profit:
+        scored = [
+            (row, ci) for row, ci in scored
+            if ci.expected_profit_after_tax is not None
+            and float(ci.expected_profit_after_tax) >= _meaningful_profit_floor(row.get("current_bin"))
+        ]
 
     if sort_by == "newest":
         # price_updated_at is nullable (a card can be discovered before its
