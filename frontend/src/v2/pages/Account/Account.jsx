@@ -9,7 +9,7 @@ export default function Account() {
   const { user, isAuthenticated, logout } = useAuth();
   const { isPremium, isAdmin, features, limits } = useEntitlements();
   const navigate = useNavigate();
-  const tier = isAdmin || features.includes("opportunity_feed") ? "ELITE" : isPremium ? "PRO" : "FREE";
+  const tier = isAdmin || features.includes("opportunity_feed") ? "ELITE" : isPremium ? "PREMIUM" : "FREE";
   const name = user?.global_name || user?.username || "EAFC Live member";
 
   async function signOut() {

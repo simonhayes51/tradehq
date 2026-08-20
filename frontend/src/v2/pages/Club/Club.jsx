@@ -31,7 +31,7 @@ export default function Club() {
       setPerformance(performanceData || {});
       setTimeline(timelineData.items || []);
     } catch (err) {
-      setError(err.message || "Could not load your Club.");
+      setError(err.message || "Could not load your portfolio.");
     } finally {
       setLoading(false);
     }
@@ -42,12 +42,12 @@ export default function Club() {
   const invested = useMemo(() => open.reduce((sum, trade) => sum + Number(trade.buy || 0) * Number(trade.quantity || 1), 0), [open]);
   const achievements = useMemo(() => buildAchievements(performance), [performance]);
 
-  if (loading) return <div className="club-page"><div className="club-loading">Loading your Club…</div></div>;
+  if (loading) return <div className="club-page"><div className="club-loading">Loading your portfolio…</div></div>;
 
   return (
     <div className="club-page">
       <header className="club-hero">
-        <div><span>MY CLUB</span><h1>Your trades. Your results.</h1><p>Track every purchase, close sales properly and learn which EAFC Live calls actually make you coins.</p></div>
+        <div><span>PORTFOLIO</span><h1>Your trades. Your results.</h1><p>Track every purchase, close sales properly and learn which EAFC Live calls actually make you coins.</p></div>
         <a href="#/v2" className="club-add"><Plus size={18} /> Find a trade</a>
       </header>
 

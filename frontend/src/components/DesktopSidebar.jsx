@@ -70,7 +70,7 @@ const DesktopSidebar = () => {
     { path: "/player-search", label: "Player Search", icon: Search },
     { path: "/player-compare", label: "Compare", icon: ArrowLeftRight },
     { path: "/watchlist", label: "Watchlist", icon: Eye },
-    { path: "/undervalued", label: "Undervalued 🔥", icon: TrendingUp },
+    { path: "/undervalued", label: "Undervalued", icon: TrendingUp },
     { path: "/trending", label: "Trending", icon: Target },
     { path: "/squad", label: "Squad Builder", icon: Users },
     { path: "/leaderboard", label: "Leaderboard", icon: Trophy },
