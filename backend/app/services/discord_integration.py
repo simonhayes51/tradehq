@@ -300,7 +300,7 @@ async def _finish_role_sync(conn, user_id: str, member: DiscordMemberState) -> N
         """
         UPDATE discord_role_sync_queue
         SET status=$2, attempts=attempts+1, last_attempt_at=NOW(),
-            next_attempt_at=NOW() + ($3::text || ' minutes')::interval,
+            next_attempt_at=NOW() + ($3::integer * INTERVAL '1 minute'),
             last_error=$4, updated_at=NOW()
         WHERE user_id=$1
         """,

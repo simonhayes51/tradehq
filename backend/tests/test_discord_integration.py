@@ -1,16 +1,25 @@
 import asyncio
+import os
 from datetime import datetime, timedelta, timezone
 
+import asyncpg
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
+from app.db import get_db
+from app.routers.discord import router as discord_router
+import app.services.discord_integration as discord_integration
 from app.services.discord_integration import (
     DiscordMemberState,
+    _finish_role_sync,
     assert_public_opportunity_payload,
     build_opportunity_digest,
     build_proof_message,
     claim_stripe_event,
     enqueue_role_sync,
     entitlement_is_active,
+    process_role_sync_queue,
     reconcile_user,
 )
 
@@ -63,6 +72,7 @@ class FakeConn:
 class FakeClient:
     class Config:
         member_role_id = "member-role"
+        role_sync_ready = True
 
     config = Config()
 
@@ -186,3 +196,187 @@ def test_in_flight_stripe_event_is_not_claimed_twice():
     conn = StripeClaimConn([None, None, None])
     result = asyncio.run(claim_stripe_event(conn, "evt_in_flight", "customer.subscription.updated"))
     assert result == "processing"
+
+
+class BindingAwareRoleSyncConn:
+    """Implements asyncpg's relevant parameter contract for this query."""
+
+    def __init__(self, *, queued=True):
+        self.queue = (
+            {
+                "discord_user_id": "123456789",
+                "desired_member_role": False,
+                "status": "pending",
+            }
+            if queued
+            else None
+        )
+        self.finish_calls = []
+
+    async def fetchrow(self, query, *args):
+        if "FROM users WHERE" in query:
+            return {
+                "discord_id": "123456789",
+                "plan": "free",
+                "tier": "free",
+                "account_type": "user",
+                "premium_until": None,
+            }
+        if "FROM subscriptions" in query:
+            return None
+        if "FROM discord_role_sync_queue" in query:
+            return self.queue
+        return None
+
+    async def fetch(self, query, *args):
+        if self.queue and self.queue["status"] != "synced":
+            return [{"user_id": "user-free"}]
+        return []
+
+    async def execute(self, query, *args):
+        if "INSERT INTO discord_role_sync_queue" in query:
+            self.queue = {
+                "discord_user_id": args[1],
+                "desired_member_role": args[2],
+                "status": "pending",
+            }
+            return "INSERT 0 1"
+        if "next_attempt_at=NOW()" in query and len(args) == 4:
+            assert "$3::integer" in query
+            assert isinstance(args[2], int)
+            self.finish_calls.append(args)
+            self.queue["status"] = args[1]
+            return "UPDATE 1"
+        if "status='synced'" in query:
+            self.finish_calls.append(args)
+            self.queue["status"] = "synced"
+            return "UPDATE 1"
+        return "UPDATE 0"
+
+
+@pytest.mark.parametrize(
+    "member,expected_status,expected_delay,expected_error",
+    [
+        (DiscordMemberState("not_joined"), "not_joined", 60, None),
+        (
+            DiscordMemberState("unavailable", error="discord_http_503"),
+            "unavailable",
+            5,
+            "discord_http_503",
+        ),
+    ],
+)
+def test_finish_role_sync_binds_integer_retry_minutes(
+    member, expected_status, expected_delay, expected_error
+):
+    conn = BindingAwareRoleSyncConn()
+    asyncio.run(_finish_role_sync(conn, "user-free", member))
+    assert conn.finish_calls == [
+        ("user-free", expected_status, expected_delay, expected_error)
+    ]
+
+
+def test_finish_role_sync_real_asyncpg_binding():
+    async def exercise():
+        dsn = os.getenv(
+            "TEST_ADMIN_DATABASE_URL",
+            "postgresql://postgres:postgres@localhost:5432/postgres",
+        )
+        try:
+            conn = await asyncpg.connect(dsn, timeout=2)
+        except Exception:
+            pytest.skip(f"no PostgreSQL reachable at {dsn}")
+        try:
+            await conn.execute(
+                """
+                CREATE TEMP TABLE discord_role_sync_queue (
+                    user_id TEXT PRIMARY KEY,
+                    status TEXT NOT NULL,
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    next_attempt_at TIMESTAMPTZ,
+                    last_attempt_at TIMESTAMPTZ,
+                    synced_at TIMESTAMPTZ,
+                    last_error TEXT,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            await conn.execute(
+                "INSERT INTO discord_role_sync_queue (user_id, status) VALUES ($1, 'pending')",
+                "user-free",
+            )
+            await _finish_role_sync(conn, "user-free", DiscordMemberState("not_joined"))
+            row = await conn.fetchrow(
+                "SELECT status, attempts, next_attempt_at - last_attempt_at AS retry_delay FROM discord_role_sync_queue WHERE user_id=$1",
+                "user-free",
+            )
+            assert row["status"] == "not_joined"
+            assert row["attempts"] == 1
+            assert row["retry_delay"] == timedelta(minutes=60)
+        finally:
+            await conn.close()
+
+    asyncio.run(exercise())
+
+
+def test_manual_reconcile_endpoint_returns_joined_free_and_is_idempotent(monkeypatch):
+    conn = BindingAwareRoleSyncConn(queued=False)
+    client = FakeClient(DiscordMemberState("joined", frozenset()))
+    monkeypatch.setattr(discord_integration, "DiscordClient", lambda: client)
+
+    app = FastAPI()
+
+    @app.middleware("http")
+    async def add_test_session(request, call_next):
+        request.scope["session"] = {"user_id": "user-free"}
+        return await call_next(request)
+
+    async def override_db():
+        yield conn
+
+    app.dependency_overrides[get_db] = override_db
+    app.include_router(discord_router)
+
+    with TestClient(app) as http:
+        first = http.post("/api/discord/reconcile")
+        second = http.post("/api/discord/reconcile")
+
+    assert first.status_code == second.status_code == 200
+    assert first.json()["guild_membership"] == "joined"
+    assert first.json()["desired_member_role"] is False
+    assert first.json()["has_member_role"] is False
+    assert first.json()["role_sync"] == "synced"
+    assert second.json() == first.json()
+    assert client.calls == [("123456789", False), ("123456789", False)]
+    assert conn.queue["status"] == "synced"
+
+
+class SingleConnectionPool:
+    def __init__(self, conn):
+        self.conn = conn
+
+    def acquire(self):
+        conn = self.conn
+
+        class Lease:
+            async def __aenter__(self):
+                return conn
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        return Lease()
+
+
+def test_background_reconcile_returns_joined_free_and_is_idempotent():
+    conn = BindingAwareRoleSyncConn()
+    pool = SingleConnectionPool(conn)
+    client = FakeClient(DiscordMemberState("joined", frozenset()))
+
+    first = asyncio.run(process_role_sync_queue(pool, client))
+    second = asyncio.run(process_role_sync_queue(pool, client))
+
+    assert first == 1
+    assert second == 0
+    assert client.calls == [("123456789", False)]
+    assert conn.queue["status"] == "synced"
