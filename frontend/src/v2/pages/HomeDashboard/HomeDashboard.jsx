@@ -4,6 +4,7 @@ import { Activity, ArrowRight, Bell, ChevronRight, Search, Star, Target, X, Zap 
 import { useAuth } from "../../../context/AuthContext";
 import { useDashboard } from "../../hooks/useDashboard";
 import { buildWhyText, sellingSpeedLabel } from "../../lib/tradeNarrative";
+import { formatCountdown } from "../../lib/format";
 import AdvancedRationale from "../../components/AdvancedRationale";
 import { useFutggMarketFreshness, useFutggOpportunities, useFutggTradeFinder } from "../../hooks/useFutggMarket";
 import { useGeneratedCardImages } from "../../hooks/useRecommendationFeeds";
@@ -19,7 +20,7 @@ import "../../styles/dashboard-v2.css";
 import "../../styles/dashboard-analysis-modal.css";
 import "../../styles/mobile-polish.css";
 
-const EMPTY={marketRegime:{label:"Unknown",confidence:0,summary:"",metrics:{}},todaysOpportunities:[],highConfidenceInvestments:[],cardsToAvoid:[],biggestMovers:[],watchlistAlerts:[],latestMarketEvents:[],latestSbcImpact:[],locked:{opportunityFeed:false,previewCount:0}};
+const EMPTY={marketRegime:{label:"Unknown",confidence:0,summary:"",metrics:{}},todaysOpportunities:[],highConfidenceInvestments:[],cardsToAvoid:[],biggestMovers:[],watchlistAlerts:[],nextPromo:null,latestMarketEvents:[],latestSbcImpact:[],locked:{opportunityFeed:false,previewCount:0}};
 // Strategy Finder used to hit the legacy FUTBIN engine's
 // /api/v2/recommendations/strategy/{name} - that pipeline's fair_value_mv
 // is broken (see the comment above baseItems below), so every tab always
@@ -135,7 +136,7 @@ export default function HomeDashboard(){
       <Ticker items={futggItems} events={dashboard.latestMarketEvents}/>
       <section className="decision-stage">
         <div className="lead-trade"><div className="lead-label"><Zap size={15}/> TOP CARD</div>{lead?<div className="lead-layout"><button className="lead-card player-open-button" onClick={()=>setSelected(lead)} aria-label={`Open ${nameOf(lead.player)} analysis`}><CardImage player={lead.player} featured/></button><div className="lead-copy"><div className="lead-head"><div><PlayerMeta player={lead.player} source={lead.source}/><h1>{nameOf(lead.player)}</h1></div><div className="lead-status"><b className={`call ${String(lead.recommendation).toLowerCase()}`}>{lead.recommendation}</b><ConfidenceRing value={lead.confidence}/></div></div>{lead.source==="futgg"?<MarketFreshness priceAgeSeconds={lead.priceAgeSeconds} capturedAt={lead.updatedAt}/>:null}<p>{reason(lead)}</p><div className="lead-numbers"><Metric label="Buy below" value={<CoinValue value={lead.entryPrice??lead.currentBin}/>} sub="Maximum entry" tone="entry"/><Metric label="Expected profit" value={<CoinValue value={expectedProfit(lead)} signed/>} sub="After EA tax" tone="positive"/><Metric label="Risk level" value={lead.risk||"Unknown"} sub={`${sellingSpeedLabel(lead.liquidityScore)} selling speed`}/></div><div className="lead-actions"><button onClick={()=>setSelected(lead)}>View move <ArrowRight size={17}/></button><button className="secondary" onClick={()=>watchItem(lead)} aria-label="Add top card to watchlist"><Star size={16} fill={watchStates[String(lead.cardId)]==="saved"?"currentColor":"none"}/>{watchStates[String(lead.cardId)]==="saved"?"Watching":"Watch"}</button></div></div></div>:<EmptyState compact text="No clean trade has passed the filters yet."/>}</div>
-        <aside className="market-panel"><div className="panel-label"><Activity size={15}/> MARKET PULSE</div><div className="pulse-head"><div><h2>{mood(dashboard.marketRegime?.label,score)}</h2><p>{dashboard.marketRegime?.summary||"Prices and completed sales are being checked now."}</p></div><strong>{score}<small>/100</small></strong></div><div className="pulse-track"><span style={{width:`${Math.max(5,score)}%`}}/></div><div className="pulse-stats"><Metric label="Buy signals" value={buyCount}/><Metric label="Coin potential" value={<CoinValue value={potential} signed/>}/><Metric label="Tracked" value={count(Number(dashboard.marketRegime?.metrics?.liquidCards||0)+Number(freshnessQuery.data?.cards_priced||0))}/></div><div className="pulse-events">{(dashboard.latestMarketEvents||[]).slice(0,3).map((event,index)=><div key={event.id||index}><i/><span>{event.title}</span></div>)}</div></aside>
+        <aside className="market-panel"><div className="panel-label"><Activity size={15}/> MARKET PULSE</div><div className="pulse-head"><div><h2>{mood(dashboard.marketRegime?.label,score)}</h2><p>{dashboard.marketRegime?.summary||"Prices and completed sales are being checked now."}</p></div><strong>{score}<small>/100</small></strong></div><div className="pulse-track"><span style={{width:`${Math.max(5,score)}%`}}/></div><div className="pulse-stats"><Metric label="Buy signals" value={buyCount}/><Metric label="Coin potential" value={<CoinValue value={potential} signed/>}/><Metric label="Tracked" value={count(Number(dashboard.marketRegime?.metrics?.liquidCards||0)+Number(freshnessQuery.data?.cards_priced||0))}/></div><PulseFooter nextPromo={dashboard.nextPromo} sbcImpact={dashboard.latestSbcImpact}/></aside>
       </section>
       <TrackRecordPanel/>
       <section className="queue-section" id="queue"><div className="section-head"><div><span>LIVE OPPORTUNITIES</span><h2>Next best moves</h2></div><Link to="/v2/players">Find a player <ArrowRight size={15}/></Link></div><div className="queue-grid">{queue.length?queue.map((item,index)=><QueueCard key={item.cardId} item={item} rank={index+2} onOpen={setSelected} onWatch={watchItem} watchState={watchStates[String(item.cardId)]}/>):<EmptyState compact text="No additional opportunities right now."/>}{dashboard.locked?.opportunityFeed&&dashboard.locked?.previewCount>0?<LockedPreviewCard count={dashboard.locked.previewCount} navigate={navigate}/>:null}</div></section>
@@ -214,6 +215,23 @@ function isNegativeCall(item){return ["AVOID","SELL"].includes(String(item?.reco
 // null (not 0) when there's no real entry/gain to compute a target from -
 // a fabricated "0" here looks like a real "sell for nothing" instruction.
 function modalTarget(item,entry,gain){if(!entry)return null;if(isNegativeCall(item))return Math.ceil(entry/.95/250)*250;return gain!=null?Math.ceil((entry+gain)/.95/250)*250:null}
+// Replaces the old raw dump of the 3 newest market_events titles - that
+// was every SBC the collector had seen, whether or not it had done
+// anything to the market, next to zero context (a bare title like "5 of
+// 10 83+ Player Pick" doesn't say what it did to prices). Two real,
+// specific things instead, each only shown when there's real data
+// behind it: which SBCs have a MEASURED price effect (server already
+// gates this to a minimum sample size and a minimum move - see
+// dashboard.py's HAVING clause), and when the next promo actually is
+// (admin-entered, never a guessed/invented date - see /api/events/next).
+function PulseFooter({nextPromo,sbcImpact}){
+  const impacts=(sbcImpact||[]).slice(0,2);
+  if(!nextPromo&&!impacts.length)return null;
+  return <div className="pulse-events">
+    {nextPromo?<div className="pulse-promo"><i/><span><b>Next: {nextPromo.name}</b> · {formatCountdown(nextPromo.startAt)}</span></div>:null}
+    {impacts.map((s,index)=>{const up=Number(s.estimatedMarketImpact)>=0;return <div key={s.eventId||index}><i className={up?"up":"down"}/><span><b>{up?"+":""}{s.estimatedMarketImpact}%</b> avg price move on cards used in "{s.title}"</span></div>})}
+  </div>;
+}
 function Metric({label,value,sub,tone}){return <div className={`metric ${tone||""}`}><span>{label}</span><strong>{value}</strong>{sub?<small>{sub}</small>:null}</div>}
 function ConfidenceRing({value,compact=false}){const score=value==null?null:Math.max(0,Math.min(100,Math.round(Number(value))));return <div className={`confidence-ring ${compact?"compact":""}${score==null?" no-data":""}`} style={{"--confidence":`${(score??0)*3.6}deg`}}><span>{score==null?"—":score}{score==null?null:<small>%</small>}</span></div>}
 function LockedPreviewCard({count,navigate}){return <button className="queue-card locked-preview" onClick={()=>navigate("/billing")}><div className="locked-preview-copy"><strong>{count} more {count===1?"opportunity":"opportunities"} today</strong><span>Upgrade to see the full live feed, updated as the market moves.</span></div><ChevronRight className="queue-arrow" size={18}/></button>}
