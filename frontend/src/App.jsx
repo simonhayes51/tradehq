@@ -34,8 +34,6 @@ const PlayerCompare = lazy(() => import("./pages/PlayerCompare"));
 const Billing       = lazy(() => import("./pages/Billing"));
 
 // NEW pages
-const SmartBuyerAI  = lazy(() => import("./pages/SmartBuyerAI"));
-const BestBuys      = lazy(() => import("./pages/BestBuys"));
 const UndervaluedBoard = lazy(() => import("./pages/UndervaluedBoard"));
 const AdminUsers = lazy(() => import("./pages/AdminUsers"));
 const Demo = lazy(() => import("./pages/Demo"));
@@ -180,25 +178,16 @@ function App() {
                       }
                     />
 
-                    {/* Smart Buyer (Simple) with name search + Trade Plan */}
-                    <Route
-                      path="smart-buyer-ai"
-                      element={
-                        <PremiumRoute feature="smart_buy" featureName="Smart Buyer AI">
-                          <SmartBuyerAI />
-                        </PremiumRoute>
-                      }
-                    />
-
-                    {/* Best Buys board (NOT default) */}
-                    <Route
-                      path="best-buys"
-                      element={
-                        <PremiumRoute feature="smart_buy" featureName="Smart Buy AI">
-                          <BestBuys />
-                        </PremiumRoute>
-                      }
-                    />
+                    {/* smart-buyer-ai and best-buys priced off live futbin
+                        scrapes on every request (app/services/price_history.py
+                        -> app.futbin_client), a separate and less reliable
+                        pricing source than the FUT.GG pipeline the rest of
+                        the app (incl. /v2/opportunities) now uses - showing
+                        both to the same paying user risks two different
+                        prices for the same card. Point both at the v2
+                        equivalent until they're rebuilt on FUT.GG data. */}
+                    <Route path="smart-buyer-ai" element={<Navigate to="/v2/opportunities" replace />} />
+                    <Route path="best-buys" element={<Navigate to="/v2/opportunities" replace />} />
 
                     {/* Optional premium analytics alias */}
                     <Route

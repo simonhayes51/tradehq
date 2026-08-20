@@ -66,3 +66,58 @@
 .locked-preview-copy { display: grid; gap: 4px; }
 .locked-preview-copy strong { font-size: 15px; color: var(--green); }
 .locked-preview-copy span { font-size: 12px; color: #8e8e8e; }
+
+/* First-time-visitor intro strip (IntroBanner) - only rendered when
+   signed out, above the live ticker. */
+.intro-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  margin-top: 16px;
+  padding: 24px 26px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: linear-gradient(135deg, #122b1f, #171717 70%);
+}
+.intro-eyebrow {
+  display: block;
+  color: var(--green);
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: .12em;
+}
+.intro-copy h1 {
+  margin: 6px 0 0;
+  font-size: 26px;
+  line-height: 1.2;
+  letter-spacing: -.02em;
+}
+.intro-copy p {
+  max-width: 640px;
+  margin: 10px 0 0;
+  color: #c2c2c2;
+  font-size: 13px;
+  line-height: 1.55;
+}
+.intro-actions { display: flex; flex-direction: column; gap: 10px; flex: none; }
+.intro-actions button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 18px;
+  border: 1px solid var(--green);
+  border-radius: 3px;
+  background: var(--green);
+  color: #101010;
+  font-weight: 900;
+  white-space: nowrap;
+}
+.intro-actions .secondary { border-color: var(--line); background: transparent; color: #fff; }
+@media (max-width: 800px) {
+  .intro-banner { flex-direction: column; align-items: flex-start; }
+  .intro-actions { flex-direction: row; width: 100%; }
+  .intro-actions button { flex: 1; }
+}

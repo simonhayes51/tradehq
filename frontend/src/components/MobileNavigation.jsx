@@ -34,8 +34,6 @@ const MORE_LINKS = [
 ];
 
 const MORE_PREMIUM_LINKS = [
-  { to: "/smart-buyer-ai", label: "Smart Buyer AI", icon: Bot },
-  { to: "/best-buys", label: "Best Buys", icon: Sparkles },
   { to: "/trade-finder", label: "Trade Finder", icon: Target },
   { to: "/advanced-analytics", label: "Advanced Analytics", icon: BarChart3 },
   { to: "/portfolio-optimizer", label: "Portfolio Optimizer", icon: Activity },

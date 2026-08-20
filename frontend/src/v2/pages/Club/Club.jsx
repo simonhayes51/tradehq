@@ -47,7 +47,7 @@ export default function Club() {
   return (
     <div className="club-page">
       <header className="club-hero">
-        <div><span>MY CLUB</span><h1>Your trades. Your results.</h1><p>Track every purchase, close sales properly and learn which FutHub calls actually make you coins.</p></div>
+        <div><span>MY CLUB</span><h1>Your trades. Your results.</h1><p>Track every purchase, close sales properly and learn which EAFC Live calls actually make you coins.</p></div>
         <a href="#/v2" className="club-add"><Plus size={18} /> Find a trade</a>
       </header>
 

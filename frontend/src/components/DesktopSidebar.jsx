@@ -79,8 +79,6 @@ const DesktopSidebar = () => {
 
   const premiumItems = [
     { path: "/smart-buy", label: "Smart Buy", icon: Zap, premium: true },
-    { path: "/smart-buyer-ai", label: "Smart Buyer AI", icon: Bot, premium: true },
-    { path: "/best-buys", label: "Best Buys", icon: Sparkles, premium: true },
     { path: "/trade-finder", label: "Trade Finder", icon: Target, premium: true },
     { path: "/advanced-analytics", label: "Advanced Analytics", icon: BarChart3, premium: true },
     { path: "/portfolio-optimizer", label: "Portfolio Optimizer", icon: Activity, premium: true },
@@ -118,7 +116,7 @@ const DesktopSidebar = () => {
         </div>
         {!collapsed && (
           <h1 className="mt-2 text-lg font-bold text-white text-center">
-            FUT Traders Hub
+            EAFC Live
           </h1>
         )}
         <button
