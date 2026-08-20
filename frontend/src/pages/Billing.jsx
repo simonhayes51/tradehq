@@ -5,6 +5,7 @@ import {
   Crown, Star, Check, Zap, ArrowRight, CreditCard, Shield, Clock,
   AlertTriangle, MessageCircle, ExternalLink, Users, Gift
 } from "lucide-react";
+import { DISCORD_INVITE_URL } from "../lib/domains";
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
 
@@ -301,7 +302,7 @@ export default function Billing() {
               </div>
               
               <a
-                href="https://discord.gg/3sSpu3rDgn"
+                href={DISCORD_INVITE_URL}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="inline-flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 rounded-lg text-white text-sm font-medium transition-all"

@@ -1,6 +1,8 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { Briefcase, LogOut, Star, Trash2, User, Wrench } from "lucide-react";
+import { Briefcase, ExternalLink, LogOut, MessageCircle, RefreshCw, Star, Trash2, User, Wrench } from "lucide-react";
+import api from "../../../axios";
+import { DISCORD_INVITE_URL } from "../../../lib/domains";
 import { useAuth } from "../../../context/AuthContext";
 import { useEntitlements } from "../../../context/EntitlementsContext";
 import { deleteAccount } from "../../../api/account";
@@ -16,6 +18,30 @@ export default function Account() {
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState(null);
+  const [discord, setDiscord] = useState(null);
+  const [discordBusy, setDiscordBusy] = useState(false);
+
+  async function loadDiscordStatus() {
+    if (!isAuthenticated) return;
+    try {
+      const { data } = await api.get("/api/discord/status", { __skipAuthRedirect: true });
+      setDiscord(data);
+    } catch {
+      setDiscord({ guild_membership: "unavailable", membership_access: isPremium ? "EAFC.Live Member" : "Free" });
+    }
+  }
+
+  useEffect(() => { loadDiscordStatus(); }, [isAuthenticated]);
+
+  async function refreshDiscordAccess() {
+    setDiscordBusy(true);
+    try {
+      await api.post("/api/discord/reconcile", null, { __skipAuthRedirect: true });
+      await loadDiscordStatus();
+    } finally {
+      setDiscordBusy(false);
+    }
+  }
 
   async function signOut() {
     await logout();
@@ -60,6 +86,20 @@ export default function Account() {
           straight into this app instead of the old one. */}
       <Link to="/add-trade"><Wrench/><div><strong>More tools</strong><span>Smart Buy, Portfolio Optimizer, Trade Copilot and more</span></div></Link>
     </section>
+    {isAuthenticated ? (
+      <section className="v2-discord-panel">
+        <div className="v2-discord-heading"><MessageCircle size={18}/><span>DISCORD</span></div>
+        <dl>
+          <div><dt>Connected as</dt><dd>{discord?.display_name || name}</dd></div>
+          <div><dt>EAFC Live server</dt><dd>{discord?.guild_membership === "joined" ? "Joined" : discord?.guild_membership === "not_joined" ? "Not joined" : "Status unavailable"}</dd></div>
+          <div><dt>Membership access</dt><dd>{discord?.membership_access || (isPremium ? "EAFC.Live Member" : "Free")}</dd></div>
+        </dl>
+        <div className="v2-discord-actions">
+          <a href={discord?.invite_url || DISCORD_INVITE_URL} target="_blank" rel="noreferrer"><ExternalLink size={15}/> Join EAFC Live Discord</a>
+          <button type="button" onClick={refreshDiscordAccess} disabled={discordBusy}><RefreshCw size={15}/>{discordBusy ? "Refreshing..." : "Refresh Discord access"}</button>
+        </div>
+      </section>
+    ) : null}
     {isAuthenticated ? <button className="v2-sign-out" onClick={signOut}><LogOut size={17}/> Sign out</button> : null}
     {isAuthenticated ? (
       <section className="v2-account-danger">

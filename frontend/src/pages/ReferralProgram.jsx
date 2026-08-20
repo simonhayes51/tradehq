@@ -32,7 +32,7 @@ const ReferralProgram = () => {
   // always undefined against the real response - reading referral_code
   // directly fixes both the stats display and the "share a working link"
   // bug in one pass, since share_url is already fully formed server-side.
-  const referralLink = referralData?.share_url || `https://app.futhub.co.uk?ref=${referralData?.referral_code || ''}`;
+  const referralLink = referralData?.share_url || `https://eafc.live/r/${referralData?.referral_code || ''}`;
 
   const copyReferralLink = () => {
     navigator.clipboard.writeText(referralLink);

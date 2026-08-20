@@ -13,9 +13,11 @@ COPY . .
 
 ARG VITE_API_URL
 ARG VITE_API_BASE_URL
+ARG VITE_DISCORD_INVITE_URL
 RUN { \
       echo "VITE_API_URL=${VITE_API_URL}"; \
       echo "VITE_API_BASE_URL=${VITE_API_BASE_URL}"; \
+      echo "VITE_DISCORD_INVITE_URL=${VITE_DISCORD_INVITE_URL}"; \
     } > .env.production
 
 RUN npm run build
