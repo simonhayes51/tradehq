@@ -91,6 +91,8 @@ from app.db import get_core_pool
 from app.services.futgg_scanner import refresher_loop as futgg_scanner_refresher_loop
 from app.services.futgg_outcome_grader import refresher_loop as futgg_outcome_grader_refresher_loop
 from app.services.priority_recompute import refresher_loop as priority_recompute_refresher_loop
+from app.services.investment_engine.runner import refresher_loop as investment_engine_refresher_loop
+from app.services.investment_engine.config import INVESTMENT_ENGINE_CONFIG
 from app.services.oauth_return import safe_return_to
 from app.services.futgg_card_image_mirror import mirror_loop as futgg_card_image_mirror_loop
 
@@ -630,6 +632,28 @@ async def lifespan(app: FastAPI):
     )
     logging.info("✅ FUT.GG outcome grader started (poll every %ss)", futgg_grader_poll)
 
+    # Investment Engine (separate concept from the trade/opportunity
+    # engines above - see app/services/investment_engine/__init__.py).
+    # Entirely inert (INVESTMENT_ENGINE_ENABLED defaults False) until
+    # explicitly turned on, and even then stays in shadow mode
+    # (calculated, never published) until INVESTMENT_ENGINE_PUBLISH_
+    # SIGNALS is also set - see backend/INVESTMENT_ENGINE.md.
+    if INVESTMENT_ENGINE_CONFIG.enabled:
+        investment_poll = INVESTMENT_ENGINE_CONFIG.recompute_interval_seconds
+        # FC27's own game_year - fut.gg URLs encode this as a two-digit
+        # year (game_year=26 for FC26, confirmed against auto_sync's
+        # futgg_common.py CARD_URL_RE); update once FC27 assigns its own.
+        investment_game_year = int(os.getenv("INVESTMENT_ENGINE_GAME_YEAR", "27"))
+        app.state.investment_engine_task = asyncio.create_task(
+            investment_engine_refresher_loop(pool, investment_poll, game_year=investment_game_year)
+        )
+        logging.info(
+            "✅ Investment Engine started (poll every %ss, game_year=%s, publish_signals=%s)",
+            investment_poll, investment_game_year, INVESTMENT_ENGINE_CONFIG.publish_signals,
+        )
+    else:
+        logging.info("⏸️  Investment Engine disabled (INVESTMENT_ENGINE_ENABLED not set)")
+
     # Adaptive priority engine. Milestone 1 (always on): rule-classifies
     # every active FUT.GG card into card_priority (baseline_tier - what
     # the card IS, liquidity/card-type/opportunity/interest/volatility/
@@ -692,7 +716,7 @@ async def lifespan(app: FastAPI):
             "futgg_scanner_task", "futgg_outcome_grader_task",
             "held_position_refresher_task", "futgg_market_snapshot_task",
             "priority_recompute_task", "futgg_card_image_mirror_task",
-            "discord_integration_task",
+            "discord_integration_task", "investment_engine_task",
         ):
             task = getattr(app.state, task_attr, None)
             if task:

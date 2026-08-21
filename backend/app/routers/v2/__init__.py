@@ -14,6 +14,7 @@ from app.routers.v2.trades import router as trades_router
 from app.routers.v2.ai_chat import router as ai_chat_router
 from app.routers.v2.futgg_market import router as futgg_market_router
 from app.routers.v2.companion import router as companion_router
+from app.routers.v2.investments import router as investments_router
 
 router = APIRouter(prefix="/api/v2")
 router.include_router(health_router)
@@ -37,3 +38,8 @@ router.include_router(futgg_market_router)
 # evolve (rate limits, API-key auth for the extension) independently of
 # the main market-intelligence surface.
 router.include_router(companion_router)
+# Investment Engine (migrations 058-061, app/services/investment_engine/)
+# - separate concept from futgg_market_router's opportunities/trade-finder
+# surface above; see that package's __init__.py docstring for the
+# Trade-vs-Investment distinction. Also purely additive/last.
+router.include_router(investments_router)

@@ -11,6 +11,7 @@ import Players from "./pages/Players/Players";
 import Watchlist from "./pages/Watchlist/Watchlist";
 import TradeFinder from "./pages/TradeFinder/TradeFinder";
 import Opportunities from "./pages/Opportunities/Opportunities";
+import Investments from "./pages/Investments/Investments";
 import Account from "./pages/Account/Account";
 import Chat from "./pages/Chat/Chat";
 import Billing from "./pages/Billing/Billing";
@@ -23,6 +24,10 @@ export default function V2App() {
           dedicated opportunities page existed); now a real page wired to
           GET /api/v2/opportunities. */}
       <Route path="opportunities" element={<ShellLayout><Opportunities /></ShellLayout>} />
+      {/* Investment Engine surface - separate from Opportunities/Trade
+          Finder by design (market-cycle plays, not single-listing
+          flips). See app/routers/v2/investments.py's module docstring. */}
+      <Route path="investments" element={<ShellLayout><Investments /></ShellLayout>} />
       <Route path="trade-finder" element={<ShellLayout><TradeFinder /></ShellLayout>} />
       <Route path="players" element={<ShellLayout><Players /></ShellLayout>} />
       <Route path="players/:cardId" element={<ShellLayout><PlayerPage /></ShellLayout>} />
