@@ -336,6 +336,33 @@ def extract_series(html: str, captured_date: date | None):
             points_by_date[obs_date] = price
 
     points = sorted(points_by_date.items())
+
+    # Sanity bound: a date before the chart's own first labeled tick, or
+    # after the page's own "as of" capture date, is definitionally
+    # impossible -- no FC26 card existed before ~Sep 2025, and no chart
+    # can show a date in the future relative to when it was captured.
+    # Caught in a real production bulk-load run: the aggregate date range
+    # across ~2600 cards briefly showed max=2026-12-01 despite every
+    # single capture happening on/before 2026-08-21. Root cause: circles
+    # positioned past the last labeled X-axis tick extrapolate via the
+    # linear day-offset regression, and per-tick pixel spacing isn't
+    # perfectly uniform in every chart, so that extrapolation can drift
+    # for cx values far beyond the last real tick. Affects only the
+    # (rare) drifted points, not the whole card -- drop just those,
+    # don't discard an otherwise-good extraction.
+    if captured_date is not None and points:
+        lower_bound = x0_date - timedelta(days=2)
+        upper_bound = captured_date + timedelta(days=2)
+        clean_points = [(d, p) for d, p in points if lower_bound <= d <= upper_bound]
+        dropped = len(points) - len(clean_points)
+        if dropped:
+            warnings.append(
+                f"dropped {dropped} point(s) with implausible dates outside "
+                f"[{lower_bound}, {upper_bound}] (likely extrapolation drift "
+                f"past the last labeled X-axis tick)"
+            )
+            points = clean_points
+
     return points, warnings, max_pct_err
 
 
