@@ -34,7 +34,9 @@ from app.services.investment_engine import ledger
 from app.services.investment_engine import live_confirmation as lc
 from app.services.investment_engine import momentum as mo
 from app.services.investment_engine import ranking as rk
+from app.services.investment_engine import readiness as rd
 from app.services.investment_engine import state_machine as sm
+from app.services.investment_engine import decision_log as dlog
 from app.services.investment_engine.config import INVESTMENT_ENGINE_CONFIG, INVESTMENT_ENGINE_VERSION
 from app.services.investment_engine.strategies import STRATEGIES
 
@@ -153,16 +155,53 @@ async def run_cohort_pass(
     snapshots = await _current_cohort_prices(conn, card_ids)
     priced = {cid: float(s["current_bin"]) for cid, s in snapshots.items() if s.get("current_bin")}
 
-    if len(priced) < config.min_cohort_size:
-        log.info("investment_engine strategy=%s cohort=%s: only %d priced cards (min %d) - skipping pass",
-                  strategy_key, cohort_key, len(priced), config.min_cohort_size)
+    history = await _market_state_history(conn, game_year=game_year, strategy_key=strategy_key, cohort_key=cohort_key)
+
+    # ---- New-cycle readiness gate ("insufficient data is a valid state")
+    # Runs BEFORE any market judgement. On a brand-new game cycle this is
+    # what produces a NAMED, persisted suppression reason instead of a
+    # silent zero-signal pass nobody can explain six hours later. See
+    # readiness.py.
+    now_utc = datetime.now(timezone.utc)
+    fresh_priced = 0
+    max_age_minutes: Optional[float] = None
+    for cid in priced:
+        updated_at = snapshots[cid].get("price_updated_at")
+        if updated_at is None:
+            continue
+        age_min = (now_utc - updated_at).total_seconds() / 60.0
+        max_age_minutes = age_min if max_age_minutes is None else max(max_age_minutes, age_min)
+        if age_min <= config.max_price_age_minutes:
+            fresh_priced += 1
+    cards_with_sales = sum(
+        1 for cid in priced if (snapshots[cid].get("sales_count") or 0) > 0
+    ) if priced else None
+
+    readiness = rd.evaluate_readiness(
+        rd.CoverageInputs(
+            cards_in_cohort=len(card_ids),
+            cards_with_price=len(priced),
+            cards_with_fresh_price=fresh_priced,
+            cards_with_recent_sales=cards_with_sales,
+            market_state_observations=len(history),
+            max_price_age_minutes=max_age_minutes,
+        ),
+        config,
+        require_sales=getattr(strategy, "REQUIRES_SALES_EVIDENCE", False),
+    )
+    if not readiness.ready:
+        log.info(
+            "investment_engine strategy=%s cohort=%s NOT READY: %s (cards=%d priced=%d fresh=%d obs=%d)",
+            strategy_key, cohort_key, ",".join(readiness.reasons),
+            len(card_ids), len(priced), fresh_priced, len(history),
+        )
         return {"new_state": sm.NORMAL, "eligible_card_count": len(priced), "candidate_count": 0,
                 "signals_created": 0, "signals_closed": 0, "signals_suppressed": 0,
-                "suppression_reasons": {"insufficient_cohort_coverage": 1}, "duration_ms": None}
+                "suppression_reasons": {r: 1 for r in readiness.reasons},
+                "readiness_detail": readiness.detail, "duration_ms": None}
 
     cohort_index = sorted(priced.values())[len(priced) // 2]  # median
 
-    history = await _market_state_history(conn, game_year=game_year, strategy_key=strategy_key, cohort_key=cohort_key)
     dd_history_values = [float(h["drawdown_pct"]) for h in history if h.get("drawdown_pct") is not None]
     momentum_history = [float(h["momentum_current"]) for h in history if h.get("momentum_current") is not None]
     prev_state = history[-1]["state"] if history else sm.NORMAL
@@ -301,6 +340,55 @@ async def run_cohort_pass(
                 signals_created += 1
             else:
                 suppression_reasons["duplicate_or_write_failure"] = suppression_reasons.get("duplicate_or_write_failure", 0) + 1
+
+            await dlog.record_decision(
+                conn, game_year=game_year, card_id=rc.card_id, strategy_key=strategy_key,
+                cohort_key=cohort_key, decision=dlog.DECISION_RECOMMENDED, reason=reason,
+                engine_version=INVESTMENT_ENGINE_VERSION, shadow=not config.publish_signals,
+                reference_price=price, card_drawdown_pct=snap.drawdown_pct,
+                card_momentum_pct=mom.current_return_pct, relative_strength_pct=None,
+                liquidity=rc.liquidity, investability=rc.investability, confidence=rc.rank_score,
+                market_state=new_state, market_severity_class=severity_class,
+                market_drawdown_pct=snap.drawdown_pct, cohort_price_index=cohort_index,
+                signal_id=signal_id,
+            )
+    else:
+        # ---- RECORD THE REFUSALS ------------------------------------------
+        # The engine declining to recommend during a crash is its most
+        # defensible behaviour, and the thing FC26's data could never
+        # evaluate. Recording it (deduplicated into decision episodes -
+        # see decision_log.py) is what will let us ask, later, "was
+        # suppressing that card correct" against what the price actually
+        # did next.
+        #
+        # Bounded deliberately: only the cards that would plausibly have
+        # been candidates (priced, tradeable) and only up to the same cap
+        # a recommending pass would write, so a suppressed pass never
+        # writes more rows than a recommending one.
+        suppress_reason = (
+            rd.COHORT_STILL_CRASHING if new_state in (sm.CRASHING, sm.OVERHEATED, sm.WATCH)
+            else rd.REGIME_NOT_INVESTABLE
+        )
+        suppressed_written = 0
+        for cid, price in priced.items():
+            if suppressed_written >= config.max_signals_per_cohort_per_run:
+                break
+            snap_row = snapshots.get(cid, {})
+            if snap_row.get("is_tradeable") is False:
+                continue
+            written = await dlog.record_decision(
+                conn, game_year=game_year, card_id=cid, strategy_key=strategy_key,
+                cohort_key=cohort_key, decision=dlog.DECISION_SUPPRESSED, reason=suppress_reason,
+                engine_version=INVESTMENT_ENGINE_VERSION, shadow=not config.publish_signals,
+                reference_price=price, card_drawdown_pct=snap.drawdown_pct,
+                card_momentum_pct=mom.current_return_pct,
+                market_state=new_state, market_severity_class=severity_class,
+                market_drawdown_pct=snap.drawdown_pct, cohort_price_index=cohort_index,
+            )
+            if written is not None:
+                suppressed_written += 1
+        if suppressed_written:
+            suppression_reasons[suppress_reason] = suppressed_written
 
     signals_closed = 0
     if new_state == sm.EXIT and prev_state in sm.INVESTABLE_STATES:

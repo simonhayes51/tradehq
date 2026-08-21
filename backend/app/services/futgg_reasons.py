@@ -37,6 +37,12 @@ NO_LIVE_PRICE = "no_live_price"
 UNTRADEABLE = "untradeable"
 UNRESOLVED_DOWNTREND = "unresolved_downtrend"
 FALLING_KNIFE = "falling_knife"
+# No trend evidence AND an implausibly large discount - we cannot tell a
+# genuine bargain from a fast repricing, so we decline to guess. Binds
+# hardest in the first hours of a new game cycle, when no card yet has
+# enough sales for the trend layer to say anything. See EngineConfig.
+# unverifiable_discount_ratio.
+UNVERIFIABLE_DISCOUNT = "unverifiable_discount"
 EXPECTED_PROFIT_TOO_LOW = "expected_profit_too_low"
 TARGET_BELOW_BREAK_EVEN = "target_below_break_even"
 NO_REALISTIC_EXIT_EVIDENCE = "no_realistic_exit_evidence"
@@ -70,7 +76,7 @@ INFO_NO_EDGE = "no_edge"
 
 BLOCKING_CODES = frozenset({
     INSUFFICIENT_SALES, STALE_MARKET, STALE_SALES, NO_LIVE_PRICE, UNTRADEABLE,
-    UNRESOLVED_DOWNTREND, FALLING_KNIFE, EXPECTED_PROFIT_TOO_LOW,
+    UNRESOLVED_DOWNTREND, FALLING_KNIFE, UNVERIFIABLE_DISCOUNT, EXPECTED_PROFIT_TOO_LOW,
     TARGET_BELOW_BREAK_EVEN, NO_REALISTIC_EXIT_EVIDENCE,
     PRICE_ABOVE_MAX_BUY, EVENT_RISK, STALE_RECOMMENDATION,
     SALES_BIN_DIVERGENCE,
@@ -161,6 +167,7 @@ CODE_LABELS: Dict[str, str] = {
     UNTRADEABLE: "Card is untradeable",
     UNRESOLVED_DOWNTREND: "Still falling",
     FALLING_KNIFE: "Falling knife",
+    UNVERIFIABLE_DISCOUNT: "Discount unconfirmed",
     EXPECTED_PROFIT_TOO_LOW: "Profit too small",
     TARGET_BELOW_BREAK_EVEN: "Target below break-even",
     NO_REALISTIC_EXIT_EVIDENCE: "No evidence it sells at target",
