@@ -94,6 +94,9 @@ class OutcomeGrade:
     exit_achieved: bool = False
     exit_at: Optional[datetime] = None
     realised_sell_price: Optional[int] = None
+    outcome_price: Optional[int] = None
+    outcome_observed_at: Optional[datetime] = None
+    outcome_price_type: Optional[str] = None
     net_profit_after_tax: Optional[Decimal] = None
     realised_roi: Optional[Decimal] = None
     max_favourable_excursion: Optional[float] = None
@@ -206,6 +209,9 @@ def grade_recommendation(
             grade.target_hit = True
             grade.exit_at = captured_at
             grade.realised_sell_price = int(price)
+            grade.outcome_price = int(price)
+            grade.outcome_observed_at = captured_at
+            grade.outcome_price_type = "target_exit"
             grade.minutes_to_target = int(
                 (captured_at - grade.entry_at).total_seconds() // 60
             )
@@ -223,6 +229,9 @@ def grade_recommendation(
     # "loss" without that distinction is how a track record starts
     # overstating itself.
     final_price = post_entry[-1][0]
+    grade.outcome_price = int(final_price)
+    grade.outcome_observed_at = post_entry[-1][1]
+    grade.outcome_price_type = "window_mark"
     grade.net_profit_after_tax = tm.net_profit(final_price, entry_price)
     grade.realised_roi = tm.net_roi(final_price, entry_price)
 
@@ -263,11 +272,12 @@ _INSERT_OUTCOME = """
         snapshot_id, source_card_id, horizon, window_start, window_end,
         observation_count, entry_achieved, entry_at, entry_price,
         exit_achieved, exit_at, realised_sell_price, net_profit_after_tax,
+        outcome_price, outcome_observed_at, outcome_price_type,
         realised_roi, max_favourable_excursion, max_adverse_excursion,
         target_hit, downside_hit, minutes_to_target, outcome_status,
         grader_version
     ) VALUES (
-        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21
+        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24
     )
     ON CONFLICT (snapshot_id, horizon) DO NOTHING
 """
@@ -324,7 +334,9 @@ async def grade_pending(pool, *, horizon: str, batch_size: int = 200) -> int:
                     grade.window_start, grade.window_end, grade.observation_count,
                     grade.entry_achieved, grade.entry_at, grade.entry_price,
                     grade.exit_achieved, grade.exit_at, grade.realised_sell_price,
-                    grade.net_profit_after_tax, grade.realised_roi,
+                    grade.net_profit_after_tax,
+                    grade.outcome_price, grade.outcome_observed_at, grade.outcome_price_type,
+                    grade.realised_roi,
                     grade.max_favourable_excursion, grade.max_adverse_excursion,
                     grade.target_hit, grade.downside_hit, grade.minutes_to_target,
                     grade.outcome_status, grade.grader_version,
