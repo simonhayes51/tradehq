@@ -155,6 +155,58 @@ def is_button_active(page: Page, button) -> bool:
     return any(marker in cls_l for marker in ("bg-orange", "active", "selected", "text-black"))
 
 
+def dismiss_cookie_banner(page: Page) -> bool:
+    """Ordinary consent-banner dismissal, same as a human clicking
+    "Accept" -- NOT anti-bot evasion. Production evidence (from the
+    Coolify twin of this script): a verified Year-button click failed
+    with Playwright naming the real cause explicitly -- '<div
+    id="cmpwrapper" class="cmpwrapper"> intercepts pointer events'.
+    Tries several common consent-platform selectors, then (last resort,
+    only if the wrapper is still obstructing) hides #cmpwrapper directly
+    -- equivalent in effect to a user dismissing the banner, not a bypass
+    of fut.gg's own protections. Returns True if something was
+    dismissed/hidden."""
+    for selector in (
+        "#onetrust-accept-btn-handler",
+        "#onetrust-reject-all-handler",
+        "#cmpwrapper button:has-text('Accept')",
+        "#cmpwrapper button:has-text('Agree')",
+        "#cmpwrapper button:has-text('Allow')",
+        "#didomi-notice-agree-button",
+        "#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll",
+        ".qc-cmp2-summary-buttons button[mode='primary']",
+        "button:has-text('Accept all')",
+        "button:has-text('Accept All')",
+        "button:has-text('Reject all')",
+        "button:has-text('I Agree')",
+        "button:has-text('Agree')",
+        "button:has-text('Got it')",
+    ):
+        try:
+            button = page.locator(selector).first
+            if button.is_visible(timeout=500):
+                button.click(timeout=2000)
+                return True
+        except Exception:  # noqa: BLE001
+            pass
+
+    try:
+        hidden = page.evaluate(
+            """
+            () => {
+                const el = document.querySelector('#cmpwrapper');
+                if (!el) return false;
+                el.style.display = 'none';
+                el.style.pointerEvents = 'none';
+                return true;
+            }
+            """
+        )
+        return bool(hidden)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def click_year_and_verify(
     page: Page, max_attempts: int = 4, verify_poll_interval: float = 0.4, verify_polls: int = 5,
 ) -> tuple[bool, str]:
@@ -178,6 +230,10 @@ def click_year_and_verify(
         try:
             btn.click(timeout=5_000)
         except Exception as exc:  # noqa: BLE001
+            # "element intercepts pointer events" from #cmpwrapper is the
+            # confirmed real-world cause of this failure mode -- try
+            # dismissing it before the next attempt.
+            dismiss_cookie_banner(page)
             if attempt == max_attempts:
                 return False, f"click raised on final attempt: {exc!r}"
             time.sleep(0.3)
@@ -280,6 +336,8 @@ def capture_one(
                 page.wait_for_load_state("networkidle", timeout=timeout_ms)
             except PWTimeoutError:
                 pass  # some pages never go fully idle (polling widgets); proceed anyway
+
+            dismiss_cookie_banner(page)
 
             switched, switch_note = click_year_and_verify(page)
             if not switched:
