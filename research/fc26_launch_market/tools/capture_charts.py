@@ -206,6 +206,26 @@ def find_chart_container_html(page: Page) -> tuple[str | None, int]:
     return result.get("html"), result.get("circles", 0)
 
 
+def wait_for_stable_chart(
+    page: Page, max_polls: int = 10, poll_interval: float = 0.5,
+) -> tuple[str | None, int]:
+    """Don't trust the first non-zero circle read: wait_for_selector only
+    guarantees ONE circle is attached, not that Recharts has finished
+    painting all of them (a mount animation / staged reveal can produce a
+    fixed early-frame count that looks identical across unrelated cards
+    -- exactly what a production run of the Coolify twin of this script
+    hit). Poll until the count is unchanged across two consecutive reads,
+    or max_polls is exhausted."""
+    last_html, last_circles = find_chart_container_html(page)
+    for _ in range(max_polls):
+        time.sleep(poll_interval)
+        html, circles = find_chart_container_html(page)
+        if circles == last_circles and html:
+            return html, circles
+        last_html, last_circles = html, circles
+    return last_html, last_circles
+
+
 def capture_one(
     page: Page, card: InputCard, timeout_ms: int, retries: int,
 ) -> tuple[str, int, str, str | None]:
@@ -243,7 +263,7 @@ def capture_one(
                 time.sleep(1.5 * attempt)
                 continue
 
-            html, num_circles = find_chart_container_html(page)
+            html, num_circles = wait_for_stable_chart(page)
             if not html or num_circles == 0:
                 last_error = f"chart container found but 0 circles (attempt {attempt})"
                 time.sleep(1.5 * attempt)
