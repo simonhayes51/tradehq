@@ -112,12 +112,28 @@ def _extract_circles(html: str) -> list[tuple[float, float]]:
     return deduped
 
 
-def _extract_x_ticks(html: str, reference_start_year: int) -> list[tuple[float, date]]:
+def _extract_x_ticks(html: str, captured_date: date | None) -> list[tuple[float, date]]:
+    """Builds ticks using an arbitrary dummy base year first (their
+    RELATIVE years -- whether a Dec->Jan rollover happened between two
+    ticks -- are always correctly inferable from the labels alone), then
+    anchors that relative structure to the real calendar using the
+    page's own displayed "as of" date, captured_date. Tick labels never
+    carry a year ("Aug 14", "Sep 17"), so a chart whose visible window
+    doesn't cross a Dec->Jan boundary gives ZERO signal about which
+    actual year it's from -- assuming a fixed year for every chart
+    (e.g. FC26's launch year) is only correct for Year-view charts that
+    happen to start at the launch date; a Week-view chart from a full
+    year later has no such anchor and was silently mis-dated a year
+    early until this fix (caught via a live report run where ~35 cards
+    all showed dates "2025-08-14..2025-08-21" despite being captured on
+    2026-08-21)."""
     raw_ticks = X_TICK_RE.findall(html)
     if not raw_ticks:
         raise ChartParseError("no X-axis date tick labels found")
+
+    DUMMY_BASE_YEAR = 2000
     ticks: list[tuple[float, date]] = []
-    year = reference_start_year
+    year = DUMMY_BASE_YEAR
     prev_month = None
     for x_str, label in raw_ticks:
         mon_str, day_str = label.split()
@@ -140,13 +156,66 @@ def _extract_x_ticks(html: str, reference_start_year: int) -> list[tuple[float, 
         deduped.append(t)
     if len(deduped) < 2:
         raise ChartParseError("fewer than 2 usable X-axis ticks")
+
+    if captured_date is not None:
+        last_dummy_date = deduped[-1][1]
+        for year_guess in (captured_date.year, captured_date.year - 1):
+            shift = year_guess - last_dummy_date.year
+            try:
+                shifted_last = last_dummy_date.replace(year=last_dummy_date.year + shift)
+            except ValueError:
+                continue  # Feb 29 into a non-leap year; try the other guess
+            if shifted_last <= captured_date + timedelta(days=3):
+                shifted = []
+                for x, d in deduped:
+                    try:
+                        shifted.append((x, d.replace(year=d.year + shift)))
+                    except ValueError:
+                        shifted.append((x, d))  # leave unshifted rather than crash
+                deduped = shifted
+                break
+
     return deduped
+
+
+def _longest_monotonic_decreasing_subseq(
+    ticks: list[tuple[float, float]],
+) -> list[tuple[float, float]]:
+    """ticks sorted by cy ascending; returns the longest subsequence
+    whose price is strictly decreasing (a valid Recharts axis is always
+    monotonic, so the longest such run is the best guess at "the real
+    ticks" when one or more spurious extra ticks are mixed in)."""
+    n = len(ticks)
+    if n == 0:
+        return []
+    lengths = [1] * n
+    prev = [-1] * n
+    for i in range(n):
+        for j in range(i):
+            if ticks[j][1] > ticks[i][1] and lengths[j] + 1 > lengths[i]:
+                lengths[i] = lengths[j] + 1
+                prev[i] = j
+    best_end = max(range(n), key=lambda i: lengths[i])
+    seq = []
+    i = best_end
+    while i != -1:
+        seq.append(ticks[i])
+        i = prev[i]
+    seq.reverse()
+    return seq
 
 
 def _extract_y_ticks(html: str) -> tuple[list[tuple[float, float]], list[str]]:
     """Returns (ticks, warnings) -- warnings records any malformed/
-    duplicate tick anomaly encountered (Phase 4's explicit ask), instead
-    of only silently dropping them."""
+    duplicate/anomalous tick encountered (Phase 4's explicit ask),
+    instead of only silently dropping them. May return a single tick
+    (flat/near-flat chart -- see extract_series' special-case handling)
+    or a recovered subset with one or more anomalous ticks dropped
+    (production evidence: several cards showed 6 evenly-spaced,
+    genuinely monotonic ticks PLUS one extra spurious tick breaking
+    monotonicity -- the same family of stray/duplicate-tick render
+    artifact Phase 1 first found, just not an exact duplicate this
+    time)."""
     warnings: list[str] = []
     raw_ticks = Y_TICK_RE.findall(html)
     if not raw_ticks:
@@ -171,17 +240,29 @@ def _extract_y_ticks(html: str) -> tuple[list[tuple[float, float]], list[str]]:
     if dup_count:
         warnings.append(f"{dup_count} duplicate Y-axis tick entries dropped")
 
-    if len(deduped) < 2:
-        raise ChartParseError("fewer than 2 usable Y-axis ticks")
+    if len(deduped) < 1:
+        raise ChartParseError("no usable Y-axis ticks")
 
     deduped.sort(key=lambda t: t[0])
+    if len(deduped) == 1:
+        return deduped, warnings  # flat-chart candidate; extract_series decides
+
     prices = [t[1] for t in deduped]
     monotonic = all(prices[i] > prices[i + 1] for i in range(len(prices) - 1))
-    if not monotonic:
-        warnings.append(f"Y-axis ticks not monotonic after dedup: {deduped!r}")
-        raise ChartParseError(f"non-monotonic Y-axis ticks: {deduped!r}")
+    if monotonic:
+        return deduped, warnings
 
-    return deduped, warnings
+    recovered = _longest_monotonic_decreasing_subseq(deduped)
+    if len(recovered) >= 4:
+        dropped = len(deduped) - len(recovered)
+        warnings.append(
+            f"dropped {dropped} anomalous Y-axis tick(s) to restore monotonicity "
+            f"(kept {recovered}, full raw set was {deduped!r})"
+        )
+        return recovered, warnings
+
+    warnings.append(f"Y-axis ticks not monotonic and no recoverable subset: {deduped!r}")
+    raise ChartParseError(f"non-monotonic Y-axis ticks: {deduped!r}")
 
 
 def _linear_fit(xs: list[float], ys: list[float]) -> tuple[float, float]:
@@ -196,14 +277,16 @@ def _linear_fit(xs: list[float], ys: list[float]) -> tuple[float, float]:
     return a, b
 
 
-def extract_series(html: str, reference_start_year: int):
+def extract_series(html: str, captured_date: date | None):
     """Returns (points, y_tick_warnings, calibration_max_pct_err) where
     points is a date-sorted list of (date, price) and
     calibration_max_pct_err is the largest residual between a Y-axis tick
     label and the linear fit through all ticks (Phase 4's 'Y-axis
-    calibration quality')."""
+    calibration quality'). captured_date anchors the X-axis tick labels
+    (which never carry a year) to the real calendar -- see
+    _extract_x_ticks' docstring."""
     circles = _extract_circles(html)
-    x_ticks = _extract_x_ticks(html, reference_start_year)
+    x_ticks = _extract_x_ticks(html, captured_date)
     y_ticks, warnings = _extract_y_ticks(html)
 
     x0_date = x_ticks[0][1]
@@ -211,9 +294,32 @@ def extract_series(html: str, reference_start_year: int):
     day_offsets = [(t[1] - x0_date).days for t in x_ticks]
     a_x, b_x = _linear_fit(xs, day_offsets)
 
-    ys = [t[0] for t in y_ticks]
-    prices = [t[1] for t in y_ticks]
-    a_y, b_y = _linear_fit(ys, prices)
+    if len(y_ticks) == 1:
+        # Phase 4's explicitly-anticipated edge case: "the chart sits
+        # near discard price for long periods" -- only one distinct
+        # Y-axis tick renders because the price barely varies across the
+        # whole window. Confirm the chart really is flat (all circles'
+        # cy clustered near that one tick's cy) before trusting a
+        # constant-price fit instead of a 2-point regression.
+        tick_cy, tick_price = y_ticks[0]
+        cys = [cy for _, cy in circles]
+        spread = (max(cys) - min(cys)) if cys else 0.0
+        mean_cy = statistics.mean(cys) if cys else tick_cy
+        if spread <= 5 and abs(mean_cy - tick_cy) <= 5:
+            a_y, b_y = tick_price, 0.0
+            warnings.append(
+                f"only 1 Y-axis tick found; chart is flat (cy spread={spread:.1f}px) "
+                f"-- using constant price {tick_price:.0f}"
+            )
+        else:
+            raise ChartParseError(
+                f"only 1 Y-axis tick found and chart is NOT flat (cy spread={spread:.1f}px) "
+                "-- cannot calibrate"
+            )
+    else:
+        ys = [t[0] for t in y_ticks]
+        prices = [t[1] for t in y_ticks]
+        a_y, b_y = _linear_fit(ys, prices)
 
     max_pct_err = 0.0
     for cy, label_price in y_ticks:
@@ -240,16 +346,22 @@ def parse_current_price_badge(html: str) -> int | None:
     return int(m.group("price").replace(",", ""))
 
 
-def parse_captured_year(html: str) -> int | None:
+def parse_captured_date(html: str) -> date | None:
+    """The page's own displayed 'as of' date (e.g. 'August 21, 2026,
+    8:24 AM' -> date(2026, 8, 21)) -- the authoritative anchor for
+    resolving X-axis tick labels, which never carry a year themselves."""
     m = CAPTURED_DATE_RE.search(html)
     if not m:
         return None
-    parts = m.group("label").rsplit(",", 1)
-    if len(parts) != 2:
-        return None
+    label = m.group("label")
     try:
-        return int(parts[1].strip())
-    except ValueError:
+        mon_str, rest = label.split(" ", 1)
+        day_str, year_str = rest.split(",")
+        month = FULL_MONTHS.get(mon_str.lower())
+        if month is None:
+            return None
+        return date(int(year_str.strip()), month, int(day_str.strip()))
+    except (ValueError, IndexError):
         return None
 
 
@@ -288,15 +400,17 @@ async def main() -> int:
             continue
 
         html = row["chart_html"]
-        # Started year for the X-axis regression: FC26's known launch date
-        # (Sep 17 2025) unless this specific chart's first tick postdates
-        # it, in which case the regression below still works because we
-        # only need TWO ticks' worth of relative day-offsets, not the true
-        # calendar start -- reference_start_year only seeds year-rollover
-        # detection across ticks within THIS chart, so 2025 is a safe
-        # default for every FC26 base card regardless of when it was added.
+        # Anchor for resolving X-axis tick labels (which never carry a
+        # year): prefer the page's own displayed "as of" date; fall back
+        # to this row's DB capture timestamp if that badge wasn't found.
+        # NOT a fixed year -- a hardcoded FC26-launch-year assumption
+        # silently mis-dated ~35 cards by a full year in a live run (see
+        # _extract_x_ticks' docstring).
+        captured_date = parse_captured_date(html)
+        if captured_date is None and row["captured_at"] is not None:
+            captured_date = row["captured_at"].date()
         try:
-            points, tick_warnings, calib_max_pct_err = extract_series(html, reference_start_year=2025)
+            points, tick_warnings, calib_max_pct_err = extract_series(html, captured_date)
         except ChartParseError as exc:
             failures.append({
                 "card_id": card_id, "name": name, "url": row["url"],
