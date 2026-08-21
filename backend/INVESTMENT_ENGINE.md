@@ -441,10 +441,16 @@ in a real deployment environment before relying on it.
   schema, so these fields are honest placeholders, not estimates.
   Investability currently falls back to sales-count/liquidity-tier
   heuristics only.
-- **No integration/DB-level test coverage.** All 77 passing tests are
-  pure-function tests; nothing has exercised `runner.py`, `ledger.py`,
-  or `investments.py` against a real database or a running FastAPI
-  process in this session.
+- **No integration/DB-level test coverage.** All pure-function tests
+  (101 as of the FC26 replay addition) exercise the engine's decision
+  logic thoroughly, but nothing has exercised `runner.py`'s actual SQL,
+  `ledger.py`'s DB writes, or `investments.py` against a real database
+  or a running FastAPI process in this session. See
+  `backend/INVESTMENT_ENGINE_REPLAY.md` for a chronological, production-
+  logic replay of FC26's launch (currently run against a synthetic
+  stand-in dataset, since no live database was reachable in that
+  session either) — the closest validation this repo has to an
+  end-to-end check today, but still not a DB-level integration test.
 - **Only two strategies implemented.** The plugin registry is ready for
   more, but promo/SBC/TOTW/Evo-driven strategies are explicitly out of
   scope for this pass.
@@ -465,7 +471,10 @@ independent flags both defaulting off, and its core logic is unit
 tested for the specific safety properties the product spec called
 out (no premature crash-to-window transitions, no accidental long
 holds, no crash-trigger leakage into the starter strategy, no future
-leakage in the historical walk).
+leakage in the historical walk) - see
+`backend/INVESTMENT_ENGINE_REPLAY.md` for a full chronological replay
+of FC26's launch through this exact code, which reached the same
+"READY FOR FC27 SHADOW MODE" verdict independently.
 
 **This is not a claim that the strategies are profitable on FC27.** The
 FC26 evidence supports the shape of both strategies (deep-drawdown-plus-

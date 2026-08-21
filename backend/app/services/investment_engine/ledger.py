@@ -25,11 +25,14 @@ from __future__ import annotations
 import json
 import logging
 import time
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from app.services import trading_math as tm
+
+Number = Decimal | int | float | str
 
 log = logging.getLogger("investment_ledger")
 
@@ -76,6 +79,47 @@ def _mark_to_market_outcome(roi: Optional[Decimal]) -> str:
     if roi is not None and roi < -_FLAT_BAND:
         return OUTCOME_LOSS_UNREALISED
     return OUTCOME_FLAT
+
+
+@dataclass
+class ExitDecision:
+    outcome: str
+    reason: str
+    profit: Decimal
+    roi_pct: Optional[float]
+
+
+def evaluate_active_signal_exit(
+    *, current_price: Optional[float], entry_price: Number, target_price: Number,
+    now, max_hold_at,
+) -> Optional[ExitDecision]:
+    """The pure NO-HINDSIGHT exit decision at the heart of both
+    grade_open_signals() (live, wall-clock `now`) and the FC26 replay
+    harness (app/services/investment_engine/replay/, simulated `now`) -
+    extracted so the two callers can never drift into two different
+    ideas of "should this signal close". Only ever looks at the single
+    `current_price`/`now` it's given - never a future/best price, never
+    a future max-hold check evaluated against the wrong clock.
+
+    Returns None if nothing warrants closing yet (no price, target not
+    hit, max hold not reached)."""
+    if current_price is None:
+        return None
+    if current_price >= float(target_price):
+        roi = tm.net_roi(current_price, entry_price)
+        return ExitDecision(
+            outcome=OUTCOME_TARGET_HIT, reason="profit_target_hit",
+            profit=tm.net_profit(current_price, entry_price),
+            roi_pct=(float(roi) * 100) if roi is not None else None,
+        )
+    if now >= max_hold_at:
+        roi = tm.net_roi(current_price, entry_price)
+        return ExitDecision(
+            outcome=_mark_to_market_outcome(roi), reason=OUTCOME_MAX_HOLD,
+            profit=tm.net_profit(current_price, entry_price),
+            roi_pct=(float(roi) * 100) if roi is not None else None,
+        )
+    return None
 
 
 _INSERT_SIGNAL = """
@@ -158,25 +202,15 @@ async def grade_open_signals(conn, *, strategy_key: str, current_price_lookup: P
     for row in rows:
         try:
             price = await current_price_lookup(row["source_card_id"])
-            if price is None:
+            decision = evaluate_active_signal_exit(
+                current_price=price, entry_price=row["entry_price"], target_price=row["target_price"],
+                now=now, max_hold_at=row["max_hold_at"],
+            )
+            if decision is None:
                 continue
-
-            outcome: Optional[str] = None
-            reason: Optional[str] = None
-            if price >= float(row["target_price"]):
-                outcome, reason = OUTCOME_TARGET_HIT, "profit_target_hit"
-            elif now >= row["max_hold_at"]:
-                roi = tm.net_roi(price, row["entry_price"])
-                outcome, reason = _mark_to_market_outcome(roi), OUTCOME_MAX_HOLD
-
-            if outcome is None:
-                continue
-
-            profit = tm.net_profit(price, row["entry_price"])
-            roi = tm.net_roi(price, row["entry_price"])
             await conn.execute(
-                _CLOSE_SIGNAL, row["id"], now, price, outcome,
-                profit, (roi * 100) if roi is not None else None, reason,
+                _CLOSE_SIGNAL, row["id"], now, price, decision.outcome,
+                decision.profit, decision.roi_pct, decision.reason,
             )
             closed += 1
         except Exception:
