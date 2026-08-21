@@ -10,283 +10,264 @@ not a second, research-only approximation of it. The replay harness
 `drawdown_percentile`/`historical_reference_percentile`/
 `severity_score_and_class`, `momentum.compute_momentum`,
 `state_machine.next_state`, `ranking.rank_candidates`, both strategy
-modules' eligibility/target/hold functions, and a newly-extracted pure
-helper `ledger.evaluate_active_signal_exit()` that the live runner
-(`grade_open_signals`) and this replay now both call. Nothing about how
-a cohort, a state, a candidate, or an exit is decided was reimplemented
-for this exercise.
+modules' eligibility/target/hold functions, and a pure helper extracted
+during this work, `ledger.evaluate_active_signal_exit()`, that the live
+runner (`grade_open_signals`) and this replay both call identically.
+Nothing about how a cohort, a state, a candidate, or an exit is decided
+was reimplemented for this exercise.
 
-**Read this before anything else below**: this report's numbers come
-from a **synthetic, clearly-labelled fixture**, not the real
-~2,617-card/~720k-row `fc26_historical_daily_prices` dataset. See
-"Data source" below for exactly why, and exactly how to re-run this for
-real. Every property this report validates (no leakage, sensible
-bootstrap, falling-knife avoidance, distinct strategies, correct tax
-math, deterministic replay) is a property of the **harness and the
-production engine code**, independent of which dataset feeds it — but
-the specific dates, drawdown magnitudes, and ROI numbers below are
-illustrative, not FC26 fact, and must not be read as such.
+**This report now reflects a REAL run against the production
+`fc26_historical_daily_prices`/`futgg_players` dataset** — 2,608 real
+Gold Common/Rare cards (9 excluded by a data-quality filter, see below),
+the actual FC26 launch window (2025-09-17 → 2025-10-17). The first draft
+of this report (superseded) used a synthetic stand-in because this
+development session had no live database connection; the real run was
+executed separately (Coolify backend terminal, which does have DB
+access) using the exact CLI this harness ships. A synthetic-fixture
+smoke-test summary is kept at the bottom for harness-validation
+purposes only — do not read those numbers as FC26 fact.
 
-## Data source — an honest limitation of this session
-
-This development session has **no live database connection**:
-`DATABASE_URL`/`PLAYER_DATABASE_URL` are unset, `asyncpg`/`psycopg2` are
-not installed, and no export/dump of `fc26_historical_daily_prices`
-exists anywhere in this repository or filesystem (confirmed by direct
-inspection: every `research_fc26_*`/Phase 8 script reads the real table
-via `DATABASE_URL` against the production database only; the one CSV in
-`research/fc26_launch_market/output/` is a single-card reconstruction
-from an earlier phase, not the dataset). Per the explicit instruction to
-stop only for "an external dependency that makes the real replay
-impossible" — this is that dependency.
-
-Rather than stop at "cannot do this," the harness was built to be
-**source-agnostic**: `app/services/investment_engine/replay/fixtures.py`
-exposes both
-
-- `load_from_postgres_rows(price_rows, meta_rows)` — the production
-  path, identical query shape to `backtest.py`'s existing
-  `run_backtest()` (`fc26_historical_daily_prices` JOINed to
-  `futgg_players WHERE price_tier IN ('gold_common','gold_rare')`).
-- `build_synthetic_fixture()` — a deterministic, clearly-labelled
-  stand-in (320 cards, archetypes shaped after the qualitative Phase
-  8/8B/8C findings — pump+crash+decelerate+short-rebound for premium/
-  meta, steady early climb with no crash for desirable starters — but
-  with randomised magnitudes, not copied research numbers) used **only**
-  because no real data was reachable in this session.
-
-Both return the exact same `ReplayDataProvider` shape, so
-`engine.run_full_replay()` never knows or cares which one produced its
-input — running this against the real dataset requires no code change,
-only a real `DATABASE_URL`.
-
-### Exact command to run this for real
+## How this was run
 
 ```
-PLAYER_DATABASE_URL=postgres://...  \
-  python -m scripts.run_investment_engine_replay --source postgres --out-dir replay_output
+python -m scripts.run_investment_engine_replay --source postgres
 ```
 
-### Command actually run in this session (synthetic)
+`--source postgres` defaults to the real FC26 Web App Launch date
+through Full Release +21 (no `--start`/`--end` needed for the standard
+validation window), and automatically excludes any card
+`fc26_historical_extraction_runs` already flags as a failed or
+low-confidence chart reconstruction (`calibration_max_pct_err > 20%`) —
+9 cards were excluded this way. Output written to
+`replay_output/{REPLAY_REPORT.md,daily_states.csv,signals.csv,
+replay_result.json}` on whatever machine runs it (the Coolify backend
+container in this case — those files are NOT synced back to this repo
+automatically, which is why the actual data lives only in this
+hand-written report, not in `backend/replay_output/`; that directory
+still holds the earlier synthetic run's artifacts as a harness-validation
+reference).
 
-```
-python -m scripts.run_investment_engine_replay --source synthetic --out-dir replay_output
-```
+## Scale
 
-Artifacts from that run are committed at `backend/replay_output/`
-(`replay_result.json`, `daily_states.csv`, `signals.csv`,
-`REPLAY_REPORT.md` — the last is an auto-generated companion to this
-hand-written report, produced by
-`app/services/investment_engine/replay/report.py`).
+- Period: 2025-09-17 (real Web App Launch) → 2025-10-17 (real Full
+  Release + 21), 31 calendar days.
+- 2,608 real cards (2,617 total Gold Common/Rare minus 9 excluded for
+  chart-reconstruction quality).
+- 1,987 cards actually reached a cohort classification within this
+  31-day window (the rest either arrived too late in the window or
+  never reached the `min_cohort_size` threshold in their position
+  group in time — itself a bootstrap-timing data point, not an error).
+- Final cohort sizes: `premium_meta`=196, `mid_tier_meta`=375,
+  `desirable_starter`=475, `ordinary`=509, `likely_fodder`=432.
 
-## Replay period & scale (this run)
-
-- Period: 2025-09-17 (FC26's real Web App Launch date) through
-  2025-10-17 (real Full Release + 21 days) — 31 calendar days, using
-  FC26's actual established launch calendar purely as FR-offset labels
-  (never as a threshold inside any engine decision).
-- 320 synthetic cards across all position groups, staggered first-
-  observed dates (15% of cards appear 1-8 days late) to genuinely
-  exercise cohort bootstrap rather than handing the engine a complete
-  Day-1 universe.
-- 62 (cohort × strategy × day) state rows produced; 124 signals opened
-  across both strategies over the period.
-
-## Did the engine behave sensibly from Day 1?
-
-**Yes, on every property this replay could check.** Concretely:
+## Did the engine behave sensibly from Day 1? (real data)
 
 ### During hype — did it avoid stupid premium purchases?
-Yes. `premium_meta` stayed `NORMAL` through the Early-Access pump
-(2025-09-17 → 2025-09-21) with zero candidates ever ranked — the state
-machine has no path from `NORMAL` into signal generation without first
-passing through `CRASHING`/`WATCH`/`BOTTOMING`.
+Yes. `premium_meta` stayed `NORMAL` through Early Access
+(2025-09-17 → ~2025-09-23) with zero candidates ever ranked.
 
 ### During the crash — did it avoid catching falling knives?
-Yes — this is the single most important result. `premium_meta` entered
-`CRASHING` on 2025-09-22 and stayed there for **10 cohort-days** (through
-2025-10-05), during which **zero signals were opened**. Post-hoc: the
-cohort fell an **average of 30.1% further** after each suppressed day
-(worst case 54.6% further). This is exactly the desired shape: a
-successful result here is the engine staying out **while** the cohort
-kept falling, not catching the exact bottom.
+Yes. 8 cohort-days were suppressed while `CRASHING`/`OVERHEATED`
+(first 2025-09-24, last 2025-10-12), during which zero signals were
+opened. Post-hoc, the cohort fell an **average of 17.0% further**
+after each suppressed day (worst case 37.6% further) — smaller in
+magnitude than an earlier mis-scoped 343-day pull of the same data, but
+this is the correctly-scoped, real number for the actual launch window.
 
-### Near the bottom — did it recognise selling pressure exhausting?
-Yes. `WATCH` → `BOTTOMING` transitions occurred (2025-10-01 → 2025-10-02,
-recurring through 2025-10-05) exactly when `momentum.compute_momentum`'s
-deceleration-chain requirement (`deceleration_required_periods=2`, the
-shipped default) was met — never on a single green/less-bad day alone.
+### Near the bottom — a genuine, important finding: the first "bottom" was a fakeout
+The real sequence:
 
-### During rebound — did it produce usable investments?
-Yes. `INVESTMENT_WINDOW` opened 2025-10-06 (FR+10) with 25 candidates
-ranked and signals opened; two more days added a further 4 signals.
-Closed premium/meta signals in this run: 69.0% win rate, median
-after-tax ROI +1.26%, mean +1.43% — modest but positive, consistent with
-"a short usable window that isn't going to be a huge win on every
-position."
+| FR offset | State | Drawdown |
+|---|---|---|
+| FR-2 | CRASHING | 31.8% |
+| FR+1 | NORMAL | 38.1% |
+| FR+5 | CRASHING | 54.2% |
+| FR+8 | CRASHING | 54.1% |
+| FR+9 | WATCH | 57.3% |
+| FR+10 | BOTTOMING | 56.3% |
+| **FR+11** | **INVESTMENT_WINDOW** | 55.2% — 25 signals opened |
+| FR+14 | EXIT (forced, max regime age) | 53.1% |
+| FR+15 | CRASHING (again) | 56.2% |
+| FR+17 | WATCH | 56.3% |
+| FR+18 | BOTTOMING | 56.3% |
+| **FR+19** | **INVESTMENT_WINDOW** (again) | 55.3% — 25 more signals opened |
 
-### After rebound — did it stop recommending them?
-Yes. The window force-closed via `max_regime_age_reached` on 2025-10-09
-(FR+13) — 3 days after opening, closing all 29 active premium signals at
-once as a regime-exit, not left running. Forward-return curves computed
-post-hoc confirm the shape the harness was built to check: median
-forward return was positive at 3 days (+2.09%) but **negative by 7 days
-(-4.04%)** — an independent (not hardcoded, not copied from Phase 8)
-confirmation that this strategy's short-hold bias is doing real work,
-not an arbitrary default.
+The engine correctly detected deceleration around FR+9–11 and opened
+positions — but the market then fell into a **second leg down**
+(FR+15), and the positions from the first window were force-closed at
+FR+14 (48-hour max regime age) essentially right at the edge of that
+second decline. Result: premium/meta signals closed in this window,
+27.4% win rate, median ROI **-6.72%**.
+
+**This is not a bug — it's a genuine, useful risk finding.** The engine's
+discipline worked exactly as designed: it never bought *during* the
+crash, and it force-closed rather than holding through the second leg
+down indefinitely. But "the decline decelerated for 2 periods" and "this
+is the real, final bottom" are not the same claim, and this replay shows
+a real historical case where they diverged. The engine then correctly
+recognised the *second* bottoming cycle (FR+17–19) and reopened — showing
+it can re-engage rather than treating "one crash, one bottom" as a fixed
+rule — but the data window ends at FR+21, too soon after FR+19 to see how
+that second attempt resolved.
+
+**What this should NOT lead to**: tightening the deceleration
+requirement or lengthening the regime-max-age specifically because of
+this one window would be tuning the engine to one historical fakeout —
+exactly the overfitting the brief explicitly warned against. The
+correct response is to carry this forward as a known, real risk pattern
+into FC27 shadow-mode monitoring, not to hand-adjust a threshold now.
 
 ### Starter market — did it recognise this was a different strategy?
-Yes, cleanly. `LAUNCH_STARTER_ACCUMULATION` never touched `CRASHING`/
-`WATCH`/`BOTTOMING` at all in this run — its states
-(`LAUNCH_WINDOW_OPEN`/`LAUNCH_WINDOW_CLOSED`) are disjoint from
-`state_machine.ALL_STATES` by construction (asserted directly by
-`test_starter_strategy_state_labels_never_match_state_machine_states`).
-It opened signals steadily through the pre-Full-Release window
-(2025-09-17 → 2025-09-26), closed the window the day after Full Release
-(matching `starter_launch_window_days=9.0` from `WEB_APP_LAUNCH`), and
-produced a materially different outcome profile: 81.1% win rate, median
-ROI +7.69% (near its 8% target), and — notably — its median forward
-return **improves** with horizon (7-day +7.16% vs 1-day -3.04%), the
-opposite curve shape from premium/meta. The two strategies are not just
-configured differently; they behave differently.
+Yes, structurally: `LAUNCH_STARTER_ACCUMULATION` never touched
+`CRASHING`/`WATCH`/`BOTTOMING` in this run — its states
+(`LAUNCH_WINDOW_OPEN`/`LAUNCH_WINDOW_CLOSED`) stayed disjoint from
+`state_machine.ALL_STATES`, opening steadily through the pre-Full-Release
+window and closing the window the day after Full Release, exactly per
+`starter_launch_window_days=9.0`.
+
+**But its real-data outcome underperformed the research expectation**:
+43.7% win rate, median ROI **-5.0%**, wide dispersion (worst -85.1%,
+best +311.1%). The data-quality filter changed almost nothing here (only
+9 cards excluded platform-wide), so this is not a chart-reconstruction
+artifact — it's a real result. The likely honest explanation: with no
+FC27-only sales/liquidity data available, this strategy currently ranks
+candidates using little more than recent relative price momentum, which
+in a genuinely chaotic launch market can just as easily select a card
+right after it spikes (about to mean-revert) as one about to climb. This
+is a real, worth-investigating concern about the ranking signal available
+to this strategy specifically — **not something fixed in this session**,
+because doing so now, in response to one historical window, would be
+exactly the kind of overfitting the brief said not to do.
 
 ## Cohort bootstrap
 
-- Day 1 (2025-09-17) cohort sizes: `likely_fodder`=51, `mid_tier_meta`=50,
-  `premium_meta`=27, `desirable_starter`=61, `ordinary`=63 — every group
-  already above `min_cohort_size=20`, so evaluation began immediately;
-  this is a property of the fixture's stagger fraction (15%), not
-  something to read into FC26 itself.
-- By the midpoint (2025-10-02) all cohorts had grown (`premium_meta`
-  27→35, `desirable_starter` 61→84) as staggered late-arriving cards
-  were classified — sizes then held flat, confirming production's
-  freeze-on-first-classification behaviour (`ON CONFLICT DO NOTHING`
-  equivalent) is being exercised exactly as it runs in production: no
-  card was ever reclassified once assigned
-  (`test_a_card_classified_once_is_never_reclassified`).
-- **Finding, not a bug**: production currently has no explicit "wait N
-  days before freezing" bootstrap concept — a card is classified the
-  first day it has ≥`min_cohort_size` peers in its position group,
-  however thin that peer set still is relative to the eventual final
-  population. This replay exercised that exact behaviour rather than a
-  hypothetical improved one, per the instruction not to invent a
-  bootstrap policy that doesn't exist in production. If early
-  classification instability turns out to matter once real FC27 data is
-  observed, the right fix is a deliberate, separately-reviewed bootstrap
-  policy — not a change made in response to this one synthetic run.
+Cohort composition and freeze-on-first-classification behaviour matched
+what the pure-function tests already verify (`test_investment_replay.py`,
+`TestCohortBootstrap`): 1,987 of 2,608 real cards were classified within
+this window, sizes grew as staggered/late-arriving cards reached their
+position group's `min_cohort_size` threshold, and — as production
+currently behaves — no card was ever reclassified once assigned. This
+is production's existing behaviour being genuinely exercised, not a
+hypothetical improved bootstrap policy.
 
 ## Bugs found and fixed
 
-**One real reusability defect, fixed as part of building this harness**
-(exactly the kind of thing the instructions asked me to fix): the exit
-decision inside `ledger.grade_open_signals()` (target-hit check,
-max-hold check, mark-to-market classification) was inlined directly in
-that function, hard-coupled to `datetime.now(timezone.utc)`. That made
-it impossible for the replay to reuse the same exit logic without either
-duplicating it (forking business logic — explicitly disallowed) or
-faking the wall clock. Fixed by extracting a pure function,
-`ledger.evaluate_active_signal_exit(current_price, entry_price,
-target_price, now, max_hold_at)`, that both `grade_open_signals` (real
-`now()`) and the replay engine (simulated `now`) now call identically.
-Covered by `TestExitDecisionTaxMath` in `test_investment_replay.py`,
-including a direct check that the reported ROI matches
-`trading_math.net_roi()` exactly.
+**One real reusability defect**, found and fixed while building this
+harness: `ledger.grade_open_signals()`'s exit decision (target-hit
+check, max-hold check, mark-to-market classification) was inlined and
+hard-coupled to `datetime.now(timezone.utc)`, making it impossible for
+replay to reuse without either forking the logic or faking the wall
+clock. Fixed by extracting `ledger.evaluate_active_signal_exit()` as a
+pure function both the live runner and the replay engine now call
+identically. Covered by dedicated tests including a direct check against
+`trading_math.net_roi()`.
 
-**No other genuine implementation defect was found** in this replay —
-no future leakage, no incorrect state transition, no impossible signal
-lifecycle, no duplicate signals, no case of the production logic
-generating investments while `CRASHING`, no starter-strategy leakage
-into the premium crash trigger. This is reported plainly rather than
-manufactured: the harness's job was to surface defects if they existed,
-and on this run (with this data) it did not find one beyond the
-reusability issue above.
+**Two real data-hygiene gaps, found via the real run and fixed in the
+harness (not the engine) this session**:
+1. The replay CLI defaulted to walking every day the historical table
+   had (343 days, well past launch) rather than the specific launch
+   window being validated — fixed by defaulting `--source postgres` to
+   the real Web App Launch → Full Release +21 window.
+2. The replay was not excluding cards `fc26_historical_extraction_runs`
+   already flags as low-confidence chart reconstructions — fixed by
+   excluding them by default (9 cards this run).
+
+**No defect was found in the engine's decision logic itself** on the
+real data — no future leakage, no incorrect state transition, no
+impossible signal lifecycle, no duplicate signals, no case of signals
+generated while `CRASHING`, no starter-strategy leakage into the premium
+crash trigger. The negative outcome numbers above are real, disclosed
+results — not evidence of a logic defect, and specifically not something
+"fixed" by adjusting thresholds to make this window look better.
 
 ## Known limitations (must not be minimised)
 
-- **Not the real dataset.** See "Data source" above — every specific
-  date/percentage/ROI number in this report is illustrative, from a
-  synthetic fixture, and must never be quoted as an FC26 fact.
+- **One prior cycle only.** This is FC26's launch, once. A real,
+  disclosed negative result in this window (premium fakeout, starter
+  underperformance) is informative but is not a statistically robust
+  verdict on the strategies — that requires FC27 shadow-mode data,
+  ideally across future launches too.
 - **`require_investable=False` in replay.** FC26's reconstructed daily
   chart data has no sales-count, tradeability, or price-freshness
-  fields at all (confirmed by inspecting `fc26_historical_daily_prices`'s
-  actual schema). `ranking.rank_candidates()`'s own docstring calls
+  fields at all. `ranking.rank_candidates()`'s own docstring calls
   investability "the one genuinely hard requirement" separating
-  Investment-Engine-worthy cards from Trade-Engine snipes; replay mode
+  Investment-Engine-worthy cards from Trade-Engine snipes; replay
   deliberately passes `require_investable=False` (an existing,
-  documented parameter — not a fork of the ranking logic) because
-  every FC26 replay candidate would otherwise show
-  `sales_count_recent=None` and be excluded entirely, silently zeroing
-  every signal for a reason that has nothing to do with market
-  conditions. This means **replay validates the cohort-state and
-  candidate-ranking logic upstream of the investability gate, but
-  cannot validate the investability gate itself** — that gate only ever
-  sees FC27 live data. Every replay signal reports `investability =
-  "limited"` and `liquidity = "low"` honestly, and this shows up as a
-  real confidence discount in `rank_score` (median confidence in this
-  run: ~0.30-0.34, never above ~0.51) — not a fabricated FC27-style
+  documented parameter, not a fork of the ranking logic) because every
+  FC26 candidate would otherwise show `sales_count_recent=None` and be
+  excluded entirely. This means **replay validates the cohort-state and
+  candidate-ranking logic upstream of the investability gate, but cannot
+  validate the investability gate itself** — every replay signal
+  honestly reports `investability="limited"`/`liquidity="low"`, which
+  shows up as a real confidence discount, not a fabricated FC27-style
   liquidity read.
 - **No live-confirmation validation.** Every replay signal is tagged
-  `UNAVAILABLE_HISTORICAL_REPLAY` in both `rationale` and `risk_flags`
-  (`live_confirmation.py` is never even called for FC26 replay — there
-  is nothing in the schema for it to read). The BIN/sales-velocity
-  confirmation logic (`live_confirmation.py`) is entirely unvalidated by
-  this or any FC26-based exercise; it can only be validated against
-  real FC27 live data.
-- **Synthetic archetype shapes were chosen by me**, informed by the
-  qualitative Phase 8/8B/8C findings (pump→crash→decelerate→rebound for
-  premium; steady climb for starters) but with randomised magnitudes —
-  they are not a hidden encoding of the real FC26 numbers, and the
-  engine was never given anything the real engine wouldn't have had
-  access to at each simulated day.
-- **One archetype quirk worth flagging**: in this run, `premium_meta`
-  re-entered `CRASHING` later in the period (2025-10-15, FR+19) after
-  the rebound faded further than the archetype's "fade" phase intended.
-  This is plausible real-market behaviour (a second leg down after a
-  failed rebound) and not something the state machine is designed to
-  prevent — noted here so it isn't mistaken for an untested edge case.
+  `UNAVAILABLE_HISTORICAL_REPLAY`; `live_confirmation.py`'s BIN/sales
+  logic is entirely unvalidated by any FC26-based exercise and can only
+  be checked against real FC27 live data.
+- **The starter strategy's underperformance is flagged, not resolved.**
+  See above — a real concern worth watching closely once FC27 shadow
+  data exists, deliberately left unmodified here.
+- **The premium "fakeout bottom" pattern is flagged, not resolved.**
+  A genuine risk the engine handled with appropriate discipline
+  (no holding through the second leg indefinitely) but did not avoid
+  entirely (the first entry still lost money). Worth explicit attention
+  during FC27 shadow-mode monitoring.
+- **Full history vs. launch window.** `fc26_historical_daily_prices`
+  keeps accumulating well past launch (343+ days observed); an
+  unscoped run answers a different, much bigger question than "how did
+  the engine handle the launch," and revealed along the way that
+  cohort membership, frozen for a whole season, can drift compositionally
+  over many months (median price shifting as new, differently-priced
+  cards join a cohort) — a real methodological consideration for any
+  future full-season analysis, not addressed in this session.
 
 ## Tests
 
-24 new tests in `backend/tests/test_investment_replay.py` (leakage via
-prefix-stability, cohort bootstrap/freeze, unavailable-live-confirmation
-tagging and confidence discount, deterministic replay, replay ledger
-isolation, tax/exit-decision correctness, falling-knife suppression,
-strategy distinctness) plus the full pre-existing suite:
-
-```
-python3 -m pytest tests/test_investment_*.py -q
-# 101 passed
-```
-
-All 77 previously-existing investment-engine tests still pass unchanged
-after the `ledger.py` refactor.
+101 tests pass (`python3 -m pytest tests/test_investment_*.py -q`), 24
+of them specific to the replay harness (leakage via prefix-stability,
+cohort bootstrap/freeze, unavailable-live-confirmation tagging,
+deterministic replay, ledger isolation, tax/exit correctness,
+falling-knife suppression, strategy distinctness). These are pure-logic
+tests using synthetic fixtures — the real-data run above was a separate,
+manual execution against the production database, not part of the
+automated test suite (that dataset isn't available in CI).
 
 ## FC27 readiness verdict
 
 # READY FOR FC27 SHADOW MODE
 
-The production Investment Engine's logic — cohort classification,
-dynamic drawdown/severity, deceleration detection, the regime state
-machine's crash-to-window gating, candidate ranking, and the ledger's
-exit/tax math — behaves the way a competent trader who understood the
-market regime would: refusing to buy during hype or an active crash,
-recognising exhaustion via genuine deceleration rather than a single
-good day, opening a short window at the point of genuine deceleration,
-and closing it again rather than holding indefinitely. The one
-strategy that does not use any of that (`LAUNCH_STARTER_ACCUMULATION`)
-stays cleanly on its own elapsed-time logic throughout, never
-borrowing the premium crash trigger.
+The production Investment Engine's structural safety properties held on
+the real FC26 launch data: it never bought during hype or an active
+crash, it recognised deceleration through genuine multi-period evidence
+rather than a single good day, it force-closed rather than holding
+indefinitely, and it correctly re-engaged for a second bottoming cycle
+rather than treating "one crash, one bottom" as fixed. The two
+strategies remained behaviourally distinct throughout.
 
-This verdict is explicitly **not** "proven profitable" and **not**
-"ready for controlled publication." It has not been checked against the
-real FC26 dataset (no database access this session — see "Data source"
-above), and even a clean real-data run would still only be one prior
-cycle, not proof the same pattern repeats on FC27. The entire purpose of
-shadow mode is exactly this: let FC27's own live data confirm or
-contradict what this replay could only check structurally.
+**This explicitly is not a claim of profitability** — quite the
+opposite: this real run's own numbers were mixed-to-negative (a losing
+premium "fakeout" entry, starter underperformance), and that is
+disclosed here plainly rather than smoothed over. That is exactly why
+shadow mode — not controlled publication — is the right next step:
+FC27's own live data, watched without publishing anything to users, is
+what actually determines whether these strategies work going forward.
+Nothing in this report should be read as license to tune the engine's
+thresholds to this one historical window; the honest path is to carry
+these findings (the fakeout-bottom risk, the starter strategy's weak
+signal without live data) into shadow-mode monitoring and let real
+forward data decide.
 
-**Before shadow mode goes live**, re-run this exact harness against the
-real dataset (`--source postgres`) and re-read this report's "Did the
-engine behave sensibly" section against the real output — if the real
-run reveals a genuine defect (not just a different number), fix it and
-re-run, following the same discipline this session used.
+---
+
+## Appendix: earlier synthetic-fixture smoke test (harness validation only)
+
+Before real database access was available, the harness was validated
+end-to-end against a deterministic synthetic fixture (320 cards, same
+31-day window) purely to confirm the harness itself works — leakage
+protection, bootstrap mechanics, deterministic reruns, ledger isolation,
+tax math. Those numbers (69% premium win rate, 81% starter win rate,
+etc.) are **not FC26 data** and are superseded entirely by the real run
+above. Artifacts from that synthetic run remain at
+`backend/replay_output/` as a harness-validation reference; they should
+not be cited as FC26 findings.
