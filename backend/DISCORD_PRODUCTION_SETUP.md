@@ -17,7 +17,9 @@
 | `DISCORD_PROOF_REPORT_HOUR` | Coolify backend | Integer `0`-`23`; default `21` | No | Optional | Local hour for the daily report |
 | `DISCORD_PROOF_REPORT_MINUTE` | Coolify backend | Integer `0`-`59`; default `0` | No | Optional | Local minute for the daily report |
 | `DISCORD_RECONCILE_INTERVAL_SECONDS` | Coolify backend | Integer seconds; default `60` | No | Optional | Durable role/publication worker interval |
-| `DISCORD_OPPORTUNITY_BATCH_MIN` | Coolify backend | Integer; default `3` | No | Optional | Minimum new qualifying cards before a digest |
+| `DISCORD_OPPORTUNITY_BATCH_MIN` | Coolify backend | Integer; default `5` | No | Optional | Minimum genuinely new qualifying cards before a digest |
+| `DISCORD_OPPORTUNITY_COOLDOWN_MINUTES` | Coolify backend | Integer minutes; default `180` | No | Optional | Minimum time between opportunity updates |
+| `DISCORD_OPPORTUNITY_DEDUP_HOURS` | Coolify backend | Integer hours; default `24` | No | Optional | Prevents the same card reappearing in successive updates |
 | `VITE_DISCORD_INVITE_URL` | Coolify frontend build args/env | Same permanent invite URL | No | Required for configured deployment | Public-site, billing, and access-denied Discord links |
 
 Legacy `DISCORD_SERVER_ID` and `DISCORD_PREMIUM_ROLE_ID` remain fallback aliases for one deployment cycle. Set the canonical names above and remove the legacy names after verification. Never put `DISCORD_BOT_TOKEN` or `DISCORD_CLIENT_SECRET` in frontend variables.

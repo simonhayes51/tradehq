@@ -387,24 +387,95 @@ async def process_role_sync_queue(pool, client: Optional[DiscordClient] = None, 
     return processed
 
 
-def _coin_band(value: Optional[float]) -> Optional[int]:
-    if value is None:
-        return None
-    return max(1000, int(round(float(value) / 10000.0) * 10000))
-
-
 def build_opportunity_digest(
-    *, count: int, min_coin: Optional[float], max_coin: Optional[float], risks: Iterable[str], app_url: str
-) -> str:
-    lines = [f"{count} new EAFC Live opportunities detected"]
-    low, high = _coin_band(min_coin), _coin_band(max_coin)
-    if low is not None and high is not None:
-        lines.append(f"Coin range: {low:,}-{high:,}")
-    clean_risks = sorted({str(r).strip().title() for r in risks if r})
-    if clean_risks:
-        lines.append(f"Risk: {'-'.join(clean_risks)}")
-    lines.extend(["", f"View live opportunities: {app_url.rstrip('/')}/#/v2/opportunities"])
-    return "\n".join(lines)
+    rows: Iterable[dict[str, Any]], app_url: str
+) -> dict[str, Any]:
+    opportunities = list(rows)
+    count = len(opportunities)
+    signal_counts = {
+        "strong_buy": sum(row.get("signal") == "strong_buy" for row in opportunities),
+        "buy": sum(row.get("signal") == "buy" for row in opportunities),
+    }
+    confidences = [
+        float(row["confidence_score"])
+        for row in opportunities
+        if row.get("confidence_score") is not None
+    ]
+    liquidity = {"high": 0, "moderate": 0, "limited": 0}
+    for row in opportunities:
+        score = row.get("liquidity_score")
+        if score is not None and float(score) >= 0.7:
+            liquidity["high"] += 1
+        elif score is not None and float(score) >= 0.4:
+            liquidity["moderate"] += 1
+        else:
+            liquidity["limited"] += 1
+    risk_counts: dict[str, int] = {}
+    for row in opportunities:
+        risk = str(row.get("risk_level") or "unknown").strip().lower()
+        risk_counts[risk] = risk_counts.get(risk, 0) + 1
+    budgets = {"under_25k": 0, "25k_100k": 0, "over_100k": 0}
+    for row in opportunities:
+        price = row.get("current_executable_buy")
+        if price is None or float(price) < 25_000:
+            budgets["under_25k"] += 1
+        elif float(price) < 100_000:
+            budgets["25k_100k"] += 1
+        else:
+            budgets["over_100k"] += 1
+
+    risk_text = " | ".join(
+        f"{risk.title()}: {risk_counts[risk]}" for risk in sorted(risk_counts)
+    )
+    confidence_text = (
+        f"Average confidence: {sum(confidences) / len(confidences):.0%}"
+        if confidences
+        else "Average confidence: unavailable"
+    )
+    opportunity_url = app_url.rstrip("/") + "/#/v2/opportunities"
+    return {
+        "title": "EAFC LIVE - OPPORTUNITY UPDATE",
+        "url": opportunity_url,
+        "description": (
+            f"{count} genuinely new opportunities have qualified since the previous update."
+        ),
+        "color": 0x22C55E,
+        "fields": [
+            {
+                "name": "SIGNAL QUALITY",
+                "value": (
+                    f"Strong buy: {signal_counts['strong_buy']} | Buy: {signal_counts['buy']}\n"
+                    f"{confidence_text}"
+                ),
+                "inline": False,
+            },
+            {
+                "name": "LIQUIDITY",
+                "value": (
+                    f"High: {liquidity['high']} | Moderate: {liquidity['moderate']} | "
+                    f"Limited: {liquidity['limited']}"
+                ),
+                "inline": False,
+            },
+            {"name": "RISK MIX", "value": risk_text, "inline": False},
+            {
+                "name": "BUDGET MIX",
+                "value": (
+                    f"Under 25k: {budgets['under_25k']} | 25k-100k: {budgets['25k_100k']} | "
+                    f"100k+: {budgets['over_100k']}"
+                ),
+                "inline": False,
+            },
+            {
+                "name": "VIEW LIVE OPPORTUNITIES",
+                "value": f"[Open EAFC Live]({opportunity_url})",
+                "inline": False,
+            },
+        ],
+        "footer": {
+            "text": "Live conditions change. Open EAFC Live and check current status before buying."
+        },
+    }
 
 
 def assert_public_opportunity_payload(payload: dict[str, Any]) -> None:
@@ -423,32 +494,39 @@ async def publish_opportunity_digest(pool, client: Optional[DiscordClient] = Non
     channel_id = client.config.opportunity_channel_id
     if not channel_id:
         return False
+    cooldown_minutes = int(os.getenv("DISCORD_OPPORTUNITY_COOLDOWN_MINUTES") or "180")
+    dedup_hours = int(os.getenv("DISCORD_OPPORTUNITY_DEDUP_HOURS") or "24")
     async with pool.acquire() as conn:
         cooldown = await conn.fetchval(
             """SELECT EXISTS (
                 SELECT 1 FROM discord_publications
                 WHERE kind='opportunity_digest' AND status='sent'
-                  AND sent_at > NOW() - INTERVAL '30 minutes'
-            )"""
+                  AND sent_at > NOW() - ($1::integer * INTERVAL '1 minute')
+            )""",
+            cooldown_minutes,
         )
         if cooldown:
             return False
         rows = await conn.fetch(
             """
-            WITH first_qualifying AS (
+            WITH last_digest AS (
+                SELECT MAX(sent_at) AS sent_at
+                FROM discord_publications
+                WHERE kind='opportunity_digest' AND status='sent'
+            ), first_qualifying AS (
                 SELECT DISTINCT ON (candidate.source_card_id)
                        candidate.id, candidate.source_card_id,
-                       candidate.current_executable_buy, candidate.risk_level
+                       candidate.current_executable_buy, candidate.risk_level,
+                       candidate.signal, candidate.confidence_score, candidate.liquidity_score
                 FROM futgg_recommendation_snapshots candidate
+                CROSS JOIN last_digest
                 WHERE candidate.signal IN ('buy', 'strong_buy')
-                  AND candidate.evaluated_at > NOW() - INTERVAL '30 minutes'
-                  AND NOT EXISTS (
-                    SELECT 1
-                    FROM futgg_recommendation_snapshots earlier
-                    WHERE earlier.source_card_id=candidate.source_card_id
-                      AND earlier.signal IN ('buy', 'strong_buy')
-                      AND earlier.evaluated_at < candidate.evaluated_at
-                      AND earlier.evaluated_at > candidate.evaluated_at - INTERVAL '6 hours'
+                  AND candidate.evaluated_at > GREATEST(
+                      COALESCE(
+                          last_digest.sent_at,
+                          NOW() - ($1::integer * INTERVAL '1 minute')
+                      ),
+                      NOW() - INTERVAL '12 hours'
                   )
                 ORDER BY candidate.source_card_id, candidate.evaluated_at
             ), latest AS (
@@ -470,11 +548,13 @@ async def publish_opportunity_digest(pool, client: Optional[DiscordClient] = Non
                     AND published.payload @> jsonb_build_object(
                         'source_card_ids', jsonb_build_array(first_qualifying.source_card_id::text)
                     )
-                    AND published.sent_at > NOW() - INTERVAL '6 hours'
+                    AND published.sent_at > NOW() - ($2::integer * INTERVAL '1 hour')
               )
-            """
+            """,
+            cooldown_minutes,
+            dedup_hours,
         )
-        if len(rows) < int(os.getenv("DISCORD_OPPORTUNITY_BATCH_MIN", "3")):
+        if len(rows) < int(os.getenv("DISCORD_OPPORTUNITY_BATCH_MIN") or "5"):
             return False
         source_key = publication_fingerprint("opportunity_digest", sorted(r["id"] for r in rows))
         inserted = await conn.fetchval(
@@ -494,15 +574,13 @@ async def publish_opportunity_digest(pool, client: Optional[DiscordClient] = Non
         )
         if inserted is None:
             return False
-    prices = [r["current_executable_buy"] for r in rows if r["current_executable_buy"] is not None]
-    message = build_opportunity_digest(
-        count=len(rows),
-        min_coin=min(prices) if prices else None,
-        max_coin=max(prices) if prices else None,
-        risks=[r["risk_level"] for r in rows],
-        app_url=os.getenv("FRONTEND_URL", "https://app.eafc.live"),
+    embed = build_opportunity_digest(
+        [dict(row) for row in rows], os.getenv("FRONTEND_URL", "https://app.eafc.live")
     )
-    ok = await client.post_message(channel_id, message)
+    status, _ = await client.post_embed(
+        channel_id, embed, nonce=source_key[:25], enforce_nonce=True
+    )
+    ok = status in (200, 201)
     async with pool.acquire() as conn:
         await conn.execute(
             "UPDATE discord_publications SET status=$2, sent_at=CASE WHEN $2='sent' THEN NOW() ELSE NULL END, last_error=$3 WHERE id=$1",

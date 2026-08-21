@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 from datetime import datetime, timedelta, timezone
 
@@ -19,6 +20,7 @@ from app.services.discord_integration import (
     enqueue_role_sync,
     entitlement_is_active,
     process_role_sync_queue,
+    publish_opportunity_digest,
     reconcile_user,
 )
 
@@ -111,30 +113,141 @@ def test_discord_unavailable_does_not_raise_or_change_entitlement():
 
 
 def test_public_opportunity_message_contains_no_actionable_fields():
-    payload = {
-        "count": 3,
-        "min_coin": 32_000,
-        "max_coin": 181_000,
-        "risks": ["low", "medium"],
-    }
-    assert_public_opportunity_payload(payload)
-    message = build_opportunity_digest(
-        count=payload["count"],
-        min_coin=payload["min_coin"],
-        max_coin=payload["max_coin"],
-        risks=payload["risks"],
-        app_url="https://app.eafc.live",
-    )
-    assert "Player" not in message
-    assert "Buy target" not in message
-    assert "Sell target" not in message
-    assert "profit" not in message.lower()
-    assert "#/v2/opportunities" in message
+    rows = [
+        {
+            "signal": "strong_buy",
+            "confidence_score": 0.84,
+            "liquidity_score": 0.78,
+            "risk_level": "low",
+            "current_executable_buy": 22_000,
+        },
+        {
+            "signal": "buy",
+            "confidence_score": 0.72,
+            "liquidity_score": 0.55,
+            "risk_level": "medium",
+            "current_executable_buy": 140_000,
+        },
+    ]
+    embed = build_opportunity_digest(rows, "https://app.eafc.live")
+    rendered = json.dumps(embed)
+    assert "genuinely new" in embed["description"]
+    assert "Strong buy: 1 | Buy: 1" in rendered
+    assert "Average confidence: 78%" in rendered
+    assert "High: 1 | Moderate: 1 | Limited: 0" in rendered
+    assert "Player" not in rendered
+    assert "Buy target" not in rendered
+    assert "Sell target" not in rendered
+    assert "profit" not in rendered.lower()
+    assert "#/v2/opportunities" in rendered
 
 
 def test_actionable_public_payload_is_rejected():
     with pytest.raises(ValueError):
         assert_public_opportunity_payload({"count": 3, "buy_target": 42_000})
+
+
+class OpportunityDigestConn:
+    def __init__(self, rows, *, cooldown=False):
+        self.rows = rows
+        self.cooldown = cooldown
+        self.calls = []
+
+    async def fetchval(self, query, *args):
+        self.calls.append((query, args))
+        if "SELECT EXISTS" in query:
+            return self.cooldown
+        if "INSERT INTO discord_publications" in query:
+            return 91
+        raise AssertionError(f"Unexpected fetchval query: {query}")
+
+    async def fetch(self, query, *args):
+        self.calls.append((query, args))
+        assert "last_digest" in query
+        assert "INTERVAL '12 hours'" in query
+        return self.rows
+
+    async def execute(self, query, *args):
+        self.calls.append((query, args))
+        return "UPDATE 1"
+
+
+class OpportunityDigestPool:
+    def __init__(self, conn):
+        self.conn = conn
+
+    def acquire(self):
+        conn = self.conn
+
+        class Lease:
+            async def __aenter__(self):
+                return conn
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        return Lease()
+
+
+class OpportunityDigestClient:
+    class Config:
+        opportunity_channel_id = "opportunity-channel"
+
+    config = Config()
+
+    def __init__(self):
+        self.posts = []
+
+    async def post_embed(self, channel_id, embed, *, nonce, enforce_nonce):
+        self.posts.append((channel_id, embed, nonce, enforce_nonce))
+        return 200, {"id": "message-id"}
+
+
+def test_opportunity_publisher_uses_quiet_defaults_and_rich_deduplicated_digest(monkeypatch):
+    for name in (
+        "DISCORD_OPPORTUNITY_BATCH_MIN",
+        "DISCORD_OPPORTUNITY_COOLDOWN_MINUTES",
+        "DISCORD_OPPORTUNITY_DEDUP_HOURS",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    rows = [
+        {
+            "id": index,
+            "source_card_id": 10_000 + index,
+            "signal": "strong_buy" if index < 3 else "buy",
+            "confidence_score": 0.8,
+            "liquidity_score": 0.75,
+            "risk_level": "low",
+            "current_executable_buy": 20_000 * index,
+        }
+        for index in range(1, 6)
+    ]
+    conn = OpportunityDigestConn(rows)
+    client = OpportunityDigestClient()
+
+    assert asyncio.run(
+        publish_opportunity_digest(OpportunityDigestPool(conn), client)
+    ) is True
+    assert conn.calls[0][1] == (180,)
+    assert conn.calls[1][1] == (180, 24)
+    assert len(client.posts) == 1
+    assert client.posts[0][0] == "opportunity-channel"
+    assert client.posts[0][1]["title"] == "EAFC LIVE - OPPORTUNITY UPDATE"
+    assert client.posts[0][3] is True
+    assert conn.calls[-1][1] == (91, "sent", None)
+
+
+def test_opportunity_publisher_does_nothing_during_three_hour_cooldown(monkeypatch):
+    monkeypatch.delenv("DISCORD_OPPORTUNITY_COOLDOWN_MINUTES", raising=False)
+    conn = OpportunityDigestConn([], cooldown=True)
+    client = OpportunityDigestClient()
+
+    assert asyncio.run(
+        publish_opportunity_digest(OpportunityDigestPool(conn), client)
+    ) is False
+    assert len(conn.calls) == 1
+    assert conn.calls[0][1] == (180,)
+    assert client.posts == []
 
 
 class QueueConn:
