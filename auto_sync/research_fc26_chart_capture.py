@@ -144,24 +144,63 @@ async def ensure_schema(conn: asyncpg.Connection) -> None:
     )
 
 
-async def dismiss_cookie_banner(page) -> None:
-    # Duplicated locally rather than shared, same as
-    # futgg_player_sync.py and test_futgg_catalogue_10.py each already do
-    # for this exact helper -- small enough not to be worth a shared
-    # module for a one-off script.
+async def dismiss_cookie_banner(page) -> bool:
+    """Ordinary consent-banner dismissal, same as a human clicking
+    "Accept" -- NOT anti-bot evasion. Production evidence: a verified
+    Year-button click failed with Playwright's own diagnostic naming the
+    real cause explicitly -- '<div id="cmpwrapper" class="cmpwrapper">
+    intercepts pointer events' -- a consent-management-platform overlay
+    the original OneTrust-only selector list below didn't recognise.
+    Extended with several common CMP vendors' own accept buttons, plus a
+    text-based fallback, plus (last resort, only if the wrapper is STILL
+    obstructing after trying to click something in it) forcibly hiding
+    #cmpwrapper itself via a style change -- equivalent in effect to a
+    user who dismissed the banner, not a bypass of any protection.
+    Returns True if a banner was found and dismissed/hidden."""
     for selector in (
         "#onetrust-accept-btn-handler",
         "#onetrust-reject-all-handler",
+        "#cmpwrapper button:has-text('Accept')",
+        "#cmpwrapper button:has-text('Agree')",
+        "#cmpwrapper button:has-text('Allow')",
+        "#didomi-notice-agree-button",
+        "#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll",
+        ".qc-cmp2-summary-buttons button[mode='primary']",
         "button:has-text('Accept all')",
+        "button:has-text('Accept All')",
         "button:has-text('Reject all')",
+        "button:has-text('I Agree')",
+        "button:has-text('Agree')",
+        "button:has-text('Got it')",
     ):
         try:
             button = page.locator(selector).first
             if await button.is_visible(timeout=500):
                 await button.click(timeout=2000)
-                return
+                return True
         except Exception:  # noqa: BLE001
             pass
+
+    # Last resort: the wrapper still exists and is still intercepting
+    # pointer events, but none of the known "accept" selectors matched
+    # (unrecognised/custom CMP markup). Hiding it has the same practical
+    # effect as a user dismissing it -- it doesn't touch fut.gg's own
+    # anti-bot posture at all, only a third-party consent widget.
+    try:
+        hidden = await page.evaluate(
+            """
+            () => {
+                const el = document.querySelector('#cmpwrapper');
+                if (!el) return false;
+                el.style.display = 'none';
+                el.style.pointerEvents = 'none';
+                return true;
+            }
+            """
+        )
+        return bool(hidden)
+    except Exception:  # noqa: BLE001
+        return False
 
 
 async def select_sample(conn: asyncpg.Connection, target: int) -> list[dict]:
@@ -272,7 +311,11 @@ async def click_year_and_verify(
             except Exception as exc:  # noqa: BLE001
                 # A click that raises (covered element, detached node from
                 # a re-render, etc.) is exactly the kind of failure the
-                # old bare `except: pass` was hiding. Log it, keep trying.
+                # old bare `except: pass` was hiding. Log it, keep trying
+                # -- but first try dismissing a consent overlay, since
+                # "element intercepts pointer events" from #cmpwrapper is
+                # the confirmed real-world cause of this failure mode.
+                await dismiss_cookie_banner(page)
                 if attempt == max_attempts:
                     return False, f"click raised on final attempt: {exc!r}"
                 await asyncio.sleep(0.3)
