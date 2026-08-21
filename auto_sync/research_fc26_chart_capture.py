@@ -242,24 +242,49 @@ async def is_button_active(button) -> bool:
 
 
 async def find_chart_container_html(page) -> tuple[str | None, int]:
+    """Locates the PRICE HISTORY chart specifically, not just "the first
+    Recharts widget on the page" -- fut.gg pages can render more than one
+    .recharts-responsive-container (e.g. a small stats/comparison widget),
+    and picking the DOM-first one silently grabbed the wrong, much
+    smaller chart in production (every sampled card returning exactly 8
+    circles, regardless of position/league -- a signature of hitting the
+    same small secondary widget, not real per-card daily history).
+
+    Fix: anchor on the "Year" toggle BUTTON, which is structurally
+    unique to the real price chart's own widget, and climb its ancestors
+    (not the chart's) to find the smallest one that also contains a
+    .recharts-responsive-container descendant. If more than one button's
+    text is exactly "Year" (defensive, in case a second widget ever
+    reuses that label), evaluate every candidate and keep whichever has
+    the MOST rendered circles -- the real daily-history chart will always
+    dominate any small stats/comparison widget by point count."""
     result = await page.evaluate(
         """
         () => {
-            const chart = document.querySelector('.recharts-responsive-container');
-            if (!chart) return { html: null, circles: 0 };
-            let node = chart;
-            let container = chart;
-            for (let i = 0; i < 8 && node; i++) {
-                const hasYearButton = Array.from(node.querySelectorAll('button'))
-                    .some(b => b.textContent.trim().toLowerCase() === 'year');
-                if (hasYearButton) { container = node; break; }
-                node = node.parentElement;
-                container = node || container;
+            const buttons = Array.from(document.querySelectorAll('button'))
+                .filter(b => b.textContent.trim().toLowerCase() === 'year');
+            if (buttons.length === 0) return { html: null, circles: 0, candidates: 0 };
+
+            let best = { html: null, circles: -1 };
+            for (const btn of buttons) {
+                let node = btn;
+                let container = null;
+                for (let i = 0; i < 10 && node; i++) {
+                    if (node.querySelector && node.querySelector('.recharts-responsive-container')) {
+                        container = node;
+                        break;
+                    }
+                    node = node.parentElement;
+                }
+                if (!container) continue;
+                const circles = container.querySelectorAll(
+                    'circle.recharts-dot, circle[class*="area-dot"]'
+                ).length;
+                if (circles > best.circles) {
+                    best = { html: container.outerHTML, circles };
+                }
             }
-            const circles = container.querySelectorAll(
-                'circle.recharts-dot, circle[class*="area-dot"]'
-            ).length;
-            return { html: container.outerHTML, circles };
+            return { html: best.html, circles: Math.max(best.circles, 0), candidates: buttons.length };
         }
         """
     )
