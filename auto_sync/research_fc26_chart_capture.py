@@ -33,8 +33,25 @@ skipped on a re-run unless FUTGG_CHART_CAPTURE_FORCE=true.
 Env vars (all optional, production-safe defaults):
   DATABASE_URL                     required (same as every other worker)
   PLAYWRIGHT_HEADLESS               default true
-  FUTGG_CHART_SAMPLE_TARGET         default 40
-  FUTGG_CHART_CAPTURE_DELAY         default 3.0 (seconds between cards)
+  FUTGG_CHART_CAPTURE_ALL           default false -- Phase 7 bulk mode:
+                                     capture EVERY qualifying Gold Common/
+                                     Gold Rare card instead of a balanced
+                                     ~40-card sample. Logs the true
+                                     qualifying-card count before starting
+                                     (Phase 6's "how many cards exist"
+                                     question) so you see the real scale
+                                     before committing to a run.
+  FUTGG_CHART_SAMPLE_TARGET         default 40 (ignored when _ALL=true)
+  FUTGG_CHART_CAPTURE_CONCURRENCY   default 3 -- number of Playwright pages
+                                     run in parallel, each on its own
+                                     card queue with its own delay/jitter.
+                                     Keep this conservative -- raising it
+                                     increases load on fut.gg as well as
+                                     this container. Start low, watch a
+                                     run, only raise if it stays stable.
+  FUTGG_CHART_CAPTURE_DELAY         default 3.0 (seconds between cards,
+                                     PER WORKER -- total request rate is
+                                     roughly concurrency / delay)
   FUTGG_CHART_CAPTURE_RETRIES       default 3
   FUTGG_CHART_CAPTURE_TIMEOUT_MS    default 20000
   FUTGG_CHART_FULL_PAGE_COUNT       default 5
@@ -55,7 +72,7 @@ import sys
 from datetime import datetime, timezone
 
 import asyncpg
-from db_connect import connect_with_retry
+from db_connect import create_pool_with_retry
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from playwright.async_api import async_playwright
 
@@ -73,7 +90,9 @@ if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL not found")
 
 HEADLESS = os.getenv("PLAYWRIGHT_HEADLESS", "true").strip().lower() not in {"0", "false", "no"}
+CAPTURE_ALL = os.getenv("FUTGG_CHART_CAPTURE_ALL", "false").strip().lower() in {"1", "true", "yes"}
 SAMPLE_TARGET = int(os.getenv("FUTGG_CHART_SAMPLE_TARGET", "40"))
+CONCURRENCY = max(1, int(os.getenv("FUTGG_CHART_CAPTURE_CONCURRENCY", "3")))
 CAPTURE_DELAY = float(os.getenv("FUTGG_CHART_CAPTURE_DELAY", "3.0"))
 RETRIES = int(os.getenv("FUTGG_CHART_CAPTURE_RETRIES", "3"))
 TIMEOUT_MS = int(os.getenv("FUTGG_CHART_CAPTURE_TIMEOUT_MS", "20000"))
@@ -203,11 +222,13 @@ async def dismiss_cookie_banner(page) -> bool:
         return False
 
 
-async def select_sample(conn: asyncpg.Connection, target: int) -> list[dict]:
-    """Builds the ~N-card representative sample directly from the
-    already-populated futgg_players table (+ latest known price from
-    futgg_bin_history), instead of re-crawling fut.gg's catalogue -- this
-    container already has DB access to production's own fresh scrape."""
+async def _fetch_qualifying_cards(conn: asyncpg.Connection) -> list[dict]:
+    """Shared by select_sample() and select_all_qualifying(): reads
+    candidate cards directly from the already-populated futgg_players
+    table (+ latest known price from futgg_bin_history) instead of
+    re-crawling fut.gg's catalogue, then keeps only Gold Common/Gold Rare
+    via classify_price_tier() (same function production code uses),
+    tagging each with position/price-tier/rarity-tier for reporting."""
     rows = await conn.fetch(
         """
         SELECT
@@ -232,7 +253,7 @@ async def select_sample(conn: asyncpg.Connection, target: int) -> list[dict]:
     )
     log.info("candidate pool from futgg_players: %d rows (rating >= 75)", len(rows))
 
-    buckets: dict[tuple[str, str], list[dict]] = {}
+    qualifying: list[dict] = []
     for r in rows:
         card = dict(r)
         tier = classify_price_tier({"rating": card["rating"], "rarity": card["rarity"]})
@@ -241,6 +262,33 @@ async def select_sample(conn: asyncpg.Connection, target: int) -> list[dict]:
         pos_b = position_bucket(card["primary_position"])
         pr_b = price_bucket(card["lowest_bin"])
         card["category_tag"] = f"{pos_b}/{pr_b}/{tier}"
+        qualifying.append(card)
+
+    log.info(
+        "qualifying Gold Common/Gold Rare cards (Phase 6 answer -- true "
+        "scale before any scraping): %d",
+        len(qualifying),
+    )
+    return qualifying
+
+
+def _log_category_coverage(cards: list[dict], label: str) -> None:
+    from collections import Counter
+    counts = Counter(c["category_tag"] for c in cards)
+    log.info("%s:", label)
+    for tag, n in sorted(counts.items()):
+        log.info("  %s: %d", tag, n)
+
+
+async def select_sample(conn: asyncpg.Connection, target: int) -> list[dict]:
+    """Builds a ~N-card sample balanced across position x price-tier
+    buckets -- useful for a quick smoke test, not for real coverage. See
+    select_all_qualifying() for Phase 7 bulk collection."""
+    qualifying = await _fetch_qualifying_cards(conn)
+
+    buckets: dict[tuple[str, str], list[dict]] = {}
+    for card in qualifying:
+        pos_b, pr_b, _tier = card["category_tag"].split("/")
         buckets.setdefault((pos_b, pr_b), []).append(card)
 
     for v in buckets.values():
@@ -258,13 +306,18 @@ async def select_sample(conn: asyncpg.Connection, target: int) -> list[dict]:
         if idx > 10_000:
             break
 
-    from collections import Counter
-    counts = Counter(c["category_tag"] for c in selected)
-    log.info("sample bucket coverage:")
-    for tag, n in sorted(counts.items()):
-        log.info("  %s: %d", tag, n)
-
+    _log_category_coverage(selected, "sample bucket coverage")
     return selected
+
+
+async def select_all_qualifying(conn: asyncpg.Connection) -> list[dict]:
+    """Phase 7 bulk mode: every qualifying Gold Common/Gold Rare card, not
+    just a balanced sample. Shuffled so concurrent workers and any
+    mid-run stop/resume don't bias which cards land early vs late."""
+    qualifying = await _fetch_qualifying_cards(conn)
+    random.shuffle(qualifying)
+    _log_category_coverage(qualifying, "full qualifying-pool category coverage")
+    return qualifying
 
 
 def find_year_button(page):
@@ -525,91 +578,143 @@ async def upsert_result(conn: asyncpg.Connection, card: dict, status: str, num_c
     )
 
 
-async def main() -> int:
-    conn = await connect_with_retry(DATABASE_URL)
+IDENTICAL_STREAK_THRESHOLD = 3  # see warning text below
+
+
+async def _worker(
+    worker_id: int, pool: asyncpg.Pool, browser, queue: "asyncio.Queue[dict]",
+    total: int, stats: dict, stats_lock: asyncio.Lock,
+    full_page_state: dict, full_page_lock: asyncio.Lock,
+) -> None:
+    """One of CONCURRENCY parallel workers, each with its own Playwright
+    page pulling cards off a shared queue until it's empty. Playwright
+    itself is fine with many pages on one browser; the DB pool (not a
+    single shared connection) is what makes concurrent upserts safe."""
+    page = await browser.new_page(user_agent=(
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+    ))
     try:
-        await ensure_schema(conn)
-        sample = await select_sample(conn, SAMPLE_TARGET)
-        if not sample:
-            log.error("No qualifying gold cards found in futgg_players -- has PlayerSync run yet?")
-            return 1
+        while True:
+            try:
+                card = queue.get_nowait()
+            except asyncio.QueueEmpty:
+                return
 
-        done = set() if FORCE else await already_captured(conn)
-        todo = [c for c in sample if c["card_id"] not in done]
-        log.info(
-            "%d cards in sample, %d already captured successfully, %d to (re)attempt this run%s",
-            len(sample), len(done & {c["card_id"] for c in sample}), len(todo),
-            " (FORCE=true, ignoring existing manifest)" if FORCE else "",
-        )
+            async with stats_lock:
+                stats["started"] += 1
+                progress = stats["started"]
+            log.info("[w%d %d/%d] card_id=%s %s (%s)", worker_id, progress, total,
+                      card["card_id"], card.get("name"), card["url"])
 
-        async with async_playwright() as pw:
-            browser = await pw.chromium.launch(headless=HEADLESS)
-            page = await browser.new_page(user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
-            ))
+            status, num_circles, html, error_reason = await capture_one(
+                page, card["url"], RETRIES, TIMEOUT_MS
+            )
 
-            full_pages_saved = 0
-            success_count = 0
-            failed_count = 0
-            recent_circle_counts: list[int] = []
-            IDENTICAL_STREAK_THRESHOLD = 3  # see warning below
-
-            for i, card in enumerate(todo, 1):
-                log.info("[%d/%d] card_id=%s %s (%s)", i, len(todo), card["card_id"],
-                         card.get("name"), card["url"])
-
-                status, num_circles, html, error_reason = await capture_one(
-                    page, card["url"], RETRIES, TIMEOUT_MS
-                )
-
-                full_page_html = None
-                if status == "success":
-                    success_count += 1
-                    if full_pages_saved < FULL_PAGE_COUNT:
+            full_page_html = None
+            if status == "success":
+                async with full_page_lock:
+                    if full_page_state["count"] < FULL_PAGE_COUNT:
                         try:
                             full_page_html = await page.content()
-                            full_pages_saved += 1
+                            full_page_state["count"] += 1
                         except Exception as exc:  # noqa: BLE001
-                            log.warning("full-page capture failed (non-fatal): %r", exc)
-                    log.info("  OK: %d circles", num_circles)
+                            log.warning("[w%d] full-page capture failed (non-fatal): %r",
+                                        worker_id, exc)
+                log.info("[w%d]   OK: %d circles", worker_id, num_circles)
+            else:
+                log.warning("[w%d]   FAILED: %s", worker_id, error_reason)
 
-                    recent_circle_counts.append(num_circles)
-                    recent_circle_counts = recent_circle_counts[-IDENTICAL_STREAK_THRESHOLD:]
-                    if (
-                        len(recent_circle_counts) == IDENTICAL_STREAK_THRESHOLD
-                        and len(set(recent_circle_counts)) == 1
-                    ):
-                        log.warning(
-                            "*** SUSPECTED EXTRACTION BUG: last %d successful cards ALL "
-                            "reported exactly %d circles. Different real cards should not "
-                            "converge on an identical daily-history length -- this is the "
-                            "same signature as the wrong-chart bug found earlier. Consider "
-                            "stopping this run and inspecting a saved full_page_html sample "
-                            "before trusting any more 'success' rows. ***",
-                            IDENTICAL_STREAK_THRESHOLD, num_circles,
-                        )
-                else:
-                    failed_count += 1
-                    log.warning("  FAILED: %s", error_reason)
-
+            async with pool.acquire() as conn:
                 await upsert_result(
                     conn, card, status, num_circles, RETRIES, error_reason, html, full_page_html
                 )
 
-                if i < len(todo):
-                    jitter = random.uniform(-1.0, 1.0)
-                    await asyncio.sleep(max(0.0, CAPTURE_DELAY + jitter))
+            async with stats_lock:
+                if status == "success":
+                    stats["success"] += 1
+                    # Streak is across completion order, not selection
+                    # order, since workers finish interleaved under
+                    # concurrency -- still a useful smoke alarm, just a
+                    # rougher one than the sequential version.
+                    stats["recent_circles"].append(num_circles)
+                    stats["recent_circles"] = stats["recent_circles"][-IDENTICAL_STREAK_THRESHOLD:]
+                    if (
+                        len(stats["recent_circles"]) == IDENTICAL_STREAK_THRESHOLD
+                        and len(set(stats["recent_circles"])) == 1
+                    ):
+                        log.warning(
+                            "*** SUSPECTED EXTRACTION BUG: last %d successful captures "
+                            "(across all workers) ALL reported exactly %d circles. "
+                            "Different real cards should not converge on an identical "
+                            "daily-history length -- this is the same signature as the "
+                            "wrong-chart bug found earlier. Consider stopping this run "
+                            "and inspecting a saved full_page_html sample before "
+                            "trusting any more 'success' rows. ***",
+                            IDENTICAL_STREAK_THRESHOLD, num_circles,
+                        )
+                else:
+                    stats["failed"] += 1
 
+            queue.task_done()
+            jitter = random.uniform(-1.0, 1.0)
+            await asyncio.sleep(max(0.0, CAPTURE_DELAY + jitter))
+    finally:
+        await page.close()
+
+
+async def main() -> int:
+    pool = await create_pool_with_retry(DATABASE_URL, min_size=1, max_size=CONCURRENCY + 1)
+    try:
+        async with pool.acquire() as conn:
+            await ensure_schema(conn)
+            sample = await (select_all_qualifying(conn) if CAPTURE_ALL else select_sample(conn, SAMPLE_TARGET))
+            if not sample:
+                log.error("No qualifying gold cards found in futgg_players -- has PlayerSync run yet?")
+                return 1
+            done = set() if FORCE else await already_captured(conn)
+
+        todo = [c for c in sample if c["card_id"] not in done]
+        log.info(
+            "%s mode: %d cards in pool, %d already captured successfully, %d to "
+            "(re)attempt this run, concurrency=%d%s",
+            "BULK (FUTGG_CHART_CAPTURE_ALL=true)" if CAPTURE_ALL else "sample",
+            len(sample), len(done & {c["card_id"] for c in sample}), len(todo), CONCURRENCY,
+            " (FORCE=true, ignoring existing manifest)" if FORCE else "",
+        )
+        if not todo:
+            log.info("Nothing to do -- every qualifying card already captured successfully.")
+            return 0
+
+        queue: asyncio.Queue = asyncio.Queue()
+        for c in todo:
+            queue.put_nowait(c)
+
+        async with async_playwright() as pw:
+            browser = await pw.chromium.launch(headless=HEADLESS)
+            stats = {"started": 0, "success": 0, "failed": 0, "recent_circles": []}
+            stats_lock = asyncio.Lock()
+            full_page_state = {"count": 0}
+            full_page_lock = asyncio.Lock()
+
+            worker_count = min(CONCURRENCY, len(todo))
+            workers = [
+                asyncio.create_task(_worker(
+                    i + 1, pool, browser, queue, len(todo),
+                    stats, stats_lock, full_page_state, full_page_lock,
+                ))
+                for i in range(worker_count)
+            ]
+            await asyncio.gather(*workers)
             await browser.close()
 
         log.info(
             "DONE: %d success, %d failed this run. Query fc26_chart_capture_fixtures for the full picture.",
-            success_count, failed_count,
+            stats["success"], stats["failed"],
         )
         return 0
     finally:
-        await conn.close()
+        await pool.close()
 
 
 if __name__ == "__main__":

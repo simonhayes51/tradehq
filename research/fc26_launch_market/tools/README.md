@@ -51,12 +51,28 @@ file) — nothing new to learn.
    ```
 3. Optionally set any of these env vars on that one run (all have
    production-safe defaults, so none are required):
-   - `FUTGG_CHART_SAMPLE_TARGET` (default `40`)
-   - `FUTGG_CHART_CAPTURE_DELAY` (default `3.0` seconds between cards)
+   - `FUTGG_CHART_CAPTURE_ALL` (default `false`) — **Phase 7 bulk mode.**
+     Set to `true` to capture every qualifying Gold Common/Gold Rare card
+     instead of a balanced ~40-card sample. Logs the true qualifying-card
+     count before starting a single capture, so you see the real scale
+     first.
+   - `FUTGG_CHART_SAMPLE_TARGET` (default `40`, ignored when `_ALL=true`)
+   - `FUTGG_CHART_CAPTURE_CONCURRENCY` (default `3`) — number of Playwright
+     pages run in parallel. Keep this conservative; raising it increases
+     load on fut.gg as well as this container. Start low, confirm a run
+     stays stable, only raise if you need to.
+   - `FUTGG_CHART_CAPTURE_DELAY` (default `3.0` seconds, **per worker** —
+     total request rate is roughly concurrency ÷ delay)
    - `FUTGG_CHART_CAPTURE_RETRIES` (default `3`)
    - `FUTGG_CHART_CAPTURE_TIMEOUT_MS` (default `20000`)
    - `FUTGG_CHART_FULL_PAGE_COUNT` (default `5`)
    - `FUTGG_CHART_CAPTURE_FORCE` (default `false`)
+
+   For a full bulk run: `FUTGG_CHART_CAPTURE_ALL=true` (and optionally
+   raise `FUTGG_CHART_CAPTURE_CONCURRENCY` a little once you've watched
+   one run go smoothly). It's fully resumable — if it's interrupted or
+   you stop it, just re-run the same command; already-successful cards
+   are skipped automatically.
 4. Trigger it via the Scheduled Task's manual "Run now" trigger (same
    mechanism `COOLIFY.md` describes for a supervised manual run) — don't
    wait for the daily cron.
