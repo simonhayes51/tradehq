@@ -154,6 +154,9 @@ class TestOutcomeStatuses:
         assert grade.outcome_status == TARGET_HIT
         assert grade.target_hit is True
         assert grade.realised_sell_price == 120_000
+        assert grade.outcome_price == 120_000
+        assert grade.outcome_observed_at == T0 + timedelta(hours=5)
+        assert grade.outcome_price_type == "target_exit"
         assert grade.minutes_to_target == 4 * 60
         # 120,000 sold after 5% tax = 114,000, minus 88,000 entry.
         assert grade.net_profit_after_tax == 26_000
@@ -179,6 +182,9 @@ class TestOutcomeStatuses:
         )
         assert grade.outcome_status == LOSS_UNREALISED
         assert grade.realised_roi < 0
+        assert grade.outcome_price == 84_000
+        assert grade.outcome_observed_at == T0 + timedelta(hours=5)
+        assert grade.outcome_price_type == "window_mark"
 
     def test_deep_drawdown_is_downside_hit(self):
         observations = _obs((1, 100_000), (3, 85_000), (5, 88_000))

@@ -5,8 +5,10 @@ import hashlib
 import json
 import logging
 import os
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Any, Iterable, Optional
 
 import aiohttp
@@ -30,6 +32,12 @@ PUBLIC_OPPORTUNITY_FORBIDDEN_FIELDS = frozenset(
         "roi",
     }
 )
+PROOF_CADENCE_MINUTES = 30
+PROOF_BATCH_MAX = 5
+PROOF_STATUSES = frozenset(
+    {"target_hit", "profitable_unrealised", "flat", "loss_unrealised", "downside_hit"}
+)
+PROOF_CLAIM_LOCK_ID = 731_904_057
 
 
 def _env(*names: str) -> Optional[str]:
@@ -183,6 +191,13 @@ class DiscordClient:
             log.warning("Discord channel post failed: channel=%s status=%s body=%s", channel_id, status, str(body)[:200])
             return False
         return True
+
+    async def post_embeds(self, channel_id: str, embeds: list[dict[str, Any]]) -> tuple[int, Any]:
+        if not channel_id or not embeds:
+            return 0, {"message": "Missing channel or embeds"}
+        return await self._request(
+            "POST", f"/channels/{channel_id}/messages", payload={"embeds": embeds}
+        )
 
 
 async def desired_member_access(conn, user_id: str) -> tuple[Optional[str], bool]:
@@ -392,21 +407,110 @@ def assert_public_opportunity_payload(payload: dict[str, Any]) -> None:
         raise ValueError(f"Public Discord opportunity payload contains forbidden fields: {sorted(leaked)}")
 
 
-def build_proof_message(row: dict[str, Any], app_url: str) -> str:
-    status = str(row.get("outcome_status") or "unknown").replace("_", " ").title()
-    lines = ["EAFC LIVE OPPORTUNITY OUTCOME", "", f"Player: {row['name']}"]
-    lines.append(f"Detected: {row['evaluated_at'].astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
-    if row.get("entry_price") is not None:
-        lines.append(f"Recorded entry: {int(row['entry_price']):,}")
-    if row.get("realised_sell_price") is not None:
-        lines.append(f"Recorded exit: {int(row['realised_sell_price']):,}")
-    lines.append(f"24h outcome: {status}")
-    if row.get("net_profit_after_tax") is not None:
-        lines.append(f"After-tax result: {float(row['net_profit_after_tax']):+,.0f}")
-    if row.get("minutes_to_target") is not None:
-        lines.append(f"Time to target: {int(row['minutes_to_target'])} minutes")
-    lines.extend(["", "This opportunity is expired and is not a live recommendation.", app_url.rstrip("/")])
-    return "\n".join(lines)
+def _aware(value: datetime) -> datetime:
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+
+
+def proof_row_is_defensible(row: dict[str, Any]) -> bool:
+    try:
+        enabled_at = _aware(row["proof_enabled_at"])
+        evaluated_at = _aware(row["evaluated_at"])
+        graded_at = _aware(row["graded_at"])
+        entry_at = _aware(row["entry_at"])
+        outcome_at = _aware(row["outcome_observed_at"])
+        window_end = _aware(row["window_end"])
+        status = str(row["outcome_status"])
+        card_ids = {
+            int(row["outcome_source_card_id"]),
+            int(row["snapshot_source_card_id"]),
+            int(row["player_source_card_id"]),
+        }
+        entry = Decimal(str(row["entry_price"]))
+        outcome_price = Decimal(str(row["outcome_price"]))
+        recorded_profit = Decimal(str(row["net_profit_after_tax"]))
+        target = Decimal(str(row["recommended_sell_target"]))
+    except (KeyError, TypeError, ValueError, ArithmeticError):
+        return False
+
+    if len(card_ids) != 1 or status not in PROOF_STATUSES:
+        return False
+    if evaluated_at < enabled_at or graded_at < enabled_at:
+        return False
+    if not row.get("entry_observation_verified") or not row.get("outcome_observation_verified"):
+        return False
+    if (
+        entry <= 0
+        or outcome_price <= 0
+        or target <= 0
+        or not (evaluated_at < entry_at < outcome_at <= window_end)
+    ):
+        return False
+    expected_profit = outcome_price * Decimal("0.95") - entry
+    if abs(recorded_profit - expected_profit) > Decimal("0.01"):
+        return False
+
+    if status == "target_hit":
+        if not row.get("target_hit") or not row.get("exit_achieved"):
+            return False
+        if row.get("outcome_price_type") != "target_exit" or outcome_price < target:
+            return False
+        if row.get("realised_sell_price") != row.get("outcome_price"):
+            return False
+        if row.get("exit_at") != row.get("outcome_observed_at"):
+            return False
+        elapsed = int((outcome_at - entry_at).total_seconds() // 60)
+        return row.get("minutes_to_target") == elapsed
+
+    realised_roi = recorded_profit / entry
+    status_matches_math = {
+        "profitable_unrealised": realised_roi > Decimal("0.005") and not row.get("downside_hit"),
+        "loss_unrealised": realised_roi < Decimal("-0.005") and not row.get("downside_hit"),
+        "flat": abs(realised_roi) <= Decimal("0.005") and not row.get("downside_hit"),
+        "downside_hit": bool(row.get("downside_hit"))
+        and Decimal(str(row.get("max_adverse_excursion"))) <= Decimal("-0.10"),
+    }
+    return (
+        not row.get("target_hit")
+        and not row.get("exit_achieved")
+        and row.get("outcome_price_type") == "window_mark"
+        and row.get("minutes_to_target") is None
+        and status_matches_math.get(status, False)
+    )
+
+
+def build_proof_embed(row: dict[str, Any], app_url: str) -> dict[str, Any]:
+    if not proof_row_is_defensible(row):
+        raise ValueError("Outcome does not have defensible proof provenance")
+    status = str(row["outcome_status"]).replace("_", " ").title()
+    profit = Decimal(str(row["net_profit_after_tax"]))
+    minutes = int(
+        (_aware(row["outcome_observed_at"]) - _aware(row["entry_at"])).total_seconds() // 60
+    )
+    colors = {
+        "target_hit": 0x22C55E,
+        "profitable_unrealised": 0x84CC16,
+        "flat": 0xEAB308,
+        "loss_unrealised": 0xEF4444,
+        "downside_hit": 0xB91C1C,
+    }
+    exit_label = "Target exit" if row["outcome_price_type"] == "target_exit" else "24h mark"
+    return {
+        "title": str(row["name"]),
+        "url": app_url.rstrip("/") + "/#/v2/opportunities",
+        "description": "Expired outcome. This is historical proof, not a live recommendation.",
+        "color": colors[str(row["outcome_status"])],
+        "fields": [
+            {"name": "Result", "value": status, "inline": True},
+            {"name": "Entry", "value": f"{int(row['entry_price']):,}", "inline": True},
+            {"name": exit_label, "value": f"{int(row['outcome_price']):,}", "inline": True},
+            {"name": "After-tax outcome", "value": f"{profit:+,.0f}", "inline": True},
+            {"name": "Time active", "value": f"{minutes} minutes", "inline": True},
+        ],
+        "footer": {
+            "text": f"EAFC Live • Card {row['outcome_source_card_id']} • Detected {row['evaluated_at'].astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"
+        },
+        "timestamp": _aware(row["outcome_observed_at"]).isoformat(),
+    }
 
 
 def publication_fingerprint(kind: str, values: Iterable[Any]) -> str:
@@ -509,71 +613,156 @@ async def publish_opportunity_digest(pool, client: Optional[DiscordClient] = Non
     return ok
 
 
-async def publish_proof_outcome(pool, client: Optional[DiscordClient] = None) -> bool:
+async def _claim_proof_batch(pool) -> list[dict[str, Any]]:
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            locked = await conn.fetchval("SELECT pg_try_advisory_xact_lock($1)", PROOF_CLAIM_LOCK_ID)
+            if not locked:
+                return []
+            cooling_down = await conn.fetchval(
+                """
+                SELECT EXISTS (
+                    SELECT 1 FROM discord_publications
+                    WHERE kind='proof_outcome'
+                      AND status IN ('sending', 'sent')
+                      AND COALESCE(sent_at, created_at) >
+                          NOW() - ($1::integer * INTERVAL '1 minute')
+                )
+                """,
+                PROOF_CADENCE_MINUTES,
+            )
+            if cooling_down:
+                return []
+            rows = await conn.fetch(
+                """
+                SELECT o.snapshot_id,
+                       o.source_card_id AS outcome_source_card_id,
+                       s.source_card_id AS snapshot_source_card_id,
+                       p.source_card_id AS player_source_card_id,
+                       o.outcome_status, o.graded_at, o.window_end, o.observation_count,
+                       o.entry_achieved, o.entry_at, o.entry_price,
+                       o.exit_achieved, o.exit_at, o.realised_sell_price,
+                       o.outcome_price, o.outcome_observed_at, o.outcome_price_type,
+                       o.net_profit_after_tax, o.realised_roi,
+                       o.target_hit, o.downside_hit, o.max_adverse_excursion,
+                       o.minutes_to_target,
+                       s.evaluated_at, s.recommended_sell_target,
+                       s.rating, s.rarity, p.name, st.proof_enabled_at,
+                       EXISTS (
+                           SELECT 1 FROM futgg_bin_history entry_observation
+                           WHERE entry_observation.source_card_id=o.source_card_id
+                             AND entry_observation.lowest_bin=o.entry_price
+                             AND entry_observation.captured_at=o.entry_at
+                       ) AS entry_observation_verified,
+                       EXISTS (
+                           SELECT 1 FROM futgg_bin_history outcome_observation
+                           WHERE outcome_observation.source_card_id=o.source_card_id
+                             AND outcome_observation.lowest_bin=o.outcome_price
+                             AND outcome_observation.captured_at=o.outcome_observed_at
+                       ) AS outcome_observation_verified
+                FROM futgg_recommendation_outcomes o
+                JOIN futgg_recommendation_snapshots s
+                  ON s.id=o.snapshot_id AND s.source_card_id=o.source_card_id
+                JOIN futgg_players p ON p.source_card_id=o.source_card_id
+                JOIN discord_integration_state st ON st.singleton=TRUE
+                WHERE st.proof_enabled_at IS NOT NULL
+                  AND s.evaluated_at >= st.proof_enabled_at
+                  AND o.graded_at >= st.proof_enabled_at
+                  AND o.horizon='24h'
+                  AND o.outcome_status = ANY($1::text[])
+                  AND o.observation_count >= 2
+                  AND o.entry_achieved=TRUE
+                  AND o.entry_at IS NOT NULL AND o.entry_price > 0
+                  AND o.outcome_price IS NOT NULL
+                  AND o.outcome_observed_at IS NOT NULL
+                  AND o.net_profit_after_tax IS NOT NULL
+                  AND (s.invalidated_at IS NOT NULL OR s.expires_at <= NOW())
+                  AND NOT EXISTS (
+                      SELECT 1 FROM futgg_recommendation_snapshots live
+                      WHERE live.source_card_id=o.source_card_id
+                        AND live.evaluated_at > s.evaluated_at
+                        AND live.signal IN ('buy', 'strong_buy')
+                        AND live.invalidated_at IS NULL
+                        AND (live.expires_at IS NULL OR live.expires_at > NOW())
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM discord_publications dp
+                      WHERE dp.kind='proof_outcome'
+                        AND dp.source_key=o.snapshot_id::text
+                        AND NOT (dp.status='failed' AND dp.last_error='discord_http_429')
+                  )
+                ORDER BY o.graded_at, o.snapshot_id
+                LIMIT 25
+                """,
+                list(PROOF_STATUSES),
+            )
+            defensible = [dict(row) for row in rows if proof_row_is_defensible(dict(row))][
+                :PROOF_BATCH_MAX
+            ]
+            if not defensible:
+                return []
+            batch_id = str(uuid.uuid4())
+            claimed: list[dict[str, Any]] = []
+            for row in defensible:
+                publication_id = await conn.fetchval(
+                    """
+                    INSERT INTO discord_publications (kind, source_key, status, payload)
+                    VALUES ('proof_outcome', $1, 'sending', $2::jsonb)
+                    ON CONFLICT (kind, source_key) DO UPDATE
+                    SET status='sending', last_error=NULL, created_at=NOW()
+                    WHERE discord_publications.status='failed'
+                      AND discord_publications.last_error='discord_http_429'
+                    RETURNING id
+                    """,
+                    str(row["snapshot_id"]),
+                    json.dumps(
+                        {
+                            "snapshot_id": row["snapshot_id"],
+                            "outcome_status": row["outcome_status"],
+                            "batch_id": batch_id,
+                        }
+                    ),
+                )
+                if publication_id is not None:
+                    row["publication_id"] = publication_id
+                    claimed.append(row)
+            return claimed
+
+
+async def publish_proof_digest(pool, client: Optional[DiscordClient] = None) -> bool:
     client = client or DiscordClient()
     channel_id = client.config.proof_channel_id
     if not channel_id:
         return False
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            """
-            SELECT o.snapshot_id, o.outcome_status, o.entry_price,
-                   o.realised_sell_price, o.net_profit_after_tax,
-                   o.minutes_to_target, s.evaluated_at, p.name
-            FROM futgg_recommendation_outcomes o
-            JOIN futgg_recommendation_snapshots s ON s.id=o.snapshot_id
-            JOIN futgg_players p ON p.source_card_id=o.source_card_id
-            JOIN discord_integration_state st ON st.singleton=TRUE
-            WHERE o.horizon='24h'
-              AND o.graded_at >= st.installed_at
-              AND o.outcome_status <> 'insufficient_observations'
-              AND (s.invalidated_at IS NOT NULL OR s.expires_at <= NOW())
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM futgg_recommendation_snapshots live
-                  WHERE live.source_card_id=o.source_card_id
-                    AND live.evaluated_at > s.evaluated_at
-                    AND live.signal IN ('buy', 'strong_buy')
-                    AND live.invalidated_at IS NULL
-                    AND (live.expires_at IS NULL OR live.expires_at > NOW())
-              )
-              AND NOT EXISTS (
-                  SELECT 1 FROM discord_publications dp
-                  WHERE dp.kind='proof_outcome' AND dp.source_key=o.snapshot_id::text
-                    AND dp.status IN ('sending', 'sent')
-              )
-            ORDER BY o.graded_at
-            LIMIT 1
-            """
-        )
-        if not row:
-            return False
-        inserted = await conn.fetchval(
-            """
-            INSERT INTO discord_publications (kind, source_key, status, payload)
-            VALUES ('proof_outcome', $1, 'sending', $2::jsonb)
-            ON CONFLICT (kind, source_key) DO UPDATE
-            SET status='sending', last_error=NULL
-            WHERE discord_publications.status='failed'
-            RETURNING id
-            """,
-            str(row["snapshot_id"]),
-            json.dumps({"snapshot_id": row["snapshot_id"], "outcome_status": row["outcome_status"]}),
-        )
-        if inserted is None:
-            return False
-    ok = await client.post_message(
-        channel_id,
-        build_proof_message(dict(row), os.getenv("FRONTEND_URL", "https://app.eafc.live")),
-    )
+    rows = await _claim_proof_batch(pool)
+    if not rows:
+        return False
+    app_url = os.getenv("FRONTEND_URL", "https://app.eafc.live")
+    embeds = [build_proof_embed(row, app_url) for row in rows]
+    status, _ = await client.post_embeds(channel_id, embeds)
+    publication_ids = [row["publication_id"] for row in rows]
+    if status in (200, 201):
+        publication_status, error = "sent", None
+    elif status == 429:
+        publication_status, error = "failed", "discord_http_429"
+    else:
+        # At-most-once: an uncertain network/5xx result or a terminal 4xx
+        # must never replay after a restart and risk duplicate public proof.
+        publication_status, error = "abandoned", f"discord_http_{status or 'network'}"
     async with pool.acquire() as conn:
         await conn.execute(
-            "UPDATE discord_publications SET status=$2, sent_at=CASE WHEN $2='sent' THEN NOW() ELSE NULL END, last_error=$3 WHERE id=$1",
-            inserted,
-            "sent" if ok else "failed",
-            None if ok else "discord_post_failed",
+            """
+            UPDATE discord_publications
+            SET status=$2,
+                sent_at=CASE WHEN $2='sent' THEN NOW() ELSE NULL END,
+                last_error=$3
+            WHERE id=ANY($1::bigint[])
+            """,
+            publication_ids,
+            publication_status,
+            error,
         )
-    return ok
+    return publication_status == "sent"
 
 
 async def discord_worker_loop(pool, poll_seconds: int = 60) -> None:
@@ -583,7 +772,7 @@ async def discord_worker_loop(pool, poll_seconds: int = 60) -> None:
             client = DiscordClient()
             await process_role_sync_queue(pool, client)
             await publish_opportunity_digest(pool, client)
-            await publish_proof_outcome(pool, client)
+            await publish_proof_digest(pool, client)
         except asyncio.CancelledError:
             raise
         except Exception:
