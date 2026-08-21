@@ -1,5 +1,5 @@
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { Briefcase, Home, SlidersHorizontal, Sparkles, Star, TrendingUp, User, Users } from "lucide-react";
+import { Briefcase, Home, LineChart, SlidersHorizontal, Sparkles, Star, TrendingUp, User, Users } from "lucide-react";
 import { useEntitlements } from "../../context/EntitlementsContext";
 import { useAuth } from "../../context/AuthContext";
 
@@ -9,6 +9,11 @@ const ITEMS = [
   // /api/v2/opportunities) instead of redirecting into Trade Finder.
   { to: "/v2/opportunities", label: "Opportunities", short: "Opps", icon: TrendingUp, match: (p) => p.startsWith("/v2/opportunities") },
   { to: "/v2/trade-finder", label: "Trade Finder", short: "Finder", icon: SlidersHorizontal, match: (p) => p.startsWith("/v2/trade-finder") },
+  // Investment Engine: market-cycle/cohort plays (1-3 day holds), a
+  // different question from Opportunities/Trade Finder's single-listing
+  // flips - kept as its own nav item so the distinction is visible in
+  // the UI, not just internally. See pages/Investments/Investments.jsx.
+  { to: "/v2/investments", label: "Investments", short: "Invest", icon: LineChart, match: (p) => p.startsWith("/v2/investments") },
   { to: "/v2/players", label: "Players", short: "Players", icon: Users, match: (p) => p.startsWith("/v2/players") },
   // Everything below needs a signed-in account - a signed-out visitor
   // sees only the genuinely public part of the app (Home/Opportunities/
