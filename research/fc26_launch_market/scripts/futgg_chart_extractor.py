@@ -38,11 +38,20 @@ CIRCLE_RE_ALT = re.compile(
 )
 
 X_TICK_RE = re.compile(
-    r'<text\b[^>]*\bx="(?P<x>-?[\d.]+)"[^>]*class="[^"]*recharts-cartesian-axis-tick-value[^"]*"'
+    # [^>]* after the class attribute is required: real fut.gg markup has
+    # more attributes (text-anchor, fill) between class="..." and the
+    # tag's closing '>'. This bug survived the original Phase 1/3
+    # validation undetected because fixtures/vdv_264453_year_chart.html
+    # was hand-simplified when saved (those extra attributes stripped),
+    # so it never exercised this path -- only surfaced once
+    # auto_sync/research_fc26_chart_report.py ran this same algorithm
+    # against genuinely raw captured production HTML. Fixed there and
+    # ported back here to keep the two extractors in sync.
+    r'<text\b[^>]*\bx="(?P<x>-?[\d.]+)"[^>]*class="[^"]*recharts-cartesian-axis-tick-value[^"]*"[^>]*'
     r'>\s*<tspan[^>]*>(?P<label>[A-Za-z]{3}\s+\d{1,2})</tspan>'
 )
 Y_TICK_RE = re.compile(
-    r'<text\b[^>]*\by="(?P<y>-?[\d.]+)"[^>]*class="[^"]*recharts-cartesian-axis-tick-value[^"]*"'
+    r'<text\b[^>]*\by="(?P<y>-?[\d.]+)"[^>]*class="[^"]*recharts-cartesian-axis-tick-value[^"]*"[^>]*'
     r'>\s*<tspan[^>]*>(?P<label>[\d,.]+)\s*(?P<suffix>[KMkm]?)</tspan>'
 )
 

@@ -51,11 +51,18 @@ CIRCLE_RE_ALT = re.compile(
     r'class="[^"]*recharts-dot[^"]*"'
 )
 X_TICK_RE = re.compile(
-    r'<text\b[^>]*\bx="(?P<x>-?[\d.]+)"[^>]*class="[^"]*recharts-cartesian-axis-tick-value[^"]*"'
+    # [^>]* after the class attribute is required: real fut.gg markup has
+    # more attributes (text-anchor, fill) between class="..." and the
+    # tag's closing '>' -- a bug that survived Phase 1/2 undetected
+    # because the only fixture ever tested locally had been hand-
+    # simplified (those extra attributes stripped) when it was saved,
+    # and only surfaced once this script ran against genuinely raw
+    # captured production HTML.
+    r'<text\b[^>]*\bx="(?P<x>-?[\d.]+)"[^>]*class="[^"]*recharts-cartesian-axis-tick-value[^"]*"[^>]*'
     r'>\s*<tspan[^>]*>(?P<label>[A-Za-z]{3}\s+\d{1,2})</tspan>'
 )
 Y_TICK_RE = re.compile(
-    r'<text\b[^>]*\by="(?P<y>-?[\d.]+)"[^>]*class="[^"]*recharts-cartesian-axis-tick-value[^"]*"'
+    r'<text\b[^>]*\by="(?P<y>-?[\d.]+)"[^>]*class="[^"]*recharts-cartesian-axis-tick-value[^"]*"[^>]*'
     r'>\s*<tspan[^>]*>(?P<label>[\d,.]+)\s*(?P<suffix>[KMkm]?)</tspan>'
 )
 CURRENT_PRICE_RE = re.compile(
