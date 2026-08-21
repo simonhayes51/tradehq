@@ -12,7 +12,10 @@
 | `DISCORD_MEMBER_ROLE_ID` | Coolify backend | `EAFC.Live Member` role ID | No | Required | The only paid role managed at launch |
 | `DISCORD_INVITE_URL` | Coolify backend | Permanent `https://discord.gg/...` invite | No | Required | Account join CTA |
 | `DISCORD_OPPORTUNITY_CHANNEL_ID` | Coolify backend | `#opportunity-alerts` channel ID | No | Optional | Enables non-actionable batched opportunity notices |
-| `DISCORD_PROOF_CHANNEL_ID` | Coolify backend | `#proof-ledger` channel ID | No | Optional | Enables closed 24-hour outcome proof posts |
+| `DISCORD_PROOF_CHANNEL_ID` | Coolify backend | `#proof-ledger` channel ID | No | Optional | Enables the once-daily performance review |
+| `DISCORD_PROOF_REPORT_TIMEZONE` | Coolify backend | IANA timezone; default `Europe/London` | No | Optional | Local timezone for the daily reporting boundary |
+| `DISCORD_PROOF_REPORT_HOUR` | Coolify backend | Integer `0`-`23`; default `21` | No | Optional | Local hour for the daily report |
+| `DISCORD_PROOF_REPORT_MINUTE` | Coolify backend | Integer `0`-`59`; default `0` | No | Optional | Local minute for the daily report |
 | `DISCORD_RECONCILE_INTERVAL_SECONDS` | Coolify backend | Integer seconds; default `60` | No | Optional | Durable role/publication worker interval |
 | `DISCORD_OPPORTUNITY_BATCH_MIN` | Coolify backend | Integer; default `3` | No | Optional | Minimum new qualifying cards before a digest |
 | `VITE_DISCORD_INVITE_URL` | Coolify frontend build args/env | Same permanent invite URL | No | Required for configured deployment | Public-site, billing, and access-denied Discord links |
@@ -43,14 +46,16 @@ Legacy `DISCORD_SERVER_ID` and `DISCORD_PREMIUM_ROLE_ID` remain fallback aliases
 ## Deploy order
 
 1. Back up the production database.
-2. Deploy migration `056_discord_integration.sql` to the core database after all migrations through `055`. With `RUN_MIGRATIONS_ON_BOOT=1`, the backend migration runner applies it once under its advisory lock; otherwise run the normal migration command before backend rollout.
+2. Apply core migrations in numeric order through `058_discord_daily_proof_review.sql`. Migration 058 records the immutable daily-report enable timestamp, creates the one-row-per-report-date ledger, and abandons unsent rows from the removed individual publisher. With `RUN_MIGRATIONS_ON_BOOT=1`, the backend migration runner applies each migration once under its advisory lock; otherwise run the normal migration command before backend rollout.
 3. Add all required backend values in Coolify and redeploy the backend.
 4. Confirm backend logs show the migration pass and no Discord configuration error. Temporary Discord/API failures must appear in the queue and must not fail Stripe handling.
 5. Add `VITE_DISCORD_INVITE_URL` as a frontend build variable and rebuild/redeploy the frontend. Vite values are compiled into the bundle, so a container restart alone is not enough.
 6. Run the manual entitlement lifecycle test before enabling the two optional channel IDs. This prevents accidental publication while role permissions are being checked.
-7. Add `DISCORD_OPPORTUNITY_CHANNEL_ID`, test one sanitized digest, then add `DISCORD_PROOF_CHANNEL_ID` and test a matured post-migration outcome.
+7. Add `DISCORD_OPPORTUNITY_CHANNEL_ID` and test one sanitized digest. Keep `DISCORD_PROOF_CHANNEL_ID` unset until migration 058 and the updated backend are confirmed live.
+8. Optionally set the three `DISCORD_PROOF_REPORT_*` values; otherwise the backend uses `21:00 Europe/London`.
+9. Add `DISCORD_PROOF_CHANNEL_ID`. The first report is intentionally skipped until a complete local reporting period exists after migration 058; no historical daily reports are backfilled.
 
-Rollback: first remove the optional channel IDs and deploy the prior backend. Only then drop `discord_role_sync_queue`, `discord_publications`, `discord_integration_state`, the payment-intent unique index, and the three new `stripe_events` columns if a database rollback is truly required. Keeping those inert tables/columns is safer and preserves retry/audit state.
+Rollback: first remove `DISCORD_PROOF_CHANNEL_ID`, then deploy the prior backend. Keep `discord_daily_proof_publications` and `daily_proof_enabled_at` in place unless a destructive database rollback is genuinely required; retaining them preserves the publication audit and prevents accidental replay.
 
 ## Stripe
 
