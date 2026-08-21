@@ -155,6 +155,42 @@ def is_button_active(page: Page, button) -> bool:
     return any(marker in cls_l for marker in ("bg-orange", "active", "selected", "text-black"))
 
 
+def click_year_and_verify(
+    page: Page, max_attempts: int = 4, verify_poll_interval: float = 0.4, verify_polls: int = 5,
+) -> tuple[bool, str]:
+    """Clicks 'Year' and CONFIRMS it took effect (button gains its active
+    class) instead of trusting a fire-and-forget click. Production
+    evidence (from the Coolify twin of this script): the page ships
+    server-rendered with "Week" active by default, and a click fired
+    before React finishes hydrating the handler is a real DOM click that
+    quietly does nothing -- every card was capturing the ~7-day Week view
+    (all converging on ~8 circles), not a wrong-widget or render-race
+    bug. Retries the click itself since a pre-hydration click is lost,
+    not delayed."""
+    btn = find_year_button(page)
+    if btn is None:
+        return False, "no 'Year' button found on page"
+
+    if is_button_active(page, btn):
+        return True, "already active"
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            btn.click(timeout=5_000)
+        except Exception as exc:  # noqa: BLE001
+            if attempt == max_attempts:
+                return False, f"click raised on final attempt: {exc!r}"
+            time.sleep(0.3)
+            continue
+
+        for _ in range(verify_polls):
+            time.sleep(verify_poll_interval)
+            if is_button_active(page, btn):
+                return True, f"switched on click attempt {attempt}"
+
+    return False, f"clicked {max_attempts}x but button never showed active state"
+
+
 def find_chart_container_html(page: Page) -> tuple[str | None, int]:
     """Finds the smallest ancestor of the Recharts chart that also
     contains the range-toggle buttons (Year/Month/Week/...), and returns
@@ -245,13 +281,12 @@ def capture_one(
             except PWTimeoutError:
                 pass  # some pages never go fully idle (polling widgets); proceed anyway
 
-            year_btn = find_year_button(page)
-            if year_btn is not None:
-                try:
-                    if not is_button_active(page, year_btn):
-                        year_btn.click(timeout=5_000)
-                except Exception:  # noqa: BLE001
-                    pass  # non-fatal; chart may already default to Year
+            switched, switch_note = click_year_and_verify(page)
+            if not switched:
+                last_error = f"could not switch chart to Year range (attempt {attempt}): {switch_note}"
+                print(f"  {last_error}")
+                time.sleep(1.5 * attempt)
+                continue
 
             try:
                 page.wait_for_selector(

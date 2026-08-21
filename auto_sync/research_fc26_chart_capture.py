@@ -241,6 +241,53 @@ async def is_button_active(button) -> bool:
     return any(m in cls_l for m in ("bg-orange", "active", "selected", "text-black"))
 
 
+async def click_year_and_verify(
+    page, max_attempts: int = 4, verify_poll_interval: float = 0.4, verify_polls: int = 5,
+) -> tuple[bool, str]:
+    """Clicks the 'Year' toggle and CONFIRMS it actually took effect
+    (button gains its active class) before moving on, instead of firing
+    the click and trusting it. Production evidence: the page ships
+    server-rendered with "Week" active by default, and a click fired
+    before React finishes hydrating the button's onClick handler is a
+    real click on a DOM node that quietly does nothing -- exactly what
+    was happening (every card capturing the ~7-day Week view instead of
+    Year, all converging on ~8 circles). Retries the click itself, not
+    just the verification wait, since a pre-hydration click is simply
+    lost, not delayed.
+
+    Returns (switched, note) -- note explains what happened either way,
+    for logging."""
+    year_locator = find_year_button(page)
+    try:
+        if await year_locator.count() == 0:
+            return False, "no 'Year' button found on page"
+        btn = year_locator.first
+
+        if await is_button_active(btn):
+            return True, "already active"
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                await btn.click(timeout=5_000)
+            except Exception as exc:  # noqa: BLE001
+                # A click that raises (covered element, detached node from
+                # a re-render, etc.) is exactly the kind of failure the
+                # old bare `except: pass` was hiding. Log it, keep trying.
+                if attempt == max_attempts:
+                    return False, f"click raised on final attempt: {exc!r}"
+                await asyncio.sleep(0.3)
+                continue
+
+            for _ in range(verify_polls):
+                await asyncio.sleep(verify_poll_interval)
+                if await is_button_active(btn):
+                    return True, f"switched on click attempt {attempt}"
+
+        return False, f"clicked {max_attempts}x but button never showed active state"
+    except Exception as exc:  # noqa: BLE001
+        return False, f"unexpected error locating/clicking Year button: {exc!r}"
+
+
 async def find_chart_container_html(page) -> tuple[str | None, int]:
     """Locates the PRICE HISTORY chart specifically, not just "the first
     Recharts widget on the page" -- fut.gg pages can render more than one
@@ -339,14 +386,24 @@ async def capture_one(page, url: str, retries: int, timeout_ms: int) -> tuple[st
             except PlaywrightTimeoutError:
                 pass
 
-            year_locator = find_year_button(page)
-            try:
-                if await year_locator.count() > 0:
-                    btn = year_locator.first
-                    if not await is_button_active(btn):
-                        await btn.click(timeout=5_000)
-            except Exception:  # noqa: BLE001
-                pass
+            switched, switch_note = await click_year_and_verify(page)
+            if not switched:
+                # Diagnosed from a real production capture: the page is
+                # SSR'd with "Week" active by default (NOT "Year" -- the
+                # opposite of what the Phase 1 manually-captured fixture
+                # showed, which was captured after a human had already
+                # clicked Year). Every card converging on exactly 8
+                # circles was the Week view's natural ~7-day point count,
+                # not a wrong-widget or rendering-race bug. If the click
+                # never takes (most likely: clicked before React finished
+                # hydrating, so the onClick handler wasn't wired up yet),
+                # this is now surfaced loudly instead of silently
+                # swallowed, and counted as a failed attempt so it
+                # retries rather than quietly capturing the wrong range.
+                last_error = f"could not switch chart to Year range (attempt {attempt}): {switch_note}"
+                log.warning("  %s", last_error)
+                await asyncio.sleep(1.5 * attempt)
+                continue
 
             try:
                 await page.wait_for_selector(
