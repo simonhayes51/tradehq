@@ -291,6 +291,37 @@ async def find_chart_container_html(page) -> tuple[str | None, int]:
     return result.get("html"), result.get("circles", 0)
 
 
+async def wait_for_stable_chart(
+    page, max_polls: int = 10, poll_interval: float = 0.5,
+) -> tuple[str | None, int]:
+    """A second production run, AFTER anchoring on the Year button fixed
+    nothing, still returned exactly 8 circles across totally unrelated
+    cards (goalkeeper, fullback, midfielder, winger, striker). That rules
+    out "wrong chart" as the sole cause -- the more likely explanation is
+    a race: wait_for_selector(state='attached') resolves the instant the
+    FIRST matching circle appears, not once Recharts has finished
+    painting all of them (a mount animation / staged reveal would explain
+    a fixed early-frame count showing up identically regardless of the
+    card's real point total -- the same family of "captured mid-
+    transition" issue Phase 1 already found in the duplicated/stale
+    Y-axis tick markup on one manually-captured page).
+
+    Fix: don't trust the first read. Poll find_chart_container_html()
+    repeatedly and only return once the circle count is IDENTICAL across
+    two consecutive reads (i.e. the chart has stopped growing), or
+    max_polls is exhausted (whatever the last read was, so a genuinely
+    slow-to-fully-render chart still returns its best-known state rather
+    than nothing)."""
+    last_html, last_circles = await find_chart_container_html(page)
+    for _ in range(max_polls):
+        await asyncio.sleep(poll_interval)
+        html, circles = await find_chart_container_html(page)
+        if circles == last_circles and html:
+            return html, circles
+        last_html, last_circles = html, circles
+    return last_html, last_circles
+
+
 async def capture_one(page, url: str, retries: int, timeout_ms: int) -> tuple[str, int, str, str | None]:
     last_error = None
     for attempt in range(1, retries + 1):
@@ -327,11 +358,19 @@ async def capture_one(page, url: str, retries: int, timeout_ms: int) -> tuple[st
                 await asyncio.sleep(1.5 * attempt)
                 continue
 
-            html, num_circles = await find_chart_container_html(page)
+            html, num_circles = await wait_for_stable_chart(page)
             if not html or num_circles == 0:
                 last_error = f"chart container found but 0 circles (attempt {attempt})"
                 await asyncio.sleep(1.5 * attempt)
                 continue
+
+            if num_circles < 20:
+                log.warning(
+                    "  SUSPICIOUSLY LOW circle count (%d) -- could be a genuinely "
+                    "short history (recently-added card) OR a mis-extraction; "
+                    "verify this one manually before trusting it",
+                    num_circles,
+                )
 
             return "success", num_circles, html, None
 
@@ -413,6 +452,8 @@ async def main() -> int:
             full_pages_saved = 0
             success_count = 0
             failed_count = 0
+            recent_circle_counts: list[int] = []
+            IDENTICAL_STREAK_THRESHOLD = 3  # see warning below
 
             for i, card in enumerate(todo, 1):
                 log.info("[%d/%d] card_id=%s %s (%s)", i, len(todo), card["card_id"],
@@ -432,6 +473,22 @@ async def main() -> int:
                         except Exception as exc:  # noqa: BLE001
                             log.warning("full-page capture failed (non-fatal): %r", exc)
                     log.info("  OK: %d circles", num_circles)
+
+                    recent_circle_counts.append(num_circles)
+                    recent_circle_counts = recent_circle_counts[-IDENTICAL_STREAK_THRESHOLD:]
+                    if (
+                        len(recent_circle_counts) == IDENTICAL_STREAK_THRESHOLD
+                        and len(set(recent_circle_counts)) == 1
+                    ):
+                        log.warning(
+                            "*** SUSPECTED EXTRACTION BUG: last %d successful cards ALL "
+                            "reported exactly %d circles. Different real cards should not "
+                            "converge on an identical daily-history length -- this is the "
+                            "same signature as the wrong-chart bug found earlier. Consider "
+                            "stopping this run and inspecting a saved full_page_html sample "
+                            "before trusting any more 'success' rows. ***",
+                            IDENTICAL_STREAK_THRESHOLD, num_circles,
+                        )
                 else:
                     failed_count += 1
                     log.warning("  FAILED: %s", error_reason)
