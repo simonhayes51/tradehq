@@ -52,12 +52,15 @@ from app.routers.auth_me import router as auth_me_router
 from app.routers.auth_email import router as auth_email_router
 from app.routers.trending import router as trending_router
 from app.routers.discord import router as discord_router
+from app.routers.discord_admin import router as discord_admin_router
+from app.routers.discord_interactions import router as discord_interactions_router
 from app.services.discord_integration import (
     claim_stripe_event,
     discord_worker_loop,
     enqueue_role_sync,
     entitlement_is_active,
 )
+from app.services.discord_trading_feed import run_all_server_feeds, seed_official_server
 from app.routers.market import router as market_router
 from app.routers.ai_engine import router as ai_router
 from app.routers.players import router as players_router
@@ -709,6 +712,42 @@ async def lifespan(app: FastAPI):
     )
     logging.info("Discord integration worker started (poll every %ss)", discord_poll)
 
+    # Best-effort: seeds the pre-existing Official guild (DISCORD_GUILD_ID)
+    # as a discord_servers row so it's managed the same way as every other
+    # server. Never overwrites an existing row. Failure here must not
+    # block boot - the env-var fallback in discord_integration.py still
+    # works if this never runs.
+    try:
+        await seed_official_server(pool)
+    except Exception:
+        logging.warning("Discord trading feed: failed to seed Official server row", exc_info=True)
+
+    # Multi-server trading feed (Free daily overview / Paid Partner live
+    # feed / Official superset). A complete no-op unless
+    # DISCORD_TRADING_FEED_ENABLED=1 - see
+    # app/services/discord_trading_feed.py's module docstring. Off by
+    # default; nothing here posts to any server until an admin registers
+    # and activates it AND the env flag is set.
+    discord_feed_poll = int(os.getenv("DISCORD_TRADING_FEED_POLL_SECONDS", "300"))
+
+    async def _discord_trading_feed_loop() -> None:
+        await asyncio.sleep(10)
+        while True:
+            try:
+                await run_all_server_feeds(pool)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logging.warning("Discord trading feed worker pass failed", exc_info=True)
+            await asyncio.sleep(discord_feed_poll)
+
+    app.state.discord_trading_feed_task = asyncio.create_task(_discord_trading_feed_loop())
+    logging.info(
+        "Discord trading feed worker started (poll every %ss, enabled=%s)",
+        discord_feed_poll,
+        (os.getenv("DISCORD_TRADING_FEED_ENABLED") or "0").strip() == "1",
+    )
+
     # The "social trading features" users-table ALTER/index block that used
     # to run here is now part of migrations/015_consolidate_core_bootstrap.sql
     # (same columns/indexes, applied once via run_on_boot() above).
@@ -732,6 +771,7 @@ async def lifespan(app: FastAPI):
             "held_position_refresher_task", "futgg_market_snapshot_task",
             "priority_recompute_task", "futgg_card_image_mirror_task",
             "discord_integration_task", "investment_engine_task",
+            "discord_trading_feed_task",
         ):
             task = getattr(app.state, task_attr, None)
             if task:
@@ -1136,6 +1176,8 @@ app.include_router(portfolio_router)        # /api/ai/optimize-portfolio
 app.include_router(leaderboard_router)      # /api/leaderboard/*
 app.include_router(referrals_router)        # /api/referrals/*
 app.include_router(discord_router)          # /api/discord/*
+app.include_router(discord_admin_router)    # /api/admin/discord/* (multi-server trading feed admin)
+app.include_router(discord_interactions_router)  # /api/discord/interactions (slash commands)
 app.include_router(trades_router)           # /api/trades/*
 
 # Public/paid historical-data API

@@ -1,0 +1,605 @@
+from __future__ import annotations
+
+"""
+Multi-server Discord trading feed.
+
+Adds three access levels on top of the existing single-guild Discord
+integration (app/services/discord_integration.py, unchanged):
+
+  - free           one automatic daily overview (aggregate stats only,
+                    never individual live opportunities)
+  - paid_partner    live opportunities posted into a chosen channel, with
+                    per-server posting policy (discord_server_settings),
+                    manually enabled by an EAFC.Live admin with an expiry
+  - official        the existing Official server, now managed as a row in
+                    discord_servers instead of pure env vars, still able to
+                    run the daily overview, the existing Proof Ledger
+                    (discord_daily_proof.py, untouched) and live
+                    opportunities
+
+This module is READ-ONLY against the opportunity engine: it imports the
+exact same candidate scan and scoring helpers
+app/routers/v2/futgg_market.py's /opportunities and /trade-finder endpoints
+already use (_segmented_candidates, _sales_for_rows, _score_and_filter,
+evaluate_card) rather than computing anything new. No trade data is
+invented here.
+
+Everything in here is inert until:
+  1. DISCORD_TRADING_FEED_ENABLED=1 (global kill switch, default off), and
+  2. a discord_servers row has status='active' with a non-expired
+     expires_at (checked per-run, not just at enable time).
+"""
+
+import hashlib
+import json
+import logging
+import os
+from dataclasses import dataclass
+from datetime import date, datetime, timezone
+from decimal import Decimal
+from typing import Any, Iterable, Optional
+
+from app.services.discord_integration import DiscordClient
+from app.services.discord_daily_proof import (
+    PROOF_STATUSES,
+    WIN_STATUSES,
+    LOSS_STATUSES,
+    _SELECT_DAILY_OUTCOMES,
+    latest_completed_reporting_period,
+    proof_row_is_defensible,
+    DailyProofSchedule,
+)
+
+log = logging.getLogger("discord_trading_feed")
+
+ACCESS_LEVELS = frozenset({"free", "paid_partner", "official"})
+POST_KINDS = frozenset(
+    {"daily_overview", "opportunity", "opportunity_update", "product_update", "test"}
+)
+
+PROMO_MESSAGE = (
+    "Powered by **EAFC.Live** — live market intelligence for FC trading. "
+    "See the full opportunity feed at https://app.eafc.live"
+)
+
+
+def feed_globally_enabled() -> bool:
+    return (os.getenv("DISCORD_TRADING_FEED_ENABLED") or "0").strip() == "1"
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _aware(value: datetime) -> datetime:
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+
+
+@dataclass(frozen=True)
+class ServerRecord:
+    id: int
+    guild_id: str
+    name: str
+    access_level: str
+    feed_channel_id: Optional[str]
+    proof_channel_id: Optional[str]
+    status: str
+    expires_at: Optional[datetime]
+
+    @property
+    def is_postable(self) -> bool:
+        if self.status != "active":
+            return False
+        if self.access_level == "paid_partner" and self.expires_at is not None:
+            if _aware(self.expires_at) <= _now():
+                return False
+        return True
+
+
+async def seed_official_server(pool) -> None:
+    """Best-effort convenience seed of the pre-existing Official guild
+    (DISCORD_GUILD_ID) as a discord_servers row, so it's managed the same
+    way as every other server. Never overwrites an existing row - if the
+    guild is already registered (e.g. an admin edited it), that row wins.
+    Safe to call on every boot."""
+    guild_id = (os.getenv("DISCORD_GUILD_ID") or os.getenv("DISCORD_SERVER_ID") or "").strip()
+    if not guild_id:
+        return
+    feed_channel_id = (os.getenv("DISCORD_OPPORTUNITY_CHANNEL_ID") or "").strip() or None
+    proof_channel_id = (os.getenv("DISCORD_PROOF_CHANNEL_ID") or "").strip() or None
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO discord_servers (
+                guild_id, name, access_level, feed_channel_id, proof_channel_id,
+                status, enabled_at
+            ) VALUES ($1, 'EAFC.Live (Official)', 'official', $2, $3, 'active', NOW())
+            ON CONFLICT (guild_id) DO NOTHING
+            RETURNING id
+            """,
+            guild_id,
+            feed_channel_id,
+            proof_channel_id,
+        )
+        if row is not None:
+            await conn.execute(
+                "INSERT INTO discord_server_settings (server_id) VALUES ($1) "
+                "ON CONFLICT (server_id) DO NOTHING",
+                row["id"],
+            )
+
+
+async def get_server(conn, server_id: int) -> Optional[ServerRecord]:
+    row = await conn.fetchrow("SELECT * FROM discord_servers WHERE id=$1", server_id)
+    if row is None:
+        return None
+    return ServerRecord(
+        id=row["id"],
+        guild_id=row["guild_id"],
+        name=row["name"],
+        access_level=row["access_level"],
+        feed_channel_id=row["feed_channel_id"],
+        proof_channel_id=row["proof_channel_id"],
+        status=row["status"],
+        expires_at=row["expires_at"],
+    )
+
+
+async def _record_post(
+    conn, server_id: int, kind: str, dedup_key: str, payload: dict[str, Any]
+) -> Optional[int]:
+    """Claim a (server, kind, dedup_key) slot. Returns the new post row id,
+    or None if this exact post was already made/claimed (duplicate)."""
+    return await conn.fetchval(
+        """
+        INSERT INTO discord_server_posts (server_id, kind, dedup_key, status, payload)
+        VALUES ($1, $2, $3, 'sending', $4::jsonb)
+        ON CONFLICT (server_id, kind, dedup_key) DO UPDATE
+        SET status='sending', attempts=discord_server_posts.attempts+1, last_error=NULL
+        WHERE discord_server_posts.status IN ('failed')
+        RETURNING id
+        """,
+        server_id,
+        kind,
+        dedup_key,
+        json.dumps(payload, default=str),
+    )
+
+
+async def _finish_post(conn, post_id: int, *, ok: bool, message_id: Optional[str], error: Optional[str]) -> None:
+    await conn.execute(
+        """
+        UPDATE discord_server_posts
+        SET status=$2, discord_message_id=$3, sent_at=CASE WHEN $2='sent' THEN NOW() ELSE NULL END,
+            last_error=$4
+        WHERE id=$1
+        """,
+        post_id,
+        "sent" if ok else "failed",
+        message_id,
+        error,
+    )
+
+
+async def _posts_sent_today(conn, server_id: int, kind: str) -> int:
+    return await conn.fetchval(
+        """
+        SELECT COUNT(*) FROM discord_server_posts
+        WHERE server_id=$1 AND kind=$2 AND status='sent'
+          AND sent_at > NOW() - INTERVAL '24 hours'
+        """,
+        server_id,
+        kind,
+    )
+
+
+async def _last_opportunity_post_at(conn, server_id: int) -> Optional[datetime]:
+    return await conn.fetchval(
+        """
+        SELECT MAX(sent_at) FROM discord_server_posts
+        WHERE server_id=$1 AND kind IN ('opportunity', 'test') AND status='sent'
+        """,
+        server_id,
+    )
+
+
+# ---------------------------------------------------------------------------
+# FREE — daily overview
+# ---------------------------------------------------------------------------
+
+
+def build_free_overview_embed(stats: dict[str, Any], app_url: str) -> dict[str, Any]:
+    """Aggregate counts only - never a player name, price, or any field in
+    discord_integration.PUBLIC_OPPORTUNITY_FORBIDDEN_FIELDS."""
+    combined = Decimal(str(stats.get("total_estimated_profit") or 0))
+    color = 0x22C55E if combined > 0 else 0xEAB308
+    best_trades_lines = [
+        f"• {item['name']}: +{Decimal(str(item['result'])):,.0f} coins"
+        for item in stats.get("best_trades", [])
+    ]
+    fields = [
+        {
+            "name": "TRADES",
+            "value": (
+                f"Successful: {stats['successful']} | "
+                f"Unsuccessful: {stats['unsuccessful']} | "
+                f"Open: {stats['open']}"
+            ),
+            "inline": False,
+        },
+        {
+            "name": "TOTAL ESTIMATED PROFIT",
+            "value": f"**{combined:+,.0f} coins**",
+            "inline": False,
+        },
+    ]
+    if best_trades_lines:
+        fields.append({"name": "BEST COMPLETED TRADES", "value": "\n".join(best_trades_lines), "inline": False})
+    fields.append({"name": "EAFC.LIVE", "value": PROMO_MESSAGE, "inline": False})
+    return {
+        "title": "EAFC LIVE — DAILY TRADING OVERVIEW",
+        "url": app_url.rstrip("/") + "/#/v2/opportunities",
+        "color": color,
+        "fields": fields,
+        "footer": {"text": "Free preview. Live Premium opportunities are not included."},
+        "timestamp": _now().isoformat(),
+    }
+
+
+async def _free_overview_stats(conn) -> dict[str, Any]:
+    """Same defensible-outcome source as the Official Proof Ledger
+    (discord_daily_proof.proof_row_is_defensible) over the trailing 24h,
+    plus a count (never details) of currently open qualifying candidates."""
+    period = latest_completed_reporting_period()
+    rows = await conn.fetch(
+        _SELECT_DAILY_OUTCOMES, period.start, period.end, sorted(PROOF_STATUSES)
+    )
+    eligible = [dict(r) for r in rows if proof_row_is_defensible(dict(r), period)]
+    wins = [r for r in eligible if r["outcome_status"] in WIN_STATUSES]
+    losses = [r for r in eligible if r["outcome_status"] in LOSS_STATUSES]
+    results = [Decimal(str(r["net_profit_after_tax"])) for r in eligible]
+    open_count = await conn.fetchval(
+        """
+        SELECT COUNT(*) FROM (
+            SELECT DISTINCT ON (source_card_id) source_card_id, signal, invalidated_at, expires_at
+            FROM futgg_recommendation_snapshots
+            ORDER BY source_card_id, evaluated_at DESC
+        ) latest
+        WHERE latest.signal IN ('buy', 'strong_buy')
+          AND latest.invalidated_at IS NULL
+          AND (latest.expires_at IS NULL OR latest.expires_at > NOW())
+        """
+    )
+    top_wins = sorted(
+        wins,
+        key=lambda r: (-Decimal(str(r["net_profit_after_tax"])), str(r["name"])),
+    )[:3]
+    return {
+        "successful": len(wins),
+        "unsuccessful": len(losses),
+        "open": int(open_count or 0),
+        "total_estimated_profit": sum(results, Decimal("0")),
+        "best_trades": [
+            {"name": str(r["name"]), "result": Decimal(str(r["net_profit_after_tax"]))}
+            for r in top_wins
+        ],
+    }
+
+
+async def publish_daily_overview(pool, server: ServerRecord, client: Optional[DiscordClient] = None) -> bool:
+    if not feed_globally_enabled() or not server.is_postable or not server.feed_channel_id:
+        return False
+    client = client or DiscordClient()
+    today = date.today().isoformat()
+    dedup_key = hashlib.sha256(f"daily_overview:{server.id}:{today}".encode()).hexdigest()[:40]
+    async with pool.acquire() as conn:
+        remaining = await conn.fetchval(
+            "SELECT max_posts_per_day FROM discord_server_settings WHERE server_id=$1", server.id
+        )
+        already = await _posts_sent_today(conn, server.id, "daily_overview")
+        if already >= 1:
+            return False
+        stats = await _free_overview_stats(conn)
+        post_id = await _record_post(conn, server.id, "daily_overview", dedup_key, stats)
+    if post_id is None:
+        return False
+    embed = build_free_overview_embed(stats, os.getenv("FRONTEND_URL", "https://app.eafc.live"))
+    status, body = await client.post_embed(
+        server.feed_channel_id, embed, nonce=dedup_key[:25], enforce_nonce=True
+    )
+    ok = status in (200, 201)
+    message_id = body.get("id") if ok and isinstance(body, dict) else None
+    async with pool.acquire() as conn:
+        await _finish_post(
+            conn, post_id, ok=ok, message_id=message_id,
+            error=None if ok else f"discord_http_{status or 'network'}",
+        )
+    return ok
+
+
+# ---------------------------------------------------------------------------
+# PAID PARTNER / OFFICIAL — live opportunities
+# ---------------------------------------------------------------------------
+
+_LIQUIDITY_LABELS = (
+    (0.7, "High"),
+    (0.4, "Moderate"),
+    (0.0, "Limited"),
+)
+
+
+def _liquidity_label(score: Optional[float]) -> str:
+    if score is None:
+        return "Unknown"
+    for threshold, label in _LIQUIDITY_LABELS:
+        if score >= threshold:
+            return label
+    return "Limited"
+
+
+def build_opportunity_post_embed(row: dict[str, Any], ci: Any, *, test: bool = False) -> dict[str, Any]:
+    title = f"{'[TEST] ' if test else ''}{row.get('name') or 'Unknown player'}"
+    version = row.get("version") or row.get("rarity") or ""
+    profit = ci.expected_profit_after_tax
+    fields = [
+        {"name": "CARD", "value": f"{title}" + (f" ({version})" if version else ""), "inline": False},
+        {
+            "name": "BUY",
+            "value": f"{int(row.get('current_executable_buy') or ci.recommended_buy_max or 0):,} coins",
+            "inline": True,
+        },
+        {
+            "name": "SELL TARGET",
+            "value": f"{int(ci.recommended_sell_target or 0):,} coins",
+            "inline": True,
+        },
+        {
+            "name": "EXPECTED PROFIT (after EA tax)",
+            "value": f"{float(profit):+,.0f} coins" if profit is not None else "n/a",
+            "inline": True,
+        },
+        {"name": "RISK", "value": str(ci.risk_level or "unknown").title(), "inline": True},
+        {"name": "SELLING SPEED", "value": _liquidity_label(ci.liquidity_score), "inline": True},
+        {"name": "CONFIDENCE", "value": f"{(ci.confidence_score or 0):.0%}", "inline": True},
+    ]
+    return {
+        "title": f"{'TEST POST — not a real trade' if test else 'LIVE TRADING OPPORTUNITY'}",
+        "description": fields[0]["value"],
+        "color": 0xF97316 if test else 0x22C55E,
+        "fields": fields[1:],
+        "footer": {
+            "text": "This is a placeholder test post." if test
+            else "Live conditions change - verify current price before buying."
+        },
+        "timestamp": _now().isoformat(),
+    }
+
+
+def build_opportunity_update_embed(post: dict[str, Any], outcome: dict[str, Any]) -> dict[str, Any]:
+    status = str(outcome.get("outcome_status") or "")
+    label = {
+        "target_hit": "TARGET HIT",
+        "loss_unrealised": "CLOSED — LOSS",
+        "downside_hit": "CLOSED — STOP",
+    }.get(status, "UPDATE")
+    profit = outcome.get("net_profit_after_tax")
+    return {
+        "title": f"{post.get('name', 'Opportunity')} — {label}",
+        "color": 0x22C55E if status == "target_hit" else 0xEF4444,
+        "fields": [
+            {
+                "name": "RESULT",
+                "value": f"{float(profit):+,.0f} coins" if profit is not None else "n/a",
+                "inline": False,
+            }
+        ],
+        "timestamp": _now().isoformat(),
+    }
+
+
+_TEST_FIXTURE_ROW: dict[str, Any] = {
+    "source_card_id": -1,
+    "name": "Sample Player (Fixture)",
+    "version": "Rare Gold",
+    "current_executable_buy": 12500,
+}
+
+
+class _FakeIntelligence:
+    recommended_sell_target = 15800
+    expected_profit_after_tax = 2500.0
+    risk_level = "low"
+    liquidity_score = 0.82
+    confidence_score = 0.77
+
+
+async def send_test_post(pool, server: ServerRecord, client: Optional[DiscordClient] = None) -> tuple[bool, Optional[str]]:
+    """Sends a clearly-labelled fixture post so an admin can verify a
+    channel/webhook works without ever exposing a genuine live trade."""
+    if not server.feed_channel_id:
+        return False, "no_feed_channel_configured"
+    client = client or DiscordClient()
+    dedup_key = hashlib.sha256(f"test:{server.id}:{_now().isoformat()}".encode()).hexdigest()[:40]
+    embed = build_opportunity_post_embed(_TEST_FIXTURE_ROW, _FakeIntelligence(), test=True)
+    async with pool.acquire() as conn:
+        post_id = await _record_post(conn, server.id, "test", dedup_key, {"fixture": True})
+    status, body = await client.post_embed(server.feed_channel_id, embed, nonce=dedup_key[:25], enforce_nonce=True)
+    ok = status in (200, 201)
+    message_id = body.get("id") if ok and isinstance(body, dict) else None
+    if post_id is not None:
+        async with pool.acquire() as conn:
+            await _finish_post(
+                conn, post_id, ok=ok, message_id=message_id,
+                error=None if ok else f"discord_http_{status or 'network'}",
+            )
+    return ok, None if ok else f"discord_http_{status or 'network'}"
+
+
+async def _settings_for(conn, server_id: int) -> dict[str, Any]:
+    row = await conn.fetchrow("SELECT * FROM discord_server_settings WHERE server_id=$1", server_id)
+    if row is None:
+        raise ValueError(f"discord_server_settings missing for server_id={server_id}")
+    return dict(row)
+
+
+async def publish_live_opportunities(pool, server: ServerRecord, client: Optional[DiscordClient] = None) -> int:
+    """Posts newly-qualifying opportunities into server.feed_channel_id,
+    honouring per-server max_posts_per_day / min_confidence /
+    min_expected_profit / cooldown_minutes / platform. Only reads the
+    engine's live candidate scan - never writes to it."""
+    if not feed_globally_enabled() or not server.is_postable or not server.feed_channel_id:
+        return 0
+    if server.access_level not in ("paid_partner", "official"):
+        return 0
+
+    # Imported lazily to avoid a router->service import cycle at module load.
+    from app.db import get_core_pool
+    from app.routers.v2.futgg_market import _segmented_candidates, _sales_for_rows, _score_and_filter
+    from app.services.market_data_provider import FutggMarketDataProvider
+
+    client = client or DiscordClient()
+    async with pool.acquire() as conn:
+        settings = await _settings_for(conn, server.id)
+        if not settings.get("live_opportunities_enabled"):
+            return 0
+        already = await _posts_sent_today(conn, server.id, "opportunity")
+        if already >= settings["max_posts_per_day"]:
+            return 0
+        last_post_at = await _last_opportunity_post_at(conn, server.id)
+        if last_post_at is not None:
+            elapsed_minutes = (_now() - _aware(last_post_at)).total_seconds() / 60
+            if elapsed_minutes < settings["cooldown_minutes"]:
+                return 0
+
+    core_pool = await get_core_pool()
+    provider = FutggMarketDataProvider(core_pool)
+    candidate_rows = await _segmented_candidates(provider)
+    sales_by_card = await _sales_for_rows(provider, candidate_rows)
+    scored = _score_and_filter(
+        candidate_rows,
+        signals={"buy", "strong_buy"},
+        min_confidence=float(settings["min_confidence"]),
+        min_expected_profit=float(settings["min_expected_profit"]),
+        sales_by_card=sales_by_card,
+    )
+    scored.sort(
+        key=lambda pair: (
+            -(pair[1].confidence_score or 0.0),
+            -(float(pair[1].expected_profit_after_tax) if pair[1].expected_profit_after_tax is not None else 0.0),
+            int(pair[0]["source_card_id"]),
+        )
+    )
+
+    posted = 0
+    budget = settings["max_posts_per_day"] - already
+    for row, ci in scored:
+        if posted >= budget:
+            break
+        snapshot_at = row.get("snapshot_computed_at")
+        dedup_key = hashlib.sha256(
+            f"{row['source_card_id']}:{snapshot_at}".encode()
+        ).hexdigest()[:40]
+        async with pool.acquire() as conn:
+            post_id = await _record_post(
+                conn, server.id, "opportunity", dedup_key,
+                {"source_card_id": row["source_card_id"], "name": row.get("name")},
+            )
+        if post_id is None:
+            continue  # already posted this exact snapshot to this server
+        embed = build_opportunity_post_embed(row, ci)
+        status, body = await client.post_embed(
+            server.feed_channel_id, embed, nonce=dedup_key[:25], enforce_nonce=True
+        )
+        ok = status in (200, 201)
+        message_id = body.get("id") if ok and isinstance(body, dict) else None
+        async with pool.acquire() as conn:
+            await _finish_post(
+                conn, post_id, ok=ok, message_id=message_id,
+                error=None if ok else f"discord_http_{status or 'network'}",
+            )
+        if ok:
+            posted += 1
+    return posted
+
+
+async def publish_opportunity_updates(pool, server: ServerRecord, client: Optional[DiscordClient] = None) -> int:
+    """Posts an update when a previously-posted opportunity's snapshot has
+    since graded (target_hit / expired / closed) in
+    futgg_recommendation_outcomes - never fabricates an outcome."""
+    if not feed_globally_enabled() or not server.is_postable or not server.feed_channel_id:
+        return 0
+    client = client or DiscordClient()
+    async with pool.acquire() as conn:
+        pending = await conn.fetch(
+            """
+            SELECT p.id AS post_id, p.payload, p.dedup_key
+            FROM discord_server_posts p
+            WHERE p.server_id=$1 AND p.kind='opportunity' AND p.status='sent'
+              AND NOT EXISTS (
+                  SELECT 1 FROM discord_server_posts u
+                  WHERE u.server_id=p.server_id AND u.kind='opportunity_update'
+                    AND u.dedup_key = p.dedup_key
+              )
+            ORDER BY p.sent_at DESC
+            LIMIT 25
+            """,
+            server.id,
+        )
+        updated = 0
+        for row in pending:
+            payload = json.loads(row["payload"]) if isinstance(row["payload"], str) else dict(row["payload"])
+            card_id = payload.get("source_card_id")
+            if card_id is None:
+                continue
+            outcome = await conn.fetchrow(
+                """
+                SELECT outcome_status, net_profit_after_tax
+                FROM futgg_recommendation_outcomes
+                WHERE source_card_id=$1 AND outcome_status IN ('target_hit', 'loss_unrealised', 'downside_hit')
+                ORDER BY graded_at DESC LIMIT 1
+                """,
+                card_id,
+            )
+            if outcome is None:
+                continue
+            update_post_id = await _record_post(
+                conn, server.id, "opportunity_update", row["dedup_key"], dict(outcome)
+            )
+            if update_post_id is None:
+                continue
+            embed = build_opportunity_update_embed({"name": payload.get("name")}, dict(outcome))
+            status, body = await client.post_embed(
+                server.feed_channel_id, embed, nonce=row["dedup_key"][:25], enforce_nonce=True
+            )
+            ok = status in (200, 201)
+            message_id = body.get("id") if ok and isinstance(body, dict) else None
+            await _finish_post(
+                conn, update_post_id, ok=ok, message_id=message_id,
+                error=None if ok else f"discord_http_{status or 'network'}",
+            )
+            if ok:
+                updated += 1
+        return updated
+
+
+async def run_all_server_feeds(pool) -> None:
+    """Called from the periodic worker loop. Iterates every active,
+    non-expired server and runs the feed appropriate to its access level.
+    A complete no-op unless DISCORD_TRADING_FEED_ENABLED=1."""
+    if not feed_globally_enabled():
+        return
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("SELECT id FROM discord_servers WHERE status='active'")
+    for row in rows:
+        async with pool.acquire() as conn:
+            server = await get_server(conn, row["id"])
+        if server is None or not server.is_postable:
+            continue
+        try:
+            if server.access_level in ("free", "official"):
+                await publish_daily_overview(pool, server)
+            if server.access_level in ("paid_partner", "official"):
+                await publish_live_opportunities(pool, server)
+                await publish_opportunity_updates(pool, server)
+        except Exception:
+            log.warning("Discord trading feed pass failed for server_id=%s", server.id, exc_info=True)
