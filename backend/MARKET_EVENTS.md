@@ -175,10 +175,10 @@ timestamps too, and the display-name cleanup benefits every card.
 ## 6. Market events
 
 ### Tables (migration 064)
-- **`market_events`** — `game_year`, `event_type`, `event_key`, `title`,
+- **`content_release_events`** — `game_year`, `event_type`, `event_key`, `title`,
   `rarity`, `squad`, `released_at`, `card_count`, `event_scale`, `source`,
   `confidence`, `metadata`, timestamps.
-- **`market_event_cards`** — `(event_id, source_card_id, source_player_id)`.
+- **`content_release_event_cards`** — `(event_id, source_card_id, source_player_id)`.
 
 `event_type` has **no CHECK constraint** enumerating promo types — so SBC
 releases/expiries, Evolutions, rewards, pack changes and promo start/end

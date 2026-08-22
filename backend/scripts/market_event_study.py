@@ -1,6 +1,6 @@
 # backend/scripts/market_event_study.py
 """
-Event-relative price study: joins market_events (migration 064) to
+Event-relative price study: joins content_release_events (migration 064) to
 fc26_historical_daily_prices and reports how cohorts moved around each
 content release.
 
@@ -26,7 +26,7 @@ release timestamp, and its price may reflect either side of an evening
 drop - which is exactly why day 0 should be read with caution and the
 T-1 -> T+1 transition is the more meaningful comparison.
 
-For FC27 the exact timestamp is retained on market_events, so once
+For FC27 the exact timestamp is retained on content_release_events, so once
 high-resolution live data exists the same events can support genuine
 hourly/intraday studies. That is deliberately not attempted here.
 """
@@ -65,7 +65,7 @@ async def _load(conn, game_year: int, min_cards: int, limit: int):
         """
         SELECT id, event_type, event_key, title, rarity, squad, released_at,
                card_count, event_scale, confidence
-        FROM market_events
+        FROM content_release_events
         WHERE game_year = $1 AND card_count >= $2
         ORDER BY released_at
         LIMIT $3
@@ -130,7 +130,7 @@ async def main() -> int:
 
     if not events:
         log.warning(
-            "No events found for game_year=%d with >= %d cards. Has migration 064 been "
+            "No events found for game_year=%d with >= %d cards. Have migrations 064/066 been "
             "applied and the reconstruction run?", args.game_year, args.min_cards,
         )
         return 0

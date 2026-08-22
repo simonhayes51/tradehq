@@ -14,7 +14,7 @@ unique index), so this is safe to run repeatedly as the release-metadata
 backfill progresses and more timestamps become known.
 
 Requires migrations 063 (futgg_players.released_at) and 064
-(market_events) to have been applied, and enough of the backfill to have
+(content_release_events) to have been applied, and enough of the backfill to have
 run that released_at is populated. See auto_sync/futgg_player_sync.py's
 FUTGG_BACKFILL_RELEASE_METADATA mode.
 """
