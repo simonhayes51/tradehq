@@ -1,52 +1,77 @@
 from __future__ import annotations
 
 """
-Discord HTTP Interactions endpoint — the transport for the new slash
-commands (/price, /fairvalue, /watchlist, /alerts, /results, /account,
-/help). Chosen over a persistent gateway bot because the existing Discord
-integration (app/services/discord_integration.py) is already REST-only and
-runs inside this one FastAPI process; this keeps that shape rather than
-adding a second long-running service to deploy and monitor.
+Discord HTTP Interactions endpoint - the transport for the slash commands
+(/price, /fairvalue, /watchlist, /alerts, /results, /account, /help) and
+their autocomplete. Chosen over a persistent gateway bot because the
+existing Discord integration (app/services/discord_integration.py) is
+already REST-only and runs inside this one FastAPI process.
 
-Discord signs every interaction request with ed25519 (see
-https://discord.com/developers/docs/interactions/receiving-and-responding);
-requests that don't verify are rejected with 401 before any handler runs,
-exactly as Discord requires.
+Handles three interaction types:
+  - PING (1)                        -> {"type": 1} (Discord's endpoint
+                                        verification check)
+  - APPLICATION_COMMAND (2)         -> deferred immediately (type 5), the
+                                        real work + reply happens in a
+                                        FastAPI BackgroundTask via a
+                                        follow-up webhook PATCH, so slow
+                                        database/engine work never risks
+                                        missing Discord's 3-second
+                                        response deadline
+  - APPLICATION_COMMAND_AUTOCOMPLETE (4) -> answered synchronously (type 8)
+                                        - Discord has no deferred form of
+                                        autocomplete, so the underlying
+                                        search must itself be fast
 
-Every command that depends on the caller's own EAFC.Live account
-(/watchlist, /alerts, /results, /account) requires a link between
-discord_id and users.id (users.discord_id, already populated by the
-existing web OAuth flow) and always replies EPHEMERAL (flags=64) so
-personal data never lands in a public channel. /price and /fairvalue are
-single-card lookups only — never the ranked/sorted opportunity list — so a
-free server cannot reconstruct the Premium feed by calling them
-repeatedly.
+All data comes from app/services/discord_command_data.py, which resolves
+the caller's discord_id to their real EAFC.Live user_id and reads from the
+exact same tables/pools the website itself uses - see that module's
+docstring for the watchlist/core pool split this fixes. Presentation
+(embeds, buttons) lives in app/services/discord_embeds.py. No trade data
+or account data is invented here.
 
-Every request arrives from Discord's own infrastructure (a handful of
-shared IPs), so app/middleware/rate_limit.py's per-IP limiter can't tell
-callers apart here — instead this module rate-limits per (discord_id,
-command) in-process, mirroring that middleware's approach.
-
-No trade data is invented here: every figure returned comes from the same
-FutggMarketDataProvider / evaluate_card path the rest of the app uses.
+Every account command (/watchlist, /alerts, /results, /account) replies
+EPHEMERAL (flags=64), decided at defer time via `ephemeral=` on the type-5
+ack - Discord ties a deferred response's visibility to that first ack, so
+the eventual follow-up PATCH does not need to (and cannot) re-set flags.
 """
 
 import logging
 import os
+import secrets
 import time
 from collections import defaultdict, deque
 from typing import Any, Deque, Dict, List, Optional, Tuple
 
-from fastapi import APIRouter, HTTPException, Request
+import aiohttp
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from fastapi.responses import JSONResponse
+
+from app.services import discord_command_data as data
+from app.services import discord_embeds as embeds
 
 log = logging.getLogger("discord_interactions")
 
 router = APIRouter(prefix="/api/discord/interactions", tags=["discord"])
 
+PING = 1
+APPLICATION_COMMAND = 2
+APPLICATION_COMMAND_AUTOCOMPLETE = 4
+
+PONG = 1
+CHANNEL_MESSAGE_WITH_SOURCE = 4
+DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE = 5
+APPLICATION_COMMAND_AUTOCOMPLETE_RESULT = 8
+
+EPHEMERAL = 1 << 6
+
+ACCOUNT_COMMANDS = frozenset({"watchlist", "alerts", "results", "account"})
+CARD_COMMANDS = frozenset({"price", "fairvalue"})
+
 # (command, limit, window_seconds) - generous enough for normal use, tight
-# enough that repeated /price calls can't be used to scrape the ranked
-# opportunity feed one card at a time.
+# enough that repeated calls can't be used to scrape data. Every request
+# to this endpoint comes from Discord's own infrastructure (a handful of
+# shared IPs), so app/middleware/rate_limit.py's per-IP limiter can't tell
+# callers apart here - this limits per (discord_id, command) instead.
 _COMMAND_RATE_LIMITS: Dict[str, Tuple[int, int]] = {
     "price": (20, 60),
     "fairvalue": (20, 60),
@@ -55,14 +80,15 @@ _COMMAND_RATE_LIMITS: Dict[str, Tuple[int, int]] = {
     "results": (10, 60),
     "account": (10, 60),
 }
+_AUTOCOMPLETE_RATE_LIMIT: Tuple[int, int] = (30, 10)
 _DEFAULT_RATE_LIMIT: Tuple[int, int] = (30, 60)
 _command_hits: Dict[Tuple[str, str], Deque[float]] = defaultdict(deque)
 
 
-def _rate_limited(discord_id: Optional[str], name: str) -> bool:
+def _rate_limited(discord_id: Optional[str], name: str, *, autocomplete: bool = False) -> bool:
     key_id = discord_id or "anonymous"
-    limit, window = _COMMAND_RATE_LIMITS.get(name, _DEFAULT_RATE_LIMIT)
-    bucket = _command_hits[(key_id, name)]
+    limit, window = _AUTOCOMPLETE_RATE_LIMIT if autocomplete else _COMMAND_RATE_LIMITS.get(name, _DEFAULT_RATE_LIMIT)
+    bucket = _command_hits[(key_id, f"{'ac:' if autocomplete else ''}{name}")]
     now = time.monotonic()
     while bucket and now - bucket[0] > window:
         bucket.popleft()
@@ -70,30 +96,6 @@ def _rate_limited(discord_id: Optional[str], name: str) -> bool:
         return True
     bucket.append(now)
     return False
-
-PING = 1
-APPLICATION_COMMAND = 2
-PONG = 1
-CHANNEL_MESSAGE_WITH_SOURCE = 4
-EPHEMERAL = 1 << 6
-
-HELP_TEXT = (
-    "**EAFC.Live commands**\n"
-    "`/price <player>` — current buy price for a card\n"
-    "`/fairvalue <player>` — fair value & signal for a card\n"
-    "`/watchlist` — your tracked cards (private)\n"
-    "`/alerts` — your active price alerts (private)\n"
-    "`/results` — your recent logged trades (private)\n"
-    "`/account` — your EAFC.Live account & plan (private)\n"
-    "`/help` — this message\n\n"
-    "Account commands need your Discord linked to EAFC.Live — link it at "
-    "https://app.eafc.live/#/settings/discord."
-)
-
-NOT_LINKED_MESSAGE = (
-    "Your Discord isn't linked to an EAFC.Live account yet. Link it securely at "
-    "https://app.eafc.live/#/settings/discord, then try again."
-)
 
 
 def _verify_signature(body: bytes, signature: str, timestamp: str, public_key: str) -> bool:
@@ -108,11 +110,8 @@ def _verify_signature(body: bytes, signature: str, timestamp: str, public_key: s
         return False
 
 
-def _respond(content: str, *, ephemeral: bool = False) -> Dict[str, Any]:
-    data: Dict[str, Any] = {"content": content[:2000]}
-    if ephemeral:
-        data["flags"] = EPHEMERAL
-    return {"type": CHANNEL_MESSAGE_WITH_SOURCE, "data": data}
+def _app_url() -> str:
+    return os.getenv("FRONTEND_URL", "https://app.eafc.live")
 
 
 def _option(options: List[Dict[str, Any]], name: str) -> Optional[Any]:
@@ -122,141 +121,132 @@ def _option(options: List[Dict[str, Any]], name: str) -> Optional[Any]:
     return None
 
 
-async def _linked_user_id(conn, discord_id: str) -> Optional[str]:
-    return await conn.fetchval("SELECT id FROM users WHERE discord_id=$1", int(discord_id))
+def _focused_option(options: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    for opt in options or []:
+        if opt.get("focused"):
+            return opt
+    return None
 
 
-async def _cmd_price(pool, player: str) -> str:
-    from app.services.market_data_provider import FutggMarketDataProvider, PlayerFilters
+async def _resolve_card(player_option: str) -> tuple[Optional[dict], Optional[dict]]:
+    """Returns (row, error_payload). `player_option` is expected to be a
+    card_id (the autocomplete's submitted value) but a user can bypass
+    autocomplete and submit free text, so both are handled - a free-text
+    value that matches more than one card returns an error rather than
+    silently guessing which version was meant."""
+    player_option = (player_option or "").strip()
+    if player_option.isdigit():
+        row = await data.get_card(int(player_option))
+        if row is None:
+            return None, {"error": "not_found", "query": player_option}
+        return row, None
+    matches = await data.search_cards(player_option, limit=5)
+    if not matches:
+        return None, {"error": "not_found", "query": player_option}
+    if len(matches) > 1:
+        return None, {"error": "ambiguous", "query": player_option, "matches": matches}
+    return matches[0], None
 
-    provider = FutggMarketDataProvider(pool)
-    rows = await provider.search_players(PlayerFilters(search=player), limit=1)
-    if not rows:
-        return f"No card found matching **{player}**."
-    row = rows[0]
-    price = row.get("current_executable_buy") or row.get("current_bin")
-    if price is None:
-        return f"**{row.get('name')}** — no current price available."
-    return f"**{row.get('name')}** ({row.get('version') or row.get('rarity') or 'N/A'}) — current buy: **{int(price):,} coins**"
+
+# ---------------------------------------------------------------------------
+# Autocomplete (type 4) - must respond synchronously, no deferral possible
+# ---------------------------------------------------------------------------
 
 
-async def _cmd_fairvalue(pool, player: str) -> str:
-    from app.services.market_data_provider import FutggMarketDataProvider, PlayerFilters
-    from app.services.futgg_intelligence import evaluate_card
+async def handle_autocomplete(name: str, options: List[Dict[str, Any]]) -> Dict[str, Any]:
+    focused = _focused_option(options)
+    query = str(focused.get("value") or "") if focused else ""
+    if name not in CARD_COMMANDS or not query.strip():
+        return {"type": APPLICATION_COMMAND_AUTOCOMPLETE_RESULT, "data": {"choices": []}}
+    rows = await data.search_cards(query, limit=25)
+    choices = [embeds.autocomplete_choice(r) for r in rows]
+    return {"type": APPLICATION_COMMAND_AUTOCOMPLETE_RESULT, "data": {"choices": choices}}
 
-    provider = FutggMarketDataProvider(pool)
-    rows = await provider.search_players(PlayerFilters(search=player), limit=1)
-    if not rows:
-        return f"No card found matching **{player}**."
-    row = rows[0]
-    sales: List[Dict[str, Any]] = []
+
+# ---------------------------------------------------------------------------
+# Application commands (type 2) - deferred, real work happens after the ack
+# ---------------------------------------------------------------------------
+
+
+async def _followup(application_id: str, interaction_token: str, payload: Dict[str, Any]) -> None:
+    url = f"https://discord.com/api/v10/webhooks/{application_id}/{interaction_token}/messages/@original"
     try:
-        sales = await provider.get_recent_sales(int(row["source_card_id"]))
-    except Exception:
-        pass
-    ci = evaluate_card(row, sales=sales)
-    fair_value = f"{int(ci.fair_value):,} coins" if ci.fair_value is not None else "unavailable"
-    signal = str(ci.signal or "unknown").replace("_", " ").title()
-    return (
-        f"**{row.get('name')}** — fair value: **{fair_value}**\n"
-        f"Signal: {signal} | Risk: {str(ci.risk_level or 'unknown').title()}"
-    )
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=8)) as session:
+            async with session.patch(url, json=payload) as resp:
+                if resp.status >= 400:
+                    log.warning("Discord follow-up PATCH failed: status=%s body=%s", resp.status, (await resp.text())[:300])
+    except (aiohttp.ClientError, Exception):
+        log.warning("Discord follow-up PATCH raised", exc_info=True)
 
 
-async def _cmd_watchlist(conn, user_id: str) -> str:
-    rows = await conn.fetch(
-        "SELECT player_name, version, last_price FROM watchlist WHERE user_id=$1 ORDER BY started_at DESC LIMIT 10",
-        user_id,
-    )
-    if not rows:
-        return "Your watchlist is empty. Add cards from the EAFC.Live app."
-    lines = [
-        f"• {r['player_name']}" + (f" ({r['version']})" if r["version"] else "")
-        + (f" — {int(r['last_price']):,} coins" if r["last_price"] else "")
-        for r in rows
-    ]
-    return "**Your watchlist:**\n" + "\n".join(lines)
+async def _build_reply(name: str, options: List[Dict[str, Any]], discord_id: Optional[str], correlation_id: str) -> Dict[str, Any]:
+    app_url = _app_url()
 
-
-async def _cmd_alerts(conn, user_id: str) -> str:
-    rows = await conn.fetch(
-        "SELECT card_id, platform, metric, rise_pct, fall_pct FROM watchlist_alerts WHERE user_id=$1 LIMIT 10",
-        user_id,
-    )
-    if not rows:
-        return "You have no active alerts."
-    lines = [
-        f"• Card {r['card_id']} ({r['platform']}) — {r['metric']} ±{r['rise_pct']}%/{r['fall_pct']}%"
-        for r in rows
-    ]
-    return "**Your active alerts:**\n" + "\n".join(lines)
-
-
-async def _cmd_results(conn, user_id: str) -> str:
-    rows = await conn.fetch(
-        "SELECT player, version, profit, timestamp FROM trades WHERE user_id=$1 ORDER BY timestamp DESC LIMIT 5",
-        user_id,
-    )
-    if not rows:
-        return "You haven't logged any trades yet."
-    lines = [
-        f"• {r['player']} ({r['version']}) — {int(r['profit']):+,} coins — {r['timestamp'].strftime('%d %b')}"
-        for r in rows
-    ]
-    total = sum(int(r["profit"]) for r in rows)
-    return "**Your recent trades:**\n" + "\n".join(lines) + f"\n\nLast {len(rows)}: {total:+,} coins"
-
-
-async def _cmd_account(conn, user_id: str) -> str:
-    from app.auth.entitlements import _load_billing_state, _resolve_tier
-
-    state = await _load_billing_state(conn, user_id)
-    tier = _resolve_tier(state)
-    premium_until = state.get("premium_until")
-    line = f"**Plan:** {tier.title()}"
-    if premium_until:
-        line += f" (until {premium_until.strftime('%d %b %Y')})"
-    return line
-
-
-async def _dispatch(pool, name: str, options: List[Dict[str, Any]], discord_id: Optional[str]) -> str:
     if name == "help":
-        return HELP_TEXT
+        return {"embeds": [embeds.help_embed(app_url)], "components": [embeds.link_row("Open EAFC.Live", app_url)]}
 
-    if name == "price":
-        player = _option(options, "player")
-        if not player:
-            return "Usage: `/price <player name>`"
-        return await _cmd_price(pool, str(player))
+    if name in CARD_COMMANDS:
+        player_option = _option(options, "player")
+        platform = str(_option(options, "platform") or "ps")
+        if not player_option:
+            return {"content": f"Usage: `/{name} <player>` — start typing and pick a suggestion."}
+        row, err = await _resolve_card(str(player_option))
+        if err is not None:
+            if err["error"] == "ambiguous":
+                names = ", ".join(embeds.card_label(m) for m in err["matches"][:5])
+                return {"content": f"Multiple cards match **{err['query']}** — please pick one from the autocomplete list: {names}"}
+            return {"embeds": [embeds.no_card_found_embed(err["query"], app_url)]}
+        if name == "price":
+            embed = embeds.price_embed(row, app_url, platform=platform)
+        else:
+            result = await data.evaluate_card_by_id(int(row["source_card_id"]))
+            if result is None:
+                return {"embeds": [embeds.no_card_found_embed(str(player_option), app_url)]}
+            _, ci = result
+            embed = embeds.fairvalue_embed(row, ci, app_url, platform=platform)
+        card_url = f"{app_url.rstrip('/')}/#/v2/players/{row['source_card_id']}"
+        return {"embeds": [embed], "components": [embeds.link_row("View in EAFC.Live", card_url)]}
 
-    if name == "fairvalue":
-        player = _option(options, "player")
-        if not player:
-            return "Usage: `/fairvalue <player name>`"
-        return await _cmd_fairvalue(pool, str(player))
+    # Everything past this point needs a linked account.
+    if not discord_id:
+        return {"embeds": [embeds.not_linked_embed(app_url)]}
+    user_id = await data.resolve_user_id(discord_id)
+    if not user_id:
+        return {"embeds": [embeds.not_linked_embed(app_url)]}
 
-    async with pool.acquire() as conn:
-        # Everything past this point needs a linked account.
-        if not discord_id:
-            return NOT_LINKED_MESSAGE
-        user_id = await _linked_user_id(conn, discord_id)
-        if not user_id:
-            return NOT_LINKED_MESSAGE
+    if name == "watchlist":
+        items = await data.get_watchlist(user_id)
+        return {"embeds": [embeds.watchlist_embed(items, app_url)], "components": [embeds.link_row("Manage watchlist", f"{app_url.rstrip('/')}/#/v2/watchlist")]}
+    if name == "alerts":
+        items = await data.get_alerts(user_id)
+        return {"embeds": [embeds.alerts_embed(items, app_url)], "components": [embeds.link_row("Manage alerts", f"{app_url.rstrip('/')}/#/v2/watchlist")]}
+    if name == "results":
+        trades = await data.get_trades(user_id)
+        return {"embeds": [embeds.results_embed(trades, app_url)], "components": [embeds.link_row("View trade journal", f"{app_url.rstrip('/')}/#/v2/journal")]}
+    if name == "account":
+        summary = await data.get_account_summary(user_id)
+        return {"embeds": [embeds.account_embed(summary, app_url)], "components": [embeds.link_row("Open account page", f"{app_url.rstrip('/')}/#/account")]}
 
-        if name == "watchlist":
-            return await _cmd_watchlist(conn, user_id)
-        if name == "alerts":
-            return await _cmd_alerts(conn, user_id)
-        if name == "results":
-            return await _cmd_results(conn, user_id)
-        if name == "account":
-            return await _cmd_account(conn, user_id)
+    return {"content": "Unknown command."}
 
-    return "Unknown command."
+
+async def _run_command(application_id: str, interaction_token: str, name: str, options: List[Dict[str, Any]], discord_id: Optional[str]) -> None:
+    correlation_id = secrets.token_hex(4)
+    try:
+        payload = await _build_reply(name, options, discord_id, correlation_id)
+    except Exception:
+        log.error("Discord command failed: command=%s correlation_id=%s discord_id=%s", name, correlation_id, discord_id, exc_info=True)
+        payload = {"embeds": [embeds.error_embed(correlation_id)]}
+    await _followup(application_id, interaction_token, payload)
+
+
+# ---------------------------------------------------------------------------
+# HTTP entrypoint
+# ---------------------------------------------------------------------------
 
 
 @router.post("")
-async def interactions(request: Request) -> JSONResponse:
+async def interactions(request: Request, background_tasks: BackgroundTasks) -> JSONResponse:
     public_key = os.getenv("DISCORD_PUBLIC_KEY")
     signature = request.headers.get("X-Signature-Ed25519")
     timestamp = request.headers.get("X-Signature-Timestamp")
@@ -266,32 +256,46 @@ async def interactions(request: Request) -> JSONResponse:
         raise HTTPException(status_code=401, detail="invalid request signature")
 
     payload = await request.json()
-    if payload.get("type") == PING:
+    interaction_type = payload.get("type")
+
+    if interaction_type == PING:
         return JSONResponse({"type": PONG})
 
-    if payload.get("type") != APPLICATION_COMMAND:
-        return JSONResponse(_respond("Unsupported interaction type.", ephemeral=True))
-
-    data = payload.get("data") or {}
-    name = str(data.get("name") or "").lower()
-    options = data.get("options") or []
+    data_block = payload.get("data") or {}
+    name = str(data_block.get("name") or "").lower()
+    options = data_block.get("options") or []
     member = payload.get("member") or {}
     discord_user = member.get("user") or payload.get("user") or {}
     discord_id = discord_user.get("id")
 
-    if name != "help" and _rate_limited(discord_id, name):
-        return JSONResponse(
-            _respond("You're using that command too fast — please wait a moment and try again.", ephemeral=True)
-        )
+    if interaction_type == APPLICATION_COMMAND_AUTOCOMPLETE:
+        if _rate_limited(discord_id, name, autocomplete=True):
+            return JSONResponse({"type": APPLICATION_COMMAND_AUTOCOMPLETE_RESULT, "data": {"choices": []}})
+        return JSONResponse(await handle_autocomplete(name, options))
 
-    from app.db import get_core_pool
+    if interaction_type != APPLICATION_COMMAND:
+        return JSONResponse({"type": CHANNEL_MESSAGE_WITH_SOURCE, "data": {"content": "Unsupported interaction type.", "flags": EPHEMERAL}})
 
-    pool = await get_core_pool()
-    try:
-        content = await _dispatch(pool, name, options, discord_id)
-    except Exception:
-        log.warning("Discord command %r failed", name, exc_info=True)
-        content = "Something went wrong running that command. Please try again shortly."
+    if _rate_limited(discord_id, name):
+        return JSONResponse({
+            "type": CHANNEL_MESSAGE_WITH_SOURCE,
+            "data": {"content": "You're using that command too fast — please wait a moment and try again.", "flags": EPHEMERAL},
+        })
 
-    ephemeral = name in {"watchlist", "alerts", "results", "account"}
-    return JSONResponse(_respond(content, ephemeral=ephemeral))
+    application_id = os.getenv("DISCORD_APPLICATION_ID")
+    interaction_token = payload.get("token")
+    ephemeral = name in ACCOUNT_COMMANDS
+
+    if not application_id or not interaction_token:
+        log.error("Cannot defer Discord interaction: missing application_id or interaction token")
+        return JSONResponse({
+            "type": CHANNEL_MESSAGE_WITH_SOURCE,
+            "data": {"content": "This bot isn't fully configured yet. Please try again shortly.", "flags": EPHEMERAL},
+        })
+
+    background_tasks.add_task(_run_command, application_id, interaction_token, name, options, discord_id)
+
+    ack: Dict[str, Any] = {"type": DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE}
+    if ephemeral:
+        ack["data"] = {"flags": EPHEMERAL}
+    return JSONResponse(ack)

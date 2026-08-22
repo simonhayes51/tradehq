@@ -53,14 +53,18 @@ This single script performs, in order:
    database round-trips, using disposable rows it cleans up itself
    (except the real posts from steps 4-6, left for you to inspect in the
    test channel).
-8. Runs every slash command's actual dispatch logic
-   (`/price /fairvalue /watchlist /alerts /results /account /help`)
-   directly against the database — this does **not** require the
-   Interactions endpoint to be deployed, since command dispatch never
-   calls out to Discord itself, only the database and the opportunity
-   engine — and confirms an unlinked Discord id gets the "link your
-   account" message rather than any account data. Also drives the
-   per-user rate limiter past its threshold and confirms it engages.
+8. Runs a real player autocomplete query and every slash command's
+   actual reply-building logic (`/price /fairvalue /watchlist /alerts
+   /results /account /help`) directly against the database — this does
+   **not** require the Interactions endpoint to be deployed, since this
+   logic never calls out to Discord itself, only the database and the
+   opportunity engine — and confirms an unlinked Discord id gets the
+   "link your account" message rather than any account data. Also drives
+   the per-user rate limiter past its threshold and confirms it engages.
+   The live in-Discord half (Discord actually calling the deployed
+   endpoint for autocomplete-as-you-type and the deferred-reply
+   round-trip) still needs the endpoint deployed and reachable — see
+   §4 below.
 9. Reads (never writes) `discord_role_sync_queue`, `discord_publications`,
    and `discord_daily_proof_publications` row counts, to make explicit
    that this run touched none of the pre-existing role-sync / opportunity
