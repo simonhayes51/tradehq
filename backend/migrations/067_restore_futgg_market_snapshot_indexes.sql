@@ -2,29 +2,54 @@
 -- target: core
 -- requires-table: futgg_market_snapshot
 --
--- INCIDENT: on 2026-08-22, futgg_market_snapshot had ZERO indexes -
--- confirmed via `SELECT indexname, indexdef FROM pg_indexes WHERE
--- tablename = 'futgg_market_snapshot'` returning 0 rows in production,
--- despite migration 065 creating all 9 of them (including the unique
--- index REFRESH MATERIALIZED VIEW CONCURRENTLY requires) in the same
--- transaction that populated fair_value_mv - and fair_value_mv was
--- confirmed populated (16,040 rows), which can only happen if that
--- transaction committed, meaning the indexes committed too.
+-- INCIDENT: on 2026-08-22, futgg_market_snapshot had only 1 of its 9
+-- expected indexes, and fair_value_mv had only 2 of its 4. Root cause,
+-- confirmed via `SELECT schemaname, tablename, indexname FROM pg_indexes
+-- WHERE indexname LIKE 'idx_futgg_market_snapshot%' OR indexname LIKE
+-- 'idx_fair_value_mv%'` in production: two orphaned tables,
+-- futgg_market_snapshot_legacy and fair_value_mv_legacy, were already
+-- holding most of these exact index names. Postgres index names are
+-- unique per SCHEMA, not per table, so every `CREATE INDEX IF NOT
+-- EXISTS idx_x ON futgg_market_snapshot (...)` in migration 065 silently
+-- no-op'd against the _legacy table's same-named index instead of
+-- creating a real one on futgg_market_snapshot - Postgres correctly
+-- reported "already exists", just not on the table anyone expected.
+-- This is also why the earlier half of this migration (before this
+-- fix), which only re-ran the same CREATE INDEX IF NOT EXISTS
+-- statements, did not actually fix anything: it hit the identical
+-- collision.
 --
--- No code path in this repo drops these indexes outside of migrations
--- 038/041/047/050/052/065 themselves (grepped the whole repo, including
--- auto_sync), and none of those would re-run against an already-recorded
--- (target, filename) row. The mechanism that removed them after a
--- confirmed-committed transaction is NOT understood from code alone -
--- this migration restores the missing state rather than explaining it.
--- The immediate symptom was every REFRESH MATERIALIZED VIEW CONCURRENTLY
--- futgg_market_snapshot attempt failing ("cannot refresh ... concurrently
--- / create a unique index with no WHERE clause"), which froze the
--- snapshot and made most of the app read stale-filtered, empty results.
---
--- All CREATE INDEX IF NOT EXISTS - a pure no-op wherever an index
--- already survives, so this is safe to apply regardless of which ones
--- were actually missing on any given database.
+-- Where the _legacy tables came from is still not explained by anything
+-- in this repo (grepped migrations, backend and auto_sync - nothing
+-- renames futgg_market_snapshot/fair_value_mv aside). Whatever renamed
+-- them, they are inert now: nothing in this codebase reads
+-- *_legacy, so freeing their colliding index names is safe. This
+-- migration renames ONLY an index that (a) has one of the expected
+-- names and (b) is NOT already attached to the real table - i.e. it
+-- only ever touches a genuine orphan, never a correctly-placed index,
+-- and is a no-op on a fresh database where no _legacy tables exist.
+DO $$
+DECLARE
+    rec RECORD;
+BEGIN
+    FOR rec IN
+        SELECT indexname
+        FROM pg_indexes
+        WHERE schemaname = 'public'
+          AND tablename NOT IN ('futgg_market_snapshot', 'fair_value_mv')
+          AND indexname IN (
+              'idx_futgg_market_snapshot_card', 'idx_futgg_market_snapshot_rating',
+              'idx_futgg_market_snapshot_position', 'idx_futgg_market_snapshot_rarity',
+              'idx_futgg_market_snapshot_club', 'idx_futgg_market_snapshot_league',
+              'idx_futgg_market_snapshot_nation', 'idx_futgg_market_snapshot_current_bin',
+              'idx_futgg_market_snapshot_tradeable', 'idx_futgg_market_snapshot_name_lower',
+              'idx_fair_value_mv_card', 'idx_fair_value_mv_discount',
+              'idx_fair_value_mv_suspect', 'idx_fair_value_mv_falling'
+          )
+    LOOP
+        EXECUTE format('ALTER INDEX %I RENAME TO %I', rec.indexname, rec.indexname || '_orphan_bak');
+    END LOOP;
+END $$;
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_futgg_market_snapshot_card
     ON futgg_market_snapshot (source_card_id);
