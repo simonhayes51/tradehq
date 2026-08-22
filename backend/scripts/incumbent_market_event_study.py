@@ -40,6 +40,14 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--game-year", type=int, default=26)
     parser.add_argument("--dsn", default=None)
     parser.add_argument("--out", default="incumbent_market_event_study_fc26.json")
+    parser.add_argument(
+        "--min-median-price", type=float, default=0.0,
+        help="Exclude incumbent cards whose OWN median stored price is below this. "
+             "See scripts/diagnose_price_quantization.py: cards under ~1,000-5,000 coins are "
+             "heavily chart-pixel-quantized (up to 79%% of adjacent days show zero change), which "
+             "swamps the pooled median with a resolution artifact rather than real flatness. "
+             "Default 0 = no filter (matches the original run). Try 5000 for a clean-instrument re-run.",
+    )
     return parser.parse_args()
 
 
@@ -109,7 +117,22 @@ async def main() -> int:
     for r in price_rows:
         series_by_card[r["card_id"]][r["observed_date"]] = float(r["price"])
     all_card_ids = list(series_by_card.keys())
-    log.info("incumbent universe: %d base-gold cards, %d priced rows", len(all_card_ids), len(price_rows))
+    log.info("incumbent universe (unfiltered): %d base-gold cards, %d priced rows", len(all_card_ids), len(price_rows))
+
+    if args.min_median_price > 0:
+        before = len(all_card_ids)
+        all_card_ids = [
+            cid for cid in all_card_ids
+            if statistics.median(series_by_card[cid].values()) >= args.min_median_price
+        ]
+        card_id_set = set(all_card_ids)
+        series_by_card = defaultdict(dict, {cid: s for cid, s in series_by_card.items() if cid in card_id_set})
+        log.info(
+            "--min-median-price=%.0f applied: %d/%d cards kept (excludes the chart-pixel-quantized "
+            "cheap tail - see scripts/diagnose_price_quantization.py)",
+            args.min_median_price, len(all_card_ids), before,
+        )
+    log.info("incumbent universe used: %d base-gold cards", len(all_card_ids))
 
     rating_of: Dict[int, Optional[int]] = {}
     rarity_of: Dict[int, Optional[str]] = {}
