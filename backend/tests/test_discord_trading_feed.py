@@ -70,25 +70,59 @@ def test_liquidity_label_bands():
     assert _liquidity_label(None) == "Unknown"
 
 
-def test_free_overview_embed_has_no_player_level_fields():
-    """The free-tier daily overview must never carry a card name, price, or
-    any field that would let a free server reconstruct a live opportunity -
-    only aggregate counts and the promo line."""
+def test_free_overview_embed_reports_completed_trade_stats():
     stats = {
         "successful": 4,
         "unsuccessful": 1,
         "open": 12,
         "total_estimated_profit": 8200,
-        "best_trades": [{"name": "Sample Player", "result": 3000}],
+        "best_trades": [
+            {"name": "Sample Player", "entry": 10000, "exit": 13500, "result": 3000},
+        ],
     }
     embed = build_free_overview_embed(stats, "https://app.eafc.live")
     field_names = {f["name"] for f in embed["fields"]}
     assert "TRADES" in field_names
-    assert "TOTAL ESTIMATED PROFIT" in field_names
-    assert "EAFC.LIVE" in field_names
-    # Best trades are named (marketing proof), but no price/target/risk
-    # fields for a *live, open* opportunity are present anywhere.
-    assert not any("BUY" in f["name"] or "SELL TARGET" in f["name"] for f in embed["fields"])
+    assert any("TOTAL ESTIMATED AFTER-TAX RESULT" in name for name in field_names)
+    assert "EAFC.LIVE PREMIUM" in field_names
+    best_trades_field = next(f for f in embed["fields"] if f["name"] == "BEST COMPLETED TRADES")
+    assert "10,000" in best_trades_field["value"]
+    assert "13,500" in best_trades_field["value"]
+    assert "3,000" in best_trades_field["value"]
+    # Promo line must point free users toward Premium for live trades.
+    promo = next(f for f in embed["fields"] if f["name"] == "EAFC.LIVE PREMIUM")
+    assert "Premium" in promo["value"]
+
+
+def test_free_overview_embed_never_shows_a_live_opportunity_field():
+    """No BUY/SELL TARGET/RISK/CONFIDENCE fields - those only ever describe
+    a currently open opportunity, which the Free tier must never expose."""
+    stats = {
+        "successful": 2,
+        "unsuccessful": 0,
+        "open": 5,
+        "total_estimated_profit": 1000,
+        "best_trades": [{"name": "A", "entry": 100, "exit": 200, "result": 90}],
+    }
+    embed = build_free_overview_embed(stats, "https://app.eafc.live")
+    forbidden = {"BUY", "SELL TARGET", "RISK", "SELLING SPEED", "CONFIDENCE"}
+    assert not forbidden.intersection(f["name"] for f in embed["fields"])
+
+
+def test_free_overview_embed_caps_best_trades_at_three():
+    stats = {
+        "successful": 5,
+        "unsuccessful": 0,
+        "open": 0,
+        "total_estimated_profit": 5000,
+        "best_trades": [
+            {"name": f"Player {i}", "entry": 1000, "exit": 1500, "result": 500}
+            for i in range(5)
+        ],
+    }
+    embed = build_free_overview_embed(stats, "https://app.eafc.live")
+    best_trades_field = next(f for f in embed["fields"] if f["name"] == "BEST COMPLETED TRADES")
+    assert best_trades_field["value"].count("•") <= 3
 
 
 def test_opportunity_post_embed_includes_required_fields():

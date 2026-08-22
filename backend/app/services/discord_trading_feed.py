@@ -58,9 +58,17 @@ POST_KINDS = frozenset(
 )
 
 PROMO_MESSAGE = (
-    "Powered by **EAFC.Live** — live market intelligence for FC trading. "
-    "See the full opportunity feed at https://app.eafc.live"
+    "This is a daily summary only. **Live trades, the full opportunity feed, and "
+    "EAFC.Live's complete trading tools are available with Premium** — "
+    "see https://app.eafc.live/#/pricing"
 )
+
+# Hard cap on how many completed trades the Free daily overview names, per
+# spec ("a maximum of 2-3 of the best completed trades"). These are already
+# CLOSED, graded outcomes (see _free_overview_stats) - never a currently
+# open or live opportunity, so naming a small number of them cannot be used
+# to reconstruct the live Premium feed.
+FREE_OVERVIEW_BEST_TRADES_MAX = 3
 
 
 def feed_globally_enabled() -> bool:
@@ -209,13 +217,30 @@ async def _last_opportunity_post_at(conn, server_id: int) -> Optional[datetime]:
 
 
 def build_free_overview_embed(stats: dict[str, Any], app_url: str) -> dict[str, Any]:
-    """Aggregate counts only - never a player name, price, or any field in
-    discord_integration.PUBLIC_OPPORTUNITY_FORBIDDEN_FIELDS."""
+    """Free-tier daily overview.
+
+    Deliberately limited to what a completed, already-graded outcome can
+    show plus a bare count of open opportunities:
+      - successful / unsuccessful / open counts
+      - total estimated after-tax result across completed opportunities
+      - at most FREE_OVERVIEW_BEST_TRADES_MAX best COMPLETED trades (entry,
+        exit, after-tax result) - never a currently open/live one
+      - a Premium promo line
+
+    Never includes: a live/open opportunity's player, price, or any field
+    in discord_integration.PUBLIC_OPPORTUNITY_FORBIDDEN_FIELDS, and never
+    enough rows to reconstruct the full Premium feed (only the capped
+    "best trades" sample, all of them already closed).
+    """
     combined = Decimal(str(stats.get("total_estimated_profit") or 0))
     color = 0x22C55E if combined > 0 else 0xEAB308
+    best_trades = stats.get("best_trades", [])[:FREE_OVERVIEW_BEST_TRADES_MAX]
     best_trades_lines = [
-        f"• {item['name']}: +{Decimal(str(item['result'])):,.0f} coins"
-        for item in stats.get("best_trades", [])
+        (
+            f"• **{item['name']}** — entry {int(item['entry']):,} → exit {int(item['exit']):,} "
+            f"({Decimal(str(item['result'])):+,.0f} coins after tax)"
+        )
+        for item in best_trades
     ]
     fields = [
         {
@@ -228,20 +253,25 @@ def build_free_overview_embed(stats: dict[str, Any], app_url: str) -> dict[str, 
             "inline": False,
         },
         {
-            "name": "TOTAL ESTIMATED PROFIT",
+            "name": "TOTAL ESTIMATED AFTER-TAX RESULT (completed trades)",
             "value": f"**{combined:+,.0f} coins**",
             "inline": False,
         },
     ]
     if best_trades_lines:
         fields.append({"name": "BEST COMPLETED TRADES", "value": "\n".join(best_trades_lines), "inline": False})
-    fields.append({"name": "EAFC.LIVE", "value": PROMO_MESSAGE, "inline": False})
+    fields.append({"name": "EAFC.LIVE PREMIUM", "value": PROMO_MESSAGE, "inline": False})
     return {
         "title": "EAFC LIVE — DAILY TRADING OVERVIEW",
         "url": app_url.rstrip("/") + "/#/v2/opportunities",
         "color": color,
         "fields": fields,
-        "footer": {"text": "Free preview. Live Premium opportunities are not included."},
+        "footer": {
+            "text": (
+                "Free daily summary of completed outcomes only. "
+                "Live, open opportunities are not shown here."
+            )
+        },
         "timestamp": _now().isoformat(),
     }
 
@@ -273,14 +303,19 @@ async def _free_overview_stats(conn) -> dict[str, Any]:
     top_wins = sorted(
         wins,
         key=lambda r: (-Decimal(str(r["net_profit_after_tax"])), str(r["name"])),
-    )[:3]
+    )[:FREE_OVERVIEW_BEST_TRADES_MAX]
     return {
         "successful": len(wins),
         "unsuccessful": len(losses),
         "open": int(open_count or 0),
         "total_estimated_profit": sum(results, Decimal("0")),
         "best_trades": [
-            {"name": str(r["name"]), "result": Decimal(str(r["net_profit_after_tax"]))}
+            {
+                "name": str(r["name"]),
+                "entry": int(r["entry_price"]),
+                "exit": int(r["outcome_price"]),
+                "result": Decimal(str(r["net_profit_after_tax"])),
+            }
             for r in top_wins
         ],
     }
