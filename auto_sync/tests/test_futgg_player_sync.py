@@ -359,11 +359,18 @@ async def test_listing_waits_for_rating_footer_after_card_links_render(monkeypat
     monkeypatch.setattr(mod, "PAGE_DELAY", 0)
     monkeypatch.setattr(mod, "LISTING_STABILIZE_MAX_ATTEMPTS", 3)
     monkeypatch.setattr(mod, "LISTING_STABILIZE_POLL_MS", 0)
-    page = _FakeListingPage({1: [_card_href(1)]})
-    url = mod.urljoin(mod.BASE_URL, _card_href(1))
+    page = _FakeListingPage({1: [_card_href(1), _card_href(2)]})
+    url1 = mod.urljoin(mod.BASE_URL, _card_href(1))
+    url2 = mod.urljoin(mod.BASE_URL, _card_href(2))
     reads = [
-        {url: mod.ListingCardMetadata()},
-        {url: mod.ListingCardMetadata(gg_rating=Decimal("99.5"))},
+        {
+            url1: mod.ListingCardMetadata(gg_rating=Decimal("99.5")),
+            url2: mod.ListingCardMetadata(),
+        },
+        {
+            url1: mod.ListingCardMetadata(gg_rating=Decimal("99.5")),
+            url2: mod.ListingCardMetadata(gg_rating=Decimal("98.7")),
+        },
     ]
 
     async def hydrated_read(_page):
@@ -385,7 +392,10 @@ async def test_listing_waits_for_rating_footer_after_card_links_render(monkeypat
     )
 
     assert reads == []
-    assert captured == [{url: mod.ListingCardMetadata(gg_rating=Decimal("99.5"))}]
+    assert captured == [{
+        url1: mod.ListingCardMetadata(gg_rating=Decimal("99.5")),
+        url2: mod.ListingCardMetadata(gg_rating=Decimal("98.7")),
+    }]
 
 
 def test_full_scan_selects_the_full_page_cap(monkeypatch):
@@ -1128,3 +1138,45 @@ async def test_listing_rating_update_is_game_year_scoped():
     assert result == mod.ListingRatingUpdateResult(matched=1, updated=1)
     assert "p.game_year = $3" in conn.query
     assert conn.args == ([1001], [Decimal("87.3")], 26, True)
+
+
+@run_async
+async def test_listing_rating_update_retries_postgres_deadlock(monkeypatch):
+    class DeadlockThenSuccessConn(_CaptureConn):
+        def __init__(self):
+            super().__init__({"matched": 2, "updated": 2})
+            self.calls = 0
+
+        async def fetchrow(self, query, *args):
+            self.calls += 1
+            if self.calls < 3:
+                raise mod.asyncpg.exceptions.DeadlockDetectedError("deadlock detected")
+            return await super().fetchrow(query, *args)
+
+    delays = []
+
+    async def capture_sleep(delay):
+        delays.append(delay)
+
+    monkeypatch.setattr(mod.asyncio, "sleep", capture_sleep)
+    conn = DeadlockThenSuccessConn()
+    cards = {
+        "https://www.fut.gg/players/2-p/26-1002/": mod.ListingCardMetadata(
+            gg_rating=Decimal("88.1")
+        ),
+        "https://www.fut.gg/players/1-p/26-1001/": mod.ListingCardMetadata(
+            gg_rating=Decimal("87.3")
+        ),
+    }
+
+    result = await mod.update_listing_gg_ratings(conn, cards, 26, only_missing=True)
+
+    assert result == mod.ListingRatingUpdateResult(matched=2, updated=2)
+    assert conn.calls == 3
+    assert delays == [0.25, 0.5]
+    assert conn.args == (
+        [1001, 1002],
+        [Decimal("87.3"), Decimal("88.1")],
+        26,
+        True,
+    )
