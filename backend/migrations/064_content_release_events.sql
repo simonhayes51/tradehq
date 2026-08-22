@@ -1,18 +1,27 @@
--- Migration 064: content/market event timeline
+-- Migration 064: content release timeline
 -- target: core
 -- requires-table: futgg_players
 -- requires-column: futgg_players.released_at, futgg_players.squad
 --
 -- WHAT THIS IS
 -- ------------
--- A timeline of GAME CONTENT events (promo teams, TOTW squads, and later
--- SBCs/Evolutions/rewards), reconstructed from FUT.GG's own card release
--- timestamps rather than guessed at. Its first purpose is to let a
--- research pass ask "how did the market behave around this release" -
--- but the table is deliberately NOT promo-specific so the same timeline
--- can later carry SBC releases and expiries, Evolution launches, reward
--- cycles, pack changes, and promo start/end markers without a schema
--- rewrite.
+-- A timeline of GAME CONTENT RELEASES (promo teams, TOTW squads, and
+-- later SBCs/Evolutions/rewards), reconstructed from FUT.GG's own card
+-- release timestamps rather than guessed at.
+--
+-- NAMED content_release_events, NOT market_events: a `market_events`
+-- table has existed since migration 018 with an entirely different
+-- schema (kind/starts_at/fingerprint/ends_at) and is depended on by
+-- migrations 019/024/046/049, app/services/market_events.py,
+-- auto_sync/promo_event_detector.py and both SBC sync writers. Reusing
+-- that name meant CREATE TABLE IF NOT EXISTS silently did nothing, which
+-- surfaced only much later as an UndefinedColumnError at INSERT time.
+--
+-- Its first purpose is to let a research pass ask "how did the market
+-- behave around this release" - but the table is deliberately NOT
+-- promo-specific, so the same timeline can later carry SBC releases and
+-- expiries, Evolution launches, reward cycles, pack changes, and promo
+-- start/end markers without a schema rewrite.
 --
 -- Derived from released_at, NEVER from first_seen_at: first_seen_at only
 -- records when our scraper noticed a card, which for historical FC26
@@ -21,7 +30,7 @@
 --
 -- GROUPING RULE
 -- -------------
--- The grouping key is (game_year, squad, released_at), NOT rarity.
+-- The grouping key is (game_year, squad, release CLUSTER), NOT rarity.
 -- Rarity is the broad promo FAMILY ("Team of the Week", "Cornerstones");
 -- squad is the specific release ("TOTW 27", "Cornerstones 1"). Many
 -- distinct releases share one rarity - every weekly TOTW squad has
@@ -38,7 +47,7 @@
 -- carry a squad label. Nothing here forces an isolated card into a
 -- "promo team" it was never part of - see event_scale.
 
-CREATE TABLE IF NOT EXISTS market_events (
+CREATE TABLE IF NOT EXISTS content_release_events (
     id                  BIGSERIAL PRIMARY KEY,
     game_year           SMALLINT NOT NULL,
 
@@ -84,17 +93,17 @@ CREATE TABLE IF NOT EXISTS market_events (
 -- of the key because the same squad name CAN legitimately appear at two
 -- timestamps (a promo re-release, or cards added later to an existing
 -- squad) and those are genuinely different events.
-CREATE UNIQUE INDEX IF NOT EXISTS market_events_identity_uniq
-    ON market_events (game_year, event_key, released_at);
+CREATE UNIQUE INDEX IF NOT EXISTS content_release_events_identity_uniq
+    ON content_release_events (game_year, event_key, released_at);
 
-CREATE INDEX IF NOT EXISTS market_events_timeline_idx
-    ON market_events (game_year, released_at DESC);
-CREATE INDEX IF NOT EXISTS market_events_type_idx
-    ON market_events (game_year, event_type, released_at DESC);
+CREATE INDEX IF NOT EXISTS content_release_events_timeline_idx
+    ON content_release_events (game_year, released_at DESC);
+CREATE INDEX IF NOT EXISTS content_release_events_type_idx
+    ON content_release_events (game_year, event_type, released_at DESC);
 
 
-CREATE TABLE IF NOT EXISTS market_event_cards (
-    event_id            BIGINT NOT NULL REFERENCES market_events(id) ON DELETE CASCADE,
+CREATE TABLE IF NOT EXISTS content_release_event_cards (
+    event_id            BIGINT NOT NULL REFERENCES content_release_events(id) ON DELETE CASCADE,
     source_card_id      BIGINT NOT NULL,
     source_player_id    BIGINT,
     PRIMARY KEY (event_id, source_card_id)
@@ -102,10 +111,10 @@ CREATE TABLE IF NOT EXISTS market_event_cards (
 
 -- "Which events did this card belong to" - the direction the event-study
 -- join runs when starting from a price series.
-CREATE INDEX IF NOT EXISTS market_event_cards_card_idx
-    ON market_event_cards (source_card_id);
+CREATE INDEX IF NOT EXISTS content_release_event_cards_card_idx
+    ON content_release_event_cards (source_card_id);
 
-COMMENT ON TABLE market_events IS
+COMMENT ON TABLE content_release_events IS
     'Content/market event timeline reconstructed from FUT.GG card release timestamps (futgg_players.released_at, never first_seen_at). Grouped by (game_year, squad, released_at) because rarity is the promo family while squad is the specific release. Intentionally not promo-specific: SBC/Evolution/reward events can be added later without schema changes.';
-COMMENT ON COLUMN market_events.event_scale IS
+COMMENT ON COLUMN content_release_events.event_scale IS
     'broad = full promo team, mini = small batch, isolated = single card (usually SBC/objective, not a promo). Prevents isolated cards being analysed as though they were promo teams.';

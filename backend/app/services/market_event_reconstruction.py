@@ -1,6 +1,6 @@
 # app/services/market_event_reconstruction.py
 """
-Reconstructs the content-event timeline (market_events / market_event_cards,
+Reconstructs the content-event timeline (content_release_events / content_release_event_cards,
 migration 064) from FUT.GG card release timestamps.
 
 Pure-core / thin-IO split, matching the investment_engine package's own
@@ -247,15 +247,15 @@ ORDER BY released_at, squad
 """
 
 _UPSERT_EVENT = """
-INSERT INTO market_events (
+INSERT INTO content_release_events (
     game_year, event_type, event_key, title, rarity, squad, released_at,
     card_count, event_scale, source, confidence, metadata, updated_at
 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'derived_futgg_release',$10,$11,now())
 ON CONFLICT (game_year, event_key, released_at) DO UPDATE SET
     event_type = EXCLUDED.event_type,
     title = EXCLUDED.title,
-    rarity = COALESCE(EXCLUDED.rarity, market_events.rarity),
-    squad = COALESCE(EXCLUDED.squad, market_events.squad),
+    rarity = COALESCE(EXCLUDED.rarity, content_release_events.rarity),
+    squad = COALESCE(EXCLUDED.squad, content_release_events.squad),
     card_count = EXCLUDED.card_count,
     event_scale = EXCLUDED.event_scale,
     confidence = EXCLUDED.confidence,
@@ -330,7 +330,7 @@ async def reconstruct_events(
                     }),
                 )
                 await conn.executemany(
-                    "INSERT INTO market_event_cards (event_id, source_card_id, source_player_id) "
+                    "INSERT INTO content_release_event_cards (event_id, source_card_id, source_player_id) "
                     "VALUES ($1,$2,$3) ON CONFLICT (event_id, source_card_id) DO NOTHING",
                     [(event_id, cid, pid) for cid, pid in event.card_ids],
                 )
