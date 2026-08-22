@@ -12,20 +12,31 @@ DERIVED FROM released_at, NEVER first_seen_at. first_seen_at records when
 our scraper noticed a card - for historical FC26 cards that can be weeks
 after the real release, which would produce a fictional timeline.
 
-GROUPING: (game_year, squad, released_at). Rarity is the promo FAMILY
+GROUPING: (game_year, squad, release CLUSTER). Rarity is the promo FAMILY
 ("Team of the Week"); squad is the specific release ("TOTW 27"). Grouping
 by rarity would collapse a whole season of weekly TOTW squads into one
-meaningless event. Including released_at means cards added LATER to an
-existing promo form their own event at their own timestamp - which is
-what actually happened in the market - rather than being retroactively
-folded into the original drop.
+meaningless event.
+
+The cluster - rather than an exact timestamp match - is what real data
+forced. FUT.GG's own ingestion stamps a single promo drop across several
+adjacent minutes: a live FUTTIES 2 sample landed cards at 17:01, 17:02
+and 17:03 UTC. Exact-equality grouping shattered that one drop into three
+events, two of which were then mislabelled "mini" because each fragment
+held only part of the squad.
+
+So cards in the same squad whose timestamps are within
+RELEASE_CLUSTER_TOLERANCE of the previous card form ONE event, stamped
+with the EARLIEST timestamp in the cluster (the actual drop moment). The
+tolerance is hours, not days, so a card genuinely added to a promo days
+later still forms its own separate event - which is what happened in the
+market and must stay visible.
 """
 from __future__ import annotations
 
 import logging
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 log = logging.getLogger("market_event_reconstruction")
@@ -49,6 +60,18 @@ BROAD_RELEASE_MIN_CARDS = 6
 # anything not recognised here is simply 'promo_release'.
 _TOTW_RARITY_PATTERN = re.compile(r"team of the week|\btotw\b", re.IGNORECASE)
 
+# How far apart two cards in the same squad can be and still count as one
+# release. Sized from observed FUT.GG behaviour: a single drop is stamped
+# across a few adjacent minutes, and a slow import could plausibly take
+# longer - but a card genuinely added to a promo later arrives DAYS
+# afterwards, so hours cleanly separates the two cases.
+#
+# Measured as the gap from the PREVIOUS card, not from the cluster start,
+# so a drop that trickles in over a while still groups. Chaining would
+# require a continuous card-every-few-hours stream within one squad,
+# which is not a shape FUT.GG content actually takes.
+RELEASE_CLUSTER_TOLERANCE = timedelta(hours=6)
+
 
 @dataclass(frozen=True)
 class CardRelease:
@@ -70,6 +93,10 @@ class DerivedEvent:
     rarity: Optional[str]
     squad: Optional[str]
     released_at: datetime
+    # How long the cluster's timestamps spanned, in seconds. Recorded so
+    # the FUT.GG ingestion jitter this clustering exists to absorb stays
+    # visible and auditable rather than being silently smoothed away.
+    span_seconds: int = 0
     card_ids: List[Tuple[int, Optional[int]]] = field(default_factory=list)
 
     @property
@@ -87,8 +114,8 @@ class DerivedEvent:
     @property
     def confidence(self) -> str:
         """Confidence that this is a real, coherent content EVENT - not
-        confidence about any market effect. A broad batch sharing one
-        exact timestamp is strong evidence of a single release; a lone
+        confidence about any market effect. A broad batch landing in one
+        tight time cluster is strong evidence of a single release; a lone
         card carrying a squad label is weak."""
         if self.event_scale == SCALE_BROAD:
             return "high"
@@ -124,31 +151,63 @@ def group_release_events(cards: Iterable[CardRelease]) -> List[DerivedEvent]:
     events that never happened. They remain queryable in futgg_players;
     they simply do not form events.
     """
-    buckets: Dict[Tuple[int, str, datetime], DerivedEvent] = {}
-
+    # Step 1: bucket by (game_year, squad). Timestamp clustering happens
+    # WITHIN a squad, never across squads - two different promos dropping
+    # in the same hour must stay separate events.
+    by_squad: Dict[Tuple[int, str], List[CardRelease]] = {}
     for card in cards:
         if card.released_at is None or not card.squad:
             continue
         squad = card.squad.strip()
         if not squad:
             continue
+        by_squad.setdefault((card.game_year, squad.casefold()), []).append(card)
 
-        key = (card.game_year, squad.casefold(), card.released_at)
-        event = buckets.get(key)
-        if event is None:
-            event = DerivedEvent(
-                game_year=card.game_year,
-                event_type=classify_event_type(card.rarity),
-                event_key=_slugify(squad),
-                title=squad,
-                rarity=card.rarity,
-                squad=squad,
-                released_at=card.released_at,
-            )
-            buckets[key] = event
-        event.card_ids.append((card.source_card_id, card.source_player_id))
+    events: List[DerivedEvent] = []
+    for (game_year, _squad_key), squad_cards in by_squad.items():
+        squad_cards.sort(key=lambda c: c.released_at)
 
-    return sorted(buckets.values(), key=lambda e: (e.released_at, e.event_key))
+        # Step 2: single-linkage cluster on the gap from the PREVIOUS
+        # card. FUT.GG stamps one drop across adjacent minutes, so exact
+        # equality fragments a promo; a genuine later addition arrives
+        # days afterwards and still separates cleanly.
+        cluster: List[CardRelease] = []
+        for card in squad_cards:
+            if cluster and (card.released_at - cluster[-1].released_at) > RELEASE_CLUSTER_TOLERANCE:
+                events.append(_event_from_cluster(game_year, cluster))
+                cluster = []
+            cluster.append(card)
+        if cluster:
+            events.append(_event_from_cluster(game_year, cluster))
+
+    return sorted(events, key=lambda e: (e.released_at, e.event_key))
+
+
+def _event_from_cluster(game_year: int, cluster: List[CardRelease]) -> DerivedEvent:
+    """Build one event from a time-adjacent group of same-squad cards.
+
+    released_at is the EARLIEST timestamp in the cluster - the moment the
+    drop actually began. Using the latest, or a mean, would place the
+    event after part of the market had already reacted.
+    """
+    first = cluster[0]
+    squad = (first.squad or "").strip()
+    # Rarity is taken from the first card that HAS one: a cluster can
+    # contain a card whose rarity failed to parse, and that must not
+    # blank out the event's promo family.
+    rarity = next((c.rarity for c in cluster if c.rarity), None)
+    event = DerivedEvent(
+        game_year=game_year,
+        event_type=classify_event_type(rarity),
+        event_key=_slugify(squad),
+        title=squad,
+        rarity=rarity,
+        squad=squad,
+        released_at=first.released_at,
+        span_seconds=int((cluster[-1].released_at - first.released_at).total_seconds()),
+    )
+    event.card_ids = [(c.source_card_id, c.source_player_id) for c in cluster]
+    return event
 
 
 # ---------------------------------------------------------------------
@@ -238,7 +297,14 @@ async def reconstruct_events(
                     event.game_year, event.event_type, event.event_key, event.title,
                     event.rarity, event.squad, event.released_at,
                     event.card_count, event.event_scale, event.confidence,
-                    json.dumps({"derived_from": "futgg_players.released_at"}),
+                    json.dumps({
+                        "derived_from": "futgg_players.released_at",
+                        # The observed FUT.GG ingestion spread for this
+                        # drop. A large span on a supposedly single
+                        # release is worth eyeballing.
+                        "release_span_seconds": event.span_seconds,
+                        "cluster_tolerance_seconds": int(RELEASE_CLUSTER_TOLERANCE.total_seconds()),
+                    }),
                 )
                 await conn.executemany(
                     "INSERT INTO market_event_cards (event_id, source_card_id, source_player_id) "
