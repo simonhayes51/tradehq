@@ -94,11 +94,12 @@ Either way the parse is deterministic rather than host-dependent.
 later shown to render in a different fixed zone, every row can be
 re-derived with a single UPDATE — no re-scrape of the catalogue.
 
-> **Residual uncertainty, stated plainly:** I could not verify against a
-> live FUT.GG page in this environment. If a spot-check after the first
-> backfill shows release times that are not the expected 18:00-style
-> content slot, change `ADDED_ON_ASSUMED_TIMEZONE` and re-derive from
-> `released_at_raw`.
+> **CONFIRMED against production.** A live backfill returned FUTTIES 2
+> cards at `17:01–17:02 UTC` on 31 Jul — i.e. 18:01–18:02 BST, the
+> canonical 6pm UK content slot. The pinned-UTC assumption holds. If a
+> future FUT.GG change ever breaks this, the fix is to change
+> `ADDED_ON_ASSUMED_TIMEZONE` and re-derive from `released_at_raw` — no
+> re-scrape needed.
 
 ---
 
