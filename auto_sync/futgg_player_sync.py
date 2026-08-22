@@ -361,13 +361,14 @@ def _merge_listing_metadata(
 
 
 def _listing_metadata_ready(cards: dict[str, ListingCardMetadata]) -> bool:
-    """Whether FUT.GG has hydrated at least one card footer.
+    """Whether FUT.GG has hydrated every visible card footer.
 
     Card anchors and images can appear before the client-rendered footer.
     A parsed or explicitly invalid rating proves the footer is present;
-    otherwise a populated href set is still an incomplete render.
+    otherwise the href set is still an incomplete render. The caller's
+    bounded attempt budget handles cards that genuinely have no footer.
     """
-    return any(
+    return bool(cards) and all(
         metadata.gg_rating is not None or metadata.gg_rating_invalid
         for metadata in cards.values()
     )

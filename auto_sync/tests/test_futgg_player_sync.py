@@ -359,11 +359,18 @@ async def test_listing_waits_for_rating_footer_after_card_links_render(monkeypat
     monkeypatch.setattr(mod, "PAGE_DELAY", 0)
     monkeypatch.setattr(mod, "LISTING_STABILIZE_MAX_ATTEMPTS", 3)
     monkeypatch.setattr(mod, "LISTING_STABILIZE_POLL_MS", 0)
-    page = _FakeListingPage({1: [_card_href(1)]})
-    url = mod.urljoin(mod.BASE_URL, _card_href(1))
+    page = _FakeListingPage({1: [_card_href(1), _card_href(2)]})
+    url1 = mod.urljoin(mod.BASE_URL, _card_href(1))
+    url2 = mod.urljoin(mod.BASE_URL, _card_href(2))
     reads = [
-        {url: mod.ListingCardMetadata()},
-        {url: mod.ListingCardMetadata(gg_rating=Decimal("99.5"))},
+        {
+            url1: mod.ListingCardMetadata(gg_rating=Decimal("99.5")),
+            url2: mod.ListingCardMetadata(),
+        },
+        {
+            url1: mod.ListingCardMetadata(gg_rating=Decimal("99.5")),
+            url2: mod.ListingCardMetadata(gg_rating=Decimal("98.7")),
+        },
     ]
 
     async def hydrated_read(_page):
@@ -385,7 +392,10 @@ async def test_listing_waits_for_rating_footer_after_card_links_render(monkeypat
     )
 
     assert reads == []
-    assert captured == [{url: mod.ListingCardMetadata(gg_rating=Decimal("99.5"))}]
+    assert captured == [{
+        url1: mod.ListingCardMetadata(gg_rating=Decimal("99.5")),
+        url2: mod.ListingCardMetadata(gg_rating=Decimal("98.7")),
+    }]
 
 
 def test_full_scan_selects_the_full_page_cap(monkeypatch):
