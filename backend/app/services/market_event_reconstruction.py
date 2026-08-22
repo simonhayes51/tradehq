@@ -26,11 +26,13 @@ held only part of the squad.
 
 So cards in the same squad within RELEASE_CLUSTER_TOLERANCE of the
 previous card form ONE event, stamped with the EARLIEST timestamp in the
-cluster (the actual drop moment) - subject to MAX_CLUSTER_SPAN, which
-stops a multi-wave release (TOTY: Attackers/Midfielders/Defenders/GK over
-a week) chaining into one fictional seven-day "event". A card genuinely
-added to a promo days later still forms its own separate event, which is
-what happened in the market and must stay visible.
+cluster (the actual drop moment). A card genuinely added to a promo days
+later - or a later wave of a multi-wave promo like TOTY - falls outside
+the tolerance and forms its own separate event, which is what happened in
+the market and must stay visible.
+
+MAX_CLUSTER_SPAN additionally caps a cluster's total span. It is purely
+defensive and does not fire on FC26 data; see its own comment.
 """
 from __future__ import annotations
 
@@ -73,19 +75,21 @@ RELEASE_CLUSTER_TOLERANCE = timedelta(hours=6)
 
 # Hard cap on how long one cluster may span in total.
 #
-# Gap-based linkage alone chains, and real FC26 data proved it: TOTY
-# releases in waves (Attackers, Midfielders, Defenders, GK) a day or so
-# apart, and each wave sits within the gap tolerance of the previous one,
-# so 24 TOTY cards merged into a single "event" spanning SEVEN DAYS.
-# Thunderstruck 1 (56 cards) chained across 48 hours the same way. For an
-# event study that is actively misleading - the market reaction to TOTY
-# Attackers is not the same event as TOTY Defenders three days later.
+# DEFENSIVE, not corrective: as of FC26 this never fires. Gap-based
+# linkage alone would chain only if cards arrived in a CONTINUOUS drip
+# with every individual gap under the tolerance while the total ran past
+# it (e.g. a batch every 2h for 12h). No FC26 release has that shape -
+# multi-wave promos like TOTY space their waves DAYS apart, which the gap
+# check already separates on its own.
+#
+# It is kept because the failure mode is real and silent if it ever
+# happens: a chained cluster becomes one fictional multi-day "event", and
+# an event study built on it would compare the wrong days. Cheap
+# insurance against a shape FUT.GG could plausibly adopt.
 #
 # Sized against observed real drops: a single release spans seconds to
 # minutes, and the slowest genuine one measured (Joga Bonito, 39 cards)
-# spanned 1h47m. 6h therefore keeps every real single drop intact while
-# splitting multi-day wave releases into the separate market moments they
-# actually were.
+# spanned 1h47m - so 6h leaves every real drop intact.
 MAX_CLUSTER_SPAN = timedelta(hours=6)
 
 
