@@ -143,6 +143,28 @@ class InvestmentEngineConfig:
     # translated, round default, not the literal FC26 date range.
     starter_launch_window_days: float = field(default_factory=lambda: _env_float("INVESTMENT_STARTER_LAUNCH_WINDOW_DAYS", 9.0))
 
+    # ---- New-cycle bootstrap / readiness gates (readiness.py) ----------------
+    # "Insufficient data is a valid state." These are the binary
+    # are-the-inputs-even-present gates that run BEFORE any market
+    # judgement, so a brand-new game cycle produces a NAMED suppression
+    # reason rather than a silent zero-signal pass. See readiness.py.
+    #
+    # Fraction of a cohort's priced cards whose price must be fresh
+    # (within max_price_age_minutes) before the cohort is judged at all.
+    # Deliberately not 1.0: a handful of stragglers in a 200-card cohort
+    # should not block the whole market read, but a cohort where half the
+    # prices are hours old is not something to make investment calls on.
+    min_fresh_price_fraction: float = field(default_factory=lambda: _env_float("INVESTMENT_MIN_FRESH_PRICE_FRACTION", 0.60))
+    # How many of this cohort's OWN market-state observations must exist
+    # before its drawdown/momentum history means anything. At 0-1
+    # observations every drawdown is 0% by definition (nothing to have
+    # fallen from), so acting on it would be acting on an artefact.
+    min_market_state_observations: int = field(default_factory=lambda: _env_int("INVESTMENT_MIN_MARKET_STATE_OBS", 6))
+    # Only checked for strategies that declare they need sales evidence
+    # (evaluate_readiness(require_sales=True)) - see that function's note
+    # on why a missing sales pipeline is not the same as zero sales.
+    min_cards_with_sales: int = field(default_factory=lambda: _env_int("INVESTMENT_MIN_CARDS_WITH_SALES", 10))
+
     # ---- Risk controls --------------------------------------------------------
     min_sales_count_recent: int = field(default_factory=lambda: _env_int("INVESTMENT_MIN_SALES_COUNT_RECENT", 3))
     min_sales_for_investable: int = field(default_factory=lambda: _env_int("INVESTMENT_MIN_SALES_FOR_INVESTABLE", 5))

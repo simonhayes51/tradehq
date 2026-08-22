@@ -86,6 +86,13 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
 @dataclass(frozen=True)
 class EngineConfig:
     """Every threshold/weight the buy-side engine reads. Frozen so a
@@ -254,6 +261,51 @@ class EngineConfig:
     # confirmed to have stopped widening.
     trend_states_capping_signal: tuple = ("stabilising", "insufficient_trend_data")
 
+    # ---- Unverifiable-discount guard (new-cycle launch safety) --------
+    # The gap the falling-knife guard above cannot close on its own.
+    #
+    # falling_knife/downtrend BLOCK a buy, and insufficient_trend_data
+    # CAPS it at "buy" - but a cap is not a block, and in the first hours
+    # of a new game cycle EVERY card is insufficient_trend_data (the
+    # trend layer needs min_observations sales over min_span_minutes,
+    # which simply do not exist yet). During price discovery a card can
+    # be repricing downward fast while its sales median - being
+    # backward-looking - still reflects the older, higher level. The
+    # engine then sees a very large apparent discount, no trend evidence
+    # to contradict it, and publishes a "buy" on a card in free fall.
+    #
+    # This guard says: when we have NO trend evidence AND the apparent
+    # discount is larger than an ordinary mispricing plausibly is, we
+    # cannot distinguish "genuine bargain" from "fast repricing" - so we
+    # do not guess. The card becomes a watch, not a buy.
+    #
+    # Deliberately general, NOT FC26-specific: no dates, no launch-phase
+    # check, no drawdown number borrowed from the FC26 research. It is a
+    # statement about evidence ("a discount this large with nothing
+    # confirming it is unverifiable"), which is true in any market at any
+    # time - it simply happens to bind hardest during a launch, which is
+    # when it is most needed.
+    unverifiable_discount_ratio: float = 0.25
+    unverifiable_discount_guard_enabled: bool = True
+    # CRITICAL QUALIFIER - what stops this guard eating the core product.
+    #
+    # The absence of a TREND reading is not by itself evidence that a
+    # discount is unverifiable. A card with 30 completed sales in the last
+    # hour, all clearing within 2% of each other, has a thoroughly
+    # established price level - a BIN far below that level is a genuine
+    # mispricing (exactly the snipe Opportunities exists to surface), even
+    # though the trend layer cannot speak because its 90-minute span
+    # requirement is not met.
+    #
+    # What actually makes a discount unverifiable is having no
+    # well-established level to be discounted FROM. So the guard only
+    # fires when the sales evidence is ALSO too thin or too scattered to
+    # have established one. During a new cycle's first hours that is the
+    # normal condition (a handful of scattered sales); for an established
+    # card being sniped it is not.
+    unverifiable_discount_min_sales_for_level: int = 20
+    unverifiable_discount_max_dispersion_for_level: float = 0.15
+
     # ---- Expiry -------------------------------------------------------
     # Base shelf-life of a recommendation before market conditions are
     # assumed to have moved on, scaled down by volatility/velocity and up
@@ -369,6 +421,10 @@ def _load_engine_config() -> EngineConfig:
         sell_target_margin=_env_float("FUTGG_SELL_TARGET_MARGIN", 0.03),
         base_expiry_minutes=_env_int("FUTGG_BASE_EXPIRY_MINUTES", 45),
         invalidation_bin_drift_pct=_env_float("FUTGG_INVALIDATION_DRIFT_PCT", 0.05),
+        unverifiable_discount_ratio=_env_float("FUTGG_UNVERIFIABLE_DISCOUNT_RATIO", 0.25),
+        unverifiable_discount_guard_enabled=_env_bool("FUTGG_UNVERIFIABLE_DISCOUNT_GUARD", True),
+        unverifiable_discount_min_sales_for_level=_env_int("FUTGG_UNVERIFIABLE_MIN_SALES_FOR_LEVEL", 20),
+        unverifiable_discount_max_dispersion_for_level=_env_float("FUTGG_UNVERIFIABLE_MAX_DISPERSION_FOR_LEVEL", 0.15),
     )
 
 

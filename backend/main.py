@@ -72,6 +72,7 @@ from app.routers.public_api import router as public_api_router
 from app.routers.public_api_v2 import router as public_api_v2_router
 from app.routers.fair_value import router as fair_value_router
 from app.routers.ops import router as ops_router
+from app.routers.launch_health import router as launch_health_router
 from app.routers.dashboard import router as dashboard_router
 from app.routers.v2 import router as v2_router
 from app.services.fair_value import refresher_loop as fair_value_refresher_loop
@@ -93,6 +94,7 @@ from app.services.futgg_outcome_grader import refresher_loop as futgg_outcome_gr
 from app.services.priority_recompute import refresher_loop as priority_recompute_refresher_loop
 from app.services.investment_engine.runner import refresher_loop as investment_engine_refresher_loop
 from app.services.investment_engine.config import INVESTMENT_ENGINE_CONFIG
+from app.services import game_cycle
 from app.services.oauth_return import safe_return_to
 from app.services.futgg_card_image_mirror import mirror_loop as futgg_card_image_mirror_loop
 
@@ -640,17 +642,30 @@ async def lifespan(app: FastAPI):
     # SIGNALS is also set - see backend/INVESTMENT_ENGINE.md.
     if INVESTMENT_ENGINE_CONFIG.enabled:
         investment_poll = INVESTMENT_ENGINE_CONFIG.recompute_interval_seconds
-        # FC27's own game_year - fut.gg URLs encode this as a two-digit
-        # year (game_year=26 for FC26, confirmed against auto_sync's
-        # futgg_common.py CARD_URL_RE); update once FC27 assigns its own.
-        investment_game_year = int(os.getenv("INVESTMENT_ENGINE_GAME_YEAR", "27"))
+        # Game year comes from app/services/game_cycle.py - the single
+        # source of truth - NOT from a per-service env var. A split-brain
+        # configuration (ingestion scraping one game year while this
+        # engine queries another) produces no error anywhere, just an
+        # engine that silently never finds any cards, so it is checked
+        # explicitly here and reported loudly rather than left to chance.
+        investment_game_year = game_cycle.investment_game_year()
+        consistency = game_cycle.consistency_report()
+        if not consistency["consistent"]:
+            for problem in consistency["problems"]:
+                logging.error("⚠️  GAME YEAR MISCONFIGURATION: %s", problem)
         app.state.investment_engine_task = asyncio.create_task(
             investment_engine_refresher_loop(pool, investment_poll, game_year=investment_game_year)
         )
         logging.info(
-            "✅ Investment Engine started (poll every %ss, game_year=%s, publish_signals=%s)",
-            investment_poll, investment_game_year, INVESTMENT_ENGINE_CONFIG.publish_signals,
+            "✅ Investment Engine started (poll every %ss, game_year=%s, phase=%s, mode=%s)",
+            investment_poll, investment_game_year, game_cycle.GAME_CYCLE.phase(),
+            "PUBLISHING" if INVESTMENT_ENGINE_CONFIG.publish_signals else "SHADOW",
         )
+        if INVESTMENT_ENGINE_CONFIG.publish_signals:
+            logging.warning(
+                "🔔 Investment Engine is PUBLISHING signals to users "
+                "(INVESTMENT_ENGINE_PUBLISH_SIGNALS is on)"
+            )
     else:
         logging.info("⏸️  Investment Engine disabled (INVESTMENT_ENGINE_ENABLED not set)")
 
@@ -1131,6 +1146,10 @@ app.include_router(public_api_v2_router)    # /api/public/v2/* (tiers/quotas + f
 # Fair Value engine + ops
 app.include_router(fair_value_router)       # /api/market/fair-value, /undervalued, /anomalies
 app.include_router(ops_router)              # /api/ops/freshness
+# /api/ops/launch-health - admin-only one-screen new-cycle readiness
+# view. Separate from ops_router's uptime-monitor freshness surface:
+# see app/routers/launch_health.py's module docstring.
+app.include_router(launch_health_router)
 app.include_router(dashboard_router)        # /api/dashboard/* (public, investor demo page)
 
 # FutHub v2 - AI market-intelligence platform, versioned routers on this

@@ -30,6 +30,20 @@ from dataclasses import dataclass
 from typing import List, Optional, Sequence, Tuple
 
 
+# Explicit confirmation states. A tri-state bool cannot distinguish
+# "the sales data says selling pressure has NOT eased" from "we do not
+# have enough sales data to know" - and treating the second as the first
+# would penalise a card's confidence for a gap in OUR pipeline rather
+# than for anything the market did. These are named so that distinction
+# is impossible to lose.
+CONFIRMED = "confirmed"          # live data positively supports the historical signal
+CONFLICTING = "conflicting"      # live data actively contradicts it (a real, measured no)
+INSUFFICIENT = "insufficient"    # some data, not enough of it to judge
+UNAVAILABLE = "unavailable"      # the input does not exist at all (e.g. FC26 replay)
+
+ALL_CONFIRMATION_STATES = (CONFIRMED, CONFLICTING, INSUFFICIENT, UNAVAILABLE)
+
+
 @dataclass(frozen=True)
 class LiveConfirmation:
     lowest_bin: Optional[float]
@@ -41,6 +55,12 @@ class LiveConfirmation:
     sales_clearing_higher: Optional[bool]
     confirmed: Optional[bool]                    # None = insufficient data to judge either way
     reasons: Tuple[str, ...]
+    # The named equivalent of `confirmed`, carrying the distinction that
+    # a bool cannot. `confirmed` is retained (and kept consistent with
+    # this) because state_machine.next_state already treats its
+    # None/True/False exactly correctly - this field is what makes the
+    # reasoning legible in stored snapshots and operator tooling.
+    status: str = UNAVAILABLE
 
 
 def evaluate_live_confirmation(
@@ -76,14 +96,23 @@ def evaluate_live_confirmation(
                 "sales_clearing_higher" if sales_clearing_higher else "sales_not_yet_clearing_higher"
             )
 
-    if sales_count < min_sales_count:
+    if not bin_history_recent and not sales_recent:
+        # Nothing at all to evaluate - distinct from "some data, not
+        # enough". This is the FC26-replay / pipeline-not-reporting case.
         confirmed = None
+        status = UNAVAILABLE
+        reasons.append("no_live_market_data_available")
+    elif sales_count < min_sales_count:
+        confirmed = None
+        status = INSUFFICIENT
         reasons.append(f"insufficient_recent_sales(<{min_sales_count})")
     else:
         confirmed = bool(lowest_bin_new_lows is False or sales_clearing_higher is True)
+        status = CONFIRMED if confirmed else CONFLICTING
         reasons.append("live_confirmation_positive" if confirmed else "live_confirmation_negative")
 
     return LiveConfirmation(
+        status=status,
         lowest_bin=lowest_bin,
         lowest_bin_making_new_lows=lowest_bin_new_lows,
         listings_near_floor=None,

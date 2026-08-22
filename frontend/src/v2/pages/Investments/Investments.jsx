@@ -15,7 +15,7 @@
 // state here, never an error banner, since "nothing published yet" is
 // the expected steady state before/just after a launch.
 import { useState } from "react";
-import { AlertTriangle, ArrowRight, Gauge, LineChart, ShieldAlert, Wallet } from "lucide-react";
+import { AlertTriangle, ArrowRight, Gauge, LineChart, ShieldAlert, ShieldCheck, Wallet } from "lucide-react";
 import CoinValue from "../../components/CoinValue";
 import EmptyState from "../../components/EmptyState";
 import {
@@ -32,11 +32,16 @@ import "./investments.css";
 // percentiles or severity scores surfaced here by design (per the
 // product spec: "understandable without exposing statistical jargon").
 const STATE_COPY = {
+  // The launch state. Deliberately first: for the opening period of a new
+  // game cycle this is what every cohort will report, and it must read as
+  // a deliberate stance ("we're collecting evidence") rather than as an
+  // empty or broken screen.
+  MARKET_FORMING: { label: "Market Forming", tone: "neutral", copy: "Prices are still being established. We're collecting market data before making any investment calls." },
   NORMAL: { label: "Normal", tone: "neutral", copy: "No unusual market-cycle activity detected right now." },
   OVERHEATED: { label: "Overheated", tone: "warn", copy: "Prices look inflated by launch hype. Avoid buying into the excitement — this is not an entry point." },
   CRASHING: { label: "Crashing", tone: "danger", copy: "Prices are actively falling. Cheaper is not the same as undervalued — do not buy just because it's dropped." },
-  WATCH: { label: "Watch", tone: "warn", copy: "The decline has reached an extreme region. Too early to buy — watching for the fall to slow down." },
-  BOTTOMING: { label: "Bottoming", tone: "warn", copy: "The decline is decelerating. Confirming with live sales and listing data before opening the window." },
+  WATCH: { label: "Watching", tone: "warn", copy: "The sell-off has become unusually deep. We're watching for evidence that selling pressure is easing." },
+  BOTTOMING: { label: "Bottoming", tone: "warn", copy: "The decline is slowing, but live market confirmation isn't strong enough yet." },
   INVESTMENT_WINDOW: { label: "Investment Window Open", tone: "good", copy: "Conditions historically favour accumulation. Investable cards are listed below." },
   REBOUND: { label: "Investment Window Open", tone: "good", copy: "The rebound is in progress. Existing positions are being monitored for their exit." },
   EXIT: { label: "Closing", tone: "neutral", copy: "This window is closing — new positions are no longer being opened here." },
@@ -84,7 +89,7 @@ export default function Investments() {
     <main className="v2-destination investments-page">
       <PageHead
         eyebrow="INVESTMENTS"
-        title="Where the market is likely to move, not just what's mispriced today"
+        title="Market cycles, not one-off flips"
         copy="This is different from Opportunities and Trade Finder — those find a single listing worth flipping right now. Investments looks at whole market segments (a cohort of cards) going through a cycle — a launch crash, a bottom, a rebound — and flags cards worth building a multi-day position in, with enough supply to actually do it."
       />
 
@@ -163,12 +168,61 @@ export default function Investments() {
             ))}
         </section>
       ) : (
-        <EmptyState
-          icon={<LineChart size={25} />}
-          text="No active investment candidates right now. This is normal outside a market cycle — check back once a segment enters a crash, bottom, or accumulation window above."
-        />
+        <NoCallsState states={states} />
       )}
     </main>
+  );
+}
+
+// "No investment calls right now" is a POSITION, not an empty state.
+// During a launch (and any time the market is mid-crash) the correct
+// answer genuinely is "don't buy yet" - the page has to say that with
+// confidence rather than looking like it failed to load. Which of the
+// two messages is shown is driven by what the cohorts are actually
+// reporting, so the copy always matches the real reason.
+function NoCallsState({ states }) {
+  const anyCrashing = states.some((s) => ["CRASHING", "OVERHEATED", "WATCH"].includes(s.state));
+  const stillForming = !states.length || states.every((s) => ["MARKET_FORMING", "NORMAL"].includes(s.state));
+
+  if (anyCrashing) {
+    return (
+      <div className="inv-no-calls">
+        <ShieldCheck size={26} />
+        <h2>No investment calls right now — deliberately</h2>
+        <p>
+          Prices in at least one market are still falling. Buying into that isn't a bargain,
+          it's catching a falling knife. We'll flag an entry when there's real evidence
+          that selling pressure has eased.
+        </p>
+        <span className="inv-no-calls-note">Sometimes the best move is not buying yet.</span>
+      </div>
+    );
+  }
+
+  if (stillForming) {
+    return (
+      <div className="inv-no-calls">
+        <LineChart size={26} />
+        <h2>Gathering market data</h2>
+        <p>
+          We're tracking the market and building up enough price and sales history to judge it
+          properly. Investment calls will appear once there's enough live evidence to support them.
+        </p>
+        <span className="inv-no-calls-note">Market intelligence above updates as data arrives.</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="inv-no-calls">
+      <ShieldCheck size={26} />
+      <h2>No investment calls right now</h2>
+      <p>
+        Nothing currently meets the bar for a multi-day hold. This is normal — investment
+        windows are occasional, not constant.
+      </p>
+      <span className="inv-no-calls-note">Looking for something to trade today? Try Opportunities.</span>
+    </div>
   );
 }
 

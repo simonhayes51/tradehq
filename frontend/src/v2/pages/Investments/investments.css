@@ -178,4 +178,50 @@
   .inv-regime-strip { grid-template-columns: 1fr; }
   .inv-targets { grid-template-columns: 1fr 1fr; }
   .inv-budget-input { flex-wrap: wrap; }
+  /* The budget input is the one control on this page a phone user
+     actually types into - let it use the full width rather than being
+     squeezed next to the coin readout. */
+  .inv-budget-input input { max-width: 100%; flex-basis: 100%; }
+  .inv-no-calls { padding: 26px 16px; }
+  .inv-no-calls h2 { font-size: 15px; }
+  .inv-no-calls p { font-size: 12px; }
+  /* Long player names must wrap rather than pushing the confidence chip
+     off the edge of the card. */
+  .inv-card .finder-card-top h2 { overflow-wrap: anywhere; }
+}
+
+/* "No investment calls right now" - a deliberate position, not an empty
+   error state. Styled as a confident statement (bordered panel, icon,
+   headline) rather than the muted .v2-empty-state used for genuine
+   "nothing here" cases. */
+.inv-no-calls {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 8px;
+  padding: 34px 24px;
+  border: 1px solid #343434;
+  border-radius: 8px;
+  background: #141414;
+}
+.inv-no-calls svg { color: var(--v2-accent, #39ff8a); }
+.inv-no-calls h2 {
+  margin: 4px 0 0;
+  font-size: 16px;
+  font-weight: 800;
+}
+.inv-no-calls p {
+  margin: 0;
+  max-width: 52ch;
+  color: #a2a2a2;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+.inv-no-calls-note {
+  margin-top: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .02em;
+  color: #868686;
 }

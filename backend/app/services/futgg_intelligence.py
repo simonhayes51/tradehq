@@ -736,6 +736,41 @@ def evaluate_card(
     trend_blocks = trend.state in cfg.trend_states_blocking_buy
     trend_caps = trend.state in cfg.trend_states_capping_signal
 
+    # ---- Unverifiable-discount guard -------------------------------------
+    # See EngineConfig.unverifiable_discount_ratio for the full rationale.
+    # Short version: trend_caps (specifically insufficient_trend_data) caps
+    # a buy but does not block one, and in the first hours of a new game
+    # cycle EVERY card is insufficient_trend_data. A card repricing
+    # downward fast then shows a huge gap against its backward-looking
+    # sales median, with no trend evidence available to contradict it.
+    # When we have no trend evidence AND the discount is larger than an
+    # ordinary mispricing plausibly is, we cannot tell a bargain from a
+    # collapse - so this becomes a watch, not a buy.
+    #
+    # The qualifier that keeps this from eating the core snipe product:
+    # a card whose recent sales are numerous AND tightly clustered has an
+    # established level, so a BIN far below it is a real mispricing even
+    # with no trend reading. Only when the level itself is unestablished
+    # (few or scattered sales - the normal new-cycle condition) is a large
+    # discount genuinely unverifiable. Unknown dispersion counts as
+    # unestablished: we cannot claim a level we cannot measure.
+    unverifiable_discount = False
+    if (
+        cfg.unverifiable_discount_guard_enabled
+        and trend.state == "insufficient_trend_data"
+        and sales_median
+        and float(sales_median) > 0
+    ):
+        level_is_established = (
+            sales_count >= cfg.unverifiable_discount_min_sales_for_level
+            and dispersion_ratio is not None
+            and dispersion_ratio <= cfg.unverifiable_discount_max_dispersion_for_level
+        )
+        discount_ratio = (float(sales_median) - float(current_bin)) / float(sales_median)
+        unverifiable_discount = (
+            not level_is_established and discount_ratio >= cfg.unverifiable_discount_ratio
+        )
+
     distance_from_threshold: Optional[float] = None
     if recommended_buy_max and recommended_buy_max > 0:
         distance_from_threshold = float((recommended_buy_max - current_bin_dec) / recommended_buy_max)
@@ -757,6 +792,23 @@ def evaluate_card(
             code,
             "The discount against recent sales is explained by an unresolved downtrend, "
             "not by underpricing - recent sales are still printing lower.",
+        )
+    elif unverifiable_discount:
+        # Deliberately a WATCH, not an "avoid": the card may well be a
+        # genuine bargain. We simply cannot demonstrate that yet, and
+        # publishing a buy we cannot support is the specific launch-day
+        # failure this guard exists to prevent.
+        signal, status = "watch", STATUS_WATCH
+        reasons.add(
+            rc.UNVERIFIABLE_DISCOUNT,
+            "This looks heavily discounted, but there aren't enough completed sales yet "
+            "to tell whether it's genuinely underpriced or simply still falling. "
+            "Waiting for the price to settle before calling it a buy.",
+        )
+        reasons.add(
+            rc.INFO_WATCH_THRESHOLD,
+            f"Reconsider once more sales confirm the level - buy below {int(recommended_buy_max):,} "
+            "if the price stabilises there.",
         )
     elif confidence < cfg.min_confidence_for_any_signal:
         signal, status = "insufficient_data", STATUS_INSUFFICIENT_DATA
