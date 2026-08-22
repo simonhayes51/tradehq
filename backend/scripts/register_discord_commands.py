@@ -24,20 +24,36 @@ import sys
 
 import requests
 
+_PLATFORM_OPTION = {
+    "type": 3,
+    "name": "platform",
+    "description": "Platform (defaults to PS)",
+    "required": False,
+    "choices": [
+        {"name": "PlayStation", "value": "ps"},
+        {"name": "Xbox", "value": "xbox"},
+        {"name": "PC", "value": "pc"},
+    ],
+}
+
+_PLAYER_OPTION = {
+    "type": 3,
+    "name": "player",
+    "description": "Start typing a player's name and pick a suggestion",
+    "required": True,
+    "autocomplete": True,
+}
+
 COMMANDS = [
     {
         "name": "price",
         "description": "Current buy price for a card",
-        "options": [
-            {"type": 3, "name": "player", "description": "Player name", "required": True}
-        ],
+        "options": [_PLAYER_OPTION, _PLATFORM_OPTION],
     },
     {
         "name": "fairvalue",
-        "description": "Fair value and signal for a card",
-        "options": [
-            {"type": 3, "name": "player", "description": "Player name", "required": True}
-        ],
+        "description": "Fair value, verdict, risk and selling speed for a card",
+        "options": [_PLAYER_OPTION, _PLATFORM_OPTION],
     },
     {"name": "watchlist", "description": "Your tracked cards (private reply)"},
     {"name": "alerts", "description": "Your active price alerts (private reply)"},

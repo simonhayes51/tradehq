@@ -47,7 +47,12 @@ from app.services.discord_trading_feed import (  # noqa: E402
     _last_opportunity_post_at,
     _posts_sent_today,
 )
-from app.routers.discord_interactions import _dispatch, _rate_limited, _command_hits  # noqa: E402
+from app.routers.discord_interactions import (  # noqa: E402
+    _build_reply,
+    _command_hits,
+    _rate_limited,
+    handle_autocomplete,
+)
 
 REPORT: list[str] = []
 
@@ -239,28 +244,37 @@ async def main() -> None:
     log("PASS: expiry gating holds; throwaway scratch server deleted")
 
     # ------------------------------------------------------------------
-    section("11. Slash commands (/price /fairvalue /watchlist /alerts /results /account /help) + rate limits")
+    section("11. Slash commands + autocomplete + rate limits")
     # ------------------------------------------------------------------
     _command_hits.clear()
-    help_reply = await _dispatch(pool, "help", [], None)
-    log(f"/help -> {help_reply[:80]}...")
-    assert "/price" in help_reply
 
-    price_reply = await _dispatch(pool, "price", [{"name": "player", "value": "Mbappe"}], None)
-    log(f"/price Mbappe -> {price_reply}")
+    help_reply = await _build_reply("help", [], None, "smoketest")
+    log(f"/help -> title={help_reply['embeds'][0]['title']!r}, fields={len(help_reply['embeds'][0]['fields'])}")
+    assert help_reply["embeds"][0]["title"]
 
-    fv_reply = await _dispatch(pool, "fairvalue", [{"name": "player", "value": "Mbappe"}], None)
-    log(f"/fairvalue Mbappe -> {fv_reply}")
+    ac_result = await handle_autocomplete("price", [{"name": "player", "value": "mbap", "focused": True}])
+    choices = ac_result["data"]["choices"]
+    log(f"/price autocomplete 'mbap' -> {len(choices)} choice(s): {[c['name'] for c in choices[:5]]}")
+    assert len(choices) <= 25
+
+    if choices:
+        card_id = choices[0]["value"]
+        price_reply = await _build_reply("price", [{"name": "player", "value": card_id}], None, "smoketest")
+        log(f"/price (card_id={card_id}) -> {price_reply['embeds'][0]['title']}")
+        fv_reply = await _build_reply("fairvalue", [{"name": "player", "value": card_id}], None, "smoketest")
+        log(f"/fairvalue (card_id={card_id}) -> verdict={fv_reply['embeds'][0]['fields'][3]['value']}")
+    else:
+        log("No autocomplete matches for 'mbap' in this dataset - skipping /price and /fairvalue live checks")
 
     test_discord_id = os.getenv("DISCORD_ADMIN_ID")
     for cmd in ("watchlist", "alerts", "results", "account"):
-        reply = await _dispatch(pool, cmd, [], test_discord_id)
-        linked = "isn't linked" not in reply
-        log(f"/{cmd} (discord_id={test_discord_id!r}) -> linked_account_path={linked}: {reply[:120]}")
+        reply = await _build_reply(cmd, [], test_discord_id, "smoketest")
+        title = reply["embeds"][0].get("title", "")
+        log(f"/{cmd} (discord_id={test_discord_id!r}) -> {title}: {reply['embeds'][0].get('description', '')[:160]}")
 
-    unlinked_reply = await _dispatch(pool, "account", [], "999999999999999999")
-    log(f"/account with an unlinked discord_id -> {unlinked_reply}")
-    assert "isn't linked" in unlinked_reply
+    unlinked_reply = await _build_reply("account", [], "999999999999999999", "smoketest")
+    log(f"/account with an unlinked discord_id -> {unlinked_reply['embeds'][0]['description']}")
+    assert "link" in unlinked_reply["embeds"][0]["description"].lower()
     log("PASS: unlinked account commands return the link-your-account message, never account data")
 
     blocked = False
