@@ -67,7 +67,7 @@ Important environment variables:
                                    complete catalogue; 0 disables the check)
   FUTGG_LISTING_IDLE_ROUNDS       4 (consecutive pages w/ 0 new cards before stopping, per partition)
   FUTGG_LISTING_PAGE_DELAY        0.5 seconds, between listing-page navigations
-  FUTGG_LISTING_STABILIZE_ATTEMPTS 6 (retries waiting for a page's cards to differ from the previous page's)
+  FUTGG_LISTING_STABILIZE_ATTEMPTS 10 (retries waiting for card links and rating footers to hydrate)
   FUTGG_LISTING_STABILIZE_POLL_MS 400 (wait between stabilize retries)
   FUTGG_REFRESH_EXISTING          false
   FUTGG_PLAYER_REQUEST_DELAY      0.35 seconds, per fetch worker
@@ -189,7 +189,7 @@ PAGE_DELAY = max(0.0, float(os.getenv("FUTGG_LISTING_PAGE_DELAY", "0.5")))
 # steadily). collect_listing_urls() polls up to this many times, waiting
 # this long between attempts, until the visible cards differ from the
 # previous page's - see its own docstring.
-LISTING_STABILIZE_MAX_ATTEMPTS = max(1, int(os.getenv("FUTGG_LISTING_STABILIZE_ATTEMPTS", "6")))
+LISTING_STABILIZE_MAX_ATTEMPTS = max(1, int(os.getenv("FUTGG_LISTING_STABILIZE_ATTEMPTS", "10")))
 LISTING_STABILIZE_POLL_MS = max(50, int(os.getenv("FUTGG_LISTING_STABILIZE_POLL_MS", "400")))
 
 REFRESH_EXISTING = os.getenv("FUTGG_REFRESH_EXISTING", "false").strip().lower() in {"1", "true", "yes", "on"}
@@ -357,6 +357,19 @@ def _merge_listing_metadata(
             if incoming.gg_rating is not None or existing.gg_rating is not None
             else incoming.gg_rating_invalid or existing.gg_rating_invalid
         ),
+    )
+
+
+def _listing_metadata_ready(cards: dict[str, ListingCardMetadata]) -> bool:
+    """Whether FUT.GG has hydrated at least one card footer.
+
+    Card anchors and images can appear before the client-rendered footer.
+    A parsed or explicitly invalid rating proves the footer is present;
+    otherwise a populated href set is still an incomplete render.
+    """
+    return any(
+        metadata.gg_rating is not None or metadata.gg_rating_invalid
+        for metadata in cards.values()
     )
 
 
@@ -643,7 +656,11 @@ async def _paginate_listing(
             # page's cards (stale content still attached). Only a
             # non-empty read that actually differs from the previous page
             # is trusted without retrying.
-            if current_hrefs and current_hrefs != previous_page_hrefs:
+            if (
+                current_hrefs
+                and current_hrefs != previous_page_hrefs
+                and _listing_metadata_ready(current_hrefs)
+            ):
                 break
             await page.wait_for_timeout(LISTING_STABILIZE_POLL_MS)
             current_hrefs = await _read_card_hrefs(page)
