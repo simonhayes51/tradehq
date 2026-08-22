@@ -202,6 +202,8 @@ async def _section_3_event_level_coverage(conn, game_year: int) -> None:
     # derive thresholds from the ACTUAL distribution rather than guessing.
     all_paired_n: List[int] = []
     per_event_cohort_paired: Dict[tuple, Dict[int, int]] = {}
+    per_event_cohort_eligible: Dict[tuple, int] = {}
+    per_event_cohort_t1: Dict[tuple, int] = {}
     for ev in events:
         card_ids = cards_by_event.get(ev["id"], [])
         by_cohort: Dict[str, List[int]] = defaultdict(list)
@@ -213,6 +215,8 @@ async def _section_3_event_level_coverage(conn, game_year: int) -> None:
         baseline = release_day + timedelta(days=-1)
         for cohort, cids in by_cohort.items():
             n_t1 = sum(1 for cid in cids if baseline in priced_dates_by_card.get(cid, ()))
+            per_event_cohort_eligible[(ev["id"], cohort)] = len(cids)
+            per_event_cohort_t1[(ev["id"], cohort)] = n_t1
             paired = {}
             for h in horizons:
                 target = release_day + timedelta(days=h)
@@ -267,8 +271,13 @@ async def _section_3_event_level_coverage(conn, game_year: int) -> None:
             qualities = {h: _quality(n) for h, n in paired.items()}
             worst = min(qualities.values(), key=lambda q: rank[q])
             best_quality_rank = max(best_quality_rank, rank[worst])
+            eligible = per_event_cohort_eligible[(ev["id"], cohort)]
+            n_t1 = per_event_cohort_t1[(ev["id"], cohort)]
+            cov_pct = (max(paired.values()) / eligible * 100.0) if eligible else 0.0
             by_cohort_lines.append(
-                f"      {cohort:<20} n(T-1..T+7)={[paired[h] for h in horizons]} -> {worst}"
+                f"      {cohort:<20} eligible={eligible} T-1_priced={n_t1} "
+                f"paired_n(T-1..T+7)={[paired[h] for h in horizons]} "
+                f"best_paired_coverage={cov_pct:.0f}% -> {worst}"
             )
         if best_quality_rank >= 1:
             usable_events += 1
@@ -300,7 +309,7 @@ async def _section_5_recoverability(conn, game_year: int) -> None:
             continue
         row = await conn.fetchrow(
             f"""
-            SELECT count(*) AS n, count(DISTINCT source_card_id) AS cards,
+            SELECT count(*) AS n, count(DISTINCT t.source_card_id) AS cards,
                    min({date_col}) AS earliest, max({date_col}) AS latest
             FROM {table} t
             JOIN futgg_players p ON p.source_card_id = t.source_card_id
@@ -332,6 +341,73 @@ async def _section_5_recoverability(conn, game_year: int) -> None:
     print("  reporting that overlap - no rebuild is performed here.")
 
 
+async def _section_4_capture_scope(conn, game_year: int) -> None:
+    print()
+    print("=" * 88)
+    print("4. WHY are premium_meta/mid_tier_meta almost absent from the priced set?")
+    print("   auto_sync/research_fc26_chart_capture.py's _fetch_qualifying_cards() selected its")
+    print("   capture candidates with: WHERE p.rating >= 75, THEN classify_price_tier() kept only")
+    print("   tier in ('gold_common','gold_rare') - i.e. this dataset was scoped, by the original")
+    print("   Phase 5/6 research, to ORDINARY BASE GOLD CARDS. Promo/special items (TOTW, TOTY,")
+    print("   FUTTIES prizes themselves, etc.) were never candidates for capture at all.")
+    print("=" * 88)
+
+    rarity_rows = await conn.fetch(
+        """
+        SELECT p.rarity, count(DISTINCT h.card_id) AS priced_cards, count(DISTINCT p.source_card_id) AS total_cards
+        FROM futgg_players p
+        LEFT JOIN (SELECT DISTINCT card_id FROM fc26_historical_daily_prices) h ON h.card_id = p.source_card_id
+        WHERE p.game_year = $1
+        GROUP BY p.rarity
+        ORDER BY total_cards DESC
+        LIMIT 20
+        """,
+        game_year,
+    )
+    print(f"  {'rarity':<28} {'priced_cards':>13} {'total_cards':>12} {'priced_%':>9}")
+    for r in rarity_rows:
+        pct = (r["priced_cards"] / r["total_cards"] * 100.0) if r["total_cards"] else 0.0
+        print(f"  {(r['rarity'] or '(null)'):<28} {r['priced_cards']:>13} {r['total_cards']:>12} {pct:>8.1f}%")
+
+    print()
+    print("  cohort membership of the priced cards specifically (which cohort do the ~2600")
+    print("  priced cards actually belong to, vs the full FC26 cohort population):")
+    cohort_rows = await conn.fetch(
+        """
+        SELECT m.cohort_key,
+               count(DISTINCT h.card_id) AS priced_cards,
+               count(DISTINCT m.source_card_id) AS total_cards
+        FROM investment_cohort_memberships m
+        LEFT JOIN (SELECT DISTINCT card_id FROM fc26_historical_daily_prices) h ON h.card_id = m.source_card_id
+        WHERE m.game_year = $1
+        GROUP BY m.cohort_key
+        ORDER BY total_cards DESC
+        """,
+        game_year,
+    )
+    print(f"  {'cohort':<20} {'priced_cards':>13} {'total_cards':>12} {'priced_%':>9}")
+    for r in cohort_rows:
+        pct = (r["priced_cards"] / r["total_cards"] * 100.0) if r["total_cards"] else 0.0
+        print(f"  {r['cohort_key']:<20} {r['priced_cards']:>13} {r['total_cards']:>12} {pct:>8.1f}%")
+
+    print()
+    print("  the actual distinct premium_meta cards that DO have price rows (all of them, if few):")
+    named = await conn.fetch(
+        """
+        SELECT DISTINCT p.source_card_id, p.display_name, p.name, p.rarity
+        FROM investment_cohort_memberships m
+        JOIN futgg_players p ON p.source_card_id = m.source_card_id
+        JOIN fc26_historical_daily_prices h ON h.card_id = m.source_card_id
+        WHERE m.game_year = $1 AND m.cohort_key = 'premium_meta'
+        """,
+        game_year,
+    )
+    if not named:
+        print("    (none)")
+    for r in named:
+        print(f"    {r['source_card_id']}  {r['display_name'] or r['name']}  [{r['rarity']}]")
+
+
 async def main() -> int:
     args = _parse_args()
     dsn = args.dsn or os.getenv("PLAYER_DATABASE_URL") or os.getenv("DATABASE_URL")
@@ -345,6 +421,7 @@ async def main() -> int:
         async with pool.acquire() as conn:
             await _section_1_monthly_coverage(conn, args.game_year)
             await _section_3_event_level_coverage(conn, args.game_year)
+            await _section_4_capture_scope(conn, args.game_year)
             await _section_5_recoverability(conn, args.game_year)
     finally:
         await pool.close()
