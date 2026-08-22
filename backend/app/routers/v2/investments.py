@@ -25,6 +25,7 @@ table.
 from __future__ import annotations
 
 import logging
+from datetime import timedelta
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -260,12 +261,17 @@ async def shadow_report(
     signals table alone, which is why investment_decision_log exists.
     """
     await require_admin(request)
-    interval = f"{int(window_hours)} hours"
+    # Passed as a bound parameter rather than interpolated. window_hours
+    # is already an int validated by Query(ge=1, le=...), so the literal
+    # form was safe - but parameterising removes the possibility that a
+    # future edit loosens the validation and quietly makes it unsafe,
+    # and matches decision_log.py's own interval-binding pattern.
+    interval = timedelta(hours=int(window_hours))
 
     async with pool.acquire() as conn:
         try:
             decisions = await conn.fetch(
-                f"""
+                """
                 SELECT strategy_key, cohort_key, decision, reason,
                        count(*) AS n,
                        avg(roi_after_24h_pct) AS avg_roi_24h,
@@ -275,29 +281,31 @@ async def shadow_report(
                        count(*) FILTER (WHERE roi_after_24h_pct IS NOT NULL) AS graded_24h,
                        count(*) FILTER (WHERE roi_after_72h_pct IS NOT NULL) AS graded_72h
                 FROM investment_decision_log
-                WHERE decided_at >= now() - '{interval}'::interval
+                WHERE decided_at >= now() - $1::interval
                 GROUP BY strategy_key, cohort_key, decision, reason
                 ORDER BY decision, n DESC
-                """
+                """,
+                interval,
             )
         except Exception:
             decisions = []
 
         try:
             by_state = await conn.fetch(
-                f"""
+                """
                 SELECT market_state, decision, count(*) AS n,
                        percentile_cont(0.5) WITHIN GROUP (ORDER BY roi_after_24h_pct) AS median_roi_24h
                 FROM investment_decision_log
-                WHERE decided_at >= now() - '{interval}'::interval AND market_state IS NOT NULL
+                WHERE decided_at >= now() - $1::interval AND market_state IS NOT NULL
                 GROUP BY market_state, decision ORDER BY market_state
-                """
+                """,
+                interval,
             )
         except Exception:
             by_state = []
 
         signals = await conn.fetch(
-            f"""
+            """
             SELECT strategy_key, cohort_key, shadow, status,
                    count(*) AS n,
                    count(*) FILTER (WHERE outcome = 'target_hit') AS target_hits,
@@ -305,10 +313,11 @@ async def shadow_report(
                    avg(after_tax_roi_pct) AS avg_roi,
                    percentile_cont(0.5) WITHIN GROUP (ORDER BY after_tax_roi_pct) AS median_roi
             FROM investment_signals
-            WHERE opened_at >= now() - '{interval}'::interval
+            WHERE opened_at >= now() - $1::interval
             GROUP BY strategy_key, cohort_key, shadow, status
             ORDER BY strategy_key
-            """
+            """,
+            interval,
         )
 
     def _f(v):
