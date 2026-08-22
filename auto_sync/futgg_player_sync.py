@@ -106,6 +106,18 @@ if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL not found")
 
 HEADLESS = os.getenv("PLAYWRIGHT_HEADLESS", "true").strip().lower() in {"1", "true", "yes", "on"}
+# Pinned browser timezone - see the new_context() call for why this
+# matters to released_at parsing. Overridable only if FUT.GG is ever
+# shown to render "Added On" in a different fixed zone, in which case
+# futgg_common.ADDED_ON_ASSUMED_TIMEZONE must be changed to match.
+BROWSER_TIMEZONE = os.getenv("FUTGG_BROWSER_TIMEZONE", "UTC").strip() or "UTC"
+# Targeted metadata backfill: revisit cards that predate the
+# released_at/display_name/full_name fields instead of forcing every
+# normal daily run to re-scrape the whole historical catalogue forever
+# (which is what FUTGG_REFRESH_EXISTING=true would do).
+BACKFILL_RELEASE_METADATA = os.getenv("FUTGG_BACKFILL_RELEASE_METADATA", "false").strip().lower() in {"1", "true", "yes", "on"}
+BACKFILL_LIMIT = int(os.getenv("FUTGG_BACKFILL_LIMIT", "500"))
+BACKFILL_GAME_YEAR = os.getenv("FUTGG_BACKFILL_GAME_YEAR", "").strip()
 TIMEOUT_MS = max(5000, int(os.getenv("PLAYWRIGHT_TIMEOUT_MS", "45000")))
 PLAYER_LIMIT = max(0, int(os.getenv("FUTGG_PLAYER_LIMIT", "0")))
 
@@ -276,6 +288,21 @@ async def ensure_schema(conn: asyncpg.Connection) -> None:
     await conn.execute(
         "ALTER TABLE futgg_players ADD COLUMN IF NOT EXISTS is_tradeable BOOLEAN"
     )
+    # display_name / full_name / released_at: see FutggCard's own comments
+    # for the naming rationale. Defensive ADD COLUMN IF NOT EXISTS here
+    # follows this worker's existing convention (it owns its own tables and
+    # must not crash on a database that has not had the migration applied
+    # yet) - but backend/migrations/063 is the real application migration,
+    # and is what the backend's own reads depend on.
+    for column, ddl_type in (
+        ("display_name", "TEXT"),
+        ("full_name", "TEXT"),
+        ("released_at", "TIMESTAMPTZ"),
+        ("released_at_raw", "TEXT"),
+    ):
+        await conn.execute(
+            f"ALTER TABLE futgg_players ADD COLUMN IF NOT EXISTS {column} {ddl_type}"
+        )
     # card_image_url: the single pre-composited full-card image FUT.GG
     # itself renders (background+cutout+badges baked in) - see
     # futgg_common.py's "/player-item-card/" branch. The
@@ -581,6 +608,63 @@ async def existing_ids(conn: asyncpg.Connection, urls) -> set[int]:
     return {int(row["source_card_id"]) for row in rows}
 
 
+async def cards_needing_release_metadata(
+    conn: asyncpg.Connection, *, limit: int, game_year: str | None = None,
+) -> list[tuple[str, str | None]]:
+    """Cards that predate the released_at/display_name/full_name fields.
+
+    Targeted metadata backfill (FUTGG_BACKFILL_RELEASE_METADATA=true)
+    rather than FUTGG_REFRESH_EXISTING=true, which would force EVERY
+    normal daily run to re-scrape the entire historical catalogue
+    forever. This selects only rows actually missing something.
+
+    Resumable and idempotent by construction: each pass re-runs the same
+    query, so completed cards drop out of the result set naturally and an
+    interrupted run simply picks up where it left off. Ordering is stable
+    (released_at NULLs first, then oldest-seen) so progress is monotonic
+    rather than reshuffling every pass.
+    """
+    where = [
+        "source_url IS NOT NULL",
+        "(released_at IS NULL OR display_name IS NULL OR full_name IS NULL)",
+    ]
+    args: list = []
+    if game_year:
+        args.append(int(game_year))
+        where.append(f"game_year = ${len(args)}")
+    args.append(limit)
+    rows = await conn.fetch(
+        f"""
+        SELECT source_url, card_image_url
+        FROM futgg_players
+        WHERE {' AND '.join(where)}
+        ORDER BY released_at NULLS FIRST, first_seen_at
+        LIMIT ${len(args)}
+        """,
+        *args,
+    )
+    return [(r["source_url"], r["card_image_url"]) for r in rows]
+
+
+async def count_cards_needing_release_metadata(
+    conn: asyncpg.Connection, *, game_year: str | None = None,
+) -> int:
+    """How much work remains - logged before a backfill starts so the run
+    can be sized (and its duration estimated at the configured
+    concurrency/delay) rather than started blind."""
+    where = [
+        "source_url IS NOT NULL",
+        "(released_at IS NULL OR display_name IS NULL OR full_name IS NULL)",
+    ]
+    args: list = []
+    if game_year:
+        args.append(int(game_year))
+        where.append(f"game_year = ${len(args)}")
+    return await conn.fetchval(
+        f"SELECT count(*) FROM futgg_players WHERE {' AND '.join(where)}", *args
+    )
+
+
 def _build_targets(
     urls: dict[str, str | None], known: set[int], refresh_existing: bool,
 ) -> tuple[list[tuple[str, bool, str | None]], int]:
@@ -611,7 +695,8 @@ async def upsert_card(conn: asyncpg.Connection, card: FutggCard) -> None:
         """
         INSERT INTO futgg_players (
             source_card_id, source_player_id, source_slug, source_url, game_year,
-            name, rating, primary_position, alternate_positions, rarity, squad, price_tier,
+            name, display_name, full_name, released_at, released_at_raw,
+            rating, primary_position, alternate_positions, rarity, squad, price_tier,
             club, league, nation, club_source_id, league_source_id, nation_source_id,
             height_cm, weight_kg, foot, skill_moves, weak_foot, accelerate_type,
             body_type, real_face, shirt_number, age,
@@ -623,7 +708,8 @@ async def upsert_card(conn: asyncpg.Connection, card: FutggCard) -> None:
         ) VALUES (
             $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,
             $19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,
-            $35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,NOW(),NOW(),NOW(),$47
+            $35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50,
+            NOW(),NOW(),NOW(),$51
         )
         ON CONFLICT (source_card_id) DO UPDATE SET
             source_player_id = EXCLUDED.source_player_id,
@@ -631,6 +717,14 @@ async def upsert_card(conn: asyncpg.Connection, card: FutggCard) -> None:
             source_url = EXCLUDED.source_url,
             game_year = EXCLUDED.game_year,
             name = COALESCE(EXCLUDED.name, futgg_players.name),
+            -- Prefer a freshly parsed value, but never let a temporarily
+            -- failed parse blank out metadata we already have. This is
+            -- what makes the backfill safe to re-run and safe to
+            -- interrupt: a card that fails once keeps whatever it had.
+            display_name = COALESCE(EXCLUDED.display_name, futgg_players.display_name),
+            full_name = COALESCE(EXCLUDED.full_name, futgg_players.full_name),
+            released_at = COALESCE(EXCLUDED.released_at, futgg_players.released_at),
+            released_at_raw = COALESCE(EXCLUDED.released_at_raw, futgg_players.released_at_raw),
             rating = COALESCE(EXCLUDED.rating, futgg_players.rating),
             primary_position = COALESCE(EXCLUDED.primary_position, futgg_players.primary_position),
             alternate_positions = EXCLUDED.alternate_positions,
@@ -694,7 +788,9 @@ async def upsert_card(conn: asyncpg.Connection, card: FutggCard) -> None:
             metadata_warnings = EXCLUDED.metadata_warnings
         """,
         data["source_card_id"], data["source_player_id"], data["source_slug"], data["source_url"], data["game_year"],
-        data["name"], data["rating"], data["primary_position"], data["alternate_positions"], data["rarity"], data["squad"], price_tier,
+        data["name"], data["display_name"], data["full_name"],
+        data["released_at"], data["released_at_raw"],
+        data["rating"], data["primary_position"], data["alternate_positions"], data["rarity"], data["squad"], price_tier,
         data["club"], data["league"], data["nation"], data["club_source_id"], data["league_source_id"], data["nation_source_id"],
         data["height_cm"], data["weight_kg"], data["foot"], data["skill_moves"], data["weak_foot"], data["accelerate_type"],
         data["body_type"], data["real_face"], data["shirt_number"], data["age"],
@@ -791,9 +887,20 @@ async def crawl_once() -> None:
             headless=HEADLESS,
             args=["--no-sandbox", "--disable-dev-shm-usage"],
         )
+        # timezone_id is pinned deliberately. FUT.GG's "Added On" value
+        # (parsed into FutggCard.released_at) carries no timezone in the
+        # markup, so if that timestamp is rendered client-side in the
+        # viewer's local zone - the common pattern - the string we scrape
+        # would silently shift with whatever timezone the container host
+        # happened to have. Pinning makes the parse deterministic and
+        # makes futgg_common.ADDED_ON_ASSUMED_TIMEZONE correct by
+        # construction rather than by assumption. If FUT.GG turns out to
+        # render server-side in a fixed zone instead, this changes
+        # nothing and costs nothing.
         context = await browser.new_context(
             user_agent=USER_AGENT,
             locale="en-GB",
+            timezone_id=BROWSER_TIMEZONE,
             viewport={"width": 1440, "height": 1000},
         )
         # Listing/pagination stays on its own dedicated page - sequential
@@ -801,11 +908,39 @@ async def crawl_once() -> None:
         # capped at a few hundred pages regardless), not the bottleneck.
         listing_page = await context.new_page()
 
-        urls = await collect_listing_urls(listing_page)  # card_url -> composited image url (or None)
-        stats["discovered"] = len(urls)
-        async with pool.acquire() as conn:
-            known = await existing_ids(conn, urls)
-            db_total = await conn.fetchval("SELECT COUNT(*) FROM futgg_players")
+        if BACKFILL_RELEASE_METADATA:
+            # Backfill mode reuses EVERYTHING below this point - the same
+            # fetch workers, the same parser, the same upsert, the same
+            # circuit breaker and per-request delay. The only difference
+            # is where the target list comes from: existing rows missing
+            # the new metadata, rather than the listing crawl. No parallel
+            # scraper, no duplicated fetch logic.
+            async with pool.acquire() as conn:
+                remaining = await count_cards_needing_release_metadata(
+                    conn, game_year=BACKFILL_GAME_YEAR or None,
+                )
+                backfill_rows = await cards_needing_release_metadata(
+                    conn, limit=BACKFILL_LIMIT, game_year=BACKFILL_GAME_YEAR or None,
+                )
+            est_seconds = (len(backfill_rows) * REQUEST_DELAY) / max(PLAYER_CONCURRENCY, 1)
+            log.info(
+                "BACKFILL MODE: %d card(s) still need release metadata%s; "
+                "processing up to %d this run (~%.1f min at concurrency=%d delay=%.2fs). "
+                "Re-run to continue - the query is resumable and idempotent.",
+                remaining,
+                f" (game_year={BACKFILL_GAME_YEAR})" if BACKFILL_GAME_YEAR else "",
+                len(backfill_rows), est_seconds / 60.0, PLAYER_CONCURRENCY, REQUEST_DELAY,
+            )
+            urls = {url: image for url, image in backfill_rows}
+            stats["discovered"] = len(urls)
+            known = set()          # force every backfill row to be fetched
+            db_total = remaining   # skips the full-scan plausibility check below
+        else:
+            urls = await collect_listing_urls(listing_page)  # card_url -> composited image url (or None)
+            stats["discovered"] = len(urls)
+            async with pool.acquire() as conn:
+                known = await existing_ids(conn, urls)
+                db_total = await conn.fetchval("SELECT COUNT(*) FROM futgg_players")
 
         scan_plausible = True
         if FULL_SCAN:
