@@ -82,6 +82,40 @@ class TestGroupingKey:
         # The absorbed jitter stays visible rather than being smoothed away.
         assert events[0].span_seconds == 120
 
+    def test_a_multi_wave_release_does_not_chain_into_one_fictional_event(self):
+        """REGRESSION - found against real FC26 data. TOTY releases in
+        waves (Attackers/Midfielders/Defenders/GK) roughly a day apart.
+        Each wave sits within the GAP tolerance of the previous one, so
+        gap-based linkage alone chained 24 TOTY cards into a single
+        'event' spanning SEVEN DAYS. Thunderstruck 1 chained across 48h
+        the same way. MAX_CLUSTER_SPAN caps the total span so these split
+        into the separate market moments they actually were."""
+        waves = []
+        for wave, offset_days in enumerate((0, 1.75, 3.5, 7)):
+            waves += _cards(6, squad="TOTY", rarity="TOTY",
+                            released_at=T1 + timedelta(days=offset_days),
+                            start_id=wave * 100)
+        events = group_release_events(waves)
+        assert len(events) == 4
+        assert all(e.card_count == 6 for e in events)
+        # Each wave is its own tight drop, not a week-long smear.
+        assert all(e.span_seconds == 0 for e in events)
+
+    def test_a_slow_but_genuine_single_drop_stays_intact(self):
+        """The counterweight to the test above: the slowest real drop
+        measured in FC26 (Joga Bonito, 39 cards) spanned 1h47m. That is
+        ONE release with a slow import and must NOT be split."""
+        cards = (
+            _cards(13, squad="Joga Bonito", rarity="Joga Bonito", released_at=T1)
+            + _cards(13, squad="Joga Bonito", rarity="Joga Bonito",
+                     released_at=T1 + timedelta(minutes=53), start_id=50)
+            + _cards(13, squad="Joga Bonito", rarity="Joga Bonito",
+                     released_at=T1 + timedelta(seconds=6420), start_id=100)
+        )
+        events = group_release_events(cards)
+        assert len(events) == 1
+        assert events[0].card_count == 39
+
     def test_two_different_promos_in_the_same_hour_do_not_merge(self):
         """Clustering is WITHIN a squad only - simultaneous drops of
         different promos must stay separate events."""

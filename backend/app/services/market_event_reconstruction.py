@@ -24,12 +24,13 @@ and 17:03 UTC. Exact-equality grouping shattered that one drop into three
 events, two of which were then mislabelled "mini" because each fragment
 held only part of the squad.
 
-So cards in the same squad whose timestamps are within
-RELEASE_CLUSTER_TOLERANCE of the previous card form ONE event, stamped
-with the EARLIEST timestamp in the cluster (the actual drop moment). The
-tolerance is hours, not days, so a card genuinely added to a promo days
-later still forms its own separate event - which is what happened in the
-market and must stay visible.
+So cards in the same squad within RELEASE_CLUSTER_TOLERANCE of the
+previous card form ONE event, stamped with the EARLIEST timestamp in the
+cluster (the actual drop moment) - subject to MAX_CLUSTER_SPAN, which
+stops a multi-wave release (TOTY: Attackers/Midfielders/Defenders/GK over
+a week) chaining into one fictional seven-day "event". A card genuinely
+added to a promo days later still forms its own separate event, which is
+what happened in the market and must stay visible.
 """
 from __future__ import annotations
 
@@ -67,10 +68,25 @@ _TOTW_RARITY_PATTERN = re.compile(r"team of the week|\btotw\b", re.IGNORECASE)
 # afterwards, so hours cleanly separates the two cases.
 #
 # Measured as the gap from the PREVIOUS card, not from the cluster start,
-# so a drop that trickles in over a while still groups. Chaining would
-# require a continuous card-every-few-hours stream within one squad,
-# which is not a shape FUT.GG content actually takes.
+# so a drop that trickles in over a while still groups.
 RELEASE_CLUSTER_TOLERANCE = timedelta(hours=6)
+
+# Hard cap on how long one cluster may span in total.
+#
+# Gap-based linkage alone chains, and real FC26 data proved it: TOTY
+# releases in waves (Attackers, Midfielders, Defenders, GK) a day or so
+# apart, and each wave sits within the gap tolerance of the previous one,
+# so 24 TOTY cards merged into a single "event" spanning SEVEN DAYS.
+# Thunderstruck 1 (56 cards) chained across 48 hours the same way. For an
+# event study that is actively misleading - the market reaction to TOTY
+# Attackers is not the same event as TOTY Defenders three days later.
+#
+# Sized against observed real drops: a single release spans seconds to
+# minutes, and the slowest genuine one measured (Joga Bonito, 39 cards)
+# spanned 1h47m. 6h therefore keeps every real single drop intact while
+# splitting multi-day wave releases into the separate market moments they
+# actually were.
+MAX_CLUSTER_SPAN = timedelta(hours=6)
 
 
 @dataclass(frozen=True)
@@ -173,9 +189,16 @@ def group_release_events(cards: Iterable[CardRelease]) -> List[DerivedEvent]:
         # days afterwards and still separates cleanly.
         cluster: List[CardRelease] = []
         for card in squad_cards:
-            if cluster and (card.released_at - cluster[-1].released_at) > RELEASE_CLUSTER_TOLERANCE:
-                events.append(_event_from_cluster(game_year, cluster))
-                cluster = []
+            if cluster:
+                gap = card.released_at - cluster[-1].released_at
+                span_if_added = card.released_at - cluster[0].released_at
+                # Break on EITHER a long gap (a clearly separate later
+                # addition) OR an over-long total span (a multi-wave
+                # release chaining through the gap check - see
+                # MAX_CLUSTER_SPAN).
+                if gap > RELEASE_CLUSTER_TOLERANCE or span_if_added > MAX_CLUSTER_SPAN:
+                    events.append(_event_from_cluster(game_year, cluster))
+                    cluster = []
             cluster.append(card)
         if cluster:
             events.append(_event_from_cluster(game_year, cluster))

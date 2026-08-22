@@ -94,10 +94,18 @@ Either way the parse is deterministic rather than host-dependent.
 later shown to render in a different fixed zone, every row can be
 re-derived with a single UPDATE — no re-scrape of the catalogue.
 
-> **CONFIRMED against production.** A live backfill returned FUTTIES 2
-> cards at `17:01–17:02 UTC` on 31 Jul — i.e. 18:01–18:02 BST, the
-> canonical 6pm UK content slot. The pinned-UTC assumption holds. If a
-> future FUT.GG change ever breaks this, the fix is to change
+> **CONFIRMED against production, twice over.**
+>
+> 1. A live backfill returned FUTTIES 2 cards at `17:01–17:02 UTC` on
+>    31 Jul — i.e. 18:01–18:02 BST, the canonical 6pm UK content slot.
+> 2. Conclusively, the reconstructed FC26 timeline shows the **BST→GMT
+>    clock change**: TOTW 6 lands at `17:00 UTC` (22 Oct) and TOTW 7 at
+>    `18:00 UTC` (29 Oct), with the UK leaving BST on 26 Oct. The event
+>    stayed at 18:00 *UK* throughout; only the UTC offset moved. The same
+>    step appears on the promo track (Ultimate Scream 1 → 2). That
+>    pattern cannot arise by accident.
+>
+> If a future FUT.GG change ever breaks this, the fix is to change
 > `ADDED_ON_ASSUMED_TIMEZONE` and re-derive from `released_at_raw` — no
 > re-scrape needed.
 
@@ -194,6 +202,16 @@ Cards in the same squad within `RELEASE_CLUSTER_TOLERANCE` (6h) of the
 previous card now form one event, stamped with the **earliest** timestamp
 in the cluster — the moment the drop began. The observed jitter is
 recorded in `metadata.release_span_seconds` rather than smoothed away.
+
+**`MAX_CLUSTER_SPAN` (6h) stops gap-based linkage chaining.** Real FC26
+data proved this necessary: TOTY releases in waves (Attackers,
+Midfielders, Defenders, GK) roughly a day apart, and each wave sits
+within the gap tolerance of the previous one — so 24 TOTY cards merged
+into one "event" spanning **seven days**. Thunderstruck 1 (56 cards)
+chained across 48 hours the same way. Capping the total span splits these
+into the separate market moments they actually were, while leaving the
+slowest genuine single drop measured (Joga Bonito, 39 cards, 1h47m)
+intact.
 
 The tolerance is hours, not days, so cards **added later to an existing
 promo** still form their own event — which is what actually happened in
