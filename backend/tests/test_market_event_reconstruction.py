@@ -7,6 +7,7 @@
 # reconstructed timeline is real or fictional:
 #   * group by (game_year, squad, release CLUSTER), never by rarity alone
 #   * absorb FUT.GG ingestion jitter without merging distinct releases
+#   * never chain separate releases into one fictional long event
 #   * never invent an event for a card with no release timestamp
 #   * keep FC26 and FC27 events separate
 #   * distinguish a promo team from a one-off SBC card
@@ -16,6 +17,7 @@ from datetime import datetime, timedelta, timezone
 
 from app.services.market_event_reconstruction import (
     BROAD_RELEASE_MIN_CARDS,
+    MAX_CLUSTER_SPAN,
     EVENT_PROMO_RELEASE,
     EVENT_TOTW_RELEASE,
     SCALE_BROAD,
@@ -82,14 +84,11 @@ class TestGroupingKey:
         # The absorbed jitter stays visible rather than being smoothed away.
         assert events[0].span_seconds == 120
 
-    def test_a_multi_wave_release_does_not_chain_into_one_fictional_event(self):
-        """REGRESSION - found against real FC26 data. TOTY releases in
-        waves (Attackers/Midfielders/Defenders/GK) roughly a day apart.
-        Each wave sits within the GAP tolerance of the previous one, so
-        gap-based linkage alone chained 24 TOTY cards into a single
-        'event' spanning SEVEN DAYS. Thunderstruck 1 chained across 48h
-        the same way. MAX_CLUSTER_SPAN caps the total span so these split
-        into the separate market moments they actually were."""
+    def test_a_multi_wave_release_splits_into_its_waves(self):
+        """TOTY releases in waves (Attackers/Midfielders/Defenders/GK)
+        DAYS apart. Those waves are far outside the gap tolerance, so the
+        gap check alone separates them - this pins that behaviour, which
+        is what the real FC26 data actually exercises."""
         waves = []
         for wave, offset_days in enumerate((0, 1.75, 3.5, 7)):
             waves += _cards(6, squad="TOTY", rarity="TOTY",
@@ -98,8 +97,30 @@ class TestGroupingKey:
         events = group_release_events(waves)
         assert len(events) == 4
         assert all(e.card_count == 6 for e in events)
-        # Each wave is its own tight drop, not a week-long smear.
         assert all(e.span_seconds == 0 for e in events)
+
+    def test_a_continuous_drip_cannot_chain_into_one_long_event(self):
+        """What MAX_CLUSTER_SPAN actually guards, as distinct from the
+        test above.
+
+        Gap-based linkage chains only when EVERY individual gap is under
+        the tolerance while the total span runs past it - a batch every
+        2h for 12h. No FC26 release has that shape (multi-wave promos
+        space their waves days apart), so this is defensive rather than
+        corrective. It is pinned because the failure is silent: a chained
+        cluster becomes one fictional 12-hour 'event', and a study built
+        on it compares the wrong days.
+        """
+        drip = []
+        for i in range(7):  # 7 batches, 2h apart -> 12h total span
+            drip += _cards(4, squad="Dripping Promo", rarity="Promo",
+                           released_at=T1 + timedelta(hours=2 * i),
+                           start_id=i * 100)
+        events = group_release_events(drip)
+        # Every gap (2h) is inside the 6h tolerance, so the gap check
+        # alone would produce ONE event. The span cap must split it.
+        assert len(events) > 1
+        assert all(e.span_seconds <= MAX_CLUSTER_SPAN.total_seconds() for e in events)
 
     def test_a_slow_but_genuine_single_drop_stays_intact(self):
         """The counterweight to the test above: the slowest real drop
