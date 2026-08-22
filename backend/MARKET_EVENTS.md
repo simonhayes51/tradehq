@@ -235,6 +235,25 @@ dropping in the same hour never merge.
 `confidence` is about whether this is a coherent *event* — not about any
 market effect.
 
+### Validation record (FC26)
+
+The reconstructed FC26 timeline was checked against known content and
+held up on every point:
+
+| Check | Result |
+|---|---|
+| TOTW sequence | **1–30, zero gaps**, exactly 23 cards each, all Wednesdays |
+| TOTW end date | Stops at TOTW 30 (8 Apr 2026) — **correct**: EA ended weekly TOTW that month to transition into TOTS. Not a coverage gap. |
+| Promo cadence | Fridays, distinct from the Wednesday TOTW track |
+| Promo identity | Real FC26 content in the right calendar slots — Ultimate Scream at Halloween, Winter Wildcards 19–26 Dec, TOTY 16 Jan |
+| Card counts | TOTW 23; promos 20–56 |
+| Clock change | BST→GMT step reproduced (see §3) |
+
+Two grouping flaws were found only by running against real data —
+ingestion jitter fragmenting drops, and multi-wave releases chaining —
+and both now carry regression tests. Synthetic fixtures would not have
+surfaced either.
+
 ### Running it
 ```bash
 python -m scripts.reconstruct_market_events --game-year 26 --dry-run
