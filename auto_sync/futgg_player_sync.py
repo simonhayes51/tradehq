@@ -922,7 +922,11 @@ async def crawl_once() -> None:
                 backfill_rows = await cards_needing_release_metadata(
                     conn, limit=BACKFILL_LIMIT, game_year=BACKFILL_GAME_YEAR or None,
                 )
-            est_seconds = (len(backfill_rows) * REQUEST_DELAY) / max(PLAYER_CONCURRENCY, 1)
+            # ~0.7s per card measured against production (20 cards in
+            # 14s at concurrency=3). An estimate based on REQUEST_DELAY
+            # alone was ~6x optimistic because it ignored page fetch and
+            # render time, which dominate.
+            est_seconds = (len(backfill_rows) * 0.7) / max(PLAYER_CONCURRENCY, 1) * 3
             log.info(
                 "BACKFILL MODE: %d card(s) still need release metadata%s; "
                 "processing up to %d this run (~%.1f min at concurrency=%d delay=%.2fs). "

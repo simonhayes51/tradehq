@@ -5,7 +5,8 @@
 #
 # The rules being pinned here are the ones that decide whether the
 # reconstructed timeline is real or fictional:
-#   * group by (game_year, squad, released_at), never by rarity alone
+#   * group by (game_year, squad, release CLUSTER), never by rarity alone
+#   * absorb FUT.GG ingestion jitter without merging distinct releases
 #   * never invent an event for a card with no release timestamp
 #   * keep FC26 and FC27 events separate
 #   * distinguish a promo team from a one-off SBC card
@@ -56,6 +57,52 @@ class TestGroupingKey:
         events = group_release_events(cards)
         assert len(events) == 2
         assert {e.squad for e in events} == {"TOTW 27", "TOTW 28"}
+
+    def test_ingestion_jitter_within_a_drop_stays_one_event(self):
+        """REGRESSION - found against real production data. FUT.GG stamps
+        a single promo drop across adjacent minutes (a live FUTTIES 2
+        sample landed at 17:01/17:02/17:03 UTC). Exact-timestamp grouping
+        shattered that one drop into three events, two of them then
+        mislabelled 'mini' because each fragment held only part of the
+        squad."""
+        cards = (
+            _cards(5, squad="FUTTIES 2", rarity="FUTTIES", released_at=T1)
+            + _cards(8, squad="FUTTIES 2", rarity="FUTTIES",
+                     released_at=T1 + timedelta(minutes=1), start_id=100)
+            + _cards(5, squad="FUTTIES 2", rarity="FUTTIES",
+                     released_at=T1 + timedelta(minutes=2), start_id=200)
+        )
+        events = group_release_events(cards)
+        assert len(events) == 1
+        assert events[0].card_count == 18
+        assert events[0].event_scale == SCALE_BROAD
+        # Stamped at the START of the drop - using the latest or a mean
+        # would place the event after part of the market had reacted.
+        assert events[0].released_at == T1
+        # The absorbed jitter stays visible rather than being smoothed away.
+        assert events[0].span_seconds == 120
+
+    def test_two_different_promos_in_the_same_hour_do_not_merge(self):
+        """Clustering is WITHIN a squad only - simultaneous drops of
+        different promos must stay separate events."""
+        cards = (
+            _cards(7, squad="FUTTIES 2", rarity="FUTTIES", released_at=T1)
+            + _cards(8, squad="Cornerstones 1", rarity="Cornerstones",
+                     released_at=T1 + timedelta(minutes=1), start_id=100)
+        )
+        events = group_release_events(cards)
+        assert len(events) == 2
+        assert {e.squad for e in events} == {"FUTTIES 2", "Cornerstones 1"}
+
+    def test_a_cluster_survives_a_rarity_that_failed_to_parse(self):
+        """One card's missing rarity must not blank the event's promo
+        family."""
+        cards = _cards(4, squad="FUTTIES 2", rarity=None, released_at=T1)
+        cards += _cards(4, squad="FUTTIES 2", rarity="FUTTIES",
+                        released_at=T1 + timedelta(minutes=1), start_id=100)
+        events = group_release_events(cards)
+        assert len(events) == 1
+        assert events[0].rarity == "FUTTIES"
 
     def test_cards_added_later_to_the_same_squad_form_their_own_event(self):
         """A late addition to an existing promo is genuinely a separate

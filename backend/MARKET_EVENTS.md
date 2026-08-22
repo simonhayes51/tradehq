@@ -177,15 +177,27 @@ markers can be added later without a schema change. Only
 `promo_release` and `totw_release` are emitted today.
 
 ### Grouping rule
-**`(game_year, squad, released_at)` — never rarity alone.**
+**`(game_year, squad, release cluster)` — never rarity alone.**
 
 Rarity is the promo *family* (`Team of the Week`); squad is the specific
 release (`TOTW 27`). Grouping by rarity would collapse a whole season of
 weekly TOTW squads into one meaningless mega-event.
 
-Including `released_at` means cards **added later to an existing promo**
-form their own event at their own timestamp — which is what actually
-happened in the market — rather than being retroactively folded in.
+**Cluster, not exact timestamp — this was forced by real data.** FUT.GG
+stamps a single promo drop across several adjacent minutes: a live
+FUTTIES 2 sample landed cards at 17:01, 17:02 and 17:03 UTC. Exact-match
+grouping shattered that one drop into three events, two of which were
+then mislabelled `mini` because each fragment held only part of the squad.
+
+Cards in the same squad within `RELEASE_CLUSTER_TOLERANCE` (6h) of the
+previous card now form one event, stamped with the **earliest** timestamp
+in the cluster — the moment the drop began. The observed jitter is
+recorded in `metadata.release_span_seconds` rather than smoothed away.
+
+The tolerance is hours, not days, so cards **added later to an existing
+promo** still form their own event — which is what actually happened in
+the market. Clustering is within a squad only, so two different promos
+dropping in the same hour never merge.
 
 ### Never inventing an event
 - No `released_at` → skipped. A timeline built on a missing timestamp is
@@ -267,19 +279,19 @@ isolated by `game_year` throughout — pinned by test.
 
 ## 10. Limitations
 
-- **Timezone is deterministic but unverified.** Pinning makes it
-  reproducible; it has not been confirmed against a live page. See §3 for
-  how to correct it cheaply if needed.
+- **Timezone: CONFIRMED correct against production data.** A live
+  backfill returned FUTTIES 2 at `17:01–17:02 UTC` on 31 Jul, i.e.
+  18:01–18:02 BST — the canonical 6pm UK content slot. The pinned-UTC
+  assumption holds.
 - **FC26 price data is daily** — no intraday event analysis is possible
   for FC26, and none is fabricated.
 - **Isolated cards are not promos.** Single-card releases are recorded but
   flagged `isolated`/`low`; analysis should generally exclude them.
 - **Cards without squad or release timestamp form no events** — by design,
   but it does mean event coverage depends on backfill completeness.
-- **The backfill has not been run** in this environment (no network access
-  to fut.gg, no database). All parser behaviour is verified against
-  representative HTML fixtures; the real run and its validation sample
-  remain outstanding.
+- **Backfill partially run.** A 20-card production sample parsed cleanly
+  (0 failures, 0 unparseable dates). ~16,040 FC26 cards remain; measured
+  throughput is ~0.7s/card, so a full backfill is roughly 3.1 hours.
 - **Broader display-name rollout** covers the main serialization choke
   point, the Investments router and the snapshot view. Other surfaces
   (Discord messages, admin tools, some v1 routers) still read `name`
