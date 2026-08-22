@@ -107,6 +107,36 @@ class FutggCard:
     speed: int | None = None
     positioning: int | None = None
 
+    # ---- Display vs full name -------------------------------------------
+    # `name` is left exactly as it always was: the Player Information
+    # panel's "Name" row, which FUT.GG renders as the player's FULL name
+    # ("Bruno Miguel Borges Fernandes"). 97 call sites across the backend
+    # read futgg_players.name, and there is a lower(name) search index on
+    # the market snapshot, so renaming it would be a breaking change for
+    # no gain. Instead:
+    #   full_name    - an explicit copy of that same Player Information
+    #                  value, so the semantics are legible without having
+    #                  to know the history of the `name` column.
+    #   display_name - the SHORT name FUT.GG uses in its own player-profile
+    #                  anchor ("Bruno Fernandes"), which is what a user
+    #                  actually wants to read.
+    # User-facing surfaces prefer COALESCE(display_name, name).
+    display_name: str | None = None
+    full_name: str | None = None
+
+    # FUT.GG's own "Added On" timestamp from the Player Information panel -
+    # when the CARD was added to the game. Deliberately distinct from
+    # futgg_players.first_seen_at, which only records when OUR scraper
+    # first discovered the card and is therefore useless for
+    # reconstructing a content-release timeline.
+    #
+    # released_at_raw preserves the exact source string. Storing it costs
+    # almost nothing and means that if we later establish FUT.GG renders
+    # this in a timezone other than the one we assumed, every row can be
+    # re-derived without re-scraping the entire catalogue.
+    released_at: datetime | None = None
+    released_at_raw: str | None = None
+
     player_image_url: str | None = None
     card_design_image_url: str | None = None
     card_image_url: str | None = None
@@ -190,6 +220,94 @@ def _find_exact(soup: BeautifulSoup, text: str):
         lambda tag: tag.name in {"h1", "h2", "h3", "h4", "span", "div", "td", "dt"}
         and clean_text(tag.get_text(" ", strip=True)).casefold() == wanted
     )
+
+
+# FUT.GG renders "Added On" as e.g. "Mar 18, 2026, 6:00 PM". No timezone
+# is present in the markup, so the timezone this represents is decided by
+# how the page is rendered, not by anything in the string.
+#
+# WHY WE TREAT IT AS UTC (and why that is not a blind assumption):
+# futgg_player_sync.py pins the Playwright browser context to
+# timezone_id=FUTGG_BROWSER_TIMEZONE (default "UTC"). If FUT.GG renders
+# this value client-side in the viewer's local timezone - which is the
+# common pattern - then pinning the browser makes the rendered string UTC
+# by construction. If instead it is server-rendered in some fixed zone,
+# pinning changes nothing and the assumption is simply recorded. Either
+# way the result is deterministic rather than dependent on whatever
+# timezone the container host happens to have.
+#
+# released_at_raw preserves the source string, so if we later establish
+# FUT.GG uses a different fixed zone, every stored row can be re-derived
+# without re-scraping.
+# Which timezone the rendered "Added On" string represents. Kept as a
+# module constant (rather than inlined) so it is a single, documented,
+# overridable decision - see parse_added_on's docstring for why UTC is
+# the correct default given the pinned browser timezone.
+ADDED_ON_ASSUMED_TIMEZONE = timezone.utc
+
+_ADDED_ON_FORMATS = (
+    "%b %d, %Y, %I:%M %p",   # Mar 18, 2026, 6:00 PM
+    "%B %d, %Y, %I:%M %p",   # March 18, 2026, 6:00 PM
+    "%b %d, %Y %I:%M %p",    # no comma before the time
+    "%B %d, %Y %I:%M %p",
+    "%b %d, %Y",             # date only
+    "%B %d, %Y",
+)
+
+
+def parse_added_on(value: str | None, assume_timezone: timezone = timezone.utc) -> datetime | None:
+    """Parse a FUT.GG "Added On" string into an aware datetime.
+
+    Returns None (never a fabricated timestamp) when the value is absent
+    or unparseable - the caller is expected to record a parse warning so
+    a format change surfaces as a visible warning rather than as silently
+    missing release data.
+    """
+    text = clean_text(value)
+    if not text:
+        return None
+    # Normalise the narrow/non-breaking spaces some renderers emit around
+    # the meridiem, which would otherwise defeat an exact strptime match.
+    text = text.replace("\u202f", " ").replace("\xa0", " ")
+    text = " ".join(text.split())
+    for fmt in _ADDED_ON_FORMATS:
+        try:
+            parsed = datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+        return parsed.replace(tzinfo=assume_timezone)
+    return None
+
+
+def _find_display_name(soup: BeautifulSoup, source_player_id: int | None) -> str | None:
+    """The SHORT player name, from FUT.GG's own player-profile anchor.
+
+    Identified structurally, never by Tailwind class: the profile URL is
+    /players/{source_player_id}-{slug}/ - note it has NO card/item id
+    segment, which is what distinguishes it from the card-version URL
+    (/players/{player_id}-{slug}/{game_year}-{card_id}/). Matching on the
+    known source_player_id also stops a navigation or "similar players"
+    link from being picked up by accident.
+    """
+    if not source_player_id:
+        return None
+    pattern = re.compile(rf"^/players/{source_player_id}-[^/]+/$")
+    for anchor in soup.find_all("a", href=True):
+        href = anchor["href"]
+        # Tolerate absolute URLs as well as root-relative ones.
+        if href.startswith(BASE_URL):
+            href = href[len(BASE_URL):]
+        if not href.startswith("/"):
+            href = "/" + href
+        if not pattern.match(href):
+            continue
+        text = clean_text(anchor.get_text(" ", strip=True))
+        # Guard against an anchor that wraps an image/badge rather than
+        # the name, and against absurdly long text that is clearly not a
+        # display name.
+        if text and 1 < len(text) <= 60:
+            return text
+    return None
 
 
 def _find_label_value(soup: BeautifulSoup, label: str) -> tuple[str | None, str | None]:
@@ -364,6 +482,36 @@ def _parse_player_information(soup: BeautifulSoup, card: FutggCard) -> None:
     card.real_face = _parse_bool(real_face)
     card.shirt_number = _parse_int_field(shirt_number)
     card.age = _parse_int_field(age)
+
+    # ---- full_name / display_name ---------------------------------------
+    # full_name mirrors the Player Information "Name" row we just read into
+    # card.name (kept in sync deliberately - see FutggCard's own comment on
+    # why `name` itself is not repurposed).
+    if card.name:
+        card.full_name = card.name
+    display = _find_display_name(soup, card.source_player_id)
+    if display:
+        card.display_name = display
+    else:
+        # Not fatal: user-facing surfaces fall back to `name`. Warned so a
+        # markup change shows up rather than silently degrading every
+        # card's name back to the long legal form.
+        card.parse_warnings.append("display_name_not_found")
+
+    # ---- released_at (FUT.GG "Added On") ---------------------------------
+    added_on, _ = _find_label_value(soup, "Added On")
+    if added_on:
+        card.released_at_raw = added_on
+        parsed = parse_added_on(added_on, assume_timezone=ADDED_ON_ASSUMED_TIMEZONE)
+        if parsed is not None:
+            card.released_at = parsed
+        else:
+            # Never invent a timestamp - a release date we cannot parse
+            # must stay NULL so the promo/event layer does not silently
+            # build a timeline on a guess.
+            card.parse_warnings.append(f"released_at_unparseable:{added_on[:40]}")
+    else:
+        card.parse_warnings.append("released_at_not_found")
 
 
 UNTRADEABLE_MARKERS = (

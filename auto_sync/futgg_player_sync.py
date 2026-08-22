@@ -109,6 +109,18 @@ if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL not found")
 
 HEADLESS = os.getenv("PLAYWRIGHT_HEADLESS", "true").strip().lower() in {"1", "true", "yes", "on"}
+# Pinned browser timezone - see the new_context() call for why this
+# matters to released_at parsing. Overridable only if FUT.GG is ever
+# shown to render "Added On" in a different fixed zone, in which case
+# futgg_common.ADDED_ON_ASSUMED_TIMEZONE must be changed to match.
+BROWSER_TIMEZONE = os.getenv("FUTGG_BROWSER_TIMEZONE", "UTC").strip() or "UTC"
+# Targeted metadata backfill: revisit cards that predate the
+# released_at/display_name/full_name fields instead of forcing every
+# normal daily run to re-scrape the whole historical catalogue forever
+# (which is what FUTGG_REFRESH_EXISTING=true would do).
+BACKFILL_RELEASE_METADATA = os.getenv("FUTGG_BACKFILL_RELEASE_METADATA", "false").strip().lower() in {"1", "true", "yes", "on"}
+BACKFILL_LIMIT = int(os.getenv("FUTGG_BACKFILL_LIMIT", "500"))
+BACKFILL_GAME_YEAR = os.getenv("FUTGG_BACKFILL_GAME_YEAR", "").strip()
 TIMEOUT_MS = max(5000, int(os.getenv("PLAYWRIGHT_TIMEOUT_MS", "45000")))
 PLAYER_LIMIT = max(0, int(os.getenv("FUTGG_PLAYER_LIMIT", "0")))
 
@@ -817,7 +829,8 @@ async def upsert_card(conn: asyncpg.Connection, card: FutggCard) -> None:
         """
         INSERT INTO futgg_players (
             source_card_id, source_player_id, source_slug, source_url, game_year,
-            name, rating, primary_position, alternate_positions, rarity, squad, price_tier,
+            name, display_name, full_name, released_at, released_at_raw,
+            rating, primary_position, alternate_positions, rarity, squad, price_tier,
             club, league, nation, club_source_id, league_source_id, nation_source_id,
             height_cm, weight_kg, foot, skill_moves, weak_foot, accelerate_type,
             body_type, real_face, shirt_number, age,
@@ -840,6 +853,14 @@ async def upsert_card(conn: asyncpg.Connection, card: FutggCard) -> None:
             source_url = EXCLUDED.source_url,
             game_year = EXCLUDED.game_year,
             name = COALESCE(EXCLUDED.name, futgg_players.name),
+            -- Prefer a freshly parsed value, but never let a temporarily
+            -- failed parse blank out metadata we already have. This is
+            -- what makes the backfill safe to re-run and safe to
+            -- interrupt: a card that fails once keeps whatever it had.
+            display_name = COALESCE(EXCLUDED.display_name, futgg_players.display_name),
+            full_name = COALESCE(EXCLUDED.full_name, futgg_players.full_name),
+            released_at = COALESCE(EXCLUDED.released_at, futgg_players.released_at),
+            released_at_raw = COALESCE(EXCLUDED.released_at_raw, futgg_players.released_at_raw),
             rating = COALESCE(EXCLUDED.rating, futgg_players.rating),
             primary_position = COALESCE(EXCLUDED.primary_position, futgg_players.primary_position),
             alternate_positions = EXCLUDED.alternate_positions,
@@ -908,7 +929,9 @@ async def upsert_card(conn: asyncpg.Connection, card: FutggCard) -> None:
             metadata_warnings = EXCLUDED.metadata_warnings
         """,
         data["source_card_id"], data["source_player_id"], data["source_slug"], data["source_url"], data["game_year"],
-        data["name"], data["rating"], data["primary_position"], data["alternate_positions"], data["rarity"], data["squad"], price_tier,
+        data["name"], data["display_name"], data["full_name"],
+        data["released_at"], data["released_at_raw"],
+        data["rating"], data["primary_position"], data["alternate_positions"], data["rarity"], data["squad"], price_tier,
         data["club"], data["league"], data["nation"], data["club_source_id"], data["league_source_id"], data["nation_source_id"],
         data["height_cm"], data["weight_kg"], data["foot"], data["skill_moves"], data["weak_foot"], data["accelerate_type"],
         data["body_type"], data["real_face"], data["shirt_number"], data["age"],
@@ -1013,9 +1036,20 @@ async def crawl_once() -> None:
             headless=HEADLESS,
             args=["--no-sandbox", "--disable-dev-shm-usage"],
         )
+        # timezone_id is pinned deliberately. FUT.GG's "Added On" value
+        # (parsed into FutggCard.released_at) carries no timezone in the
+        # markup, so if that timestamp is rendered client-side in the
+        # viewer's local zone - the common pattern - the string we scrape
+        # would silently shift with whatever timezone the container host
+        # happened to have. Pinning makes the parse deterministic and
+        # makes futgg_common.ADDED_ON_ASSUMED_TIMEZONE correct by
+        # construction rather than by assumption. If FUT.GG turns out to
+        # render server-side in a fixed zone instead, this changes
+        # nothing and costs nothing.
         context = await browser.new_context(
             user_agent=USER_AGENT,
             locale="en-GB",
+            timezone_id=BROWSER_TIMEZONE,
             viewport={"width": 1440, "height": 1000},
         )
         # Listing/pagination stays on its own dedicated page - sequential
@@ -1106,15 +1140,43 @@ async def crawl_once() -> None:
         log.info("Run complete: mode=%s scan_plausible=%s %s", "full" if FULL_SCAN else "daily", scan_plausible, stats)
 
     finally:
-        if context:
-            await context.close()
-        if browser:
-            await browser.close()
-        if playwright:
-            await playwright.stop()
-        await pool.close()
-        await lock_conn.execute("SELECT pg_advisory_unlock($1)", OVERLAP_LOCK_KEY)
-        await lock_conn.close()
+        # Every cleanup step is independently fault-tolerant. Before this,
+        # a single failure here aborted the rest of the teardown AND
+        # crashed the process with exit(1) - reporting failure for a run
+        # whose work had already completed successfully.
+        #
+        # That is not hypothetical: a ~3h backfill (15,834 cards) finished
+        # all its upserts, then died on the pg_advisory_unlock below
+        # because the long-idle lock connection had been recycled by the
+        # pooler. The stats line said success; the exit code said failure.
+        for label, close in (
+            ("playwright context", context.close if context else None),
+            ("browser", browser.close if browser else None),
+            ("playwright", playwright.stop if playwright else None),
+            ("pool", pool.close),
+        ):
+            if close is None:
+                continue
+            try:
+                await close()
+            except Exception:
+                log.warning("cleanup: failed to close %s", label, exc_info=True)
+
+        # Advisory locks are SESSION-scoped: Postgres releases this one
+        # automatically the moment the connection ends. So an unlock that
+        # fails because the connection is already gone has nothing left to
+        # do - the lock is released either way. Best-effort, never fatal.
+        try:
+            await lock_conn.execute("SELECT pg_advisory_unlock($1)", OVERLAP_LOCK_KEY)
+        except Exception:
+            log.info(
+                "cleanup: advisory unlock skipped (lock connection already closed - "
+                "the session-scoped lock is released automatically)"
+            )
+        try:
+            await lock_conn.close()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
