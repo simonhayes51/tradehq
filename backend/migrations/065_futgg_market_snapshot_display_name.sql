@@ -23,8 +23,33 @@
 --
 -- Postgres has no CREATE OR REPLACE MATERIALIZED VIEW (same reason
 -- 038/041/047/050 DROP+CREATE rather than ALTER).
+--
+-- CASCADE + fair_value_mv rebuild, added after this migration first
+-- failed in production:
+--
+--     DependentObjectsStillExistError: cannot drop materialized view
+--     futgg_market_snapshot because other objects depend on it
+--     DETAIL: materialized view fair_value_mv depends on materialized
+--     view futgg_market_snapshot
+--
+-- fair_value_mv's SELECT was never defined anywhere in THIS repo's
+-- migrations (011-036 built it against the old FUTBIN-era columns; no
+-- migration after that touches it) - it was rebuilt against
+-- futgg_market_snapshot directly on production at some point outside
+-- the tracked migration history. 050/052 both already DROP
+-- futgg_market_snapshot without CASCADE and never hit this, which places
+-- that rebuild AFTER 052 and confirms it is untracked drift, not
+-- something this migration set caused.
+--
+-- Captured verbatim via `SELECT pg_get_viewdef('fair_value_mv'::regclass,
+-- true)` against production and transcribed byte-for-byte below - not
+-- reconstructed from an old migration, which could easily have missed a
+-- production-only change. DROP ... CASCADE takes fair_value_mv and its
+-- indexes down along with futgg_market_snapshot; both are rebuilt in the
+-- same transaction as this file, so a failure here still rolls back
+-- atomically and never leaves the database without fair_value_mv.
 
-DROP MATERIALIZED VIEW IF EXISTS futgg_market_snapshot;
+DROP MATERIALIZED VIEW IF EXISTS futgg_market_snapshot CASCADE;
 
 CREATE MATERIALIZED VIEW futgg_market_snapshot AS
 WITH latest_bin AS (
@@ -192,3 +217,72 @@ CREATE INDEX IF NOT EXISTS idx_futgg_market_snapshot_tradeable
     ON futgg_market_snapshot (is_tradeable) WHERE is_tradeable IS NOT FALSE;
 CREATE INDEX IF NOT EXISTS idx_futgg_market_snapshot_name_lower
     ON futgg_market_snapshot (lower(name));
+
+-- ---------------------------------------------------------------------
+-- fair_value_mv rebuild - CASCADE-dropped above, restored here VERBATIM
+-- (see the comment on the CASCADE line for why this is here at all).
+-- Do not "clean up" or refactor this definition in a future migration
+-- without re-checking it against the live view first; the whole point of
+-- capturing it here is to stop it drifting silently again.
+-- ---------------------------------------------------------------------
+
+CREATE MATERIALIZED VIEW fair_value_mv AS
+SELECT s.source_card_id AS card_id,
+    s.name,
+    s.rating,
+    s.rarity AS version,
+    s.primary_position AS "position",
+    COALESCE(a.generated_card_url, s.card_image_stored_url, s.card_image_url, s.player_image_url) AS image_url,
+    CASE
+        WHEN s.latest_sale_at >= (now() - '24:00:00'::interval) THEN round(s.sales_median)::bigint
+        ELSE NULL::bigint
+    END AS fair_value_24h,
+    CASE
+        WHEN s.latest_sale_at >= (now() - '7 days'::interval) THEN round(s.sales_median)::bigint
+        ELSE NULL::bigint
+    END AS fair_value_7d,
+    CASE
+        WHEN s.latest_sale_at >= (now() - '24:00:00'::interval) THEN s.sales_count
+        ELSE 0::bigint
+    END AS sales_24h,
+    CASE
+        WHEN s.latest_sale_at >= (now() - '7 days'::interval) THEN s.sales_count
+        ELSE 0::bigint
+    END AS sales_7d,
+    CASE
+        WHEN s.latest_sale_at >= (now() - '24:00:00'::interval) AND s.sales_window_span_minutes > 0::numeric THEN round(s.sales_count::numeric / GREATEST(s.sales_window_span_minutes / 60.0, 1::numeric), 2)
+        ELSE 0::numeric
+    END AS sales_per_hour_24h,
+    round(s.sales_stddev)::bigint AS volatility_24h,
+    s.latest_sale_at AS last_sale_at,
+    s.current_bin,
+    s.bin_captured_at,
+    CASE
+        WHEN s.current_bin IS NOT NULL AND s.sales_median > 0::double precision AND s.latest_sale_at >= (now() - '24:00:00'::interval) THEN round(((s.sales_median - s.current_bin::double precision) / s.sales_median * 100::double precision)::numeric, 2)
+        ELSE NULL::numeric
+    END AS discount_pct,
+    CASE
+        WHEN s.current_bin IS NOT NULL AND COALESCE(s.sales_stddev, 0::numeric) > 0::numeric AND s.latest_sale_at >= (now() - '24:00:00'::interval) THEN round(((s.current_bin::double precision - s.sales_median) / s.sales_stddev::double precision)::numeric, 2)
+        ELSE NULL::numeric
+    END AS bin_zscore_24h,
+    false AS trend_falling,
+    s.current_bin IS NULL OR s.sales_median IS NULL OR s.sales_count < 5 OR s.latest_sale_at IS NULL OR s.latest_sale_at < (now() - '7 days'::interval) AS data_quality_suspect,
+    s.snapshot_computed_at AS computed_at,
+    a.generated_card_url,
+    a.generated_card_status,
+    a.generated_card_error
+   FROM futgg_market_snapshot s
+     LEFT JOIN fut_players a ON a.card_id = s.source_card_id
+  WHERE s.source_card_id IS NOT NULL;
+
+-- Indexes matched to the last tracked fair_value_mv definition
+-- (migration 036) - CASCADE dropped these along with the view above, so
+-- they must be recreated here rather than assumed to survive.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_fair_value_mv_card
+    ON fair_value_mv (card_id);
+CREATE INDEX IF NOT EXISTS idx_fair_value_mv_discount
+    ON fair_value_mv (discount_pct DESC NULLS LAST);
+CREATE INDEX IF NOT EXISTS idx_fair_value_mv_suspect
+    ON fair_value_mv (data_quality_suspect) WHERE data_quality_suspect;
+CREATE INDEX IF NOT EXISTS idx_fair_value_mv_falling
+    ON fair_value_mv (trend_falling) WHERE trend_falling;
