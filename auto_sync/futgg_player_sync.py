@@ -859,32 +859,49 @@ async def update_listing_gg_ratings(
     if not observations:
         return ListingRatingUpdateResult(matched=0, updated=0)
 
-    row = await conn.fetchrow(
-        """
-        WITH input(source_card_id, gg_rating) AS (
-            SELECT * FROM unnest($1::bigint[], $2::numeric[])
-        ),
-        matched AS MATERIALIZED (
-            SELECT p.source_card_id, i.gg_rating
-            FROM futgg_players p
-            JOIN input i USING (source_card_id)
-            WHERE p.game_year = $3
-        ),
-        updated AS (
-            UPDATE futgg_players p
-               SET gg_rating = m.gg_rating,
-                   gg_rating_updated_at = NOW()
-              FROM matched m
-             WHERE p.source_card_id = m.source_card_id
-               AND p.game_year = $3
-               AND (NOT $4::boolean OR p.gg_rating IS NULL)
-            RETURNING p.source_card_id
-        )
-        SELECT (SELECT COUNT(*) FROM matched) AS matched,
-               (SELECT COUNT(*) FROM updated) AS updated
-        """,
-        list(observations), list(observations.values()), game_year, only_missing,
-    )
+    ordered_observations = sorted(observations.items())
+    for attempt in range(4):
+        try:
+            row = await conn.fetchrow(
+                """
+                WITH input(source_card_id, gg_rating) AS (
+                    SELECT * FROM unnest($1::bigint[], $2::numeric[])
+                ),
+                matched AS MATERIALIZED (
+                    SELECT p.source_card_id, i.gg_rating
+                    FROM futgg_players p
+                    JOIN input i USING (source_card_id)
+                    WHERE p.game_year = $3
+                ),
+                updated AS (
+                    UPDATE futgg_players p
+                       SET gg_rating = m.gg_rating,
+                           gg_rating_updated_at = NOW()
+                      FROM matched m
+                     WHERE p.source_card_id = m.source_card_id
+                       AND p.game_year = $3
+                       AND (NOT $4::boolean OR p.gg_rating IS NULL)
+                    RETURNING p.source_card_id
+                )
+                SELECT (SELECT COUNT(*) FROM matched) AS matched,
+                       (SELECT COUNT(*) FROM updated) AS updated
+                """,
+                [card_id for card_id, _ in ordered_observations],
+                [rating for _, rating in ordered_observations],
+                game_year,
+                only_missing,
+            )
+            break
+        except asyncpg.exceptions.DeadlockDetectedError:
+            if attempt == 3:
+                raise
+            delay = 0.25 * (2 ** attempt)
+            log.warning(
+                "GG Rating update deadlocked; retrying attempt=%d/4 in %.2fs",
+                attempt + 2,
+                delay,
+            )
+            await asyncio.sleep(delay)
     return ListingRatingUpdateResult(matched=int(row["matched"]), updated=int(row["updated"]))
 
 
