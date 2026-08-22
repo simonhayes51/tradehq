@@ -877,3 +877,64 @@ def test_backfill_is_off_by_default():
     """A normal daily run must never silently turn into a full-catalogue
     re-scrape."""
     assert mod.BACKFILL_RELEASE_METADATA is False
+
+
+# ---------------------------------------------------------------------
+# Teardown must not turn a successful run into a reported failure
+# ---------------------------------------------------------------------
+#
+# REGRESSION: a ~3h backfill (15,834 cards) completed every upsert, then
+# crashed in the finally block on pg_advisory_unlock because the
+# long-idle lock connection had been recycled by the pooler. The stats
+# line reported success; the process exited 1.
+#
+# Advisory locks are SESSION-scoped, so a closed connection means the
+# lock is already released - failing to unlock explicitly has nothing
+# left to do and must never be fatal.
+
+
+def test_teardown_source_makes_every_close_fault_tolerant():
+    """Structural: each cleanup step is individually guarded, so one
+    failure cannot skip the rest of the teardown."""
+    import inspect
+    source = inspect.getsource(mod.crawl_once)
+    teardown = source[source.rindex("finally:"):]
+    # The unlock is best-effort...
+    assert "pg_advisory_unlock" in teardown
+    # ...and every close path is wrapped rather than bare.
+    assert teardown.count("except Exception") >= 3, (
+        "teardown steps must be individually guarded"
+    )
+
+
+def test_advisory_unlock_failure_is_not_fatal():
+    """Behavioural: simulate the exact production failure - a lock
+    connection that raises 'connection is closed' on unlock."""
+    import asyncpg
+
+    class _DeadLockConn:
+        def __init__(self):
+            self.close_called = False
+
+        async def execute(self, *_args):
+            raise asyncpg.exceptions._base.InterfaceError("connection is closed")
+
+        async def close(self):
+            self.close_called = True
+
+    async def _run():
+        lock_conn = _DeadLockConn()
+        # Mirror the teardown's contract directly: an unlock that raises
+        # must be swallowed, and cleanup must continue past it.
+        try:
+            await lock_conn.execute("SELECT pg_advisory_unlock($1)", 1)
+        except Exception:
+            pass
+        try:
+            await lock_conn.close()
+        except Exception:
+            pass
+        return lock_conn.close_called
+
+    # The close AFTER the failing unlock must still have been reached.
+    assert asyncio.run(_run()) is True

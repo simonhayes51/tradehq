@@ -1011,15 +1011,43 @@ async def crawl_once() -> None:
         log.info("Run complete: mode=%s scan_plausible=%s %s", "full" if FULL_SCAN else "daily", scan_plausible, stats)
 
     finally:
-        if context:
-            await context.close()
-        if browser:
-            await browser.close()
-        if playwright:
-            await playwright.stop()
-        await pool.close()
-        await lock_conn.execute("SELECT pg_advisory_unlock($1)", OVERLAP_LOCK_KEY)
-        await lock_conn.close()
+        # Every cleanup step is independently fault-tolerant. Before this,
+        # a single failure here aborted the rest of the teardown AND
+        # crashed the process with exit(1) - reporting failure for a run
+        # whose work had already completed successfully.
+        #
+        # That is not hypothetical: a ~3h backfill (15,834 cards) finished
+        # all its upserts, then died on the pg_advisory_unlock below
+        # because the long-idle lock connection had been recycled by the
+        # pooler. The stats line said success; the exit code said failure.
+        for label, close in (
+            ("playwright context", context.close if context else None),
+            ("browser", browser.close if browser else None),
+            ("playwright", playwright.stop if playwright else None),
+            ("pool", pool.close),
+        ):
+            if close is None:
+                continue
+            try:
+                await close()
+            except Exception:
+                log.warning("cleanup: failed to close %s", label, exc_info=True)
+
+        # Advisory locks are SESSION-scoped: Postgres releases this one
+        # automatically the moment the connection ends. So an unlock that
+        # fails because the connection is already gone has nothing left to
+        # do - the lock is released either way. Best-effort, never fatal.
+        try:
+            await lock_conn.execute("SELECT pg_advisory_unlock($1)", OVERLAP_LOCK_KEY)
+        except Exception:
+            log.info(
+                "cleanup: advisory unlock skipped (lock connection already closed - "
+                "the session-scoped lock is released automatically)"
+            )
+        try:
+            await lock_conn.close()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
