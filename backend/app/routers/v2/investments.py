@@ -170,7 +170,7 @@ async def list_signals(
 
     args.extend([page_size, (page - 1) * page_size])
     query = f"""
-        SELECT s.*, p.name, p.rating, p.primary_position, m.current_bin
+        SELECT s.*, COALESCE(p.display_name, p.name) AS name, p.rating, p.primary_position, m.current_bin
         FROM investment_signals s
         LEFT JOIN futgg_players p ON p.source_card_id = s.source_card_id
         LEFT JOIN futgg_market_snapshot m ON m.source_card_id = s.source_card_id
@@ -188,7 +188,7 @@ async def get_signal(signal_id: int, pool=Depends(get_core_pool)) -> Dict[str, A
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
-            SELECT s.*, p.name, p.rating, p.primary_position, m.current_bin
+            SELECT s.*, COALESCE(p.display_name, p.name) AS name, p.rating, p.primary_position, m.current_bin
             FROM investment_signals s
             LEFT JOIN futgg_players p ON p.source_card_id = s.source_card_id
             LEFT JOIN futgg_market_snapshot m ON m.source_card_id = s.source_card_id
@@ -221,7 +221,7 @@ async def get_ledger(
         where.append(f"s.outcome = ${len(args)}")
     args.extend([page_size, (page - 1) * page_size])
     query = f"""
-        SELECT s.*, p.name, p.rating, p.primary_position, NULL AS current_bin
+        SELECT s.*, COALESCE(p.display_name, p.name) AS name, p.rating, p.primary_position, NULL AS current_bin
         FROM investment_signals s
         LEFT JOIN futgg_players p ON p.source_card_id = s.source_card_id
         WHERE {' AND '.join(where)}
@@ -384,7 +384,7 @@ async def budget_plan(
         args.append(strategy)
         where.append(f"strategy_key = ${len(args)}")
     query = f"""
-        SELECT s.*, p.name
+        SELECT s.*, COALESCE(p.display_name, p.name) AS name
         FROM investment_signals s
         LEFT JOIN futgg_players p ON p.source_card_id = s.source_card_id
         WHERE {' AND '.join(where)}

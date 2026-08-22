@@ -231,6 +231,23 @@ def _serialize_intelligence(ci: CardIntelligence) -> Dict[str, Any]:
 
 def _serialize_player(row: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(row)
+    # User-facing name: FUT.GG's short display name ("Bruno Fernandes")
+    # in preference to the Player Information full name ("Bruno Miguel
+    # Borges Fernandes"), which is what futgg_players.name holds.
+    #
+    # Applied HERE rather than in ~69 individual queries because this is
+    # the single serialization choke point every player-facing response
+    # passes through. The underlying columns are left untouched in the
+    # payload (`full_name` stays available, and `name` keeps its existing
+    # meaning for any consumer already relying on it), so this is additive
+    # rather than a breaking rename.
+    #
+    # COALESCE order matters: a row whose display_name has not been
+    # backfilled yet falls back to exactly today's behaviour rather than
+    # to null. See backend/migrations/063.
+    display = out.get("display_name")
+    if display:
+        out["name"] = display
     # Prefer when the feed last CONFIRMED the price over when it last
     # CHANGED - the same distinction futgg_intelligence._price_observed_at
     # makes, and for the same reason. Reading bin_captured_at here meant

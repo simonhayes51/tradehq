@@ -785,3 +785,95 @@ async def test_fetch_worker_leaves_card_image_url_untouched_when_listing_had_non
 
     assert len(captured_cards) == 1
     assert captured_cards[0].card_image_url is None
+
+
+# ---------------------------------------------------------------------
+# Release-metadata backfill target selection
+# ---------------------------------------------------------------------
+#
+# The backfill exists so we do NOT have to set FUTGG_REFRESH_EXISTING=true,
+# which would force every normal daily run to re-scrape the entire
+# historical catalogue forever. These tests pin that the selection query
+# targets only rows actually missing the new fields, and that it is
+# resumable/idempotent by construction.
+
+
+class _FakeConn:
+    """Captures the SQL and args a selection call would issue, without a
+    database - same approach the rest of this module uses for Playwright."""
+
+    def __init__(self, rows=None, scalar=0):
+        self.rows = rows or []
+        self.scalar = scalar
+        self.queries = []
+
+    async def fetch(self, query, *args):
+        self.queries.append((query, args))
+        return self.rows
+
+    async def fetchval(self, query, *args):
+        self.queries.append((query, args))
+        return self.scalar
+
+
+def test_backfill_targets_only_rows_missing_the_new_fields():
+    conn = _FakeConn(rows=[{"source_url": "u1", "card_image_url": None}])
+    result = asyncio.run(mod.cards_needing_release_metadata(conn, limit=100))
+    query, args = conn.queries[0]
+
+    assert result == [("u1", None)]
+    # The whole point: never "everything", only rows still missing data.
+    assert "released_at IS NULL OR display_name IS NULL OR full_name IS NULL" in query
+    assert 100 in args
+
+
+def test_backfill_can_be_scoped_to_one_game_year():
+    conn = _FakeConn()
+    asyncio.run(mod.cards_needing_release_metadata(conn, limit=50, game_year="26"))
+    query, args = conn.queries[0]
+    assert "game_year" in query
+    assert 26 in args
+
+
+def test_backfill_ordering_is_stable_so_progress_is_monotonic():
+    """An unstable ORDER BY would reshuffle every pass and could starve
+    some rows indefinitely across repeated runs."""
+    conn = _FakeConn()
+    asyncio.run(mod.cards_needing_release_metadata(conn, limit=10))
+    query, _ = conn.queries[0]
+    assert "ORDER BY released_at NULLS FIRST, first_seen_at" in query
+
+
+def test_backfill_skips_rows_with_no_source_url():
+    """A row with no URL cannot be re-fetched; selecting it would produce
+    a permanent failure that never drains from the queue."""
+    conn = _FakeConn()
+    asyncio.run(mod.cards_needing_release_metadata(conn, limit=10))
+    query, _ = conn.queries[0]
+    assert "source_url IS NOT NULL" in query
+
+
+def test_remaining_count_uses_the_same_predicate_as_selection():
+    """If the count and the selection disagreed, the logged estimate would
+    be misleading and the run could look finished while work remained."""
+    count_conn = _FakeConn(scalar=1234)
+    select_conn = _FakeConn()
+    total = asyncio.run(mod.count_cards_needing_release_metadata(count_conn))
+    asyncio.run(mod.cards_needing_release_metadata(select_conn, limit=10))
+
+    assert total == 1234
+    predicate = "released_at IS NULL OR display_name IS NULL OR full_name IS NULL"
+    assert predicate in count_conn.queries[0][0]
+    assert predicate in select_conn.queries[0][0]
+
+
+def test_browser_timezone_is_pinned_by_default():
+    """released_at parsing assumes UTC; that is only sound because the
+    browser context pins the timezone rather than inheriting the host's."""
+    assert mod.BROWSER_TIMEZONE == "UTC"
+
+
+def test_backfill_is_off_by_default():
+    """A normal daily run must never silently turn into a full-catalogue
+    re-scrape."""
+    assert mod.BACKFILL_RELEASE_METADATA is False
