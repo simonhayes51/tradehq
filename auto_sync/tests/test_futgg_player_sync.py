@@ -10,9 +10,11 @@ import functools
 import os
 import re
 import sys
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
+from bs4 import BeautifulSoup
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 # The module raises at import time if DATABASE_URL is unset (same
@@ -63,7 +65,7 @@ class _FakeLocator:
         return None
 
     async def evaluate_all(self, script):
-        # _read_card_hrefs' real evaluate_all script returns {href, image}
+        # _read_card_hrefs' real evaluate_all script returns tile records
         # objects, not plain strings - most tests only care about
         # pagination and pass plain href strings, so auto-wrap those with
         # image=None here rather than touching every test. Tests that
@@ -532,16 +534,22 @@ def test_full_scan_is_plausible_disabled_when_min_coverage_zero():
 def test_build_targets_skips_existing_unless_refresh_requested():
     url1 = mod.urljoin(mod.BASE_URL, _card_href(1))  # card_id 1001
     url2 = mod.urljoin(mod.BASE_URL, _card_href(2))  # card_id 1002
-    urls = {url1: None, url2: "img"}
+    urls = {
+        url1: mod.ListingCardMetadata(),
+        url2: mod.ListingCardMetadata(image_url="img"),
+    }
     known = {1001}
 
     targets, skipped = mod._build_targets(urls, known, refresh_existing=False)
     assert skipped == 1
-    assert targets == [(url2, False, "img")]
+    assert targets == [mod.FetchTarget(url2, False, mod.ListingCardMetadata(image_url="img"))]
 
     targets_refresh, skipped_refresh = mod._build_targets(urls, known, refresh_existing=True)
     assert skipped_refresh == 0
-    assert sorted(targets_refresh) == sorted([(url1, True, None), (url2, False, "img")])
+    assert targets_refresh == [
+        mod.FetchTarget(url1, True, mod.ListingCardMetadata()),
+        mod.FetchTarget(url2, False, mod.ListingCardMetadata(image_url="img")),
+    ]
 
 
 class _FakeCardLocator:
@@ -629,7 +637,7 @@ async def test_fetch_worker_pool_processes_every_target_exactly_once(monkeypatch
 
     queue: "asyncio.Queue" = asyncio.Queue()
     for index, url in enumerate(urls, start=1):
-        queue.put_nowait((index, url, False, None))
+        queue.put_nowait((index, mod.FetchTarget(url, False, mod.ListingCardMetadata())))
 
     pages = [_FakeCardPage() for _ in range(3)]
     stats = {"new": 0, "updated": 0, "failed": 0}
@@ -665,7 +673,7 @@ async def test_fetch_worker_circuit_breaker_stops_remaining_work(monkeypatch):
 
     queue: "asyncio.Queue" = asyncio.Queue()
     for index, url in enumerate(urls, start=1):
-        queue.put_nowait((index, url, False, None))
+        queue.put_nowait((index, mod.FetchTarget(url, False, mod.ListingCardMetadata())))
 
     # A single page that returns HTTP 403 for every URL - should trip
     # the breaker well before all 10 targets are attempted.
@@ -688,8 +696,8 @@ async def test_fetch_worker_circuit_breaker_stops_remaining_work(monkeypatch):
 # the detail-page-only cutout/background fields while this stayed at 0%.
 # ---------------------------------------------------------------------
 
-def _card_pair(card_id: int, image: str | None) -> dict:
-    return {"href": _card_href(card_id), "image": image}
+def _card_pair(card_id: int, image: str | None, gg_rating=None) -> dict:
+    return {"href": _card_href(card_id), "image": image, "gg_rating": gg_rating}
 
 
 _COMPOSITED_IMG = (
@@ -713,8 +721,8 @@ async def test_collect_listing_urls_captures_composited_image_per_card(monkeypat
 
     card1_url = mod.urljoin(mod.BASE_URL, _card_href(1))
     card2_url = mod.urljoin(mod.BASE_URL, _card_href(2))
-    assert urls[card1_url] == _COMPOSITED_IMG
-    assert urls[card2_url] is None
+    assert urls[card1_url].image_url == _COMPOSITED_IMG
+    assert urls[card2_url].image_url is None
 
 
 @run_async
@@ -730,7 +738,7 @@ async def test_collect_listing_urls_ignores_non_composited_images():
     urls = await mod.collect_listing_urls(page)
 
     card1_url = mod.urljoin(mod.BASE_URL, _card_href(1))
-    assert urls[card1_url] is None
+    assert urls[card1_url].image_url is None
 
 
 @run_async
@@ -748,7 +756,9 @@ async def test_fetch_worker_applies_listing_image_url_to_the_parsed_card(monkeyp
     monkeypatch.setattr(mod, "upsert_card", capturing_upsert)
 
     queue: "asyncio.Queue" = asyncio.Queue()
-    queue.put_nowait((1, url, False, _COMPOSITED_IMG))
+    queue.put_nowait((1, mod.FetchTarget(
+        url, False, mod.ListingCardMetadata(image_url=_COMPOSITED_IMG, gg_rating=Decimal("87.3")),
+    )))
 
     page = _FakeCardPage()
     stats = {"new": 0, "updated": 0, "failed": 0}
@@ -758,6 +768,7 @@ async def test_fetch_worker_applies_listing_image_url_to_the_parsed_card(monkeyp
 
     assert len(captured_cards) == 1
     assert captured_cards[0].card_image_url == _COMPOSITED_IMG
+    assert captured_cards[0].gg_rating == Decimal("87.3")
 
 
 @run_async
@@ -775,7 +786,7 @@ async def test_fetch_worker_leaves_card_image_url_untouched_when_listing_had_non
     monkeypatch.setattr(mod, "upsert_card", capturing_upsert)
 
     queue: "asyncio.Queue" = asyncio.Queue()
-    queue.put_nowait((1, url, False, None))
+    queue.put_nowait((1, mod.FetchTarget(url, False, mod.ListingCardMetadata())))
 
     page = _FakeCardPage()
     stats = {"new": 0, "updated": 0, "failed": 0}
@@ -785,3 +796,143 @@ async def test_fetch_worker_leaves_card_image_url_untouched_when_listing_had_non
 
     assert len(captured_cards) == 1
     assert captured_cards[0].card_image_url is None
+
+
+def test_confirmed_footer_fixture_extracts_structural_gg_rating():
+    fixture = Path(__file__).parent / "fixtures" / "futgg_listing_gg_rating.html"
+    tile = BeautifulSoup(fixture.read_text(encoding="utf-8"), "html.parser").find("a")
+
+    footer = mod.parse_listing_footer(tile)
+
+    assert footer == mod.ListingFooterMetadata(
+        position="RB", gg_rating=Decimal("87.3"), price_text="11.8K",
+    )
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [("87.3", Decimal("87.3")), ("88.6", Decimal("88.6")), ("90", Decimal("90.0"))],
+)
+def test_parse_gg_rating_valid_values(raw, expected):
+    assert mod._parse_gg_rating(raw) == expected
+
+
+@pytest.mark.parametrize("raw", [None, "", "N/A", "rating 87.3", "101", "-1"])
+def test_parse_gg_rating_invalid_values_do_not_crash(raw):
+    assert mod._parse_gg_rating(raw) is None
+
+
+def _tile_html(
+    card_id: int,
+    rating: str | None,
+    *,
+    image: str | None = None,
+    footer_icon: str = "Coin",
+) -> str:
+    rating_span = "" if rating is None else f"<span>{rating}</span>"
+    image_html = f'<img src="{image}">' if image else ""
+    return f"""
+      <a href="{_card_href(card_id)}">
+        <span>99</span>{image_html}
+        <div><div><span>CM</span>{rating_span}</div>
+        <div><img alt="{footer_icon}" src="/coin.webp">22.5K</div></div>
+      </a>
+    """
+
+
+def test_multiple_cards_keep_rating_and_image_associated_to_their_url():
+    nodes = [
+        {"href": _card_href(1), "image": _COMPOSITED_IMG, "tile_html": _tile_html(1, "88.6")},
+        {"href": _card_href(2), "image": None, "tile_html": _tile_html(2, "90")},
+    ]
+    parsed = dict(mod._metadata_from_listing_node(node) for node in nodes)
+
+    first = parsed[mod.urljoin(mod.BASE_URL, _card_href(1))]
+    second = parsed[mod.urljoin(mod.BASE_URL, _card_href(2))]
+    assert first.gg_rating == Decimal("88.6")
+    assert first.image_url == _COMPOSITED_IMG
+    assert second.gg_rating == Decimal("90.0")
+    assert second.image_url is None
+
+
+def test_missing_and_invalid_tile_rating_are_non_fatal_and_distinct():
+    missing = mod._metadata_from_listing_node({
+        "href": _card_href(1), "image": None, "tile_html": _tile_html(1, None),
+    })[1]
+    invalid = mod._metadata_from_listing_node({
+        "href": _card_href(2), "image": None, "tile_html": _tile_html(2, "N/A"),
+    })[1]
+
+    assert missing.gg_rating is None and missing.gg_rating_invalid is False
+    assert invalid.gg_rating is None and invalid.gg_rating_invalid is True
+
+
+@pytest.mark.parametrize("footer_icon", ["Coin", "SBC", "Objective"])
+def test_live_footer_status_variants_share_the_same_rating_structure(footer_icon):
+    node = {
+        "href": _card_href(1),
+        "image": None,
+        "tile_html": _tile_html(1, "99.1", footer_icon=footer_icon),
+    }
+    metadata = mod._metadata_from_listing_node(node)[1]
+    assert metadata.gg_rating == Decimal("99.1")
+
+
+def test_objective_tile_without_price_text_still_captures_rating():
+    html = _tile_html(1, "98.8", footer_icon="Objective").replace("22.5K", "")
+    metadata = mod._metadata_from_listing_node({
+        "href": _card_href(1), "image": None, "tile_html": html,
+    })[1]
+    assert metadata.gg_rating == Decimal("98.8")
+
+
+def test_listing_metadata_dedupe_preserves_best_fields():
+    rating_only = mod.ListingCardMetadata(gg_rating=Decimal("87.3"))
+    image_only = mod.ListingCardMetadata(image_url=_COMPOSITED_IMG)
+
+    assert mod._merge_listing_metadata(rating_only, image_only) == mod.ListingCardMetadata(
+        image_url=_COMPOSITED_IMG, gg_rating=Decimal("87.3"),
+    )
+
+
+class _CaptureConn:
+    def __init__(self, row=None):
+        self.query = None
+        self.args = None
+        self.row = row or {"matched": 0, "updated": 0}
+
+    async def execute(self, query, *args):
+        self.query, self.args = query, args
+
+    async def fetchrow(self, query, *args):
+        self.query, self.args = query, args
+        return self.row
+
+
+@run_async
+async def test_upsert_sql_preserves_old_rating_on_null_and_refreshes_valid_observations():
+    from futgg_common import FutggCard
+
+    conn = _CaptureConn()
+    card = FutggCard(1, 1, "p", 26, "https://www.fut.gg/players/1-p/26-1/")
+    await mod.upsert_card(conn, card)
+    assert "gg_rating = COALESCE(EXCLUDED.gg_rating, futgg_players.gg_rating)" in conn.query
+    assert "WHEN EXCLUDED.gg_rating IS NOT NULL THEN NOW()" in conn.query
+    assert conn.args[-2] is None
+
+    card.gg_rating = Decimal("88.1")
+    await mod.upsert_card(conn, card)
+    assert conn.args[-2] == Decimal("88.1")
+
+
+@run_async
+async def test_listing_rating_update_is_game_year_scoped():
+    conn = _CaptureConn({"matched": 1, "updated": 1})
+    url = "https://www.fut.gg/players/1-p/26-1001/"
+    result = await mod.update_listing_gg_ratings(
+        conn, {url: mod.ListingCardMetadata(gg_rating=Decimal("87.3"))}, 26, only_missing=True,
+    )
+
+    assert result == mod.ListingRatingUpdateResult(matched=1, updated=1)
+    assert "p.game_year = $3" in conn.query
+    assert conn.args == ([1001], [Decimal("87.3")], 26, True)
