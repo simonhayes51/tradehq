@@ -61,6 +61,7 @@ from app.services.discord_integration import (
     entitlement_is_active,
 )
 from app.services.discord_trading_feed import run_all_server_feeds, seed_official_server
+from app.services import discord_feed_billing
 from app.routers.market import router as market_router
 from app.routers.ai_engine import router as ai_router
 from app.routers.players import router as players_router
@@ -3887,18 +3888,33 @@ async def stripe_webhook(request: Request, conn=Depends(get_db)):
         stripe_event_table_ready = False
 
     try:
-        if event['type'] == 'checkout.session.completed':
-            await handle_checkout_completed(event['data']['object'], conn)
+        event_object = event['data']['object']
+        # Discord Server Feed subscriptions (metadata.kind == 'discord_feed',
+        # set by discord_feed_billing.create_checkout_session) are guild-
+        # scoped, not user-scoped - routed to their own handlers rather
+        # than the per-user ones below, which key everything off
+        # metadata.user_id / the `subscriptions`/`user_profiles` tables.
+        if discord_feed_billing.is_discord_feed_object(event_object):
+            if event['type'] == 'checkout.session.completed':
+                await discord_feed_billing.handle_discord_feed_checkout_completed(event_object, conn)
+            elif event['type'] == 'customer.subscription.created':
+                await discord_feed_billing.handle_discord_feed_subscription_created(event_object, conn)
+            elif event['type'] == 'customer.subscription.updated':
+                await discord_feed_billing.handle_discord_feed_subscription_updated(event_object, conn)
+            elif event['type'] == 'customer.subscription.deleted':
+                await discord_feed_billing.handle_discord_feed_subscription_deleted(event_object, conn)
+        elif event['type'] == 'checkout.session.completed':
+            await handle_checkout_completed(event_object, conn)
         elif event['type'] == 'customer.subscription.created':
-            await handle_subscription_created(event['data']['object'], conn)
+            await handle_subscription_created(event_object, conn)
         elif event['type'] == 'customer.subscription.updated':
-            await handle_subscription_updated(event['data']['object'], conn)
+            await handle_subscription_updated(event_object, conn)
         elif event['type'] == 'customer.subscription.deleted':
-            await handle_subscription_deleted(event['data']['object'], conn)
+            await handle_subscription_deleted(event_object, conn)
         elif event['type'] == 'invoice.payment_succeeded':
-            await handle_payment_succeeded(event['data']['object'], conn)
+            await handle_payment_succeeded(event_object, conn)
         elif event['type'] == 'invoice.payment_failed':
-            await handle_payment_failed(event['data']['object'], conn)
+            await handle_payment_failed(event_object, conn)
         if stripe_event_table_ready:
             await conn.execute(
                 "UPDATE stripe_events SET processed_at=NOW(), processing_started_at=NULL, processing_error=NULL WHERE event_id=$1",

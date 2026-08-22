@@ -338,3 +338,124 @@ def help_embed(app_url: str) -> dict[str, Any]:
         ],
         "footer": {"text": f"{BRAND_NAME} — link your Discord in the app to use 🔒 commands"},
     }
+
+
+# ---------------------------------------------------------------------------
+# /feed command group (server-owner self-service trading feed)
+# ---------------------------------------------------------------------------
+
+_PLAN_LABELS = {"server_feed": "Server Feed", "server_feed_plus": "Server Feed+"}
+_PLATFORM_SCOPE_LABELS = {"console": "Console", "pc": "PC", "both": "Console + PC"}
+_BUDGET_MIX_LABELS = {
+    "balanced": "Balanced", "mostly_low": "Mostly low-budget",
+    "mostly_medium": "Mostly medium-budget", "mostly_high": "Mostly high-budget",
+}
+_SUBSCRIPTION_STATUS_LABELS = {
+    "unpaid": "No subscription yet", "checkout_pending": "Checkout started, awaiting payment",
+    "active": "Active", "trialing": "Trial", "past_due": "Payment past due", "canceled": "Canceled",
+}
+
+
+def feed_setup_summary_embed(feed: dict[str, Any], price_gbp: float) -> dict[str, Any]:
+    low, medium, high = feed.get("budget_low"), feed.get("budget_medium"), feed.get("budget_high")
+    return {
+        "title": "Server Feed — setup saved",
+        "color": BRAND_COLOR,
+        "fields": [
+            {"name": "PLAN", "value": f"{_PLAN_LABELS.get(feed['plan'], feed['plan'])} — £{price_gbp:.2f}/month", "inline": False},
+            {"name": "CHANNEL", "value": f"<#{feed['feed_channel_id']}>", "inline": True},
+            {"name": "PLATFORM", "value": _PLATFORM_SCOPE_LABELS.get(feed.get("platform_scope"), "Console"), "inline": True},
+            {"name": "BUDGET MIX", "value": f"{_BUDGET_MIX_LABELS.get(feed.get('budget_mix'), feed.get('budget_mix'))} ({low} low / {medium} medium / {high} high)", "inline": False},
+        ],
+        "footer": {"text": f"{BRAND_NAME} — complete payment to continue, then run /feed test and /feed activate"},
+    }
+
+
+def feed_status_embed(feed: dict[str, Any], *, posts_used: int, channel_ok: bool, channel_problem: Optional[str]) -> dict[str, Any]:
+    plan_label = _PLAN_LABELS.get(feed.get("plan"), "Not set up")
+    sub_status = _SUBSCRIPTION_STATUS_LABELS.get(feed.get("subscription_status"), feed.get("subscription_status") or "Unknown")
+    paid_through = feed.get("current_period_end")
+    paid_through_label = paid_through.strftime("%d %b %Y") if isinstance(paid_through, datetime) else "n/a"
+    state = "Active" if feed.get("status") == "active" else "Paused"
+    problems = []
+    if not channel_ok:
+        problems.append(channel_problem or "Channel permissions could not be verified.")
+    if feed.get("bot_removed_at"):
+        problems.append("The bot appears to have been removed from this server.")
+    if not feed.get("test_post_confirmed_at") and feed.get("status") != "active":
+        problems.append("No confirmed test post yet — run /feed test.")
+    color = BRAND_COLOR if state == "Active" and not problems else (BRAND_COLOR_DANGER if problems else BRAND_COLOR_WARN)
+    fields = [
+        {"name": "PLAN", "value": plan_label, "inline": True},
+        {"name": "SUBSCRIPTION", "value": sub_status, "inline": True},
+        {"name": "STATE", "value": state, "inline": True},
+        {"name": "CHANNEL", "value": f"<#{feed['feed_channel_id']}>" if feed.get("feed_channel_id") else "Not set", "inline": True},
+        {"name": "PLATFORM", "value": _PLATFORM_SCOPE_LABELS.get(feed.get("platform_scope"), "n/a"), "inline": True},
+        {"name": "PAID THROUGH", "value": paid_through_label, "inline": True},
+        {
+            "name": "BUDGET ALLOCATION",
+            "value": f"{feed.get('budget_low', 0)} low / {feed.get('budget_medium', 0)} medium / {feed.get('budget_high', 0)} high",
+            "inline": False,
+        },
+        {
+            "name": "POSTS TODAY",
+            "value": f"{posts_used} of up to {feed.get('max_posts_per_day', 0)}",
+            "inline": False,
+        },
+    ]
+    if problems:
+        fields.append({"name": "⚠️ ISSUES", "value": "\n".join(f"• {p}" for p in problems), "inline": False})
+    return {
+        "title": "Server Feed status",
+        "color": color,
+        "author": _brand_author("https://app.eafc.live"),
+        "fields": fields,
+        "footer": _footer(),
+    }
+
+
+def feed_help_embed() -> dict[str, Any]:
+    return {
+        "title": "Server Feed — plans & commands",
+        "color": BRAND_COLOR,
+        "author": _brand_author("https://app.eafc.live"),
+        "description": (
+            "Server Feed posts live EAFC.Live trading opportunities directly into a channel you choose. "
+            "All replies from these commands are only visible to you."
+        ),
+        "fields": [
+            {"name": "Server Feed — £9.99/month", "value": "Up to 6 opportunities per day.", "inline": False},
+            {"name": "Server Feed+ — £19.99/month", "value": "Up to 12 opportunities per day.", "inline": False},
+            {
+                "name": "\"Up to\" means exactly that",
+                "value": "EAFC.Live will never post a weak trade just to fill your daily quota — some days you may see fewer posts than your allowance.",
+                "inline": False,
+            },
+            {"name": "/feed setup", "value": "Choose a plan, channel, platform and budget mix, then pay via Stripe.", "inline": False},
+            {"name": "/feed test", "value": "Send a clearly-labelled synthetic post to confirm everything works.", "inline": False},
+            {"name": "/feed activate", "value": "Turn on live posting once payment and a test post are confirmed.", "inline": False},
+            {"name": "/feed status", "value": "See your plan, subscription, channel and today's post count.", "inline": False},
+            {"name": "/feed channel / preferences", "value": "Change the posting channel or platform/budget/confidence settings.", "inline": False},
+            {"name": "/feed pause / resume", "value": "Pause or resume posting without affecting billing.", "inline": False},
+            {"name": "/feed billing", "value": "Get a secure link to manage or cancel your subscription.", "inline": False},
+        ],
+        "footer": {"text": f"{BRAND_NAME} — requires the Manage Server permission"},
+    }
+
+
+def feed_permission_denied_embed() -> dict[str, Any]:
+    return {
+        "title": "Manage Server permission required",
+        "description": "Only members with the Manage Server permission can manage this server's trading feed.",
+        "color": BRAND_COLOR_WARN,
+        "footer": _footer(),
+    }
+
+
+def feed_dm_not_allowed_embed() -> dict[str, Any]:
+    return {
+        "title": "Server-only command",
+        "description": "/feed commands can only be used inside a server, not in direct messages.",
+        "color": BRAND_COLOR_WARN,
+        "footer": _footer(),
+    }

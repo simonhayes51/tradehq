@@ -157,3 +157,65 @@ then the same channel/allowance/resume sequence as above — except
 `PUT .../allowance` will refuse to activate a Paid Partner server without
 an `expires_at` set, per the "manual enable with an expiry date"
 requirement.
+
+## 7. Self-service `/feed` command group (server owners)
+
+As an alternative to the admin API above, a server owner with the
+**Manage Server** permission can set up and manage their own paid feed
+entirely from Discord via `/feed setup`, `/feed test`, `/feed activate`,
+`/feed status`, `/feed channel`, `/feed preferences`, `/feed pause`,
+`/feed resume`, `/feed billing`, and `/feed help`. This is billing-backed
+(Stripe subscriptions: "Server Feed" £9.99/mo up to 6 posts/day, "Server
+Feed+" £19.99/mo up to 12/day) and fully independent of the admin flow
+above — either can register/manage a `discord_servers` row for a given
+guild, but a guild only ever has one row.
+
+**New environment variables required before `/feed setup` can create a
+real checkout session:**
+
+```
+STRIPE_SERVER_FEED_PRICE_ID=price_...       # create this Price in Stripe Dashboard first
+STRIPE_SERVER_FEED_PLUS_PRICE_ID=price_...  # £9.99/mo and £19.99/mo recurring subscription Prices
+```
+
+These are **not** created for you — set up two recurring subscription
+Prices in the Stripe Dashboard (test mode first) and put their IDs here.
+Without them, `/feed setup` replies with a friendly "billing isn't fully
+configured yet" message rather than failing silently.
+
+**Re-run command registration** after pulling this change — `/feed` is a
+new top-level command with subcommands, registered alongside the existing
+seven by the same script:
+
+```
+python scripts/register_discord_commands.py
+```
+
+**Stripe webhook**: no new endpoint — `/feed setup`'s checkout sessions
+and subscriptions are tagged `metadata.kind = "discord_feed"` and routed
+inside the existing `/api/webhooks/stripe` handler in `main.py`, so no
+new webhook needs registering in the Stripe Dashboard; your existing
+`STRIPE_WEBHOOK_SECRET` already covers it.
+
+**What to smoke-test for `/feed`** (same network caveats as §1 apply —
+run from an environment with real Discord + Stripe + DB access):
+- `/feed setup` as a non-Manage-Server member → permission-denied reply.
+- `/feed setup` in a DM → "server-only command" reply.
+- `/feed setup` with a channel the bot can't post in → rejected before
+  anything is saved.
+- `/feed setup` happy path → ephemeral summary + a real Stripe Checkout
+  link (test mode); complete payment there.
+- `/feed test` before and after payment (spec allows it before payment).
+- `/feed activate` before a test post / before payment → clear rejection
+  reasons; after both → succeeds.
+- `/feed status` shows plan, subscription state, channel, platform,
+  budget, posts used/allowance, paused/active, paid-through date.
+- `/feed pause` / `/feed resume`, `/feed billing` (opens the Stripe
+  customer portal), `/feed preferences` (try a budget mix that would
+  exceed the plan's daily cap — must be rejected).
+- Cancel the Stripe subscription from the portal and confirm a
+  `customer.subscription.deleted` webhook pauses the feed automatically.
+
+Keep `DISCORD_TRADING_FEED_ENABLED` unset throughout — `/feed activate`
+only flips that one guild's own `status`/`live_opportunities_enabled`
+flags; the global switch still gates all real posting everywhere.
