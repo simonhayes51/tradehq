@@ -182,6 +182,38 @@ a launch.
 
 ---
 
+## 5b. Live confirmation — what is actually measured
+
+`live_confirmation.py` reports one of four **named** states, never a bare
+bool. A tri-state boolean cannot distinguish "the sales data says selling
+pressure has not eased" from "we do not have enough sales data to know",
+and treating the second as the first would penalise a card's confidence
+for a gap in *our* pipeline rather than for anything the market did.
+
+| State | Meaning |
+|---|---|
+| `confirmed` | Live data positively supports the historical signal |
+| `conflicting` | Live data actively contradicts it (a real, measured no) |
+| `insufficient` | Some data present, not enough to judge |
+| `unavailable` | The input does not exist at all |
+
+**Computed today** (from `futgg_bin_history` / `futgg_sales_history`):
+lowest BIN, whether lowest BIN is still making new lows, recent sales
+count, median recent sale price, whether sales are clearing higher.
+
+**Not computed** (no source data exists — never fabricated):
+listing count/depth, listings near floor, listing consumption, spread.
+These return `None` and would only change if a scraper starts capturing
+genuine listing depth.
+
+In the state machine, `unavailable`/`insufficient` are **neutral, not
+blocking** — live confirmation is additive evidence on top of the
+historical regime signal, never a hard requirement that signal alone
+cannot satisfy. Only a measured `conflicting` holds the regime at
+`BOTTOMING`. Both behaviours are pinned by tests.
+
+---
+
 ## 6. FC27 learning dataset
 
 `investment_decision_log` (migration 062) records **every decision, both

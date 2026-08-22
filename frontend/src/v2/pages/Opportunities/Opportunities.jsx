@@ -7,7 +7,7 @@
 // a new page rather than an edit of an existing one.
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { ArrowRight, RotateCcw, ShieldAlert, SlidersHorizontal, TrendingUp } from "lucide-react";
+import { ArrowRight, LineChart, RotateCcw, ShieldAlert, SlidersHorizontal, TrendingUp } from "lucide-react";
 import CoinValue from "../../components/CoinValue";
 import EmptyState from "../../components/EmptyState";
 import MarketFreshness from "../../components/MarketFreshness";
@@ -52,12 +52,21 @@ export default function Opportunities() {
       <PageHead
         eyebrow="OPPORTUNITIES"
         title="Today's shortlist, no setup needed"
-        copy="A pre-filtered feed of cards already qualifying as a buy or strong buy signal — the current BIN sits meaningfully below recent completed sales. Want full control over budget, position, rarity and sort order instead? That's Trade Finder."
+        copy="Trades: cards you can buy and flip now. The current BIN sits meaningfully below recent completed sales, so the edge is available today — not something you hold and wait on. Want full control over budget, position, rarity and sort order instead? That's Trade Finder."
       />
 
-      <Link className="opp-crosslink" to="/v2/trade-finder">
-        <SlidersHorizontal size={15} /> Need more control? Open Trade Finder <ArrowRight size={14} />
-      </Link>
+      <div className="opp-crosslinks">
+        <Link className="opp-crosslink" to="/v2/trade-finder">
+          <SlidersHorizontal size={15} /> Need more control? Open Trade Finder <ArrowRight size={14} />
+        </Link>
+        {/* The Trade-vs-Investment distinction, stated where a user is
+            actually standing rather than only in the docs: this page is
+            "make coins now", Investments is "buy and hold for days".
+            They are different products and must never blur together. */}
+        <Link className="opp-crosslink" to="/v2/investments">
+          <LineChart size={15} /> Looking to buy and hold instead? Open Investments <ArrowRight size={14} />
+        </Link>
+      </div>
 
       <section className="finder-controls opp-controls" aria-label="Opportunity filters">
         <div className="finder-control">

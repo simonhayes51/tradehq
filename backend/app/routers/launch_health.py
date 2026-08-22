@@ -88,6 +88,20 @@ async def launch_health(
             "AND m.price_updated_at >= now() - interval '60 minutes'",
             game_year,
         )
+        # Cards from a PREVIOUS game cycle still marked active. The
+        # cutover mechanism is futgg_players.is_active (futgg_market_
+        # snapshot filters on it), not a game_year predicate - so during
+        # a transition, old-cycle cards linger until the player sync
+        # deactivates them. Their prices go stale and the existing
+        # freshness gates exclude them from recommendations, so this is
+        # not dangerous; but it IS worth seeing, because a number that
+        # stays high for days means the deactivation side of the cutover
+        # is not running.
+        stale_cycle_active = await _scalar(
+            conn,
+            "SELECT count(*) FROM futgg_players WHERE is_active AND game_year <> $1",
+            game_year,
+        )
 
         # ---- Pipeline recency -------------------------------------------
         last_price_age = await _scalar(
@@ -182,6 +196,7 @@ async def launch_health(
             "priced_pct": priced_pct,
             "fresh_priced": fresh_priced,
             "fresh_price_pct": fresh_pct,
+            "previous_cycle_cards_still_active": stale_cycle_active,
         },
         "pipelines": {
             "price": {

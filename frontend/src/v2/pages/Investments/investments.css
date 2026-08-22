@@ -178,6 +178,16 @@
   .inv-regime-strip { grid-template-columns: 1fr; }
   .inv-targets { grid-template-columns: 1fr 1fr; }
   .inv-budget-input { flex-wrap: wrap; }
+  /* The budget input is the one control on this page a phone user
+     actually types into - let it use the full width rather than being
+     squeezed next to the coin readout. */
+  .inv-budget-input input { max-width: 100%; flex-basis: 100%; }
+  .inv-no-calls { padding: 26px 16px; }
+  .inv-no-calls h2 { font-size: 15px; }
+  .inv-no-calls p { font-size: 12px; }
+  /* Long player names must wrap rather than pushing the confidence chip
+     off the edge of the card. */
+  .inv-card .finder-card-top h2 { overflow-wrap: anywhere; }
 }
 
 /* "No investment calls right now" - a deliberate position, not an empty

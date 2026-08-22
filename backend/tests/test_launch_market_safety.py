@@ -233,3 +233,84 @@ class TestReadinessSuppression:
             assert copy and copy[0].isupper()
             for jargon in ("percentile", "z-score", "coefficient", "deceleration", "_pct"):
                 assert jargon not in copy.lower()
+
+
+class TestLiveConfirmationNamedStates:
+    """Item 14: the engine must know the difference between 'sales data
+    says no' and 'we don't have enough sales data to know'. A tri-state
+    bool cannot carry that distinction legibly; these named states can."""
+
+    def _eval(self, bins, sales, min_sales=3):
+        from app.services.investment_engine.live_confirmation import evaluate_live_confirmation
+        return evaluate_live_confirmation(
+            bin_history_recent=bins, sales_recent=sales, min_sales_count=min_sales,
+        )
+
+    def test_no_data_at_all_is_unavailable_not_negative(self):
+        from app.services.investment_engine import live_confirmation as lc
+        result = self._eval([], [])
+        assert result.status == lc.UNAVAILABLE
+        # Must NOT be False - a missing pipeline is not a market verdict.
+        assert result.confirmed is None
+
+    def test_some_data_but_too_little_is_insufficient(self):
+        from app.services.investment_engine import live_confirmation as lc
+        result = self._eval([(100.0, 1)], [(100.0, 1)])
+        assert result.status == lc.INSUFFICIENT
+        assert result.confirmed is None
+
+    def test_a_measured_negative_is_conflicting(self):
+        from app.services.investment_engine import live_confirmation as lc
+        result = self._eval(
+            [(200.0, 1), (150.0, 2), (100.0, 3)],
+            [(100.0, 1), (95.0, 2), (90.0, 3), (85.0, 4)],
+        )
+        assert result.status == lc.CONFLICTING
+        assert result.confirmed is False
+
+    def test_a_measured_positive_is_confirmed(self):
+        from app.services.investment_engine import live_confirmation as lc
+        result = self._eval(
+            [(100.0, 1), (90.0, 2), (95.0, 3)],
+            [(90.0, 1), (92.0, 2), (95.0, 3), (98.0, 4)],
+        )
+        assert result.status == lc.CONFIRMED
+        assert result.confirmed is True
+
+    def test_status_and_confirmed_never_disagree(self):
+        from app.services.investment_engine import live_confirmation as lc
+        cases = [
+            ([], []),
+            ([(100.0, 1)], [(100.0, 1)]),
+            ([(200.0, 1), (150.0, 2), (100.0, 3)], [(100.0, 1), (95.0, 2), (90.0, 3), (85.0, 4)]),
+            ([(100.0, 1), (90.0, 2), (95.0, 3)], [(90.0, 1), (92.0, 2), (95.0, 3), (98.0, 4)]),
+        ]
+        for bins, sales in cases:
+            r = self._eval(bins, sales)
+            expected = {
+                lc.CONFIRMED: True, lc.CONFLICTING: False,
+                lc.INSUFFICIENT: None, lc.UNAVAILABLE: None,
+            }[r.status]
+            assert r.confirmed is expected, r.status
+
+    def test_unavailable_never_blocks_the_historical_trigger(self):
+        """state_machine treats None as neutral, not blocking - live
+        confirmation is additive evidence on top of the historical
+        regime signal, never a hard requirement that signal alone
+        cannot satisfy."""
+        from app.services.investment_engine import state_machine as sm
+        new_state, _ = sm.next_state(sm.BOTTOMING, sm.RegimeInputs(
+            severity_class="extreme", is_decelerating=True, breadth_spread=None,
+            live_confirmation_ok=None, overheat_pct=None,
+            hours_in_state=1.0, regime_max_age_hours=48.0,
+        ))
+        assert new_state == sm.INVESTMENT_WINDOW
+
+    def test_a_measured_conflict_does_block(self):
+        from app.services.investment_engine import state_machine as sm
+        new_state, _ = sm.next_state(sm.BOTTOMING, sm.RegimeInputs(
+            severity_class="extreme", is_decelerating=True, breadth_spread=None,
+            live_confirmation_ok=False, overheat_pct=None,
+            hours_in_state=1.0, regime_max_age_hours=48.0,
+        ))
+        assert new_state == sm.BOTTOMING

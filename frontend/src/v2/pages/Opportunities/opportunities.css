@@ -55,3 +55,12 @@
   .opp-targets { grid-template-columns: 1fr 1fr; }
   .finder-card-foot { flex-wrap: wrap; gap: 8px; }
 }
+
+/* Two cross-links now sit here: Trade Finder (more control over the same
+   kind of thing) and Investments (a genuinely different product - buy
+   and hold, not flip now). Stack them on narrow screens. */
+.opp-crosslinks { display: flex; flex-wrap: wrap; gap: 8px; }
+@media (max-width: 700px) {
+  .opp-crosslinks { flex-direction: column; }
+  .opp-crosslinks .opp-crosslink { width: 100%; }
+}
