@@ -112,6 +112,11 @@ async def run_backfill(*, game_year: int, start_page: int | None, max_pages: int
                 and int(match.group("game_year")) == game_year
             }
             ratings_found = sum(metadata.gg_rating is not None for metadata in page_cards.values())
+            if page_cards and ratings_found == 0:
+                raise RuntimeError(
+                    f"FUT.GG page {page_number} rendered {len(page_cards)} cards but no GG Ratings; "
+                    "refusing to advance the durable checkpoint"
+                )
             page_counts = BackfillCounters(
                 pages_processed=1,
                 cards_seen=len(page_cards),

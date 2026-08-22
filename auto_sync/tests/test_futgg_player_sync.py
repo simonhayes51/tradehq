@@ -351,6 +351,43 @@ async def test_collect_listing_urls_retries_page_one_when_grid_not_yet_rendered(
     ]
 
 
+@run_async
+async def test_listing_waits_for_rating_footer_after_card_links_render(monkeypatch):
+    """Card links can render before FUT.GG hydrates their rating footer."""
+    monkeypatch.setattr(mod, "PLAYER_LIMIT", 0)
+    monkeypatch.setattr(mod, "IDLE_ROUNDS", 10)
+    monkeypatch.setattr(mod, "PAGE_DELAY", 0)
+    monkeypatch.setattr(mod, "LISTING_STABILIZE_MAX_ATTEMPTS", 3)
+    monkeypatch.setattr(mod, "LISTING_STABILIZE_POLL_MS", 0)
+    page = _FakeListingPage({1: [_card_href(1)]})
+    url = mod.urljoin(mod.BASE_URL, _card_href(1))
+    reads = [
+        {url: mod.ListingCardMetadata()},
+        {url: mod.ListingCardMetadata(gg_rating=Decimal("99.5"))},
+    ]
+
+    async def hydrated_read(_page):
+        return reads.pop(0)
+
+    captured = []
+
+    async def capture(_page_number, cards):
+        captured.append(cards)
+
+    monkeypatch.setattr(mod, "_read_card_hrefs", hydrated_read)
+
+    await mod._paginate_listing(
+        page,
+        "/players/?page={page}",
+        1,
+        "rating-hydration-test",
+        page_callback=capture,
+    )
+
+    assert reads == []
+    assert captured == [{url: mod.ListingCardMetadata(gg_rating=Decimal("99.5"))}]
+
+
 def test_full_scan_selects_the_full_page_cap(monkeypatch):
     monkeypatch.setenv("FUTGG_LISTING_FULL_SCAN", "true")
     monkeypatch.setenv("FUTGG_LISTING_MAX_PAGES", "5")
