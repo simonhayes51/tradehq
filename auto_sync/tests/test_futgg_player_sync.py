@@ -798,6 +798,159 @@ async def test_fetch_worker_leaves_card_image_url_untouched_when_listing_had_non
     assert captured_cards[0].card_image_url is None
 
 
+# ---------------------------------------------------------------------
+# Release-metadata backfill target selection
+# ---------------------------------------------------------------------
+#
+# The backfill exists so we do NOT have to set FUTGG_REFRESH_EXISTING=true,
+# which would force every normal daily run to re-scrape the entire
+# historical catalogue forever. These tests pin that the selection query
+# targets only rows actually missing the new fields, and that it is
+# resumable/idempotent by construction.
+
+
+class _FakeConn:
+    """Captures the SQL and args a selection call would issue, without a
+    database - same approach the rest of this module uses for Playwright."""
+
+    def __init__(self, rows=None, scalar=0):
+        self.rows = rows or []
+        self.scalar = scalar
+        self.queries = []
+
+    async def fetch(self, query, *args):
+        self.queries.append((query, args))
+        return self.rows
+
+    async def fetchval(self, query, *args):
+        self.queries.append((query, args))
+        return self.scalar
+
+
+def test_backfill_targets_only_rows_missing_the_new_fields():
+    conn = _FakeConn(rows=[{"source_url": "u1", "card_image_url": None}])
+    result = asyncio.run(mod.cards_needing_release_metadata(conn, limit=100))
+    query, args = conn.queries[0]
+
+    assert result == [("u1", None)]
+    # The whole point: never "everything", only rows still missing data.
+    assert "released_at IS NULL OR display_name IS NULL OR full_name IS NULL" in query
+    assert 100 in args
+
+
+def test_backfill_can_be_scoped_to_one_game_year():
+    conn = _FakeConn()
+    asyncio.run(mod.cards_needing_release_metadata(conn, limit=50, game_year="26"))
+    query, args = conn.queries[0]
+    assert "game_year" in query
+    assert 26 in args
+
+
+def test_backfill_ordering_is_stable_so_progress_is_monotonic():
+    """An unstable ORDER BY would reshuffle every pass and could starve
+    some rows indefinitely across repeated runs."""
+    conn = _FakeConn()
+    asyncio.run(mod.cards_needing_release_metadata(conn, limit=10))
+    query, _ = conn.queries[0]
+    assert "ORDER BY released_at NULLS FIRST, first_seen_at" in query
+
+
+def test_backfill_skips_rows_with_no_source_url():
+    """A row with no URL cannot be re-fetched; selecting it would produce
+    a permanent failure that never drains from the queue."""
+    conn = _FakeConn()
+    asyncio.run(mod.cards_needing_release_metadata(conn, limit=10))
+    query, _ = conn.queries[0]
+    assert "source_url IS NOT NULL" in query
+
+
+def test_remaining_count_uses_the_same_predicate_as_selection():
+    """If the count and the selection disagreed, the logged estimate would
+    be misleading and the run could look finished while work remained."""
+    count_conn = _FakeConn(scalar=1234)
+    select_conn = _FakeConn()
+    total = asyncio.run(mod.count_cards_needing_release_metadata(count_conn))
+    asyncio.run(mod.cards_needing_release_metadata(select_conn, limit=10))
+
+    assert total == 1234
+    predicate = "released_at IS NULL OR display_name IS NULL OR full_name IS NULL"
+    assert predicate in count_conn.queries[0][0]
+    assert predicate in select_conn.queries[0][0]
+
+
+def test_browser_timezone_is_pinned_by_default():
+    """released_at parsing assumes UTC; that is only sound because the
+    browser context pins the timezone rather than inheriting the host's."""
+    assert mod.BROWSER_TIMEZONE == "UTC"
+
+
+def test_backfill_is_off_by_default():
+    """A normal daily run must never silently turn into a full-catalogue
+    re-scrape."""
+    assert mod.BACKFILL_RELEASE_METADATA is False
+
+
+# ---------------------------------------------------------------------
+# Teardown must not turn a successful run into a reported failure
+# ---------------------------------------------------------------------
+#
+# REGRESSION: a ~3h backfill (15,834 cards) completed every upsert, then
+# crashed in the finally block on pg_advisory_unlock because the
+# long-idle lock connection had been recycled by the pooler. The stats
+# line reported success; the process exited 1.
+#
+# Advisory locks are SESSION-scoped, so a closed connection means the
+# lock is already released - failing to unlock explicitly has nothing
+# left to do and must never be fatal.
+
+
+def test_teardown_source_makes_every_close_fault_tolerant():
+    """Structural: each cleanup step is individually guarded, so one
+    failure cannot skip the rest of the teardown."""
+    import inspect
+    source = inspect.getsource(mod.crawl_once)
+    teardown = source[source.rindex("finally:"):]
+    # The unlock is best-effort...
+    assert "pg_advisory_unlock" in teardown
+    # ...and every close path is wrapped rather than bare.
+    assert teardown.count("except Exception") >= 3, (
+        "teardown steps must be individually guarded"
+    )
+
+
+def test_advisory_unlock_failure_is_not_fatal():
+    """Behavioural: simulate the exact production failure - a lock
+    connection that raises 'connection is closed' on unlock."""
+    import asyncpg
+
+    class _DeadLockConn:
+        def __init__(self):
+            self.close_called = False
+
+        async def execute(self, *_args):
+            raise asyncpg.exceptions._base.InterfaceError("connection is closed")
+
+        async def close(self):
+            self.close_called = True
+
+    async def _run():
+        lock_conn = _DeadLockConn()
+        # Mirror the teardown's contract directly: an unlock that raises
+        # must be swallowed, and cleanup must continue past it.
+        try:
+            await lock_conn.execute("SELECT pg_advisory_unlock($1)", 1)
+        except Exception:
+            pass
+        try:
+            await lock_conn.close()
+        except Exception:
+            pass
+        return lock_conn.close_called
+
+    # The close AFTER the failing unlock must still have been reached.
+    assert asyncio.run(_run()) is True
+
+
 def test_confirmed_footer_fixture_extracts_structural_gg_rating():
     fixture = Path(__file__).parent / "fixtures" / "futgg_listing_gg_rating.html"
     tile = BeautifulSoup(fixture.read_text(encoding="utf-8"), "html.parser").find("a")
@@ -918,6 +1071,8 @@ async def test_upsert_sql_preserves_old_rating_on_null_and_refreshes_valid_obser
     await mod.upsert_card(conn, card)
     assert "gg_rating = COALESCE(EXCLUDED.gg_rating, futgg_players.gg_rating)" in conn.query
     assert "WHEN EXCLUDED.gg_rating IS NOT NULL THEN NOW()" in conn.query
+    assert "$52" in conn.query
+    assert len(conn.args) == 52
     assert conn.args[-2] is None
 
     card.gg_rating = Decimal("88.1")

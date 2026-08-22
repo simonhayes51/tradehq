@@ -1,4 +1,4 @@
--- Migration 059: capture FUT.GG's current listing-tile GG Rating
+-- Migration 068: capture FUT.GG's current listing-tile GG Rating
 -- target: core
 -- requires-table: futgg_players
 

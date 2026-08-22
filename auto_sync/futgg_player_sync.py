@@ -436,6 +436,21 @@ async def ensure_schema(conn: asyncpg.Connection) -> None:
     await conn.execute(
         "ALTER TABLE futgg_players ADD COLUMN IF NOT EXISTS is_tradeable BOOLEAN"
     )
+    # display_name / full_name / released_at: see FutggCard's own comments
+    # for the naming rationale. Defensive ADD COLUMN IF NOT EXISTS here
+    # follows this worker's existing convention (it owns its own tables and
+    # must not crash on a database that has not had the migration applied
+    # yet) - but backend/migrations/063 is the real application migration,
+    # and is what the backend's own reads depend on.
+    for column, ddl_type in (
+        ("display_name", "TEXT"),
+        ("full_name", "TEXT"),
+        ("released_at", "TIMESTAMPTZ"),
+        ("released_at_raw", "TEXT"),
+    ):
+        await conn.execute(
+            f"ALTER TABLE futgg_players ADD COLUMN IF NOT EXISTS {column} {ddl_type}"
+        )
     await conn.execute(
         "ALTER TABLE futgg_players ADD COLUMN IF NOT EXISTS gg_rating NUMERIC(4,1)"
     )
@@ -747,6 +762,63 @@ async def existing_ids(conn: asyncpg.Connection, urls) -> set[int]:
     return {int(row["source_card_id"]) for row in rows}
 
 
+async def cards_needing_release_metadata(
+    conn: asyncpg.Connection, *, limit: int, game_year: str | None = None,
+) -> list[tuple[str, str | None]]:
+    """Cards that predate the released_at/display_name/full_name fields.
+
+    Targeted metadata backfill (FUTGG_BACKFILL_RELEASE_METADATA=true)
+    rather than FUTGG_REFRESH_EXISTING=true, which would force EVERY
+    normal daily run to re-scrape the entire historical catalogue
+    forever. This selects only rows actually missing something.
+
+    Resumable and idempotent by construction: each pass re-runs the same
+    query, so completed cards drop out of the result set naturally and an
+    interrupted run simply picks up where it left off. Ordering is stable
+    (released_at NULLs first, then oldest-seen) so progress is monotonic
+    rather than reshuffling every pass.
+    """
+    where = [
+        "source_url IS NOT NULL",
+        "(released_at IS NULL OR display_name IS NULL OR full_name IS NULL)",
+    ]
+    args: list = []
+    if game_year:
+        args.append(int(game_year))
+        where.append(f"game_year = ${len(args)}")
+    args.append(limit)
+    rows = await conn.fetch(
+        f"""
+        SELECT source_url, card_image_url
+        FROM futgg_players
+        WHERE {' AND '.join(where)}
+        ORDER BY released_at NULLS FIRST, first_seen_at
+        LIMIT ${len(args)}
+        """,
+        *args,
+    )
+    return [(r["source_url"], r["card_image_url"]) for r in rows]
+
+
+async def count_cards_needing_release_metadata(
+    conn: asyncpg.Connection, *, game_year: str | None = None,
+) -> int:
+    """How much work remains - logged before a backfill starts so the run
+    can be sized (and its duration estimated at the configured
+    concurrency/delay) rather than started blind."""
+    where = [
+        "source_url IS NOT NULL",
+        "(released_at IS NULL OR display_name IS NULL OR full_name IS NULL)",
+    ]
+    args: list = []
+    if game_year:
+        args.append(int(game_year))
+        where.append(f"game_year = ${len(args)}")
+    return await conn.fetchval(
+        f"SELECT count(*) FROM futgg_players WHERE {' AND '.join(where)}", *args
+    )
+
+
 async def update_listing_gg_ratings(
     conn: asyncpg.Connection,
     cards: dict[str, ListingCardMetadata],
@@ -843,9 +915,9 @@ async def upsert_card(conn: asyncpg.Connection, card: FutggCard) -> None:
         ) VALUES (
             $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,
             $19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,
-            $35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47,
-            CASE WHEN $47::numeric IS NULL THEN NULL ELSE NOW() END,
-            NOW(),NOW(),NOW(),$48
+            $35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50,$51,
+            CASE WHEN $51::numeric IS NULL THEN NULL ELSE NOW() END,
+            NOW(),NOW(),NOW(),$52
         )
         ON CONFLICT (source_card_id) DO UPDATE SET
             source_player_id = EXCLUDED.source_player_id,
@@ -1057,23 +1129,62 @@ async def crawl_once() -> None:
         # capped at a few hundred pages regardless), not the bottleneck.
         listing_page = await context.new_page()
 
-        urls = await collect_listing_urls(listing_page)
-        stats["discovered"] = len(urls)
-        stats["gg_ratings_found"] = sum(metadata.gg_rating is not None for metadata in urls.values())
-        stats["gg_ratings_invalid"] = sum(metadata.gg_rating_invalid for metadata in urls.values())
-        async with pool.acquire() as conn:
-            known = await existing_ids(conn, urls)
-            db_total = await conn.fetchval("SELECT COUNT(*) FROM futgg_players")
-            listing_years = {
-                int(match.group("game_year"))
-                for url in urls
-                if (match := CARD_URL_RE.match(urlparse(url).path))
-            }
-            for listing_year in listing_years:
-                result = await update_listing_gg_ratings(
-                    conn, urls, listing_year, only_missing=False,
+        if BACKFILL_RELEASE_METADATA:
+            # Backfill mode reuses EVERYTHING below this point - the same
+            # fetch workers, the same parser, the same upsert, the same
+            # circuit breaker and per-request delay. The only difference
+            # is where the target list comes from: existing rows missing
+            # the new metadata, rather than the listing crawl. No parallel
+            # scraper, no duplicated fetch logic.
+            async with pool.acquire() as conn:
+                remaining = await count_cards_needing_release_metadata(
+                    conn, game_year=BACKFILL_GAME_YEAR or None,
                 )
-                stats["gg_rows_updated"] += result.updated
+                backfill_rows = await cards_needing_release_metadata(
+                    conn, limit=BACKFILL_LIMIT, game_year=BACKFILL_GAME_YEAR or None,
+                )
+            # ~0.7s per card measured against production (20 cards in
+            # 14s at concurrency=3). An estimate based on REQUEST_DELAY
+            # alone was ~6x optimistic because it ignored page fetch and
+            # render time, which dominate.
+            est_seconds = (len(backfill_rows) * 0.7) / max(PLAYER_CONCURRENCY, 1) * 3
+            log.info(
+                "BACKFILL MODE: %d card(s) still need release metadata%s; "
+                "processing up to %d this run (~%.1f min at concurrency=%d delay=%.2fs). "
+                "Re-run to continue - the query is resumable and idempotent.",
+                remaining,
+                f" (game_year={BACKFILL_GAME_YEAR})" if BACKFILL_GAME_YEAR else "",
+                len(backfill_rows), est_seconds / 60.0, PLAYER_CONCURRENCY, REQUEST_DELAY,
+            )
+            urls = {
+                url: ListingCardMetadata(image_url=image)
+                for url, image in backfill_rows
+            }
+            stats["discovered"] = len(urls)
+            known = set()          # force every backfill row to be fetched
+            db_total = remaining   # skips the full-scan plausibility check below
+        else:
+            urls = await collect_listing_urls(listing_page)
+            stats["discovered"] = len(urls)
+            stats["gg_ratings_found"] = sum(
+                metadata.gg_rating is not None for metadata in urls.values()
+            )
+            stats["gg_ratings_invalid"] = sum(
+                metadata.gg_rating_invalid for metadata in urls.values()
+            )
+            async with pool.acquire() as conn:
+                known = await existing_ids(conn, urls)
+                db_total = await conn.fetchval("SELECT COUNT(*) FROM futgg_players")
+                listing_years = {
+                    int(match.group("game_year"))
+                    for url in urls
+                    if (match := CARD_URL_RE.match(urlparse(url).path))
+                }
+                for listing_year in listing_years:
+                    result = await update_listing_gg_ratings(
+                        conn, urls, listing_year, only_missing=False,
+                    )
+                    stats["gg_rows_updated"] += result.updated
 
         scan_plausible = True
         if FULL_SCAN:

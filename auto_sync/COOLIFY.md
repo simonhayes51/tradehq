@@ -61,7 +61,7 @@ values): `PLAYWRIGHT_HEADLESS`, `PLAYWRIGHT_TIMEOUT_MS`,
 
 ### One-off GG Rating backfill
 
-After backend migration `059_futgg_gg_rating.sql` has run, use the
+After backend migration `068_futgg_gg_rating.sql` has run, use the
 PlayerSync image for a supervised listing-only backfill. It reads the
 main `/players/` catalogue and never opens card detail pages. Run one
 page first:

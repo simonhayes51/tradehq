@@ -166,13 +166,31 @@ async def run_backfill(*, game_year: int, start_page: int | None, max_pages: int
         raise
     finally:
         if context:
-            await context.close()
+            try:
+                await context.close()
+            except Exception:
+                log.warning("Browser context cleanup failed", exc_info=True)
         if browser:
-            await browser.close()
+            try:
+                await browser.close()
+            except Exception:
+                log.warning("Browser cleanup failed", exc_info=True)
         if playwright:
-            await playwright.stop()
-        await conn.execute("SELECT pg_advisory_unlock($1)", sync.OVERLAP_LOCK_KEY)
-        await conn.close()
+            try:
+                await playwright.stop()
+            except Exception:
+                log.warning("Playwright cleanup failed", exc_info=True)
+        try:
+            await conn.execute("SELECT pg_advisory_unlock($1)", sync.OVERLAP_LOCK_KEY)
+        except Exception:
+            # Advisory locks are session-scoped. A closed connection has
+            # already released it, and cleanup must not turn a successful
+            # multi-hour backfill into a failed process exit.
+            log.warning("Advisory unlock failed during cleanup", exc_info=True)
+        try:
+            await conn.close()
+        except Exception:
+            log.warning("Database connection cleanup failed", exc_info=True)
 
 
 def _parse_args() -> argparse.Namespace:
