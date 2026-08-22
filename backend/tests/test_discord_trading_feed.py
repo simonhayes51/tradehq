@@ -5,8 +5,11 @@ import pytest
 
 from app.services.discord_trading_feed import (
     ServerRecord,
+    _TEST_OUTCOMES,
+    _TEST_OVERVIEW_STATS,
     build_free_overview_embed,
     build_opportunity_post_embed,
+    build_opportunity_update_embed,
     feed_globally_enabled,
     _liquidity_label,
 )
@@ -156,3 +159,22 @@ def test_test_post_embed_is_clearly_labelled():
     embed = build_opportunity_post_embed(row, CI(), test=True)
     assert "TEST" in embed["title"]
     assert "[TEST]" in embed["description"]
+
+
+def test_fixture_overview_stats_are_fixed_not_queried():
+    """The smoke-test fixture used by send_test_free_overview is a fixed
+    dict, not the result of a query - so a test post can never leak real
+    Proof Ledger numbers."""
+    embed = build_free_overview_embed(_TEST_OVERVIEW_STATS, "https://app.eafc.live")
+    best_trades_field = next(f for f in embed["fields"] if f["name"] == "BEST COMPLETED TRADES")
+    assert "[TEST]" in best_trades_field["value"]
+
+
+@pytest.mark.parametrize("status", sorted(_TEST_OUTCOMES))
+def test_fixture_opportunity_update_embed_labels(status):
+    embed = build_opportunity_update_embed({"name": "[TEST] Sample Player"}, _TEST_OUTCOMES[status])
+    assert "[TEST]" in embed["title"]
+    if status == "target_hit":
+        assert "TARGET HIT" in embed["title"]
+    else:
+        assert "LOSS" in embed["title"]

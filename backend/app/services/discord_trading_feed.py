@@ -470,6 +470,79 @@ async def send_test_post(pool, server: ServerRecord, client: Optional[DiscordCli
     return ok, None if ok else f"discord_http_{status or 'network'}"
 
 
+_TEST_OVERVIEW_STATS: dict[str, Any] = {
+    "successful": 3,
+    "unsuccessful": 1,
+    "open": 7,
+    "total_estimated_profit": Decimal("4200"),
+    "best_trades": [
+        {"name": "[TEST] Sample Player A", "entry": 10000, "exit": 13200, "result": Decimal("2900")},
+        {"name": "[TEST] Sample Player B", "entry": 25000, "exit": 26800, "result": Decimal("1550")},
+    ],
+}
+
+_TEST_OUTCOMES: dict[str, dict[str, Any]] = {
+    "target_hit": {"outcome_status": "target_hit", "net_profit_after_tax": Decimal("2500")},
+    "loss_unrealised": {"outcome_status": "loss_unrealised", "net_profit_after_tax": Decimal("-800")},
+}
+
+
+async def send_test_free_overview(
+    pool, server: ServerRecord, client: Optional[DiscordClient] = None
+) -> tuple[bool, Optional[str]]:
+    """Sends a clearly-labelled fixture Free daily overview - fixed
+    fixture numbers, never a query against real closed-trade data - so an
+    admin can verify the channel/format without revealing real Proof
+    Ledger results ahead of the real daily post."""
+    if not server.feed_channel_id:
+        return False, "no_feed_channel_configured"
+    client = client or DiscordClient()
+    dedup_key = hashlib.sha256(f"test_overview:{server.id}:{_now().isoformat()}".encode()).hexdigest()[:40]
+    embed = build_free_overview_embed(_TEST_OVERVIEW_STATS, os.getenv("FRONTEND_URL", "https://app.eafc.live"))
+    embed["title"] = "[TEST] " + embed["title"]
+    async with pool.acquire() as conn:
+        post_id = await _record_post(conn, server.id, "test", dedup_key, {"fixture": True, "kind": "free_overview"})
+    status, body = await client.post_embed(server.feed_channel_id, embed, nonce=dedup_key[:25], enforce_nonce=True)
+    ok = status in (200, 201)
+    message_id = body.get("id") if ok and isinstance(body, dict) else None
+    if post_id is not None:
+        async with pool.acquire() as conn:
+            await _finish_post(
+                conn, post_id, ok=ok, message_id=message_id,
+                error=None if ok else f"discord_http_{status or 'network'}",
+            )
+    return ok, None if ok else f"discord_http_{status or 'network'}"
+
+
+async def send_test_opportunity_update(
+    pool, server: ServerRecord, status: str, client: Optional[DiscordClient] = None
+) -> tuple[bool, Optional[str]]:
+    """Sends a clearly-labelled fixture opportunity-update post (target hit
+    or closed/expired) using a fixed fixture outcome - never a real graded
+    row - so an admin can verify the update format without a real trade
+    having to close first. `status` must be one of _TEST_OUTCOMES's keys."""
+    if status not in _TEST_OUTCOMES:
+        raise ValueError(f"Unknown test outcome status: {status}")
+    if not server.feed_channel_id:
+        return False, "no_feed_channel_configured"
+    client = client or DiscordClient()
+    dedup_key = hashlib.sha256(f"test_update:{server.id}:{status}:{_now().isoformat()}".encode()).hexdigest()[:40]
+    embed = build_opportunity_update_embed({"name": "[TEST] Sample Player"}, _TEST_OUTCOMES[status])
+    embed["title"] = "[TEST] " + embed["title"]
+    async with pool.acquire() as conn:
+        post_id = await _record_post(conn, server.id, "test", dedup_key, {"fixture": True, "kind": "opportunity_update", "status": status})
+    result_status, body = await client.post_embed(server.feed_channel_id, embed, nonce=dedup_key[:25], enforce_nonce=True)
+    ok = result_status in (200, 201)
+    message_id = body.get("id") if ok and isinstance(body, dict) else None
+    if post_id is not None:
+        async with pool.acquire() as conn:
+            await _finish_post(
+                conn, post_id, ok=ok, message_id=message_id,
+                error=None if ok else f"discord_http_{result_status or 'network'}",
+            )
+    return ok, None if ok else f"discord_http_{result_status or 'network'}"
+
+
 async def _settings_for(conn, server_id: int) -> dict[str, Any]:
     row = await conn.fetchrow("SELECT * FROM discord_server_settings WHERE server_id=$1", server_id)
     if row is None:

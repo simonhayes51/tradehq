@@ -25,7 +25,12 @@ from pydantic import BaseModel, Field
 
 from app.db import get_db
 from app.routers.admin import require_admin
-from app.services.discord_trading_feed import get_server, send_test_post
+from app.services.discord_trading_feed import (
+    get_server,
+    send_test_free_overview,
+    send_test_opportunity_update,
+    send_test_post,
+)
 
 router = APIRouter(prefix="/api/admin/discord", tags=["admin", "discord"])
 
@@ -268,6 +273,49 @@ async def test_post(server_id: int, admin=Depends(require_admin), conn=Depends(g
     pool = await get_core_pool()
     ok, error = await send_test_post(pool, server)
     await _audit(conn, admin["user_id"], server_id, "test_post", {"ok": ok, "error": error})
+    if not ok:
+        raise HTTPException(status_code=502, detail=error or "Discord post failed")
+    return {"ok": True}
+
+
+@router.post("/servers/{server_id}/test-free-overview")
+async def test_free_overview(server_id: int, admin=Depends(require_admin), conn=Depends(get_db)) -> Dict[str, Any]:
+    """Sends a clearly-labelled fixture Free daily overview - fixture
+    numbers only, never real Proof Ledger data."""
+    from app.db import get_core_pool
+
+    server = await get_server(conn, server_id)
+    if server is None:
+        raise HTTPException(status_code=404, detail="Server not found")
+    pool = await get_core_pool()
+    ok, error = await send_test_free_overview(pool, server)
+    await _audit(conn, admin["user_id"], server_id, "test_free_overview", {"ok": ok, "error": error})
+    if not ok:
+        raise HTTPException(status_code=502, detail=error or "Discord post failed")
+    return {"ok": True}
+
+
+class TestUpdate(BaseModel):
+    status: str = Field(pattern="^(target_hit|loss_unrealised)$")
+
+
+@router.post("/servers/{server_id}/test-opportunity-update")
+async def test_opportunity_update(
+    server_id: int, body: TestUpdate, admin=Depends(require_admin), conn=Depends(get_db)
+) -> Dict[str, Any]:
+    """Sends a clearly-labelled fixture opportunity-update post (target hit
+    or closed/expired) - never a real graded outcome."""
+    from app.db import get_core_pool
+
+    server = await get_server(conn, server_id)
+    if server is None:
+        raise HTTPException(status_code=404, detail="Server not found")
+    pool = await get_core_pool()
+    ok, error = await send_test_opportunity_update(pool, server, body.status)
+    await _audit(
+        conn, admin["user_id"], server_id, "test_opportunity_update",
+        {"ok": ok, "error": error, "status": body.status},
+    )
     if not ok:
         raise HTTPException(status_code=502, detail=error or "Discord post failed")
     return {"ok": True}
