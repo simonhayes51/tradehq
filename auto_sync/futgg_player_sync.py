@@ -81,19 +81,22 @@ import asyncio
 import logging
 import os
 import random
+import re
 import sys
-from dataclasses import asdict
-from typing import Any
+from dataclasses import asdict, dataclass
+from decimal import Decimal, InvalidOperation
+from typing import Any, Awaitable, Callable
 from urllib.parse import urljoin, urlparse
 
 import asyncpg
+from bs4 import BeautifulSoup, Tag
 
 from db_connect import connect_with_retry, create_pool_with_retry
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from playwright.async_api import async_playwright
 
 from futgg_common import (
-    BASE_URL, CARD_URL_RE, CircuitBreaker, FutggCard, upsize_card_image,
+    BASE_URL, CARD_URL_RE, POSITIONS, CircuitBreaker, FutggCard, upsize_card_image,
     classify_price_tier, parse_futgg_card,
 )
 from monitoring import alert, heartbeat
@@ -214,6 +217,149 @@ USER_AGENT = (
 )
 
 
+@dataclass(frozen=True)
+class ListingFooterMetadata:
+    """Sanity fields from one tile footer; only gg_rating is persisted."""
+
+    position: str
+    gg_rating: Decimal
+    price_text: str
+
+
+@dataclass(frozen=True)
+class ListingCardMetadata:
+    image_url: str | None = None
+    gg_rating: Decimal | None = None
+    gg_rating_invalid: bool = False
+
+
+@dataclass(frozen=True)
+class FetchTarget:
+    url: str
+    existed: bool
+    listing: ListingCardMetadata
+
+
+@dataclass(frozen=True)
+class ListingRatingUpdateResult:
+    matched: int
+    updated: int
+
+
+def _parse_gg_rating(value: str | None) -> Decimal | None:
+    text = (value or "").strip()
+    if not text or not re.fullmatch(r"\d{1,3}(?:\.\d)?", text):
+        return None
+    try:
+        rating = Decimal(text)
+    except InvalidOperation:
+        return None
+    if rating < 0 or rating > 100:
+        return None
+    return rating.quantize(Decimal("0.1"))
+
+
+def parse_listing_footer(tile: Tag) -> ListingFooterMetadata | None:
+    """Read position/rating/price from a single card tile structurally.
+
+    A recognised footer status icon anchors the price/status group. Its sibling must contain a
+    recognised FUT position plus exactly one broad-range numeric value;
+    that prevents card OVR and listing price numbers elsewhere in the
+    tile from being mistaken for GG Rating. Tradeable cards use Coin;
+    live catalogue variants use the same structure with SBC/Objective.
+    """
+    for marker in tile.select('img[alt="Coin"], img[alt="SBC"], img[alt="Objective"]'):
+        price_group = marker.parent
+        if not isinstance(price_group, Tag) or not isinstance(price_group.parent, Tag):
+            continue
+        footer_row = price_group.parent
+        sibling_groups = [child for child in footer_row.children if isinstance(child, Tag) and child is not price_group]
+        for group in sibling_groups:
+            texts = [span.get_text(" ", strip=True) for span in group.find_all("span")]
+            positions = [text for text in texts if text.upper() in POSITIONS]
+            ratings = [rating for text in texts if (rating := _parse_gg_rating(text)) is not None]
+            if len(positions) != 1 or len(ratings) != 1:
+                continue
+            price_text = price_group.get_text(" ", strip=True)
+            return ListingFooterMetadata(
+                position=positions[0].upper(),
+                gg_rating=ratings[0],
+                price_text=price_text,
+            )
+    return None
+
+
+def _has_invalid_listing_rating(tile: Tag) -> bool:
+    """A position/price footer exists and contains a non-position span,
+    but no valid GG Rating. This distinguishes malformed text from a tile
+    where FUT.GG simply did not render the field."""
+    for marker in tile.select('img[alt="Coin"], img[alt="SBC"], img[alt="Objective"]'):
+        price_group = marker.parent
+        if not isinstance(price_group, Tag) or not isinstance(price_group.parent, Tag):
+            continue
+        for group in (child for child in price_group.parent.children if isinstance(child, Tag) and child is not price_group):
+            spans = group.find_all("span")
+            texts = [span.get_text(" ", strip=True) for span in spans]
+            if any(text.upper() in POSITIONS for text in texts) and any(
+                text.upper() not in POSITIONS for text in texts
+            ):
+                return True
+    return False
+
+
+def _metadata_from_listing_node(node: dict[str, Any]) -> tuple[str, ListingCardMetadata] | None:
+    href = node.get("href")
+    if not href:
+        return None
+    absolute = urljoin(BASE_URL, href)
+    parsed = urlparse(absolute)
+    if not CARD_URL_RE.match(parsed.path):
+        return None
+
+    image = node.get("image")
+    if image and "player-item-card/" in image:
+        image = upsize_card_image(urljoin(BASE_URL, image))
+    else:
+        image = None
+
+    gg_rating = None
+    gg_rating_invalid = False
+    tile_html = node.get("tile_html")
+    if tile_html:
+        soup = BeautifulSoup(tile_html, "html.parser")
+        tile = soup.find("a") or soup
+        footer = parse_listing_footer(tile)
+        gg_rating = footer.gg_rating if footer else None
+        gg_rating_invalid = footer is None and _has_invalid_listing_rating(tile)
+    elif "gg_rating" in node:
+        # Test/diagnostic callers may supply already-extracted fields.
+        gg_rating = _parse_gg_rating(str(node.get("gg_rating") or ""))
+
+    canonical = urljoin(BASE_URL, parsed.path)
+    return canonical, ListingCardMetadata(
+        image_url=image,
+        gg_rating=gg_rating,
+        gg_rating_invalid=gg_rating_invalid,
+    )
+
+
+def _merge_listing_metadata(
+    existing: ListingCardMetadata | None,
+    incoming: ListingCardMetadata,
+) -> ListingCardMetadata:
+    if existing is None:
+        return incoming
+    return ListingCardMetadata(
+        image_url=incoming.image_url or existing.image_url,
+        gg_rating=incoming.gg_rating if incoming.gg_rating is not None else existing.gg_rating,
+        gg_rating_invalid=(
+            False
+            if incoming.gg_rating is not None or existing.gg_rating is not None
+            else incoming.gg_rating_invalid or existing.gg_rating_invalid
+        ),
+    )
+
+
 async def ensure_schema(conn: asyncpg.Connection) -> None:
     await conn.execute(
         """
@@ -231,6 +377,8 @@ async def ensure_schema(conn: asyncpg.Connection) -> None:
             rarity TEXT,
             squad TEXT,
             price_tier TEXT NOT NULL DEFAULT 'bronze',
+            gg_rating NUMERIC(4,1),
+            gg_rating_updated_at TIMESTAMPTZ,
 
             club TEXT,
             league TEXT,
@@ -303,6 +451,12 @@ async def ensure_schema(conn: asyncpg.Connection) -> None:
         await conn.execute(
             f"ALTER TABLE futgg_players ADD COLUMN IF NOT EXISTS {column} {ddl_type}"
         )
+    await conn.execute(
+        "ALTER TABLE futgg_players ADD COLUMN IF NOT EXISTS gg_rating NUMERIC(4,1)"
+    )
+    await conn.execute(
+        "ALTER TABLE futgg_players ADD COLUMN IF NOT EXISTS gg_rating_updated_at TIMESTAMPTZ"
+    )
     # card_image_url: the single pre-composited full-card image FUT.GG
     # itself renders (background+cutout+badges baked in) - see
     # futgg_common.py's "/player-item-card/" branch. The
@@ -376,53 +530,48 @@ async def dismiss_cookie_banner(page) -> None:
             pass
 
 
-async def _read_card_hrefs(page) -> dict[str, str | None]:
-    """The canonical card URLs currently visible on the page, mapped to
-    each card's composited full-card image src if present (the single
+async def _read_card_hrefs(page) -> dict[str, ListingCardMetadata]:
+    """Canonical visible card URLs mapped to tile-scoped metadata.
+
+    Metadata contains the composited full-card image src if present (the single
     background+cutout+badges render FUT.GG itself composites - see
-    futgg_common.py's "player-item-card/" branch). This listing grid is
+    futgg_common.py's "player-item-card/" branch) and the structurally
+    parsed GG Rating from the position/price footer. This listing grid is
     the ONLY place that image can be captured from: a live production
     backfill reached 100% coverage on the per-card detail page's own
     cutout/background fields while the composited image stayed at 0%
     coverage, confirming FUT.GG does not render it on the individual
     card page at all, only here."""
-    pairs = await page.locator("a[href]").evaluate_all(
+    nodes = await page.locator("a[href]").evaluate_all(
         """
         nodes => nodes.map(node => ({
             href: node.getAttribute('href'),
-            image: node.querySelector('img[src]')?.src || null,
+            image: Array.from(node.querySelectorAll('img[src]'))
+                .map(image => image.src)
+                .find(src => src.includes('player-item-card/')) || null,
+            tile_html: node.outerHTML,
         }))
         """
     )
-    matched: dict[str, str | None] = {}
-    for pair in pairs:
-        href = pair.get("href")
-        if not href:
+    matched: dict[str, ListingCardMetadata] = {}
+    for node in nodes:
+        parsed = _metadata_from_listing_node(node)
+        if parsed is None:
             continue
-        absolute = urljoin(BASE_URL, href)
-        parsed = urlparse(absolute)
-        if not CARD_URL_RE.match(parsed.path):
-            continue
-        canonical = urljoin(BASE_URL, parsed.path)
-        image = pair.get("image")
-        if image and "player-item-card/" in image:
-            # This listing grid serves a 300px thumbnail (see
-            # _upsize_card_image's own docstring) - bump it to a real
-            # source resolution before it's ever stored/mirrored, same as
-            # futgg_common.py's own (now-dead-in-practice, since this
-            # image never actually appears on the per-card detail page)
-            # capture branch intended.
-            image = upsize_card_image(image)
-        else:
-            image = None
-        if canonical not in matched or (matched[canonical] is None and image):
-            matched[canonical] = image
+        canonical, metadata = parsed
+        matched[canonical] = _merge_listing_metadata(matched.get(canonical), metadata)
     return matched
 
 
 async def _paginate_listing(
-    page, url_template: str, max_pages: int, partition_label: str
-) -> dict[str, str | None]:
+    page,
+    url_template: str,
+    max_pages: int,
+    partition_label: str,
+    *,
+    start_page: int = 1,
+    page_callback: Callable[[int, dict[str, ListingCardMetadata]], Awaitable[None]] | None = None,
+) -> dict[str, ListingCardMetadata]:
     """Paginates a single FUT.GG listing partition (?page=1, ?page=2, ...
     against url_template, a path containing a literal '{page}'
     placeholder) - no window.scrollTo() or scroll-settle waits anywhere.
@@ -434,20 +583,24 @@ async def _paginate_listing(
     discovery (one or more partitions, merged - see collect_listing_urls());
     partition_label only affects logging.
 
-    Returns card URL -> composited card image URL (or None if that
-    card's tile had none) - see _read_card_hrefs' docstring for why this
-    listing crawl is the only place that image can be captured."""
-    seen: dict[str, str | None] = {}
+    Returns card URL -> ListingCardMetadata. An optional callback runs
+    after each page stabilises; the GG-rating backfill uses it to commit
+    and checkpoint one listing page at a time."""
+    seen: dict[str, ListingCardMetadata] = {}
     idle_pages = 0
-    previous_page_hrefs: dict[str, str | None] = {}
+    previous_page_hrefs: dict[str, ListingCardMetadata] = {}
 
-    for page_number in range(1, max_pages + 1):
+    for page_number in range(start_page, start_page + max_pages):
         listing_url = f"{BASE_URL}{url_template.format(page=page_number)}"
         response = await page.goto(listing_url, wait_until="domcontentloaded", timeout=TIMEOUT_MS)
         status = response.status if response else 0
         if status != 200:
             if page_number == 1:
                 raise RuntimeError(f"FUT.GG listing partition={partition_label} returned HTTP {status}")
+            if page_callback is not None:
+                raise RuntimeError(
+                    f"FUT.GG listing partition={partition_label} page={page_number} returned HTTP {status}"
+                )
             log.warning(
                 "FUT.GG listing partition=%s page %d returned HTTP %d - stopping pagination",
                 partition_label, page_number, status,
@@ -496,11 +649,13 @@ async def _paginate_listing(
             current_hrefs = await _read_card_hrefs(page)
 
         before = len(seen)
-        for card_url, image_url in current_hrefs.items():
-            if card_url not in seen or (seen[card_url] is None and image_url):
-                seen[card_url] = image_url
+        for card_url, metadata in current_hrefs.items():
+            seen[card_url] = _merge_listing_metadata(seen.get(card_url), metadata)
         new_this_page = len(seen) - before
         previous_page_hrefs = current_hrefs
+
+        if page_callback is not None:
+            await page_callback(page_number, current_hrefs)
 
         log.info(
             "Listing partition=%s page %d: %d new cards, %d unique total",
@@ -521,13 +676,13 @@ async def _paginate_listing(
         else:
             idle_pages = 0
 
-        if page_number < max_pages and PAGE_DELAY:
+        if page_number < start_page + max_pages - 1 and PAGE_DELAY:
             await asyncio.sleep(random.uniform(PAGE_DELAY * 0.7, PAGE_DELAY * 1.3))
 
     return seen
 
 
-async def collect_listing_urls(page) -> dict[str, str | None]:
+async def collect_listing_urls(page) -> dict[str, ListingCardMetadata]:
     """Top-level discovery entry point - see module docstring for the
     daily-vs-full-scan distinction and why full-scan walks more than
     /players/new/.
@@ -543,7 +698,7 @@ async def collect_listing_urls(page) -> dict[str, str | None]:
     one partition (e.g. a genuinely new card that appears in both the
     "new" feed and the main catalogue browse) is only fetched once.
 
-    Returns card URL -> composited card image URL (or None) - see
+    Returns card URL -> ListingCardMetadata - see
     _read_card_hrefs' docstring for why this listing crawl is the only
     place that image can be captured. Callers that only need the URLs can
     still iterate/len() this like a plain list - dict keys behave
@@ -555,13 +710,12 @@ async def collect_listing_urls(page) -> dict[str, str | None]:
             return dict(list(urls.items())[:PLAYER_LIMIT])
         return urls
 
-    combined: dict[str, str | None] = {}
+    combined: dict[str, ListingCardMetadata] = {}
     for name, template in FULL_SCAN_PARTITIONS:
         partition_urls = await _paginate_listing(page, template, MAX_PAGES_FULL, name)
         before = len(combined)
-        for card_url, image_url in partition_urls.items():
-            if card_url not in combined or (combined[card_url] is None and image_url):
-                combined[card_url] = image_url
+        for card_url, metadata in partition_urls.items():
+            combined[card_url] = _merge_listing_metadata(combined.get(card_url), metadata)
         log.info(
             "Discovery mode=full source=partition:%s partition_unique=%d new_to_combined=%d combined_total=%d",
             name, len(partition_urls), len(combined) - before, len(combined),
@@ -665,17 +819,69 @@ async def count_cards_needing_release_metadata(
     )
 
 
+async def update_listing_gg_ratings(
+    conn: asyncpg.Connection,
+    cards: dict[str, ListingCardMetadata],
+    game_year: int,
+    *,
+    only_missing: bool,
+) -> ListingRatingUpdateResult:
+    """Persist valid listing observations for existing cards only.
+
+    Both source_card_id and game_year are checked, so an FC26 backfill
+    cannot write an FC27 row even if an upstream identifier is reused.
+    The timestamp means last successfully observed, including an
+    unchanged value. Missing/invalid parses never enter this statement.
+    """
+    observations: dict[int, Decimal] = {}
+    for url, metadata in cards.items():
+        match = CARD_URL_RE.match(urlparse(url).path)
+        if not match or int(match.group("game_year")) != game_year or metadata.gg_rating is None:
+            continue
+        observations[int(match.group("card_id"))] = metadata.gg_rating
+    if not observations:
+        return ListingRatingUpdateResult(matched=0, updated=0)
+
+    row = await conn.fetchrow(
+        """
+        WITH input(source_card_id, gg_rating) AS (
+            SELECT * FROM unnest($1::bigint[], $2::numeric[])
+        ),
+        matched AS MATERIALIZED (
+            SELECT p.source_card_id, i.gg_rating
+            FROM futgg_players p
+            JOIN input i USING (source_card_id)
+            WHERE p.game_year = $3
+        ),
+        updated AS (
+            UPDATE futgg_players p
+               SET gg_rating = m.gg_rating,
+                   gg_rating_updated_at = NOW()
+              FROM matched m
+             WHERE p.source_card_id = m.source_card_id
+               AND p.game_year = $3
+               AND (NOT $4::boolean OR p.gg_rating IS NULL)
+            RETURNING p.source_card_id
+        )
+        SELECT (SELECT COUNT(*) FROM matched) AS matched,
+               (SELECT COUNT(*) FROM updated) AS updated
+        """,
+        list(observations), list(observations.values()), game_year, only_missing,
+    )
+    return ListingRatingUpdateResult(matched=int(row["matched"]), updated=int(row["updated"]))
+
+
 def _build_targets(
-    urls: dict[str, str | None], known: set[int], refresh_existing: bool,
-) -> tuple[list[tuple[str, bool, str | None]], int]:
+    urls: dict[str, ListingCardMetadata], known: set[int], refresh_existing: bool,
+) -> tuple[list[FetchTarget], int]:
     """Splits discovered URLs into (fetch targets, skipped-existing
     count). A card already in futgg_players (card_id in known) is skipped
     unless refresh_existing - same skip rule crawl_once has always
     applied, pulled out into its own pure function so it's unit-testable
     without a live DB/Playwright."""
-    targets: list[tuple[str, bool, str | None]] = []
+    targets: list[FetchTarget] = []
     skipped = 0
-    for url, listing_image_url in urls.items():
+    for url, listing in urls.items():
         match = CARD_URL_RE.match(urlparse(url).path)
         if not match:
             continue
@@ -684,7 +890,7 @@ def _build_targets(
         if existed and not refresh_existing:
             skipped += 1
             continue
-        targets.append((url, existed, listing_image_url))
+        targets.append(FetchTarget(url=url, existed=existed, listing=listing))
     return targets, skipped
 
 
@@ -703,13 +909,15 @@ async def upsert_card(conn: asyncpg.Connection, card: FutggCard) -> None:
             pace, shooting, passing, dribbling, defending, physicality,
             diving, handling, kicking, reflexes, speed, positioning,
             player_image_url, card_design_image_url, card_image_url, club_image_url,
-            league_image_url, nation_image_url, last_seen_at, metadata_updated_at,
+            league_image_url, nation_image_url, gg_rating, gg_rating_updated_at,
+            last_seen_at, metadata_updated_at,
             next_price_due_at, metadata_warnings
         ) VALUES (
             $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,
             $19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,
-            $35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50,
-            NOW(),NOW(),NOW(),$51
+            $35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50,$51,
+            CASE WHEN $51::numeric IS NULL THEN NULL ELSE NOW() END,
+            NOW(),NOW(),NOW(),$52
         )
         ON CONFLICT (source_card_id) DO UPDATE SET
             source_player_id = EXCLUDED.source_player_id,
@@ -782,6 +990,11 @@ async def upsert_card(conn: asyncpg.Connection, card: FutggCard) -> None:
             club_image_url = COALESCE(EXCLUDED.club_image_url, futgg_players.club_image_url),
             league_image_url = COALESCE(EXCLUDED.league_image_url, futgg_players.league_image_url),
             nation_image_url = COALESCE(EXCLUDED.nation_image_url, futgg_players.nation_image_url),
+            gg_rating = COALESCE(EXCLUDED.gg_rating, futgg_players.gg_rating),
+            gg_rating_updated_at = CASE
+                WHEN EXCLUDED.gg_rating IS NOT NULL THEN NOW()
+                ELSE futgg_players.gg_rating_updated_at
+            END,
             is_active = TRUE,
             last_seen_at = NOW(),
             metadata_updated_at = NOW(),
@@ -798,6 +1011,7 @@ async def upsert_card(conn: asyncpg.Connection, card: FutggCard) -> None:
         data["diving"], data["handling"], data["kicking"], data["reflexes"], data["speed"], data["positioning"],
         data["player_image_url"], data["card_design_image_url"], data["card_image_url"],
         data["club_image_url"], data["league_image_url"], data["nation_image_url"],
+        data["gg_rating"],
         data["parse_warnings"],
     )
 
@@ -806,7 +1020,7 @@ async def _fetch_worker(
     worker_id: int,
     page,
     pool: asyncpg.Pool,
-    queue: "asyncio.Queue[tuple[int, str, bool, str | None]]",
+    queue: "asyncio.Queue[tuple[int, FetchTarget]]",
     total: int,
     stats: dict[str, int],
     breaker: CircuitBreaker,
@@ -816,9 +1030,11 @@ async def _fetch_worker(
             log.warning("worker=%d stopping: circuit breaker tripped (%s)", worker_id, breaker.trip_reason)
             return
         try:
-            index, url, existed, listing_image_url = queue.get_nowait()
+            index, target = queue.get_nowait()
         except asyncio.QueueEmpty:
             return
+
+        url, existed, listing = target.url, target.existed, target.listing
 
         try:
             response = await page.goto(url, wait_until="domcontentloaded", timeout=TIMEOUT_MS)
@@ -834,22 +1050,23 @@ async def _fetch_worker(
             await page.locator(".fc-card").first.wait_for(state="attached", timeout=15000)
             await page.wait_for_timeout(800)
             card = parse_futgg_card(await page.content(), url)
-            if listing_image_url:
+            if listing.image_url:
                 # The composited full-card image only exists on the
                 # listing grid tile, never on the card's own detail page
                 # (confirmed live - see collect_listing_urls'/
                 # _read_card_hrefs' docstrings) - parse_futgg_card() can
                 # never set this itself, so apply what the listing crawl
                 # already captured for this URL.
-                card.card_image_url = listing_image_url
+                card.card_image_url = listing.image_url
+            card.gg_rating = listing.gg_rating
             async with pool.acquire() as conn:
                 await upsert_card(conn, card)
             breaker.record_success()
             stats["updated" if existed else "new"] += 1
             log.info(
-                "[%d/%d] worker=%d upserted id=%s name=%r rating=%s rarity=%r tier=%s",
+                "[%d/%d] worker=%d upserted id=%s name=%r rating=%s gg_rating=%s rarity=%r tier=%s",
                 index, total, worker_id, card.source_card_id, card.name, card.rating,
-                card.rarity, classify_price_tier(card),
+                card.gg_rating, card.rarity, classify_price_tier(card),
             )
         except Exception as exc:
             stats["failed"] += 1
@@ -876,7 +1093,11 @@ async def crawl_once() -> None:
         DATABASE_URL, min_size=1, max_size=PLAYER_CONCURRENCY + 2
     )
     playwright = browser = context = None
-    stats: dict[str, int] = {"discovered": 0, "new": 0, "updated": 0, "failed": 0, "skipped_existing": 0}
+    stats: dict[str, int] = {
+        "discovered": 0, "new": 0, "updated": 0, "failed": 0,
+        "skipped_existing": 0, "gg_ratings_found": 0,
+        "gg_ratings_invalid": 0, "gg_rows_updated": 0,
+    }
     breaker = CircuitBreaker(CIRCUIT_BREAKER_THRESHOLD)
     try:
         async with pool.acquire() as conn:
@@ -935,16 +1156,35 @@ async def crawl_once() -> None:
                 f" (game_year={BACKFILL_GAME_YEAR})" if BACKFILL_GAME_YEAR else "",
                 len(backfill_rows), est_seconds / 60.0, PLAYER_CONCURRENCY, REQUEST_DELAY,
             )
-            urls = {url: image for url, image in backfill_rows}
+            urls = {
+                url: ListingCardMetadata(image_url=image)
+                for url, image in backfill_rows
+            }
             stats["discovered"] = len(urls)
             known = set()          # force every backfill row to be fetched
             db_total = remaining   # skips the full-scan plausibility check below
         else:
-            urls = await collect_listing_urls(listing_page)  # card_url -> composited image url (or None)
+            urls = await collect_listing_urls(listing_page)
             stats["discovered"] = len(urls)
+            stats["gg_ratings_found"] = sum(
+                metadata.gg_rating is not None for metadata in urls.values()
+            )
+            stats["gg_ratings_invalid"] = sum(
+                metadata.gg_rating_invalid for metadata in urls.values()
+            )
             async with pool.acquire() as conn:
                 known = await existing_ids(conn, urls)
                 db_total = await conn.fetchval("SELECT COUNT(*) FROM futgg_players")
+                listing_years = {
+                    int(match.group("game_year"))
+                    for url in urls
+                    if (match := CARD_URL_RE.match(urlparse(url).path))
+                }
+                for listing_year in listing_years:
+                    result = await update_listing_gg_ratings(
+                        conn, urls, listing_year, only_missing=False,
+                    )
+                    stats["gg_rows_updated"] += result.updated
 
         scan_plausible = True
         if FULL_SCAN:
@@ -970,9 +1210,9 @@ async def crawl_once() -> None:
             "full" if FULL_SCAN else "daily", len(urls), len(known), len(targets), REFRESH_EXISTING, PLAYER_CONCURRENCY,
         )
 
-        queue: "asyncio.Queue[tuple[int, str, bool, str | None]]" = asyncio.Queue()
-        for index, (url, existed, listing_image_url) in enumerate(targets, start=1):
-            queue.put_nowait((index, url, existed, listing_image_url))
+        queue: "asyncio.Queue[tuple[int, FetchTarget]]" = asyncio.Queue()
+        for index, target in enumerate(targets, start=1):
+            queue.put_nowait((index, target))
 
         fetch_pages = [await context.new_page() for _ in range(PLAYER_CONCURRENCY)]
         try:

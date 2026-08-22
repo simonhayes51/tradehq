@@ -4,6 +4,7 @@ import hashlib
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
@@ -65,6 +66,10 @@ class FutggCard:
     source_slug: str
     game_year: int
     source_url: str
+
+    # Listing-only FUT.GG quality score. This is the value observed now,
+    # not a claim about what FUT.GG displayed historically.
+    gg_rating: Decimal | None = None
 
     name: str | None = None
     rating: int | None = None

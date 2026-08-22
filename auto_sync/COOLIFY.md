@@ -59,6 +59,30 @@ values): `PLAYWRIGHT_HEADLESS`, `PLAYWRIGHT_TIMEOUT_MS`,
 `FUTGG_REFRESH_EXISTING`, `FUTGG_PLAYER_REQUEST_DELAY`,
 `FUTGG_PLAYER_CONCURRENCY`, `FUTGG_CIRCUIT_BREAKER_THRESHOLD`.
 
+### One-off GG Rating backfill
+
+After backend migration `068_futgg_gg_rating.sql` has run, use the
+PlayerSync image for a supervised listing-only backfill. It reads the
+main `/players/` catalogue and never opens card detail pages. Run one
+page first:
+
+```sh
+python backfill_futgg_gg_rating.py --game-year 26 --start-page 1 --max-pages 1
+```
+
+Check `futgg_players.gg_rating` and the logged found/matched/updated
+counts, then resume from the durable database checkpoint:
+
+```sh
+python backfill_futgg_gg_rating.py --game-year 26 --max-pages 400
+```
+
+`FUTGG_GAME_YEAR` remains the default game-year setting. `--game-year`
+is the explicit historical override and does not change production cycle
+state. `FUTGG_LISTING_PAGE_DELAY`, stabilization, timeout, headless, and
+idle-round settings are shared with PlayerSync. The advisory lock prevents
+this job and the normal PlayerSync task from crawling concurrently.
+
 ---
 
 ## PriceSync
