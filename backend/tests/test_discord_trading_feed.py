@@ -129,7 +129,7 @@ def test_free_overview_embed_caps_best_trades_at_three():
 
 
 def test_opportunity_post_embed_includes_required_fields():
-    row = {"name": "Erling Haaland", "version": "TOTS", "current_executable_buy": 500000}
+    row = {"source_card_id": 12345, "name": "Erling Haaland", "version": "TOTS", "current_executable_buy": 500000}
 
     class CI:
         recommended_sell_target = 620000
@@ -139,10 +139,13 @@ def test_opportunity_post_embed_includes_required_fields():
         confidence_score = 0.9
         recommended_buy_max = 505000
 
-    embed = build_opportunity_post_embed(row, CI())
+    embed, components = build_opportunity_post_embed(row, CI())
     names = {f["name"] for f in embed["fields"]}
     for expected in ("BUY", "SELL TARGET", "EXPECTED PROFIT (after EA tax)", "RISK", "SELLING SPEED", "CONFIDENCE"):
         assert expected in names
+    # Branded and links back to the card in the app.
+    assert embed["author"]["name"] == "EAFC.Live"
+    assert components and components[0]["components"][0]["url"]
 
 
 def test_test_post_embed_is_clearly_labelled():
@@ -156,9 +159,29 @@ def test_test_post_embed_is_clearly_labelled():
         confidence_score = 0.5
         recommended_buy_max = 1000
 
-    embed = build_opportunity_post_embed(row, CI(), test=True)
-    assert "TEST" in embed["title"]
-    assert "[TEST]" in embed["description"]
+    embed, components = build_opportunity_post_embed(row, CI(), test=True)
+    assert "[TEST]" in embed["title"]
+    assert "TEST POST" in embed["description"]
+    # A test post is never a real trade - no link back to a real card.
+    assert components == []
+
+
+def test_opportunity_post_embed_colors_by_risk_level():
+    class CI:
+        recommended_sell_target = 100
+        expected_profit_after_tax = 10.0
+        liquidity_score = 0.5
+        confidence_score = 0.5
+        recommended_buy_max = 90
+
+        def __init__(self, risk):
+            self.risk_level = risk
+
+    row = {"source_card_id": 1, "name": "X", "current_executable_buy": 90}
+    low_embed, _ = build_opportunity_post_embed(row, CI("low"))
+    medium_embed, _ = build_opportunity_post_embed(row, CI("medium"))
+    high_embed, _ = build_opportunity_post_embed(row, CI("high"))
+    assert low_embed["color"] != medium_embed["color"] != high_embed["color"]
 
 
 def test_fixture_overview_stats_are_fixed_not_queried():

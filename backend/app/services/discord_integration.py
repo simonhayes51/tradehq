@@ -207,18 +207,22 @@ class DiscordClient:
         *,
         nonce: str,
         enforce_nonce: bool,
+        components: Optional[list[dict[str, Any]]] = None,
     ) -> tuple[int, Any]:
         if not channel_id or not embed:
             return 0, {"message": "Missing channel or embed"}
+        payload: dict[str, Any] = {
+            "embeds": [embed],
+            "nonce": nonce,
+            "enforce_nonce": enforce_nonce,
+            "allowed_mentions": {"parse": []},
+        }
+        if components:
+            payload["components"] = components
         return await self._request(
             "POST",
             f"/channels/{channel_id}/messages",
-            payload={
-                "embeds": [embed],
-                "nonce": nonce,
-                "enforce_nonce": enforce_nonce,
-                "allowed_mentions": {"parse": []},
-            },
+            payload=payload,
         )
 
 
