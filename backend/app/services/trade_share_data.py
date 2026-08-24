@@ -11,6 +11,7 @@
 # block sharing a trade.
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Optional
 
 from app.db import get_core_pool
@@ -49,6 +50,18 @@ async def _card_art_for(trade: dict[str, Any]) -> Optional[dict[str, Any]]:
     return await _best_effort_card_art(trade["player"], trade.get("version") or "")
 
 
+def _isoformat(value: Any) -> Optional[str]:
+    """The pool behind get_core_pool() isn't guaranteed to be raw asyncpg
+    (a wrapper can pre-stringify timestamp columns) - handle a datetime, a
+    string already in some serialized form, or nothing, without crashing
+    on whichever one actually shows up in production."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return str(value)
+
+
 async def build_trade_share_render_data(trade: dict[str, Any]) -> dict[str, Any]:
     card = await _card_art_for(trade)
     image_url = None
@@ -65,7 +78,7 @@ async def build_trade_share_render_data(trade: dict[str, Any]) -> dict[str, Any]
         "profit": trade.get("profit") or 0,
         "ea_tax": trade.get("ea_tax") or 0,
         "platform": trade.get("platform"),
-        "timestamp": trade.get("timestamp").isoformat() if trade.get("timestamp") else None,
+        "timestamp": _isoformat(trade.get("timestamp")),
         "image_url": image_url,
         "rating": rating,
     }
