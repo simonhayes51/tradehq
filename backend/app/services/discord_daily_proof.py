@@ -173,6 +173,10 @@ def _report_item(row: dict[str, Any]) -> dict[str, Any]:
         "snapshot_id": int(row["snapshot_id"]),
         "source_card_id": int(row["outcome_source_card_id"]),
         "name": str(row["name"]),
+        "card_rating": (
+            int(row["card_rating"]) if row.get("card_rating") is not None else None
+        ),
+        "rarity": str(row["rarity"]) if row.get("rarity") else None,
         "entry": int(row["entry_price"]),
         "exit": int(row["outcome_price"]),
         "exit_type": str(row["outcome_price_type"]),
@@ -182,12 +186,33 @@ def _report_item(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _unique_card_version_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep the earliest eligible signal for each exact FUT card/version.
+
+    Repeated recommendation snapshots for one source_card_id are not
+    independent trades. Earliest-signal selection is deterministic and
+    avoids choosing whichever duplicate later produced the best result.
+    """
+    selected: dict[int, dict[str, Any]] = {}
+    for row in rows:
+        source_card_id = int(row["outcome_source_card_id"])
+        existing = selected.get(source_card_id)
+        candidate_key = (_aware(row["evaluated_at"]), int(row["snapshot_id"]))
+        if existing is None or candidate_key < (
+            _aware(existing["evaluated_at"]),
+            int(existing["snapshot_id"]),
+        ):
+            selected[source_card_id] = row
+    return list(selected.values())
+
+
 def build_daily_proof_report(
     rows: list[dict[str, Any]], period: ReportingPeriod
 ) -> Optional[dict[str, Any]]:
-    eligible = [row for row in rows if proof_row_is_defensible(row, period)]
-    if not eligible:
+    eligible_snapshots = [row for row in rows if proof_row_is_defensible(row, period)]
+    if not eligible_snapshots:
         return None
+    eligible = _unique_card_version_rows(eligible_snapshots)
 
     wins = [row for row in eligible if row["outcome_status"] in WIN_STATUSES]
     losses = [row for row in eligible if row["outcome_status"] in LOSS_STATUSES]
@@ -222,6 +247,7 @@ def build_daily_proof_report(
         "period_end": period.end.isoformat(),
         "timezone": period.timezone_name,
         "total": total,
+        "repeat_snapshots_consolidated": len(eligible_snapshots) - total,
         "wins": len(wins),
         "losses": len(losses),
         "flats": len(flats),
@@ -243,8 +269,12 @@ def _result_line(item: dict[str, Any], rank: Optional[int] = None) -> str:
     prefix = f"{rank}. " if rank is not None else ""
     exit_label = "Target exit" if item["exit_type"] == "target_exit" else "24h mark"
     roi = Decimal(str(item["roi"])) * Decimal("100")
+    version = " ".join(
+        str(value) for value in (item.get("card_rating"), item.get("rarity")) if value
+    )
+    version_label = f" ({version})" if version else ""
     return (
-        f"**{prefix}{item['name']}**\n"
+        f"**{prefix}{item['name']}**{version_label}\n"
         f"Entry: {_coins(item['entry'])} | {exit_label}: {_coins(item['exit'])}\n"
         f"Result: {_coins(item['result'], signed=True)} coins ({roi:+.1f}% ROI)"
     )
@@ -263,8 +293,13 @@ def build_daily_proof_embed(report: dict[str, Any], app_url: str) -> dict[str, A
         {
             "name": "RESULTS",
             "value": (
-                f"{report['total']} opportunities completed\n"
-                f"Wins: {report['wins']} | Losses: {report['losses']} | Flat: {report['flats']}\n"
+                f"{report['total']} unique card opportunities completed\n"
+                + (
+                    f"{report['repeat_snapshots_consolidated']} repeat same-card snapshots consolidated\n"
+                    if report.get("repeat_snapshots_consolidated")
+                    else ""
+                )
+                + f"Wins: {report['wins']} | Losses: {report['losses']} | Flat: {report['flats']}\n"
                 f"Win rate: {win_rate:.1f}%"
             ),
             "inline": False,
@@ -342,7 +377,7 @@ _SELECT_DAILY_OUTCOMES = """
            o.target_hit, o.downside_hit, o.max_adverse_excursion,
            o.minutes_to_target,
            s.evaluated_at, s.recommended_sell_target,
-           p.name,
+           p.name, p.rating AS card_rating, p.rarity,
            (s.invalidated_at IS NOT NULL OR s.expires_at <= $2) AS snapshot_closed,
            EXISTS (
                SELECT 1 FROM futgg_recommendation_snapshots live
