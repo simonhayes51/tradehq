@@ -55,6 +55,9 @@ const PlayerCardExport = lazy(() => import("./pages/internal/PlayerCardExport"))
 // Same pattern, for the Portfolio "Share" button's trade-result card -
 // see app/services/trade_share_render.py.
 const TradeShareExport = lazy(() => import("./pages/internal/TradeShareExport"));
+// Same pattern again, for the period-summary (Today/This Week/All-Time)
+// recap card - see app/services/trade_summary_render.py.
+const TradeSummaryExport = lazy(() => import("./pages/internal/TradeSummaryExport"));
 
 // v2 - AI market-intelligence redesign, self-contained under src/v2/ (see
 // the v2 plan). Own internal routing via V2App's <Routes>, so it's
@@ -114,6 +117,7 @@ function App() {
                       see PlayerCardExport.jsx's header comment. */}
                   <Route path="/internal/render/player-card/:cardId" element={<PlayerCardExport />} />
                   <Route path="/internal/render/trade-share/:tradeId" element={<TradeShareExport />} />
+                  <Route path="/internal/render/trade-summary/:period" element={<TradeSummaryExport />} />
 
                   {/* v2 - handles its own per-panel gating via
                       useEntitlements/PremiumGate rather than a full-page

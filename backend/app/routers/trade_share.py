@@ -7,10 +7,11 @@
 # the pattern, rather than rendering server-side with e.g. Pillow).
 from __future__ import annotations
 
+import base64
 import logging
 from typing import Any, Dict
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 
 from app.auth.entitlements import compute_entitlements
 from app.services.trade_share_data import (
@@ -19,6 +20,12 @@ from app.services.trade_share_data import (
     get_owned_trade,
 )
 from app.services.trade_share_token import verify_render_token
+from app.services.trade_summary_data import (
+    PERIOD_LABELS,
+    build_summary_share_caption,
+    get_owned_portfolio_summary,
+)
+from app.services.trade_summary_token import verify_render_token as verify_summary_render_token
 
 log = logging.getLogger("trade_share")
 
@@ -59,9 +66,43 @@ async def create_trade_share_card(trade_id: int, request: Request):
         log.warning("Trade share render failed for trade_id=%s", trade_id, exc_info=True)
         raise HTTPException(status_code=502, detail="Couldn't generate the share image - please try again.")
 
-    import base64
-
     return {
         "image_data_url": f"data:image/png;base64,{base64.b64encode(rendered.png_bytes).decode('ascii')}",
         "caption": build_share_caption(render_data),
+    }
+
+
+@internal_router.get("/render/trade-summary/{period}")
+async def get_trade_summary_render_data(period: str, token: str = Query(...)) -> Dict[str, Any]:
+    if period not in PERIOD_LABELS:
+        raise HTTPException(status_code=404, detail="Unknown period")
+    user_id = verify_summary_render_token(period, token)
+    if not user_id:
+        raise HTTPException(status_code=403, detail="Invalid or expired render token")
+
+    return {"data": await get_owned_portfolio_summary(user_id, period)}
+
+
+@router.post("/summary-share-card")
+async def create_trade_summary_share_card(request: Request, period: str = Query(...)):
+    if period not in PERIOD_LABELS:
+        raise HTTPException(status_code=400, detail="period must be one of: today, week, all")
+
+    ent = await compute_entitlements(request)
+    user_id = ent.get("user_id")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    from app.services.trade_summary_render import TradeSummaryRenderError, render_trade_summary_png
+
+    summary = await get_owned_portfolio_summary(str(user_id), period)
+    try:
+        rendered = await render_trade_summary_png(str(user_id), period)
+    except TradeSummaryRenderError:
+        log.warning("Trade summary render failed for user_id=%s period=%s", user_id, period, exc_info=True)
+        raise HTTPException(status_code=502, detail="Couldn't generate the share image - please try again.")
+
+    return {
+        "image_data_url": f"data:image/png;base64,{base64.b64encode(rendered.png_bytes).decode('ascii')}",
+        "caption": build_summary_share_caption(summary),
     }

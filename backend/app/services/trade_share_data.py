@@ -41,7 +41,7 @@ async def _best_effort_card_art(player: str, version: str) -> Optional[dict[str,
     return candidates[0]
 
 
-async def _card_art_for(trade: dict[str, Any]) -> Optional[dict[str, Any]]:
+async def card_art_for(trade: dict[str, Any]) -> Optional[dict[str, Any]]:
     card_id = trade.get("card_id")
     if card_id is not None:
         card = await get_card(int(card_id))
@@ -63,7 +63,7 @@ def _isoformat(value: Any) -> Optional[str]:
 
 
 async def build_trade_share_render_data(trade: dict[str, Any]) -> dict[str, Any]:
-    card = await _card_art_for(trade)
+    card = await card_art_for(trade)
     image_url = None
     rating = None
     if card:

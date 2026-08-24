@@ -217,10 +217,15 @@
 .history-head,
 .history-row {
   display: grid;
-  grid-template-columns: 2fr repeat(4, 1fr) 40px;
+  grid-template-columns: 2fr repeat(4, 1fr) 78px;
   gap: 12px;
   align-items: center;
   padding: 14px 18px;
+}
+.history-share-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
 }
 .history-share {
   display: flex;
@@ -514,4 +519,67 @@
   .club-form-grid label.wide {
     grid-column: auto;
   }
+  .summary-share-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 14px;
+  }
+  .summary-share-controls {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+}
+
+.summary-share {
+  margin-bottom: 16px;
+}
+.summary-share-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+}
+.summary-share-hint {
+  margin: 4px 0 0;
+  color: var(--v2-muted);
+  font-size: 13px;
+}
+.summary-share-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.summary-share-controls select {
+  background: var(--v2-bg);
+  color: var(--v2-text);
+  border: 1px solid var(--v2-border);
+  border-radius: 4px;
+  padding: 9px 10px;
+  font-size: 13px;
+}
+.summary-share-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: transparent;
+  color: var(--v2-text);
+  border: 1px solid var(--v2-border);
+  border-radius: 4px;
+  padding: 9px 14px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.summary-share-btn:hover:not(:disabled) {
+  border-color: var(--v2-accent);
+  color: var(--v2-accent);
+}
+.summary-share-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.summary-share-btn .spin {
+  animation: history-share-spin 0.8s linear infinite;
 }
