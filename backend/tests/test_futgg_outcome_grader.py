@@ -142,6 +142,39 @@ class TestEntry:
         assert grade.entry_achieved is False
         assert grade.outcome_status == NO_ENTRY
 
+    def test_a_sub_ea_minimum_glitch_price_is_never_treated_as_a_real_entry(self):
+        # Production bug: track_record()'s headline average ROI was
+        # reported at 212.5% against a sane 22.0% median over 8,014
+        # entries - the textbook signature of a right-skewed distribution
+        # with a handful of extreme outliers. Root cause: the entry loop
+        # only guarded against an exact 0 (see the zero-price test above),
+        # so a glitched/bogus 1-coin futgg_bin_history reading - no real
+        # EA listing is ever priced below EA_MIN_PRICE (200 coins, see
+        # trading_math.py) - was accepted as a genuine executable entry.
+        # entry_price=1 against a normal five-figure sell target produces
+        # a realised_roi in the thousands of percent from a single row,
+        # which is enough to drag an unweighted AVG() far above the
+        # median even across thousands of real, sane outcomes.
+        observations = _obs((1, 1), (2, 150), (3, 89_000), (4, 95_000))
+        grade = grade_recommendation(
+            horizon="24h", evaluated_at=T0,
+            buy_price=90_000, sell_target=115_000,
+            observations=observations,
+        )
+        assert grade.entry_price is not None
+        assert grade.entry_price >= 200
+        assert grade.entry_price == 89_000
+
+    def test_a_sub_minimum_price_only_series_is_no_entry_not_a_false_win(self):
+        observations = _obs((1, 1), (2, 150), (3, 199))
+        grade = grade_recommendation(
+            horizon="24h", evaluated_at=T0,
+            buy_price=90_000, sell_target=115_000,
+            observations=observations,
+        )
+        assert grade.entry_achieved is False
+        assert grade.outcome_status == NO_ENTRY
+
 
 class TestOutcomeStatuses:
     def test_clean_round_trip_is_target_hit_with_realised_numbers(self):

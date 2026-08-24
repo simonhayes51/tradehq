@@ -162,18 +162,26 @@ def grade_recommendation(
         return grade
 
     # ---- 1. Entry: first observation at or below the buy price --------
-    # price > 0 guards against a glitched/bogus 0-coin futgg_bin_history
-    # reading being accepted as a real executable price - a genuine BIN
-    # is never free. Without this, such a row becomes entry_price=0 and
-    # crashes the excursion math below with a ZeroDivisionError, which
-    # (since grade_pending() processes its batch in one loop with no
-    # per-row try/except) aborts the ENTIRE horizon's grading pass at
-    # that row - confirmed live: this silently blocked all further 24h-
-    # horizon grading behind one poisoned row while other horizons kept
-    # progressing normally.
+    # price >= tm.EA_MIN_PRICE (200 coins - the real EA-enforced floor,
+    # see trading_math.py) guards against a glitched/bogus near-zero
+    # futgg_bin_history reading being accepted as a real executable
+    # price. The original guard here was only `price > 0`, which stopped
+    # an exact 0 (a genuine past incident: entry_price=0 crashed the
+    # excursion math below with a ZeroDivisionError, and since
+    # grade_pending() processes its batch in one loop with no per-row
+    # try/except, that aborted the ENTIRE horizon's grading pass at that
+    # row) but let anything from 1 to 199 coins through unfiltered. A
+    # single such row (e.g. entry_price=1 against a normal five-figure
+    # sell target) produces a realised_roi in the thousands of percent -
+    # not a loss, not a real trade, just bad data - and an unweighted
+    # AVG() over thousands of real outcomes is enough for one or two of
+    # these to drag the mean to something like 212% while the median
+    # stayed a sane ~22%. No real EA listing is ever priced below
+    # EA_MIN_PRICE, so this is the same class of guard as price>0, just
+    # drawn at the real floor instead of at zero.
     entry_index: Optional[int] = None
     for index, (price, captured_at) in enumerate(series):
-        if price > 0 and price <= buy_price:
+        if price >= tm.EA_MIN_PRICE and price <= buy_price:
             entry_index = index
             grade.entry_achieved = True
             grade.entry_at = captured_at
