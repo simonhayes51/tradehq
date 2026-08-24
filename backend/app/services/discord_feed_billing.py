@@ -239,6 +239,10 @@ async def create_checkout_session(*, guild_id: str, owner_discord_id: str, plan:
         success_url=success_url,
         cancel_url=cancel_url,
         client_reference_id=guild_id,
+        # Without this, Stripe Checkout shows no promo-code field at all -
+        # a customer can never apply a Coupon/Promotion Code, regardless
+        # of anything configured in the Dashboard.
+        allow_promotion_codes=True,
         metadata={"kind": "discord_feed", "guild_id": guild_id, "discord_user_id": str(owner_discord_id), "plan": plan},
         subscription_data={
             "metadata": {"kind": "discord_feed", "guild_id": guild_id, "discord_user_id": str(owner_discord_id), "plan": plan},
