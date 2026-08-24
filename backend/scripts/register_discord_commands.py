@@ -123,6 +123,22 @@ FEED_COMMAND = {
                 {"type": 3, "name": "budget_mix", "description": "Budget mix", "required": False, "choices": _BUDGET_MIX_CHOICES},
                 {"type": 3, "name": "min_confidence", "description": "Minimum confidence", "required": False, "choices": _MIN_CONFIDENCE_CHOICES},
                 {"type": 3, "name": "min_expected_profit", "description": "Minimum expected profit", "required": False, "choices": _MIN_PROFIT_CHOICES},
+                {
+                    "type": 4, "name": "posting_start_hour", "description": "Posting window start (0-23, local time)",
+                    "required": False, "min_value": 0, "max_value": 23,
+                },
+                {
+                    "type": 4, "name": "posting_end_hour", "description": "Posting window end (0-23, local time)",
+                    "required": False, "min_value": 0, "max_value": 23,
+                },
+                {
+                    "type": 3, "name": "posting_timezone",
+                    "description": "IANA timezone for the posting window, e.g. Europe/London", "required": False,
+                },
+                {
+                    "type": 5, "name": "clear_posting_window",
+                    "description": "Remove the posting window restriction (post any time)", "required": False,
+                },
             ],
         },
         {"type": 1, "name": "pause", "description": "Pause new live opportunity posts (billing unaffected)"},

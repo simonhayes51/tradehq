@@ -182,6 +182,73 @@ def test_set_preferences_rejects_unlisted_confidence_value(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Posting window validation and persistence
+# ---------------------------------------------------------------------------
+
+
+def test_validate_posting_window_accepts_no_window():
+    billing.validate_posting_window(None, None, None)  # no raise
+
+
+def test_validate_posting_window_requires_both_hours_together():
+    with pytest.raises(billing.FeedError):
+        billing.validate_posting_window(8, None, "UTC")
+    with pytest.raises(billing.FeedError):
+        billing.validate_posting_window(None, 23, "UTC")
+
+
+def test_validate_posting_window_rejects_out_of_range_hours():
+    with pytest.raises(billing.FeedError):
+        billing.validate_posting_window(-1, 23, None)
+    with pytest.raises(billing.FeedError):
+        billing.validate_posting_window(8, 24, None)
+
+
+def test_validate_posting_window_rejects_unknown_timezone():
+    with pytest.raises(billing.FeedError, match="recognised timezone"):
+        billing.validate_posting_window(8, 23, "Not/AZone")
+
+
+def test_validate_posting_window_accepts_a_real_timezone():
+    billing.validate_posting_window(8, 23, "Europe/London")  # no raise
+
+
+def test_set_preferences_rejects_invalid_posting_window(monkeypatch):
+    monkeypatch.setattr(billing, "get_guild_feed", AsyncMock(return_value={
+        "id": 1, "plan": "server_feed", "budget_mix": "balanced",
+    }))
+    with pytest.raises(billing.FeedError):
+        run(billing.set_preferences(guild_id="g1", admin_id="1", posting_window_start_hour=8))
+
+
+def test_set_preferences_persists_posting_window(monkeypatch):
+    conn = _FakeConn()
+    pool = _FakePool(conn)
+    monkeypatch.setattr(billing, "get_core_pool", AsyncMock(return_value=pool))
+    monkeypatch.setattr(billing, "get_guild_feed", AsyncMock(return_value={
+        "id": 1, "plan": "server_feed", "budget_mix": "balanced",
+    }))
+    run(billing.set_preferences(
+        guild_id="g1", admin_id="1",
+        posting_window_start_hour=8, posting_window_end_hour=23, posting_timezone="Europe/London",
+    ))
+    server_update = next(q for q, a in conn.executed if "posting_window_start_hour = $7" in q)
+    assert server_update  # the window UPDATE branch ran, not the plain one
+
+
+def test_set_preferences_clears_posting_window(monkeypatch):
+    conn = _FakeConn()
+    pool = _FakePool(conn)
+    monkeypatch.setattr(billing, "get_core_pool", AsyncMock(return_value=pool))
+    monkeypatch.setattr(billing, "get_guild_feed", AsyncMock(return_value={
+        "id": 1, "plan": "server_feed", "budget_mix": "balanced",
+    }))
+    run(billing.set_preferences(guild_id="g1", admin_id="1", clear_posting_window=True))
+    server_update = next(q for q, a in conn.executed if "posting_window_start_hour = NULL" in q)
+    assert server_update
+
+
+# ---------------------------------------------------------------------------
 # Activation gating: subscription + channel + test post, all required
 # ---------------------------------------------------------------------------
 

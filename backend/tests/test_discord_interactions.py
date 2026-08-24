@@ -330,6 +330,39 @@ def test_build_reply_account_never_includes_email(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Regression: link buttons must point at routes that actually exist in
+# frontend/src (App.jsx / v2/App.v2.jsx) - /#/settings/discord, /#/account,
+# and /#/v2/journal never existed and were dead links.
+# ---------------------------------------------------------------------------
+
+
+def test_not_linked_message_points_at_login_not_a_nonexistent_settings_page():
+    reply = run(_build_reply("account", [], None, "corr123"))
+    description = reply["embeds"][0]["description"]
+    assert "/#/login" in description
+    assert "/#/settings/discord" not in description
+
+
+def test_account_button_uses_the_real_v2_account_route(monkeypatch):
+    monkeypatch.setattr(data, "resolve_user_id", AsyncMock(return_value="user-abc"))
+    monkeypatch.setattr(data, "get_account_summary", AsyncMock(return_value={
+        "tier": "pro", "premium_until": None, "watchlist_count": 0, "alerts_count": 0, "trades_count": 0,
+    }))
+    reply = run(_build_reply("account", [], "712239212749127740", "corr123"))
+    url = reply["components"][0]["components"][0]["url"]
+    assert url.endswith("/#/v2/account")
+
+
+def test_results_button_uses_the_real_trades_route_not_a_nonexistent_journal(monkeypatch):
+    monkeypatch.setattr(data, "resolve_user_id", AsyncMock(return_value="user-abc"))
+    monkeypatch.setattr(data, "get_trades", AsyncMock(return_value=[]))
+    reply = run(_build_reply("results", [], "712239212749127740", "corr123"))
+    url = reply["components"][0]["components"][0]["url"]
+    assert url.endswith("/#/trades")
+    assert "journal" not in url
+
+
+# ---------------------------------------------------------------------------
 # Card search: no silent version guessing
 # ---------------------------------------------------------------------------
 
@@ -727,6 +760,45 @@ def test_feed_pause_never_mentions_billing(monkeypatch):
     payload = _feed_payload(subcommand="pause")
     reply = run(_build_reply("feed", payload["data"]["options"], "712239212749127740", "corr", payload))
     assert "unaffected" in reply["content"].lower()
+
+
+def test_feed_preferences_passes_posting_window_options_through(monkeypatch):
+    set_preferences = AsyncMock(return_value={"id": 1, "plan": "server_feed", "feed_channel_id": "chan1"})
+    monkeypatch.setattr(feed_billing, "set_preferences", set_preferences)
+    options = [
+        {"name": "posting_start_hour", "value": 8},
+        {"name": "posting_end_hour", "value": 23},
+        {"name": "posting_timezone", "value": "Europe/London"},
+    ]
+    payload = _feed_payload(subcommand="preferences", options=options)
+    reply = run(_build_reply("feed", payload["data"]["options"], "712239212749127740", "corr", payload))
+    assert "updated" in reply["content"].lower()
+    _, kwargs = set_preferences.call_args
+    assert kwargs["posting_window_start_hour"] == 8
+    assert kwargs["posting_window_end_hour"] == 23
+    assert kwargs["posting_timezone"] == "Europe/London"
+    assert kwargs["clear_posting_window"] is False
+
+
+def test_feed_preferences_can_clear_the_posting_window(monkeypatch):
+    set_preferences = AsyncMock(return_value={"id": 1, "plan": "server_feed", "feed_channel_id": "chan1"})
+    monkeypatch.setattr(feed_billing, "set_preferences", set_preferences)
+    options = [{"name": "clear_posting_window", "value": True}]
+    payload = _feed_payload(subcommand="preferences", options=options)
+    run(_build_reply("feed", payload["data"]["options"], "712239212749127740", "corr", payload))
+    _, kwargs = set_preferences.call_args
+    assert kwargs["clear_posting_window"] is True
+
+
+def test_feed_preferences_reports_posting_window_errors_to_user(monkeypatch):
+    async def raise_error(**kwargs):
+        raise feed_billing.FeedError("Posting window hours must be between 0 and 23.")
+
+    monkeypatch.setattr(feed_billing, "set_preferences", raise_error)
+    options = [{"name": "posting_start_hour", "value": 8}]
+    payload = _feed_payload(subcommand="preferences", options=options)
+    reply = run(_build_reply("feed", payload["data"]["options"], "712239212749127740", "corr", payload))
+    assert "between 0 and 23" in reply["content"]
 
 
 def test_feed_billing_link_is_a_short_redirect_not_the_raw_stripe_url(monkeypatch):

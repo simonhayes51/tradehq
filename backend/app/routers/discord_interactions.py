@@ -283,12 +283,20 @@ async def _build_feed_reply(interaction_payload: Dict[str, Any], options: List[D
             budget_mix = _sub_option(sub_options, "budget_mix")
             min_confidence_raw = _sub_option(sub_options, "min_confidence")
             min_profit_raw = _sub_option(sub_options, "min_expected_profit")
+            start_hour_raw = _sub_option(sub_options, "posting_start_hour")
+            end_hour_raw = _sub_option(sub_options, "posting_end_hour")
+            posting_timezone = _sub_option(sub_options, "posting_timezone")
+            clear_posting_window = bool(_sub_option(sub_options, "clear_posting_window"))
             feed = await feed_billing.set_preferences(
                 guild_id=guild_id, admin_id=str(discord_id),
                 platform_scope=str(platform_scope) if platform_scope else None,
                 budget_mix=str(budget_mix) if budget_mix else None,
                 min_confidence=float(min_confidence_raw) if min_confidence_raw else None,
                 min_expected_profit=int(min_profit_raw) if min_profit_raw else None,
+                posting_window_start_hour=int(start_hour_raw) if start_hour_raw is not None else None,
+                posting_window_end_hour=int(end_hour_raw) if end_hour_raw is not None else None,
+                posting_timezone=str(posting_timezone) if posting_timezone else None,
+                clear_posting_window=clear_posting_window,
             )
             return {"content": "✅ Preferences updated.", "embeds": [embeds.feed_status_embed(feed, posts_used=0, channel_ok=True, channel_problem=None)]}
 
@@ -359,10 +367,10 @@ async def _build_reply(name: str, options: List[Dict[str, Any]], discord_id: Opt
         return {"embeds": [embeds.alerts_embed(items, app_url)], "components": [embeds.link_row("Manage alerts", f"{app_url.rstrip('/')}/#/v2/watchlist")]}
     if name == "results":
         trades = await data.get_trades(user_id)
-        return {"embeds": [embeds.results_embed(trades, app_url)], "components": [embeds.link_row("View trade journal", f"{app_url.rstrip('/')}/#/v2/journal")]}
+        return {"embeds": [embeds.results_embed(trades, app_url)], "components": [embeds.link_row("View trade journal", f"{app_url.rstrip('/')}/#/trades")]}
     if name == "account":
         summary = await data.get_account_summary(user_id)
-        return {"embeds": [embeds.account_embed(summary, app_url)], "components": [embeds.link_row("Open account page", f"{app_url.rstrip('/')}/#/account")]}
+        return {"embeds": [embeds.account_embed(summary, app_url)], "components": [embeds.link_row("Open account page", f"{app_url.rstrip('/')}/#/v2/account")]}
 
     return {"content": "Unknown command."}
 

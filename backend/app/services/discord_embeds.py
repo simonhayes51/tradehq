@@ -27,7 +27,7 @@ def _app_url(app_url: str) -> str:
     return app_url.rstrip("/")
 
 
-def _brand_author(app_url: str) -> dict[str, str]:
+def brand_author(app_url: str) -> dict[str, str]:
     base = _app_url(app_url)
     return {"name": BRAND_NAME, "icon_url": base + LOGO_PATH, "url": base}
 
@@ -116,10 +116,10 @@ def not_linked_embed(app_url: str) -> dict[str, Any]:
         "title": "Discord not linked",
         "description": (
             "Your Discord isn't linked to an EAFC.Live account yet. "
-            f"Link it securely at {_app_url(app_url)}/#/settings/discord, then try again."
+            f"Log in to EAFC.Live with Discord at {_app_url(app_url)}/#/login to link your account, then try again."
         ),
         "color": BRAND_COLOR_WARN,
-        "author": _brand_author(app_url),
+        "author": brand_author(app_url),
         "footer": _footer(),
     }
 
@@ -144,7 +144,7 @@ def no_card_found_embed(query: str, app_url: str) -> dict[str, Any]:
             "suggestions Discord offers, rather than typing a full name and pressing enter."
         ),
         "color": BRAND_COLOR_WARN,
-        "author": _brand_author(app_url),
+        "author": brand_author(app_url),
         "footer": _footer(),
     }
 
@@ -161,7 +161,7 @@ def price_embed(row: dict[str, Any], app_url: str, *, platform: str = "ps") -> d
         "title": card_label(row),
         "description": f"**Current buy: {coins(price)} coins**" if price is not None else "No current price available.",
         "color": BRAND_COLOR if price is not None else BRAND_COLOR_NEUTRAL,
-        "author": _brand_author(app_url),
+        "author": brand_author(app_url),
         "fields": fields,
         "footer": _footer(),
     }
@@ -204,7 +204,7 @@ def fairvalue_embed(row: dict[str, Any], ci: Any, app_url: str, *, platform: str
     embed: dict[str, Any] = {
         "title": card_label(row),
         "color": color,
-        "author": _brand_author(app_url),
+        "author": brand_author(app_url),
         "fields": fields,
         "footer": _footer(),
     }
@@ -221,7 +221,7 @@ def watchlist_embed(items: list[dict[str, Any]], app_url: str) -> dict[str, Any]
             "title": "Your watchlist",
             "description": "Your watchlist is empty. Add a card from the EAFC.Live app to start tracking it.",
             "color": BRAND_COLOR_NEUTRAL,
-            "author": _brand_author(app_url),
+            "author": brand_author(app_url),
             "footer": _footer(),
         }
     lines = []
@@ -238,7 +238,7 @@ def watchlist_embed(items: list[dict[str, Any]], app_url: str) -> dict[str, Any]
         "title": "Your watchlist",
         "description": "\n".join(lines),
         "color": BRAND_COLOR,
-        "author": _brand_author(app_url),
+        "author": brand_author(app_url),
         "footer": {"text": f"{BRAND_NAME} — showing {min(len(items), 10)} of {len(items)}"},
     }
 
@@ -249,7 +249,7 @@ def alerts_embed(items: list[dict[str, Any]], app_url: str) -> dict[str, Any]:
             "title": "Your alerts",
             "description": "You have no active alerts. Set one up from a card's page in the EAFC.Live app.",
             "color": BRAND_COLOR_NEUTRAL,
-            "author": _brand_author(app_url),
+            "author": brand_author(app_url),
             "footer": _footer(),
         }
     lines = []
@@ -263,7 +263,7 @@ def alerts_embed(items: list[dict[str, Any]], app_url: str) -> dict[str, Any]:
         "title": "Your alerts",
         "description": "\n".join(lines),
         "color": BRAND_COLOR,
-        "author": _brand_author(app_url),
+        "author": brand_author(app_url),
         "footer": {"text": f"{BRAND_NAME} — showing {min(len(items), 10)} of {len(items)}"},
     }
 
@@ -274,7 +274,7 @@ def results_embed(trades: list[dict[str, Any]], app_url: str) -> dict[str, Any]:
             "title": "Your recent trades",
             "description": "You haven't logged any trades yet.",
             "color": BRAND_COLOR_NEUTRAL,
-            "author": _brand_author(app_url),
+            "author": brand_author(app_url),
             "footer": _footer(),
         }
     lines = []
@@ -296,7 +296,7 @@ def results_embed(trades: list[dict[str, Any]], app_url: str) -> dict[str, Any]:
         "title": "Your recent trades",
         "description": "\n".join(lines),
         "color": BRAND_COLOR,
-        "author": _brand_author(app_url),
+        "author": brand_author(app_url),
         "footer": {"text": f"{BRAND_NAME} — total for these {len(trades)}: {coins(total, signed=True)} coins"},
     }
 
@@ -310,7 +310,7 @@ def account_embed(summary: dict[str, Any], app_url: str) -> dict[str, Any]:
     return {
         "title": "Your EAFC.Live account",
         "color": BRAND_COLOR if tier != "Free" else BRAND_COLOR_NEUTRAL,
-        "author": _brand_author(app_url),
+        "author": brand_author(app_url),
         "fields": [
             {"name": "PLAN", "value": plan_line, "inline": True},
             {"name": "WATCHLIST", "value": str(summary.get("watchlist_count", 0)), "inline": True},
@@ -325,7 +325,7 @@ def help_embed(app_url: str) -> dict[str, Any]:
     return {
         "title": "EAFC.Live commands",
         "color": BRAND_COLOR,
-        "author": _brand_author(app_url),
+        "author": brand_author(app_url),
         "description": "All account commands reply privately (only you can see them), marked 🔒 below.",
         "fields": [
             {"name": "/price <player>", "value": "Current buy price for a card", "inline": False},
@@ -402,13 +402,23 @@ def feed_status_embed(feed: dict[str, Any], *, posts_used: int, channel_ok: bool
             "value": f"{posts_used} of up to {feed.get('max_posts_per_day', 0)}",
             "inline": False,
         },
+        {
+            "name": "POSTING WINDOW",
+            "value": (
+                f"{feed['posting_window_start_hour']:02d}:00–{feed['posting_window_end_hour']:02d}:00 "
+                f"({feed.get('posting_timezone') or 'UTC'})"
+                if feed.get("posting_window_start_hour") is not None and feed.get("posting_window_end_hour") is not None
+                else "Any time"
+            ),
+            "inline": False,
+        },
     ]
     if problems:
         fields.append({"name": "⚠️ ISSUES", "value": "\n".join(f"• {p}" for p in problems), "inline": False})
     return {
         "title": "Server Feed status",
         "color": color,
-        "author": _brand_author("https://app.eafc.live"),
+        "author": brand_author("https://app.eafc.live"),
         "fields": fields,
         "footer": _footer(),
     }
@@ -418,7 +428,7 @@ def feed_help_embed() -> dict[str, Any]:
     return {
         "title": "Server Feed — plans & commands",
         "color": BRAND_COLOR,
-        "author": _brand_author("https://app.eafc.live"),
+        "author": brand_author("https://app.eafc.live"),
         "description": (
             "Server Feed posts live EAFC.Live trading opportunities directly into a channel you choose. "
             "All replies from these commands are only visible to you."

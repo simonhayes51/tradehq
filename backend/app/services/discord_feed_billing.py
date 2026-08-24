@@ -308,10 +308,32 @@ async def set_channel(*, guild_id: str, admin_id: str, channel_id: str) -> dict[
     return await get_guild_feed(guild_id)
 
 
+def validate_posting_window(
+    start_hour: Optional[int], end_hour: Optional[int], tz_name: Optional[str]
+) -> None:
+    """Both hours must be supplied together (or neither), 0-23, and the
+    timezone must be a real IANA name. Raises FeedError on anything else."""
+    if start_hour is None and end_hour is None:
+        return
+    if start_hour is None or end_hour is None:
+        raise FeedError("Please set both a start hour and an end hour for the posting window.")
+    if not (0 <= start_hour <= 23) or not (0 <= end_hour <= 23):
+        raise FeedError("Posting window hours must be between 0 and 23.")
+    if tz_name:
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+        try:
+            ZoneInfo(tz_name)
+        except (ZoneInfoNotFoundError, ValueError):
+            raise FeedError(f"'{tz_name}' isn't a recognised timezone (e.g. 'Europe/London', 'America/New_York').")
+
+
 async def set_preferences(
     *, guild_id: str, admin_id: str,
     platform_scope: Optional[str] = None, budget_mix: Optional[str] = None,
     min_confidence: Optional[float] = None, min_expected_profit: Optional[int] = None,
+    posting_window_start_hour: Optional[int] = None, posting_window_end_hour: Optional[int] = None,
+    posting_timezone: Optional[str] = None, clear_posting_window: bool = False,
 ) -> dict[str, Any]:
     feed = await get_guild_feed(guild_id)
     if not feed:
@@ -325,19 +347,50 @@ async def set_preferences(
         raise FeedError("Please choose one of the offered confidence levels.")
     if min_expected_profit is not None and min_expected_profit not in dict(MIN_PROFIT_CHOICES).values():
         raise FeedError("Please choose one of the offered profit thresholds.")
+    if clear_posting_window:
+        posting_window_start_hour = posting_window_end_hour = posting_timezone = None
+    else:
+        validate_posting_window(posting_window_start_hour, posting_window_end_hour, posting_timezone)
 
     pool = await get_core_pool()
     async with pool.acquire() as conn:
-        await conn.execute(
-            """
-            UPDATE discord_servers SET
-                platform_scope = COALESCE($2, platform_scope),
-                budget_mix = $3, budget_low=$4, budget_medium=$5, budget_high=$6,
-                updated_at=NOW()
-            WHERE guild_id=$1
-            """,
-            guild_id, platform_scope, new_budget_mix, low, medium, high,
-        )
+        if clear_posting_window:
+            await conn.execute(
+                """
+                UPDATE discord_servers SET
+                    platform_scope = COALESCE($2, platform_scope),
+                    budget_mix = $3, budget_low=$4, budget_medium=$5, budget_high=$6,
+                    posting_window_start_hour = NULL, posting_window_end_hour = NULL, posting_timezone = NULL,
+                    updated_at=NOW()
+                WHERE guild_id=$1
+                """,
+                guild_id, platform_scope, new_budget_mix, low, medium, high,
+            )
+        elif posting_window_start_hour is not None:
+            await conn.execute(
+                """
+                UPDATE discord_servers SET
+                    platform_scope = COALESCE($2, platform_scope),
+                    budget_mix = $3, budget_low=$4, budget_medium=$5, budget_high=$6,
+                    posting_window_start_hour = $7, posting_window_end_hour = $8,
+                    posting_timezone = COALESCE($9, posting_timezone, 'UTC'),
+                    updated_at=NOW()
+                WHERE guild_id=$1
+                """,
+                guild_id, platform_scope, new_budget_mix, low, medium, high,
+                posting_window_start_hour, posting_window_end_hour, posting_timezone,
+            )
+        else:
+            await conn.execute(
+                """
+                UPDATE discord_servers SET
+                    platform_scope = COALESCE($2, platform_scope),
+                    budget_mix = $3, budget_low=$4, budget_medium=$5, budget_high=$6,
+                    updated_at=NOW()
+                WHERE guild_id=$1
+                """,
+                guild_id, platform_scope, new_budget_mix, low, medium, high,
+            )
         await conn.execute(
             """
             UPDATE discord_server_settings SET
@@ -354,6 +407,9 @@ async def set_preferences(
         await _audit(conn, feed["id"], admin_id, "feed_preferences_changed", {
             "platform_scope": platform_scope, "budget_mix": new_budget_mix,
             "min_confidence": min_confidence, "min_expected_profit": min_expected_profit,
+            "posting_window_start_hour": posting_window_start_hour,
+            "posting_window_end_hour": posting_window_end_hour,
+            "posting_timezone": posting_timezone, "clear_posting_window": clear_posting_window,
         })
     return await get_guild_feed(guild_id)
 

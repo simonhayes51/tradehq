@@ -39,6 +39,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any, Iterable, Optional
 
+from app.services import discord_embeds as embeds
 from app.services.discord_integration import DiscordClient
 from app.services.discord_daily_proof import (
     PROOF_STATUSES,
@@ -372,62 +373,75 @@ def _liquidity_label(score: Optional[float]) -> str:
     return "Limited"
 
 
-def build_opportunity_post_embed(row: dict[str, Any], ci: Any, *, test: bool = False) -> dict[str, Any]:
-    title = f"{'[TEST] ' if test else ''}{row.get('name') or 'Unknown player'}"
-    version = row.get("version") or row.get("rarity") or ""
+_RISK_COLORS = {"low": embeds.BRAND_COLOR, "medium": embeds.BRAND_COLOR_WARN, "high": embeds.BRAND_COLOR_DANGER}
+
+
+def build_opportunity_post_embed(row: dict[str, Any], ci: Any, *, test: bool = False) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Returns (embed, components) - the link button is a separate
+    top-level message field in Discord's API, not part of the embed
+    itself."""
+    app_url = os.getenv("FRONTEND_URL", "https://app.eafc.live")
+    thumbnail = row.get("card_image_stored_url") or row.get("card_image_url") or row.get("card_design_image_url")
+    risk = str(ci.risk_level or "unknown").lower()
     profit = ci.expected_profit_after_tax
     fields = [
-        {"name": "CARD", "value": f"{title}" + (f" ({version})" if version else ""), "inline": False},
         {
             "name": "BUY",
-            "value": f"{int(row.get('current_executable_buy') or ci.recommended_buy_max or 0):,} coins",
+            "value": f"{embeds.coins(row.get('current_executable_buy') or ci.recommended_buy_max)} coins",
             "inline": True,
         },
-        {
-            "name": "SELL TARGET",
-            "value": f"{int(ci.recommended_sell_target or 0):,} coins",
-            "inline": True,
-        },
+        {"name": "SELL TARGET", "value": f"{embeds.coins(ci.recommended_sell_target)} coins", "inline": True},
         {
             "name": "EXPECTED PROFIT (after EA tax)",
-            "value": f"{float(profit):+,.0f} coins" if profit is not None else "n/a",
+            "value": f"{embeds.coins(profit, signed=True)} coins" if profit is not None else "n/a",
             "inline": True,
         },
-        {"name": "RISK", "value": str(ci.risk_level or "unknown").title(), "inline": True},
+        {"name": "RISK", "value": risk.title() if risk != "unknown" else "Unknown", "inline": True},
         {"name": "SELLING SPEED", "value": _liquidity_label(ci.liquidity_score), "inline": True},
         {"name": "CONFIDENCE", "value": f"{(ci.confidence_score or 0):.0%}", "inline": True},
     ]
-    return {
-        "title": f"{'TEST POST — not a real trade' if test else 'LIVE TRADING OPPORTUNITY'}",
-        "description": fields[0]["value"],
-        "color": 0xF97316 if test else 0x22C55E,
-        "fields": fields[1:],
+    embed: dict[str, Any] = {
+        "title": f"{'[TEST] ' if test else ''}{embeds.card_label(row)}",
+        "description": "🧪 **TEST POST — not a real trade**" if test else "🔥 **Live trading opportunity**",
+        "color": 0xF97316 if test else _RISK_COLORS.get(risk, embeds.BRAND_COLOR),
+        "author": embeds.brand_author(app_url),
+        "fields": fields,
         "footer": {
-            "text": "This is a placeholder test post." if test
-            else "Live conditions change - verify current price before buying."
+            "text": "EAFC.Live — this is a placeholder test post." if test
+            else "EAFC.Live — live conditions change, verify current price before buying."
         },
         "timestamp": _now().isoformat(),
     }
+    if thumbnail:
+        embed["thumbnail"] = {"url": thumbnail}
+    components: list[dict[str, Any]] = []
+    card_id = row.get("source_card_id")
+    if not test and card_id is not None and int(card_id) > 0:
+        components = [embeds.link_row("View in EAFC.Live", f"{app_url.rstrip('/')}/#/v2/players/{card_id}")]
+    return embed, components
 
 
 def build_opportunity_update_embed(post: dict[str, Any], outcome: dict[str, Any]) -> dict[str, Any]:
     status = str(outcome.get("outcome_status") or "")
     label = {
-        "target_hit": "TARGET HIT",
+        "target_hit": "🎯 TARGET HIT",
         "loss_unrealised": "CLOSED — LOSS",
         "downside_hit": "CLOSED — STOP",
     }.get(status, "UPDATE")
     profit = outcome.get("net_profit_after_tax")
+    app_url = os.getenv("FRONTEND_URL", "https://app.eafc.live")
     return {
         "title": f"{post.get('name', 'Opportunity')} — {label}",
-        "color": 0x22C55E if status == "target_hit" else 0xEF4444,
+        "color": embeds.BRAND_COLOR if status == "target_hit" else embeds.BRAND_COLOR_DANGER,
+        "author": embeds.brand_author(app_url),
         "fields": [
             {
                 "name": "RESULT",
-                "value": f"{float(profit):+,.0f} coins" if profit is not None else "n/a",
+                "value": f"{embeds.coins(profit, signed=True)} coins" if profit is not None else "n/a",
                 "inline": False,
             }
         ],
+        "footer": {"text": "EAFC.Live"},
         "timestamp": _now().isoformat(),
     }
 
@@ -455,10 +469,12 @@ async def send_test_post(pool, server: ServerRecord, client: Optional[DiscordCli
         return False, "no_feed_channel_configured"
     client = client or DiscordClient()
     dedup_key = hashlib.sha256(f"test:{server.id}:{_now().isoformat()}".encode()).hexdigest()[:40]
-    embed = build_opportunity_post_embed(_TEST_FIXTURE_ROW, _FakeIntelligence(), test=True)
+    embed, components = build_opportunity_post_embed(_TEST_FIXTURE_ROW, _FakeIntelligence(), test=True)
     async with pool.acquire() as conn:
         post_id = await _record_post(conn, server.id, "test", dedup_key, {"fixture": True})
-    status, body = await client.post_embed(server.feed_channel_id, embed, nonce=dedup_key[:25], enforce_nonce=True)
+    status, body = await client.post_embed(
+        server.feed_channel_id, embed, nonce=dedup_key[:25], enforce_nonce=True, components=components
+    )
     ok = status in (200, 201)
     message_id = body.get("id") if ok and isinstance(body, dict) else None
     if post_id is not None:
@@ -543,6 +559,29 @@ async def send_test_opportunity_update(
     return ok, None if ok else f"discord_http_{result_status or 'network'}"
 
 
+def _within_posting_window(
+    start_hour: Optional[int], end_hour: Optional[int], tz_name: Optional[str], *, now: Optional[datetime] = None
+) -> bool:
+    """True when posting is allowed right now. No window configured
+    (either bound unset) means no restriction - always True. Supports an
+    overnight wraparound window where start_hour > end_hour (e.g. 20 -> 6
+    covers 20:00 through 05:59)."""
+    if start_hour is None or end_hour is None:
+        return True
+    try:
+        from zoneinfo import ZoneInfo
+
+        tz = ZoneInfo(tz_name) if tz_name else timezone.utc
+    except Exception:
+        tz = timezone.utc
+    local_hour = (now or _now()).astimezone(tz).hour
+    if start_hour == end_hour:
+        return True
+    if start_hour < end_hour:
+        return start_hour <= local_hour < end_hour
+    return local_hour >= start_hour or local_hour < end_hour
+
+
 async def _settings_for(conn, server_id: int) -> dict[str, Any]:
     row = await conn.fetchrow("SELECT * FROM discord_server_settings WHERE server_id=$1", server_id)
     if row is None:
@@ -579,8 +618,19 @@ async def publish_live_opportunities(pool, server: ServerRecord, client: Optiona
             if elapsed_minutes < settings["cooldown_minutes"]:
                 return 0
         budget_row = await conn.fetchrow(
-            "SELECT budget_low, budget_medium, budget_high FROM discord_servers WHERE id=$1", server.id
+            """
+            SELECT budget_low, budget_medium, budget_high,
+                   posting_window_start_hour, posting_window_end_hour, posting_timezone
+            FROM discord_servers WHERE id=$1
+            """,
+            server.id,
         )
+        if budget_row and not _within_posting_window(
+            budget_row["posting_window_start_hour"],
+            budget_row["posting_window_end_hour"],
+            budget_row["posting_timezone"],
+        ):
+            return 0
         band_budget: Optional[dict[str, int]] = None
         band_used: dict[str, int] = {"low": 0, "medium": 0, "high": 0}
         if budget_row and budget_row["budget_low"] is not None:
@@ -619,10 +669,20 @@ async def publish_live_opportunities(pool, server: ServerRecord, client: Optiona
         )
     )
 
+    # Posts at most ONE opportunity per call. cooldown_minutes is only
+    # checked once, above, against the single most recent post - if this
+    # loop kept posting every qualifying candidate in one pass, a batch of
+    # several qualifying cards would all land in the same instant with no
+    # spacing between them regardless of cooldown_minutes (confirmed live:
+    # several posts landed at the identical minute). Posting one per call
+    # and relying on the periodic worker loop
+    # (DISCORD_TRADING_FEED_POLL_SECONDS) to call this again later makes
+    # cooldown_minutes apply between every single post, not just the first
+    # in a batch.
     posted = 0
     budget = settings["max_posts_per_day"] - already
     for row, ci in scored:
-        if posted >= budget:
+        if posted >= budget or posted >= 1:
             break
         band = None
         if band_budget is not None:
@@ -643,9 +703,9 @@ async def publish_live_opportunities(pool, server: ServerRecord, client: Optiona
             )
         if post_id is None:
             continue  # already posted this exact snapshot to this server
-        embed = build_opportunity_post_embed(row, ci)
+        embed, components = build_opportunity_post_embed(row, ci)
         status, body = await client.post_embed(
-            server.feed_channel_id, embed, nonce=dedup_key[:25], enforce_nonce=True
+            server.feed_channel_id, embed, nonce=dedup_key[:25], enforce_nonce=True, components=components
         )
         ok = status in (200, 201)
         message_id = body.get("id") if ok and isinstance(body, dict) else None
