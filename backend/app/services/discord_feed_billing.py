@@ -457,6 +457,21 @@ async def _resolve_guild_id(conn, subscription: dict[str, Any]) -> Optional[str]
     )
 
 
+def _subscription_period_end(subscription: dict[str, Any]) -> Optional[datetime]:
+    """current_period_end/start moved off the top-level Subscription
+    object onto each subscription item in newer Stripe API versions
+    (confirmed via a real webhook payload on API version
+    2025-08-27.basil: absent on the subscription itself, present at
+    items.data[0].current_period_end) - fall back to the first item's
+    value so /feed status's PAID THROUGH date actually populates."""
+    raw = subscription.get("current_period_end")
+    if raw is None:
+        items = (subscription.get("items") or {}).get("data") or []
+        if items:
+            raw = items[0].get("current_period_end")
+    return datetime.fromtimestamp(raw, tz=timezone.utc) if raw else None
+
+
 async def handle_discord_feed_checkout_completed(session: dict[str, Any], conn) -> None:
     guild_id = (session.get("metadata") or {}).get("guild_id") or session.get("client_reference_id")
     if not guild_id:
@@ -472,9 +487,7 @@ async def handle_discord_feed_subscription_created(subscription: dict[str, Any],
     if not guild_id:
         log.warning("discord_feed subscription.created with no resolvable guild_id: %s", subscription.get("id"))
         return
-    period_end = None
-    if subscription.get("current_period_end"):
-        period_end = datetime.fromtimestamp(subscription["current_period_end"], tz=timezone.utc)
+    period_end = _subscription_period_end(subscription)
     await conn.execute(
         """
         UPDATE discord_servers SET
@@ -491,9 +504,7 @@ async def handle_discord_feed_subscription_updated(subscription: dict[str, Any],
     guild_id = await _resolve_guild_id(conn, subscription)
     if not guild_id:
         return
-    period_end = None
-    if subscription.get("current_period_end"):
-        period_end = datetime.fromtimestamp(subscription["current_period_end"], tz=timezone.utc)
+    period_end = _subscription_period_end(subscription)
     status = subscription.get("status")
     await conn.execute(
         """
