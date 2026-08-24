@@ -130,6 +130,24 @@ export function useFutggTradeFinder(params = {}) {
   });
 }
 
+// GET /api/v2/trade-finder/strategy/{strategy} - the Strategy Finder
+// tabs (Best overall/Quick flips/Low risk/Big profit/Budget picks). Each
+// tab's filter thresholds are now defined and enforced server-side
+// (app/services/strategy_definitions.py) instead of the frontend sending
+// raw min_profit/min_confidence/etc query params - see that module's
+// docstring for why (a cheap card could clear "Big profit" with no real
+// coin floor when the frontend owned the params).
+export function useStrategyFinder(strategy, { enabled = true } = {}) {
+  return useQuery({
+    queryKey: ["v2", "futgg", "trade-finder", "strategy", strategy],
+    queryFn: async ({ signal }) =>
+      (await api.get(`/api/v2/trade-finder/strategy/${strategy}`, { signal, ...REQUEST_OPTS })).data,
+    enabled: enabled && !!strategy,
+    retry: false,
+    staleTime: 30_000,
+  });
+}
+
 // GET /api/v2/market/freshness - overall FUT.GG pipeline health, used by
 // MarketFreshness.jsx when no per-card price_age_seconds is available.
 export function useFutggMarketFreshness() {

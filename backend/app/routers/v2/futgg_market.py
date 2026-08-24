@@ -54,6 +54,11 @@ from app.services.priority_recompute import (
     _CONSERVATIVE_DEMOTION_CANDIDATES_QUERY,
     is_eligible_for_conservative_demotion,
 )
+from app.services.strategy_definitions import (
+    STRATEGY_DEFINITIONS,
+    get_strategy,
+    why_this_fits,
+)
 
 router = APIRouter(tags=["v2-futgg-market"])
 log = logging.getLogger("futgg_market")
@@ -1196,3 +1201,118 @@ async def market_evaluation_coverage(
             "cards_evaluated_24h": None,
             "pool_coverage_24h_pct": None,
         }
+
+
+# =============================================================================
+# Strategy Finder - server-defined, per-tab canonical filters
+# =============================================================================
+# See app/services/strategy_definitions.py for why this is a separate
+# endpoint from GET /trade-finder rather than the frontend supplying raw
+# filter params: the tab's guarantee (e.g. "Big profit always means
+# >=5,000 after-tax coins") has to be enforced in exactly one place, and
+# that place has to be the server, not whichever client happens to be
+# calling it.
+
+
+def _live_entry_state(row: Dict[str, Any], ci: CardIntelligence, snipe) -> str:
+    """Classify one scored candidate into the state Strategy Finder cards
+    must show explicitly, per the product requirement that "a card whose
+    current verified price is already above its valid buy threshold must
+    not look like an immediately actionable trade."
+
+    Reuses the same per-tier staleness threshold evaluate_card()'s
+    confidence scoring already treats as "too old to trust"
+    (_is_stale_for_tier) rather than a second, disagreeing definition -
+    that existing threshold only ever softly penalises confidence, so a
+    stale card can still clear a strategy's min_confidence bar with
+    signal="buy". This turns the same threshold into a hard label.
+    """
+    if ci.expires_at is not None and ci.expires_at <= datetime.now(timezone.utc):
+        return "expired"
+    if _is_stale_for_tier(ci.price_age_minutes, row.get("price_tier")):
+        return "stale"
+    if snipe is not None:
+        if snipe.mode == "buy":
+            return "buy_now"
+        if snipe.mode == "watch":
+            return "watch"
+    # Should not normally occur - trade_finder-style scoring only ever
+    # keeps buy/strong_buy/watch signals, both of which snipe_filter
+    # covers above. Falling back to "watch" (not "buy_now") keeps the
+    # fail-safe direction: never over-claim actionability.
+    return "watch"
+
+
+@router.get("/trade-finder/strategy/{strategy}")
+async def strategy_finder(
+    strategy: str,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
+    provider: FutggMarketDataProvider = ProviderDep,
+) -> Dict[str, Any]:
+    definition = get_strategy(strategy)
+    if definition is None:
+        raise HTTPException(404, f"Unknown strategy '{strategy}'. Valid: {sorted(STRATEGY_DEFINITIONS)}")
+
+    filters = _filters_from_query(
+        None, None, None, None, None, None, None, None,
+        definition.budget, None, None,
+    )
+    rows = _apply_filters_in_python(await _segmented_candidates(provider), filters)
+
+    risk_order = {"low": 0, "medium": 1, "high": 2, "avoid": 3}
+    max_risk_rank = risk_order.get(definition.risk_tolerance, 2) if definition.risk_tolerance else None
+
+    scored = _score_and_filter(
+        rows, min_expected_profit=definition.min_profit, min_roi=definition.min_roi,
+        min_confidence=definition.min_confidence, min_liquidity=definition.min_liquidity,
+        signals={"buy", "strong_buy"} if definition.require_executable else {"buy", "strong_buy", "watch"},
+        sales_by_card=await _sales_for_rows(provider, rows),
+    )
+    if max_risk_rank is not None:
+        scored = [(row, ci) for row, ci in scored if risk_order.get(ci.risk_level, 3) <= max_risk_rank]
+    if definition.meaningful_profit:
+        scored = [
+            (row, ci) for row, ci in scored
+            if ci.expected_profit_after_tax is not None
+            and float(ci.expected_profit_after_tax) >= _meaningful_profit_floor(row.get("current_bin"))
+        ]
+    # Big profit's own hard floor (definition.min_profit) is already
+    # applied above via _score_and_filter's min_expected_profit - no
+    # separate/looser check here. No fallback widening: if this leaves
+    # zero rows, the response below is simply an empty list.
+
+    scored.sort(key=_TRADE_FINDER_SORTS[definition.sort_by])
+
+    total = len(scored)
+    window = scored[(page - 1) * page_size: page * page_size]
+    items = []
+    for row, ci in window:
+        snipe = build_snipe_filter(row, ci)
+        item = _item_with_intelligence(row, ci)
+        item["live_entry_state"] = _live_entry_state(row, ci, snipe)
+        item["why_this_fits"] = why_this_fits(definition, row, ci)
+        items.append(item)
+
+    return {
+        "strategy": definition.key,
+        "label": definition.label,
+        "description": definition.description,
+        "items": items,
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+    }
+
+
+@router.get("/trade-finder/strategies")
+async def list_strategies() -> Dict[str, Any]:
+    """Strategy metadata (label/description) for the frontend tab bar -
+    keeps the tab copy in sync with the server-enforced definition
+    instead of a second hand-maintained copy in the frontend."""
+    return {
+        "strategies": [
+            {"key": d.key, "label": d.label, "description": d.description}
+            for d in STRATEGY_DEFINITIONS.values()
+        ]
+    }
