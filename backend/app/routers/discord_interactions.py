@@ -197,7 +197,6 @@ async def _build_feed_reply(interaction_payload: Dict[str, Any], options: List[D
 
     guild_id = str(interaction_payload["guild_id"])
     guild_name = ((interaction_payload.get("guild") or {}).get("name")) or f"Guild {guild_id}"
-    app_url = _app_url()
 
     if not options:
         return {"content": "Usage: `/feed <setup|test|activate|status|channel|preferences|pause|resume|billing|help>`"}
@@ -221,8 +220,13 @@ async def _build_feed_reply(interaction_payload: Dict[str, Any], options: List[D
                 guild_id=guild_id, guild_name=guild_name, owner_discord_id=str(discord_id),
                 plan=plan, channel_id=channel_id, platform_scope=platform_scope, budget_mix=budget_mix,
             )
-            success_url = f"{app_url}/#/discord/feed/success?guild_id={guild_id}"
-            cancel_url = f"{app_url}/#/discord/feed/cancel?guild_id={guild_id}"
+            # Backend-served static pages, not a frontend SPA route - those
+            # don't exist yet and 404'd on a real completed checkout (see
+            # discord_feed_redirect.py's _static_page docstring).
+            from app.routers.discord_feed_redirect import api_base_url, make_redirect_url
+
+            success_url = f"{api_base_url()}/api/discord/feed/success"
+            cancel_url = f"{api_base_url()}/api/discord/feed/cancel"
             await feed_billing.create_checkout_session(
                 guild_id=guild_id, owner_discord_id=str(discord_id), plan=plan,
                 success_url=success_url, cancel_url=cancel_url,
@@ -231,7 +235,6 @@ async def _build_feed_reply(interaction_payload: Dict[str, Any], options: List[D
             # Stripe Checkout Session URL routinely exceeds that, so the
             # button points at our own short, signed redirect instead of
             # the raw Stripe URL - see discord_feed_redirect.py.
-            from app.routers.discord_feed_redirect import make_redirect_url
 
             summary = embeds.feed_setup_summary_embed(feed, feed_billing.PLANS[plan]["price_gbp"])
             return {"embeds": [summary], "components": [embeds.link_row("Continue to payment", make_redirect_url(guild_id, "checkout"))]}

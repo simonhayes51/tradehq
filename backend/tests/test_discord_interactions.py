@@ -661,7 +661,8 @@ def test_feed_setup_happy_path_returns_checkout_link(monkeypatch):
     # chars outright - this is the exact bug that left /feed setup
     # stuck on "thinking..." before the redirect indirection was added).
     long_stripe_url = "https://checkout.stripe.com/c/pay/cs_live_" + "a" * 500
-    monkeypatch.setattr(feed_billing, "create_checkout_session", AsyncMock(return_value=long_stripe_url))
+    create_checkout = AsyncMock(return_value=long_stripe_url)
+    monkeypatch.setattr(feed_billing, "create_checkout_session", create_checkout)
     options = [
         {"name": "plan", "value": "server_feed"},
         {"name": "channel", "value": "chan1"},
@@ -674,6 +675,14 @@ def test_feed_setup_happy_path_returns_checkout_link(monkeypatch):
     assert len(button_url) <= 512
     assert button_url != long_stripe_url
     assert button_url.startswith("https://api.eafc.live/api/discord/feed/checkout/")
+    # Regression: success/cancel URLs must be backend-served pages, never
+    # a frontend SPA route that doesn't exist (a real completed checkout
+    # 404'd on exactly this before the fix).
+    success_url = create_checkout.call_args.kwargs["success_url"]
+    cancel_url = create_checkout.call_args.kwargs["cancel_url"]
+    assert "/#/" not in success_url and "/#/" not in cancel_url
+    assert success_url.endswith("/api/discord/feed/success")
+    assert cancel_url.endswith("/api/discord/feed/cancel")
     # No raw database id or secret in the button URL - just a signed, opaque token.
     assert "guild_id=" not in button_url and "g1" not in button_url
 
