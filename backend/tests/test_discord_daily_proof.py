@@ -474,3 +474,220 @@ def test_old_individual_proof_publisher_is_removed():
     worker_source = inspect.getsource(discord_integration.discord_worker_loop)
     assert "publish_daily_proof_review" in worker_source
     assert "publish_proof_digest" not in worker_source
+
+
+class TestAggregatePublishedOutcomes:
+    """Pure aggregation tests for the Published Opportunity Track Record
+    (app/services/discord_daily_proof.py's aggregate_published_outcomes(),
+    called by published_track_record() after fetching + defensibility-
+    filtering real rows). This is the hotfix for the Track Record panel
+    conflating high-volume internal signal validation with genuine
+    published-to-users outcomes."""
+
+    def test_below_minimum_sample_suppresses_percentages(self):
+        from app.services.discord_daily_proof import aggregate_published_outcomes
+
+        rows = [_proof_row("target_hit", snapshot_id=i) for i in range(5)]
+        result = aggregate_published_outcomes(rows)
+        assert result["published_opportunities"] == 5
+        assert result["has_enough_data"] is False
+        assert result["win_rate_pct"] is None
+        assert result["total_profit_after_tax"] is None
+
+    def test_win_rate_and_profit_computed_from_deduplicated_rows(self):
+        from app.services.discord_daily_proof import aggregate_published_outcomes
+
+        rows = (
+            [_proof_row("target_hit", snapshot_id=i) for i in range(15)]
+            + [_proof_row("downside_hit", snapshot_id=100 + i) for i in range(5)]
+        )
+        result = aggregate_published_outcomes(rows)
+        assert result["published_opportunities"] == 20
+        assert result["has_enough_data"] is True
+        assert result["wins"] == 15
+        assert result["losses"] == 5
+        assert result["win_rate_pct"] == 75.0
+        # Every published row is, by construction, entered - the publish
+        # pipeline has never tracked "recommended but never entered".
+        assert result["entry_reached"] == 20
+        assert result["entry_reached_not_tracked"] is True
+
+    def test_repeated_snapshots_for_the_same_card_count_once(self):
+        # A card recommended across several different sent days must not
+        # be counted once per day - same "one card, one call" rule the
+        # single-day report already applies, extended across the window.
+        from app.services.discord_daily_proof import aggregate_published_outcomes
+
+        rows = (
+            [_proof_row("target_hit", snapshot_id=1, source_card_id=999)]
+            + [_proof_row("target_hit", snapshot_id=2, source_card_id=999)]
+            + [_proof_row("target_hit", snapshot_id=i) for i in range(3, 22)]
+        )
+        result = aggregate_published_outcomes(rows)
+        # 21 raw rows, 2 of them the same card -> 20 unique published calls.
+        assert result["published_opportunities"] == 20
+
+    def test_median_profit_and_roi_are_real_medians_not_averages(self):
+        from app.services.discord_daily_proof import aggregate_published_outcomes
+
+        # 20 modest wins plus one wildly large one - the median must stay
+        # near the modest cluster, unlike an unweighted average which the
+        # ROI hotfix specifically exists to stop trusting on its own.
+        rows = [_proof_row("target_hit", snapshot_id=i, entry=50_000, outcome_price=55_000) for i in range(20)]
+        rows.append(_proof_row("target_hit", snapshot_id=999, entry=100, outcome_price=100_000))
+        result = aggregate_published_outcomes(rows)
+        assert result["published_opportunities"] == 21
+        # (55000*0.95 - 50000) / 50000 = 0.045 -> 4.5%
+        assert result["median_roi_pct"] == pytest.approx(4.5, abs=0.5)
+
+    def test_median_time_to_target_only_uses_target_hit_rows(self):
+        from app.services.discord_daily_proof import aggregate_published_outcomes
+
+        rows = [_proof_row("target_hit", snapshot_id=i) for i in range(10)]
+        rows += [_proof_row("flat", snapshot_id=100 + i) for i in range(10)]
+        result = aggregate_published_outcomes(rows)
+        # _proof_row's target_hit rows are all 20 minutes to target.
+        assert result["median_time_to_target_minutes"] == 20
+
+
+class _EmptyProofLedgerConn:
+    """Minimal fake conn for published_track_record()'s two lookup
+    queries, standing in for a database where daily proof has never
+    published anything - proves the honest-empty-state path (no
+    fabricated numbers) without needing a real Postgres instance."""
+
+    def __init__(self, earliest_sent_date=None):
+        self.earliest_sent_date = earliest_sent_date
+
+    async def fetch(self, query, *args):
+        assert "discord_daily_proof_publications" in query
+        assert "status = 'sent'" in query
+        return []
+
+    async def fetchval(self, query, *args):
+        assert "min(report_date)" in query
+        return self.earliest_sent_date
+
+
+class _EmptyProofLedgerPool:
+    def __init__(self, earliest_sent_date=None):
+        self._conn = _EmptyProofLedgerConn(earliest_sent_date)
+
+    def acquire(self):
+        conn = self._conn
+
+        class Lease:
+            async def __aenter__(self):
+                return conn
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        return Lease()
+
+
+def test_published_track_record_is_honest_when_nothing_has_ever_been_sent():
+    from app.services.discord_daily_proof import published_track_record
+
+    pool = _EmptyProofLedgerPool(earliest_sent_date=None)
+    result = asyncio.run(published_track_record(pool, window_days=90))
+    assert result == {
+        "has_published_data": False,
+        "tracking_since": None,
+        "window_days": 90,
+    }
+
+
+def test_published_track_record_reports_tracking_since_outside_the_window():
+    from app.services.discord_daily_proof import published_track_record
+
+    earliest = datetime(2025, 1, 1, tzinfo=timezone.utc).date()
+    pool = _EmptyProofLedgerPool(earliest_sent_date=earliest)
+    result = asyncio.run(published_track_record(pool, window_days=7))
+    assert result["has_published_data"] is False
+    assert result["tracking_since"] == earliest.isoformat()
+
+
+class _FakeProofLedgerConn:
+    """Fake conn supporting published_track_record()/
+    published_recent_wins_and_losses()'s two query shapes: the sent-
+    publications list, and per-day _SELECT_DAILY_OUTCOMES fetches keyed
+    by report_date -> rows."""
+
+    def __init__(self, pubs, rows_by_date):
+        self._pubs = pubs
+        self._rows_by_date = rows_by_date
+
+    async def fetch(self, query, *args):
+        if "discord_daily_proof_publications" in query:
+            return self._pubs
+        assert "o.graded_at >= $1 AND o.graded_at < $2" in query
+        period_start = args[0]
+        for report_date, rows in self._rows_by_date.items():
+            if report_date == period_start.date():
+                return rows
+        return []
+
+    async def fetchval(self, query, *args):
+        return None
+
+
+class _FakeProofLedgerPool:
+    def __init__(self, pubs, rows_by_date):
+        self._conn = _FakeProofLedgerConn(pubs, rows_by_date)
+
+    def acquire(self):
+        conn = self._conn
+
+        class Lease:
+            async def __aenter__(self):
+                return conn
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        return Lease()
+
+
+def _pub_row(report_date, start, end):
+    return {
+        "report_date": report_date, "period_start": start,
+        "period_end": end, "timezone_name": "Europe/London",
+    }
+
+
+def test_published_recent_wins_and_losses_are_split_and_sorted_most_recent_first():
+    from app.services.discord_daily_proof import published_recent_wins_and_losses
+
+    day1 = datetime(2026, 8, 20, tzinfo=timezone.utc).date()
+    day1_start = PERIOD.start
+    day1_end = PERIOD.end
+    pubs = [_pub_row(day1, day1_start, day1_end)]
+    rows_by_date = {
+        day1: [
+            _proof_row("target_hit", snapshot_id=1, name="Older Win",
+                       graded_at=day1_start + timedelta(hours=1)),
+            _proof_row("target_hit", snapshot_id=2, name="Newer Win",
+                       graded_at=day1_start + timedelta(hours=5)),
+            _proof_row("downside_hit", snapshot_id=3, name="A Loss",
+                       graded_at=day1_start + timedelta(hours=2)),
+        ]
+    }
+    pool = _FakeProofLedgerPool(pubs, rows_by_date)
+    result = asyncio.run(published_recent_wins_and_losses(pool, window_days=90, limit=5))
+
+    assert result["has_published_data"] is True
+    win_names = [w["player_name"] for w in result["recent_wins"]]
+    assert win_names == ["Newer Win", "Older Win"]  # most recent first
+    loss_names = [l["player_name"] for l in result["recent_losses"]]
+    assert loss_names == ["A Loss"]
+
+
+def test_published_recent_wins_and_losses_honest_when_nothing_sent():
+    from app.services.discord_daily_proof import published_recent_wins_and_losses
+
+    pool = _FakeProofLedgerPool([], {})
+    result = asyncio.run(published_recent_wins_and_losses(pool, window_days=90, limit=5))
+    assert result["has_published_data"] is False
+    assert result["recent_wins"] == []
+    assert result["recent_losses"] == []

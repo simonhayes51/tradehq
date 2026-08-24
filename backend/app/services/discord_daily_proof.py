@@ -260,6 +260,218 @@ def build_daily_proof_report(
     }
 
 
+# =============================================================================
+# Published opportunity track record
+# =============================================================================
+# HOTFIX: the customer-facing Track Record panel was presenting
+# background-scanner signal validation (every buy/strong_buy call the
+# engine evaluated, ~10-minute cadence, no dedup across passes) as "our
+# calls" - language a user could reasonably read as recommendations they
+# personally could have followed. That is not what that dataset is.
+#
+# discord_daily_proof_publications is the one place in this codebase
+# that already tracks genuine publication to real users: a row with
+# status='sent' means build_daily_proof_report()'s output was actually
+# posted to the configured Discord channel (discord_message_id +
+# published_at prove delivery - see publish_daily_proof_review() above).
+# This is the real "Proof Ledger". published_track_record() re-derives
+# the exact per-day eligible outcome set for every sent day in the
+# window using the SAME query and the SAME row-by-row validation
+# (_SELECT_DAILY_OUTCOMES, proof_row_is_defensible) the publish path
+# itself uses - not a looser or different definition - so the numbers
+# shown here are provably the same population that was actually sent to
+# Discord, deduplicated globally across the whole window with
+# _unique_card_version_rows (a card recommended on multiple sent days
+# counts once, at its earliest eligible signal).
+#
+# The publish pipeline only ever reports on entered trades
+# (_SELECT_DAILY_OUTCOMES's own AND o.entry_achieved=TRUE) - it has never
+# tracked "recommended but never reached entry" as a published concept.
+# has_published_data=False (or entry_reached_not_tracked=True) is the
+# honest answer for that, not a fabricated count.
+PROOF_MIN_SAMPLE = 20
+
+
+async def _fetch_sent_publications(conn, window_days: int):
+    interval = timedelta(days=int(window_days))
+    return await conn.fetch(
+        """
+        SELECT report_date, period_start, period_end, timezone_name
+        FROM discord_daily_proof_publications
+        WHERE status = 'sent' AND report_date >= (now() - $1::interval)::date
+        ORDER BY report_date
+        """,
+        interval,
+    )
+
+
+async def _fetch_published_eligible_rows(pool, window_days: int):
+    """Shared fetch for both published_track_record() (aggregates) and
+    published_recent_wins_and_losses() (individual rows) - re-derives
+    the exact per-day eligible outcome set for every sent day in the
+    window using the SAME query and SAME row-by-row validation
+    (_SELECT_DAILY_OUTCOMES, proof_row_is_defensible) the publish path
+    itself uses. Returns (pubs, all_eligible) - pubs is empty if nothing
+    has ever been sent."""
+    async with pool.acquire() as conn:
+        pubs = await _fetch_sent_publications(conn, window_days)
+        if not pubs:
+            earliest = await conn.fetchval(
+                "SELECT min(report_date) FROM discord_daily_proof_publications WHERE status = 'sent'"
+            )
+            return pubs, [], earliest
+
+        all_eligible: list[dict[str, Any]] = []
+        for pub in pubs:
+            period = ReportingPeriod(
+                report_date=pub["report_date"],
+                start=_aware(pub["period_start"]),
+                end=_aware(pub["period_end"]),
+                timezone_name=pub["timezone_name"],
+            )
+            rows = await conn.fetch(
+                _SELECT_DAILY_OUTCOMES, period.start, period.end, sorted(PROOF_STATUSES),
+            )
+            all_eligible.extend(
+                dict(row) for row in rows if proof_row_is_defensible(dict(row), period)
+            )
+    return pubs, all_eligible, None
+
+
+async def published_track_record(pool, *, window_days: int = 90) -> dict[str, Any]:
+    pubs, all_eligible, earliest_ever = await _fetch_published_eligible_rows(pool, window_days)
+    if not pubs:
+        return {
+            "has_published_data": False,
+            "tracking_since": earliest_ever.isoformat() if earliest_ever else None,
+            "window_days": window_days,
+        }
+
+    if not all_eligible:
+        return {
+            "has_published_data": False,
+            "tracking_since": pubs[0]["report_date"].isoformat(),
+            "window_days": window_days,
+        }
+
+    return {
+        "has_published_data": True,
+        "tracking_since": pubs[0]["report_date"].isoformat(),
+        "window_days": window_days,
+        **aggregate_published_outcomes(all_eligible),
+    }
+
+
+async def published_recent_wins_and_losses(
+    pool, *, window_days: int = 90, limit: int = 5,
+) -> dict[str, Any]:
+    """The 5 most recent published wins and 5 most recent published
+    losses, kept in clearly separate lists so losses are always visible
+    without a filter click. Deduplicated by real recommendation identity
+    (snapshot_id) via the same _unique_card_version_rows rule the
+    aggregate track record uses - the same card cannot appear twice
+    unless it is genuinely two separate published recommendations
+    (different snapshot_id/evaluated_at), which stays visible in the
+    output rather than being silently collapsed."""
+    pubs, all_eligible, earliest_ever = await _fetch_published_eligible_rows(pool, window_days)
+    if not pubs or not all_eligible:
+        return {
+            "has_published_data": False,
+            "tracking_since": (pubs[0]["report_date"].isoformat() if pubs else (earliest_ever.isoformat() if earliest_ever else None)),
+            "window_days": window_days,
+            "recent_wins": [],
+            "recent_losses": [],
+        }
+
+    eligible = _unique_card_version_rows(all_eligible)
+    wins = sorted(
+        (row for row in eligible if row["outcome_status"] in WIN_STATUSES),
+        key=lambda row: (_aware(row["graded_at"]), int(row["snapshot_id"])),
+        reverse=True,
+    )
+    losses = sorted(
+        (row for row in eligible if row["outcome_status"] in LOSS_STATUSES),
+        key=lambda row: (_aware(row["graded_at"]), int(row["snapshot_id"])),
+        reverse=True,
+    )
+    return {
+        "has_published_data": True,
+        "tracking_since": pubs[0]["report_date"].isoformat(),
+        "window_days": window_days,
+        "recent_wins": [_ledger_item(row) for row in wins[:limit]],
+        "recent_losses": [_ledger_item(row) for row in losses[:limit]],
+    }
+
+
+def _ledger_item(row: dict[str, Any]) -> dict[str, Any]:
+    """Full per-row detail for the recent-outcomes list - richer than
+    _report_item() (which only carries what the Discord embed needs)."""
+    entry = Decimal(str(row["entry_price"]))
+    result = Decimal(str(row["net_profit_after_tax"]))
+    return {
+        "snapshot_id": int(row["snapshot_id"]),
+        # _SELECT_DAILY_OUTCOMES hardcodes horizon='24h' in its WHERE
+        # clause and doesn't select the column itself, so this is a
+        # constant, not a read of row data.
+        "outcome_id": f"{row['snapshot_id']}:24h",
+        "source_card_id": int(row["outcome_source_card_id"]),
+        "player_name": str(row["name"]),
+        "card_rating": int(row["card_rating"]) if row.get("card_rating") is not None else None,
+        "rarity": str(row["rarity"]) if row.get("rarity") else None,
+        "detected_at": _aware(row["evaluated_at"]).isoformat(),
+        "entry_price": int(entry),
+        "exit_price": int(row["outcome_price"]),
+        "net_profit_after_tax": float(result),
+        "realised_roi_pct": round(float(result / entry) * 100, 2),
+        "minutes_to_target": int(row["minutes_to_target"]) if row.get("minutes_to_target") is not None else None,
+        "outcome_status": str(row["outcome_status"]),
+        "graded_at": _aware(row["graded_at"]).isoformat(),
+    }
+
+
+def aggregate_published_outcomes(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Pure aggregation over already-fetched, already-defensibility-
+    filtered outcome rows (see published_track_record() above - this is
+    its computation half, split out so it's testable without a database,
+    the same way build_daily_proof_report() is).
+
+    Applies the same global "one card, one call" dedup the single-day
+    report already applies within a day - extended across the whole
+    input so a card recommended on several different sent days still
+    counts once, at its earliest eligible signal, not once per day it
+    appeared.
+    """
+    eligible = _unique_card_version_rows(rows)
+
+    wins = [row for row in eligible if row["outcome_status"] in WIN_STATUSES]
+    losses = [row for row in eligible if row["outcome_status"] in LOSS_STATUSES]
+    flats = [row for row in eligible if row["outcome_status"] == "flat"]
+    profits = [Decimal(str(row["net_profit_after_tax"])) for row in eligible]
+    rois = [Decimal(str(row["realised_roi"])) for row in eligible]
+    hold_times = [
+        int(row["minutes_to_target"]) for row in eligible
+        if row.get("target_hit") and row.get("minutes_to_target") is not None
+    ]
+    total = len(eligible)
+    has_enough = total >= PROOF_MIN_SAMPLE
+
+    return {
+        "has_enough_data": has_enough,
+        "min_sample": PROOF_MIN_SAMPLE,
+        "published_opportunities": total,
+        "entry_reached": total,  # every published row is, by definition, entered
+        "entry_reached_not_tracked": True,  # the publish pipeline never records "recommended but never entered"
+        "wins": len(wins),
+        "losses": len(losses),
+        "flats": len(flats),
+        "win_rate_pct": round(100 * len(wins) / total, 1) if has_enough else None,
+        "total_profit_after_tax": float(sum(profits, Decimal("0"))) if has_enough else None,
+        "median_profit_after_tax": float(median(profits)) if has_enough else None,
+        "median_roi_pct": round(float(median(rois)) * 100, 2) if has_enough else None,
+        "median_time_to_target_minutes": int(median(hold_times)) if has_enough and hold_times else None,
+    }
+
+
 def _coins(value: Any, *, signed: bool = False) -> str:
     amount = Decimal(str(value))
     return f"{amount:+,.0f}" if signed else f"{amount:,.0f}"

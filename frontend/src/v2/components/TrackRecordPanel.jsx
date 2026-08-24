@@ -1,25 +1,26 @@
 // src/v2/components/TrackRecordPanel.jsx
 //
-// The single highest-leverage trust feature an AI trading tool can
-// ship: a real, honest hit-rate instead of asking anyone to just take
-// "AI-powered" on faith.
+// HOTFIX: the previous version of this panel presented background-
+// scanner signal validation (every buy/strong_buy call the engine
+// evaluated, ~10-minute cadence, no dedup across passes - 8,000+ in a
+// single week) as "our calls", right next to copy admitting these were
+// "not a personal record of trades you were shown". Those two
+// statements conflicted, and internal model volume is not a customer-
+// facing track record.
 //
-// WHAT THIS ACTUALLY MEASURES - read before changing the copy below.
-// Every number here comes from GET /api/v2/track-record and
-// /api/v2/track-record/recent, backed by app/services/
-// futgg_recommendation_store.py's track_record()/recent_outcomes().
-// These are graded outcomes of every buy/strong_buy signal the
-// background scanner issued (roughly every 10 minutes, across the
-// whole candidate pool) - NOT a log of recommendations a specific user
-// was shown. There is no "published to a user" concept anywhere in this
-// pipeline. This is automated signal validation, not a personal trade
-// history, and the copy below must not blur that line - see the
-// PR description for the full audit this was rebuilt from.
+// This panel now shows two genuinely distinct things, never blended:
 //
-// "No entry" (the recommended buy price was never actually reached) is
-// excluded from win rate and profit stats - counting a never-purchasable
-// call as a win or a loss would both be wrong. It is always shown as its
-// own separate count, never folded into "losses".
+//   1. PUBLISHED (primary) - recommendations actually posted to real
+//      users via the Discord Proof Ledger (GET /api/v2/track-record's
+//      `published` key, backed by app/services/discord_daily_proof.py's
+//      published_track_record() - only discord_daily_proof_publications
+//      rows with status='sent', i.e. provably delivered). This is the
+//      real "did our calls work" answer.
+//   2. MODEL VALIDATION (secondary, collapsed by default) - the same
+//      scanner dataset the old panel over-presented, now labelled with
+//      "signal"/"entry reached" language rather than "our calls"/
+//      "entered trades", so it cannot be mistaken for the primary
+//      section.
 import { useState } from "react";
 import { useTrackRecord, useRecentOutcomes } from "../hooks/useTrackRecord";
 import EmptyState from "./EmptyState";
@@ -46,7 +47,7 @@ const RESULT_COPY = {
 };
 
 function fmtPct(value) {
-  return value == null ? "—" : `${value >= 0 ? "" : ""}${Number(value).toFixed(1)}%`;
+  return value == null ? "—" : `${Number(value).toFixed(1)}%`;
 }
 
 function fmtMinutes(value) {
@@ -57,13 +58,94 @@ function fmtMinutes(value) {
   return `${hrs}h ${mins}m`;
 }
 
+function fmtDate(iso) {
+  return iso ? new Date(iso).toLocaleDateString() : "—";
+}
+
 function StatTile({ label, value, sub, tone }) {
   return (
-    <div className="track-record-card">
+    <div className="track-record-card compact">
       <span className="track-record-label">{label}</span>
       <strong className={tone || ""}>{value}</strong>
       {sub ? <small>{sub}</small> : null}
     </div>
+  );
+}
+
+function LedgerRow({ item, result }) {
+  const copy = RESULT_COPY[result] || { text: result, tone: "" };
+  return (
+    <div className="track-record-outcome-row">
+      <div className="track-record-outcome-copy">
+        <div className="track-record-outcome-title">
+          <strong>{item.player_name}</strong>
+          <span className={`outcome-badge ${copy.tone}`}>{copy.text}</span>
+        </div>
+        <small>
+          {item.card_rating ? `${item.card_rating} OVR · ` : ""}
+          {item.rarity || "Card"} · detected {fmtDate(item.detected_at)}
+        </small>
+      </div>
+      <div className="track-record-outcome-numbers">
+        <span>
+          Entered <CoinValue value={item.entry_price} />
+        </span>
+        <span className={item.net_profit_after_tax >= 0 ? "positive" : "negative"}>
+          <CoinValue value={item.net_profit_after_tax} signed /> ({fmtPct(item.realised_roi_pct)})
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function PublishedEmptyState({ published }) {
+  if (published?.tracking_since) {
+    return (
+      <EmptyState
+        compact
+        text={`Tracking published recommendations since ${fmtDate(published.tracking_since)} - not enough sent yet in this window. Try a longer period.`}
+      />
+    );
+  }
+  return (
+    <EmptyState
+      compact
+      text="No published recommendations tracked yet. This section will fill in as recommendations are actually sent to users."
+    />
+  );
+}
+
+function ModelValidationSection({ window }) {
+  const [open, setOpen] = useState(false);
+  const { data, isLoading, isError } = useTrackRecord(window);
+  const mv = data?.model_validation;
+
+  return (
+    <details className="track-record-model-validation" open={open} onToggle={(e) => setOpen(e.target.open)}>
+      <summary>Model signal validation (technical detail, not customer trades)</summary>
+      {isLoading || isError || !mv ? null : (
+        <div className="track-record-mv-body">
+          <p className="track-record-disclosure">
+            A much larger, automated dataset: every buy/strong-buy signal the engine evaluated on its
+            own scanning cadence, whether or not it was ever shown to a user. Useful as a technical
+            check on the engine, not a customer trade history - so this uses "signal"/"entry reached"
+            language, never "our calls" or "entered trades".
+          </p>
+          {mv.graded_signals ? (
+            <div className="track-record-mv-grid">
+              <StatTile label="Graded signals" value={mv.graded_signals.toLocaleString()} />
+              <StatTile label="Entry reached" value={mv.entry_reached.toLocaleString()} sub={`${fmtPct(mv.entry_reached_rate_pct)} of graded signals`} />
+              <StatTile label="Entry not reached" value={mv.entry_not_reached.toLocaleString()} tone="muted" />
+              <StatTile label="Profitable rate" value={mv.has_enough_data ? fmtPct(mv.profitable_rate_pct) : "—"} sub={mv.has_enough_data ? "of entry-reached signals" : `Below ${mv.min_sample} minimum`} />
+              <StatTile label="Median ROI" value={mv.has_enough_data ? fmtPct(mv.median_roi_pct) : "—"} sub="After tax" />
+              <StatTile label="Avg hold" value={mv.has_enough_data ? fmtMinutes(mv.avg_hold_minutes) : "—"} sub="To exact target" />
+            </div>
+          ) : (
+            <EmptyState compact text="No graded signals in this window." />
+          )}
+        </div>
+      )}
+    </details>
   );
 }
 
@@ -75,26 +157,19 @@ export default function TrackRecordPanel() {
 
   if (isLoading || isError) return null;
 
-  const summary = data?.summary;
-  if (!summary) return null;
-
-  const outcomes = recentQuery.data?.outcomes || [];
+  const published = data?.published;
+  if (!published) return null;
 
   return (
     <section className="track-record-panel">
       <div className="section-head compact">
         <div>
           <span>TRACK RECORD</span>
-          <h2>Did our calls actually work?</h2>
+          <h2>Did our published calls actually work?</h2>
         </div>
         <div className="track-record-window-tabs">
           {WINDOWS.map(([key, label]) => (
-            <button
-              key={key}
-              type="button"
-              className={window === key ? "active" : ""}
-              onClick={() => setWindow(key)}
-            >
+            <button key={key} type="button" className={window === key ? "active" : ""} onClick={() => setWindow(key)}>
               {label}
             </button>
           ))}
@@ -102,113 +177,107 @@ export default function TrackRecordPanel() {
       </div>
 
       <p className="track-record-disclosure">
-        These are automated buy/strong-buy signals the engine issued, graded against real
-        chronological market data - not a personal record of trades you were shown. Every rate
-        is shown next to the real count it's based on.
+        Recommendations actually sent to users via the Discord Proof Ledger - not internal model
+        scoring. Results are hypothetical (based on real market data) and don't guarantee any
+        individual user achieved these exact prices.
       </p>
 
-      {!summary.has_enough_data ? (
-        <EmptyState
-          compact
-          text={`Not enough graded outcomes yet in this window (${summary.total_graded}/${summary.min_sample}). Try a longer window.`}
-        />
+      {!published.has_published_data ? (
+        <PublishedEmptyState published={published} />
+      ) : !published.has_enough_data ? (
+        <EmptyState compact text={`Not enough published outcomes yet in this window (${published.published_opportunities}/${published.min_sample}). Try a longer window.`} />
       ) : (
         <>
-          <div className="track-record-grid">
-            <StatTile label="Graded calls" value={summary.total_graded.toLocaleString()} sub="Every actionable signal graded in this window" />
-            <StatTile label="Entered" value={summary.entered.toLocaleString()} sub={`${fmtPct(summary.entry_rate_pct)} of graded calls reached the buy price`} />
-            <StatTile label="No entry" value={summary.no_entry.toLocaleString()} sub="Buy price never reached - excluded from win rate & profit" tone="muted" />
-            <StatTile
-              label="Win rate"
-              value={fmtPct(summary.win_rate_pct)}
-              sub={`of ${summary.entered.toLocaleString()} entered trades`}
-              tone={summary.win_rate_pct >= 50 ? "positive" : ""}
-            />
-            <StatTile label="Hit exact target" value={fmtPct(summary.target_hit_rate_pct)} sub="Stricter than win rate - price crossed the exact sell target" />
-            <StatTile label="Avg ROI" value={fmtPct(summary.avg_roi_pct)} sub="After EA's 5% tax, entered trades only" tone={summary.avg_roi_pct >= 0 ? "positive" : "negative"} />
-            <StatTile label="Median ROI" value={fmtPct(summary.median_roi_pct)} sub="After tax, entered trades only" />
-            <StatTile label="Avg time to target" value={fmtMinutes(summary.avg_hold_minutes)} sub="For trades that hit their exact target" />
+          <div className="track-record-grid compact-grid">
+            <StatTile label="Wins" value={published.wins.toLocaleString()} tone="positive" />
+            <StatTile label="Losses" value={published.losses.toLocaleString()} tone="negative" />
+            <StatTile label="Win rate" value={fmtPct(published.win_rate_pct)} tone={published.win_rate_pct >= 50 ? "positive" : ""} />
+            <StatTile label="Total profit" value={<CoinValue value={published.total_profit_after_tax} signed />} sub="After tax, one card per call" />
+            <StatTile label="Median ROI" value={fmtPct(published.median_roi_pct)} sub="After tax" />
+            <StatTile label="Median time to target" value={fmtMinutes(published.median_time_to_target_minutes)} />
           </div>
+          <p className="track-record-disclosure small">
+            Published opportunities: {published.published_opportunities.toLocaleString()} · entry
+            reached: {published.entry_reached.toLocaleString()} (this pipeline only tracks
+            recommendations that were actually entered - it does not yet track ones that never
+            reached their buy price).
+          </p>
 
-          <div className="track-record-recent">
-            <div className="track-record-recent-head">
-              <h3>Recent outcomes</h3>
-              <div className="track-record-result-tabs">
-                {RESULT_FILTERS.map(([key, label]) => (
-                  <button
-                    key={key}
-                    type="button"
-                    className={resultFilter === key ? "active" : ""}
-                    onClick={() => setResultFilter(key)}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
+          <div className="track-record-recent-split">
+            <div className="track-record-recent-col">
+              <h3>Recent wins</h3>
+              {published.recent_wins?.length ? (
+                <div className="track-record-outcomes">
+                  {published.recent_wins.map((item) => (
+                    <LedgerRow key={item.outcome_id} item={item} result="win" />
+                  ))}
+                </div>
+              ) : (
+                <EmptyState compact text="No recent wins in this window." />
+              )}
             </div>
-            {recentQuery.isLoading ? (
-              <EmptyState compact text="Loading recent outcomes…" />
-            ) : outcomes.length ? (
-              <div className="track-record-outcomes">
-                {outcomes.map((o) => {
-                  const copy = RESULT_COPY[o.result] || { text: o.result, tone: "" };
-                  return (
-                    <div className="track-record-outcome-row" key={o.outcome_id}>
-                      {o.image_url ? (
-                        <img className="track-record-outcome-art" src={o.image_url} alt={o.player_name || "Card"} />
-                      ) : (
-                        <div className="track-record-outcome-art placeholder" aria-hidden="true" />
-                      )}
-                      <div className="track-record-outcome-copy">
-                        <div className="track-record-outcome-title">
-                          <strong>{o.player_name || "Unknown card"}</strong>
-                          <span className={`outcome-badge ${copy.tone}`}>{copy.text}</span>
-                        </div>
-                        <small>
-                          {o.rating ? `${o.rating} OVR · ` : ""}
-                          {o.rarity || "Card"} · detected {o.detected_at ? new Date(o.detected_at).toLocaleDateString() : "—"}
-                        </small>
-                      </div>
-                      <div className="track-record-outcome-numbers">
-                        <span>
-                          Buy below <CoinValue value={o.buy_threshold} />
-                        </span>
-                        {o.entry_achieved ? (
-                          <>
-                            <span>
-                              Entered <CoinValue value={o.entry_price} />
-                            </span>
-                            <span className={o.net_profit_after_tax >= 0 ? "positive" : "negative"}>
-                              <CoinValue value={o.net_profit_after_tax} signed /> ({fmtPct(o.realised_roi_pct)})
-                            </span>
-                          </>
-                        ) : (
-                          <span className="muted">Buy price never reached</span>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            ) : (
-              <EmptyState compact text="No outcomes match this filter in this window yet." />
-            )}
+            <div className="track-record-recent-col">
+              <h3>Recent losses</h3>
+              {published.recent_losses?.length ? (
+                <div className="track-record-outcomes">
+                  {published.recent_losses.map((item) => (
+                    <LedgerRow key={item.outcome_id} item={item} result="loss" />
+                  ))}
+                </div>
+              ) : (
+                <EmptyState compact text="No recent losses in this window." />
+              )}
+            </div>
           </div>
         </>
       )}
 
+      <div className="track-record-recent">
+        <div className="track-record-recent-head">
+          <h3>Full chronological ledger</h3>
+          <div className="track-record-result-tabs">
+            {RESULT_FILTERS.map(([key, label]) => (
+              <button key={key} type="button" className={resultFilter === key ? "active" : ""} onClick={() => setResultFilter(key)}>
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <p className="track-record-disclosure small">
+          Every graded model signal in this window (see Model signal validation below for what that
+          means), not limited to published recommendations.
+        </p>
+        {recentQuery.isLoading ? (
+          <EmptyState compact text="Loading…" />
+        ) : recentQuery.data?.outcomes?.length ? (
+          <div className="track-record-outcomes">
+            {recentQuery.data.outcomes.slice(0, 6).map((o) => (
+              <LedgerRow key={o.outcome_id} item={{
+                outcome_id: o.outcome_id, player_name: o.player_name, card_rating: o.rating,
+                rarity: o.rarity, detected_at: o.detected_at, entry_price: o.entry_price,
+                net_profit_after_tax: o.net_profit_after_tax, realised_roi_pct: o.realised_roi_pct,
+              }} result={o.result} />
+            ))}
+          </div>
+        ) : (
+          <EmptyState compact text="No outcomes match this filter in this window yet." />
+        )}
+      </div>
+
+      <ModelValidationSection window={window} />
+
       <details className="track-record-methodology-detail">
         <summary>How this is calculated</summary>
         <p className="track-record-methodology">
-          Every actionable recommendation is frozen the moment it's made and graded later against
-          the real, chronological listing history - entry must happen before exit, and the best
-          price in the window is never used with hindsight. "No entry" means the recommended buy
-          price was never actually available, and those calls are excluded from win rate and
-          profit statistics entirely rather than counted as a loss. All profit and ROI figures are
-          after EA's 5% sale tax. These are hypothetical results based on real market data - they
-          do not guarantee any individual user actually achieved these prices, since real execution
-          depends on timing, competition for the listing, and platform. Percentages are withheld
-          entirely below {summary?.min_sample ?? 20} graded outcomes for that window.
+          Published figures come only from recommendations actually posted to the Discord Proof
+          Ledger. Every recommendation is frozen the moment it's made and graded later against the
+          real, chronological listing history - entry must happen before exit, and the best price in
+          the window is never used with hindsight. All profit and ROI figures are after EA's 5% sale
+          tax, assuming one card per published call. These are hypothetical results based on real
+          market data - they do not guarantee any individual user actually achieved these prices,
+          since real execution depends on timing, competition for the listing, and platform.
+          Percentages are withheld entirely below {published?.min_sample ?? 20} graded outcomes for
+          that window.
         </p>
       </details>
     </section>

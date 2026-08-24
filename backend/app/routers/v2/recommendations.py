@@ -65,25 +65,6 @@ def _needs_card(d: Dict[str, Any]) -> bool:
     return d.get("generated_card_status") != "ready" or bool(d.get("generated_card_flagged"))
 
 
-_TRACK_RECORD_LABEL = {
-    "quick_flip": "Quick Flip",
-    "swing_trade": "Swing Trade",
-    "long_hold": "Long Hold",
-}
-
-# ml_feature_pipeline.py opens one ml_labels row per horizon for every
-# card it snapshots (not just ones a live BUY was issued for), so a raw
-# hit-rate over every label would understate the engine's real accuracy
-# with cards that never would have qualified for a live call in the
-# first place. eligibility_tier='LIVE_ELIGIBLE' is the same hard-gate
-# result the live engine itself would have produced (see
-# ml_feature_pipeline.snapshot_card's would_pass_live_gates), so this is
-# "how did the calls we'd have actually made turn out", not "how did
-# every card in the database do" - see HORIZON_STRATEGY in
-# ml_feature_pipeline.py for the horizon->strategy mapping this mirrors.
-_TRACK_RECORD_MIN_SAMPLE = 20
-
-
 # window query param -> window_days. "all" is not literally unbounded
 # (an unindexed full-table scan with no lower bound is a real cost for
 # no honest benefit - migration 040 is recent enough that a 2-year
@@ -93,95 +74,50 @@ _TRACK_RECORD_MIN_SAMPLE = 20
 _TRACK_RECORD_WINDOW_DAYS = {"7d": 7, "30d": 30, "90d": 90, "all": 730}
 
 
-@router.get("/track-record")
-async def track_record(request: Request, window: str = Query("90d")) -> Dict[str, Any]:
-    """Aggregated, honest hit-rate - real closed-window outcomes, not a
-    claim invented for marketing copy. Deliberately ungated (no
-    require_feature call): this is a trust signal, and a trust signal
-    only free/prospective users have to take on faith is not doing its
-    job.
-
-    REPOINTED to the FUT.GG outcome pipeline (migration 040 +
-    app/services/futgg_outcome_grader.py). The legacy implementation
-    below reads ml_labels, which app/services/ml_feature_pipeline.py
-    populates exclusively from fair_value_mv - the broken FUTBIN
-    materialized view that no longer drives any user-visible
-    recommendation. It was therefore reporting the track record of a
-    pipeline nobody uses, while the engine that actually produces every
-    live recommendation had no outcome feedback whatsoever.
-
-    The legacy path is kept as a fallback purely for the transition
-    window: migration 040's tables start empty and only fill once the
-    scanner has run and a horizon has fully elapsed, so until then this
-    returns the legacy shape rather than an empty page. Once FUT.GG
-    outcomes are flowing this branch stops being reachable and the
-    ml_labels query below can be deleted outright.
-
-    WHAT "total_recommendations" ACTUALLY COUNTS (read before changing
-    the response shape): every row here is one background-scanner
-    evaluation pass that scored buy/strong_buy for a card (see
-    app/services/futgg_scanner.py, ~every 10 minutes, up to ~1,500
-    candidates/pass, no dedup across passes) - NOT a distinct,
-    deliberately-published, user-visible recommendation. There is no
-    "published to a user" concept anywhere in this schema. The honest
-    label for this whole endpoint is automated signal validation, not a
-    log of trades a specific person was shown - the frontend copy must
-    not imply the latter. See PR description for the full audit.
-
-    `summary` below is the fields the UI should actually render;
-    `strategies`/`sampleSize`/`hitRatePct` are kept byte-for-byte for the
-    existing AI chat tool (app/routers/v2/ai_chat.py's get_track_record)
-    and any other current consumer - this is an additive change, not a
-    breaking one. Do not remove the `strategies` shape without checking
-    ai_chat.py first.
-
-    IMPORTANT: `sampleSize` in `strategies[0]` is `total_recommendations`
-    (every graded call, including ones that never reached entry), NOT the
-    same base `hitRatePct` is computed over (`entered`). Showing those two
-    numbers side by side without qualification is the exact "75.5% / N
-    closed calls" mislabeling this endpoint used to produce - see
-    `summary.entered` for the true win-rate denominator.
+async def _model_validation(window: str, window_days: int) -> Dict[str, Any]:
+    """The FUT.GG scanner's own signal-grading dataset - background
+    evaluations of every buy/strong_buy candidate on a ~10-minute
+    cadence, no dedup across passes, no "published to a user" concept.
+    Genuinely useful as an at-scale technical validation of the engine,
+    but NOT a customer trade history - see track_record()'s docstring
+    for the full incident this naming exists to prevent repeating.
+    "entered"/"win"/"loss" language is deliberately avoided here in
+    favour of "signal"/"entry reached"/"entry not reached", so this
+    section cannot be read as a personal record of trades a user saw.
     """
     from app.services.futgg_recommendation_store import track_record as futgg_track_record
-
-    window_days = _TRACK_RECORD_WINDOW_DAYS.get(window, 90)
 
     try:
         core_pool = await get_core_pool()
         futgg = await futgg_track_record(core_pool, horizon="24h", window_days=window_days)
         if int(futgg.get("headline", {}).get("total_recommendations") or 0) > 0:
             head = futgg["headline"]
-            no_entry = int(head["total_recommendations"]) - int(head["entered"])
+            entry_reached = int(head["entered"])
+            graded_signals = int(head["total_recommendations"])
             return {
                 "source": "futgg",
-                "engine": "futgg-outcome-grader",
-                "window": window if window in _TRACK_RECORD_WINDOW_DAYS else "90d",
-                "window_days": window_days,
-                # The fields the rebuilt Track Record UI actually renders.
-                # Every rate here is paired with its real denominator.
-                "summary": {
-                    "total_graded": head["total_recommendations"],
-                    "entered": head["entered"],
-                    "no_entry": no_entry,
-                    "entry_rate_pct": head.get("entry_rate_pct"),
-                    # "win" = realised_roi > 0 among entered trades - see
-                    # futgg_recommendation_store.py's _outcome_result for
-                    # why this, not target_hit, is the primary win/loss
-                    # split shown per-outcome.
-                    "win_rate_pct": head.get("profitable_rate_pct"),
-                    "target_hit_rate_pct": head.get("target_hit_rate_pct"),
-                    "avg_roi_pct": head.get("avg_roi_pct"),
-                    "median_roi_pct": head.get("median_roi_pct"),
-                    "avg_hold_minutes": head.get("avg_hold_minutes"),
-                    "has_enough_data": futgg["has_enough_data"],
-                    "min_sample": futgg["min_sample"],
-                },
+                "graded_signals": graded_signals,
+                "entry_reached": entry_reached,
+                "entry_not_reached": graded_signals - entry_reached,
+                "entry_reached_rate_pct": head.get("entry_rate_pct"),
+                "profitable_rate_pct": head.get("profitable_rate_pct"),
+                "target_hit_rate_pct": head.get("target_hit_rate_pct"),
+                "avg_roi_pct": head.get("avg_roi_pct"),
+                "median_roi_pct": head.get("median_roi_pct"),
+                "avg_hold_minutes": head.get("avg_hold_minutes"),
+                "has_enough_data": futgg["has_enough_data"],
+                "min_sample": futgg["min_sample"],
+                "methodology": futgg["methodology"],
+                # Kept byte-for-byte for the existing AI chat tool
+                # (app/routers/v2/ai_chat.py's get_track_record) and any
+                # other current consumer of the old response shape - do
+                # not remove without checking ai_chat.py first.
                 "strategies": [
                     {
                         "strategy": "mispricing",
                         "label": "Mispricing calls",
                         "horizon": futgg["horizon"],
-                        "sampleSize": head["total_recommendations"],
+                        "sampleSize": graded_signals,
                         "hasEnoughData": futgg["has_enough_data"],
                         "hitRatePct": head.get("target_hit_rate_pct"),
                         "avgRealizedReturnPct": head.get("avg_roi_pct"),
@@ -191,65 +127,77 @@ async def track_record(request: Request, window: str = Query("90d")) -> Dict[str
                         "windowEnd": None,
                     }
                 ],
-                "breakdowns": futgg.get("breakdowns", {}),
-                "methodology": futgg["methodology"],
             }
     except Exception:
-        # Falls back to the legacy ml_labels path below - normal and
-        # expected on a database where migration 040 hasn't run yet, but
-        # a silent `pass` here made a real bug (any exception in the
-        # query/aggregation above) indistinguishable from that expected
-        # case, with zero trace in the logs either way. Logged now so a
-        # real failure is diagnosable from a backend log line instead of
-        # requiring a full manual SQL investigation to even confirm
-        # something's actually wrong.
-        log.warning("futgg-backed /track-record failed; falling back to legacy ml_labels path", exc_info=True)
-
-    pool = _player_pool(request)
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            """
-            SELECT
-                l.horizon,
-                COUNT(*) FILTER (WHERE l.label_closed_at IS NOT NULL) AS closed_count,
-                COUNT(*) FILTER (WHERE l.label_closed_at IS NOT NULL AND l.target_reached) AS hit_count,
-                AVG(l.strategy_realized_return) FILTER (WHERE l.label_closed_at IS NOT NULL) AS avg_realized_return,
-                MIN(s.snapshot_at) FILTER (WHERE l.label_closed_at IS NOT NULL) AS earliest_snapshot_at,
-                MAX(l.label_closed_at) AS latest_closed_at
-            FROM ml_labels l
-            JOIN ml_feature_snapshots s ON s.id = l.feature_snapshot_id
-            WHERE s.eligibility_tier = 'LIVE_ELIGIBLE'
-              AND s.snapshot_at >= now() - interval '90 days'
-            GROUP BY l.horizon
-            """
-        )
-
-    by_horizon = {r["horizon"]: r for r in rows}
-    strategies = []
-    for horizon, strategy_name in (("24h", "quick_flip"), ("48h", "swing_trade"), ("7d", "long_hold")):
-        r = by_horizon.get(horizon)
-        closed = int(r["closed_count"]) if r else 0
-        hits = int(r["hit_count"]) if r else 0
-        has_enough_data = closed >= _TRACK_RECORD_MIN_SAMPLE
-        strategies.append({
-            "strategy": strategy_name,
-            "label": _TRACK_RECORD_LABEL[strategy_name],
-            "horizon": horizon,
-            "sampleSize": closed,
-            "hasEnoughData": has_enough_data,
-            "hitRatePct": round(100 * hits / closed, 1) if has_enough_data else None,
-            "avgRealizedReturnPct": round(float(r["avg_realized_return"]) * 100, 1) if has_enough_data and r["avg_realized_return"] is not None else None,
-            "windowStart": r["earliest_snapshot_at"].isoformat() if r and r["earliest_snapshot_at"] else None,
-            "windowEnd": r["latest_closed_at"].isoformat() if r and r["latest_closed_at"] else None,
-        })
+        log.warning("futgg-backed model-validation track record failed", exc_info=True)
 
     return {
-        "strategies": strategies,
-        "methodology": (
-            "Every recommendation the engine could have made is snapshotted and graded against what "
-            "actually happened in the real market afterwards - this is not a backtest or a projection, "
-            "only closed, already-happened outcomes count."
-        ),
+        "source": "unavailable",
+        "graded_signals": 0,
+        "entry_reached": 0,
+        "entry_not_reached": 0,
+        "has_enough_data": False,
+        "strategies": [],
+    }
+
+
+@router.get("/track-record")
+async def track_record(request: Request, window: str = Query("90d")) -> Dict[str, Any]:
+    """Two distinct, clearly separated datasets - never presented as
+    interchangeable. See PR description for the full audit this
+    restructure was built from.
+
+    `published`: recommendations actually posted to real users via the
+    Discord Proof Ledger (discord_daily_proof_publications, status=
+    'sent' rows only - see app/services/discord_daily_proof.py's
+    published_track_record()). This is the primary, customer-facing
+    number: genuine wins/losses/win-rate/profit for opportunities that
+    were actually surfaced, not internal model scoring.
+
+    `model_validation`: the FUT.GG scanner's own background signal
+    grading - a much larger, technical dataset (every buy/strong_buy
+    evaluation, ~10-minute cadence) that is useful as engine validation
+    but is NOT a customer trade history. Labelled with "signal"/"entry
+    reached" language, never "our calls"/"entered trades", so it cannot
+    be mistaken for the primary section.
+
+    Both are deliberately ungated (no require_feature call): a trust
+    signal only free/prospective users have to take on faith is not
+    doing its job.
+    """
+    from app.services.discord_daily_proof import (
+        published_recent_wins_and_losses,
+        published_track_record,
+    )
+
+    window_days = _TRACK_RECORD_WINDOW_DAYS.get(window, 90)
+    resolved_window = window if window in _TRACK_RECORD_WINDOW_DAYS else "90d"
+
+    try:
+        core_pool = await get_core_pool()
+        published = await published_track_record(core_pool, window_days=window_days)
+        if published.get("has_published_data"):
+            # 5 most recent wins + 5 most recent losses, always both
+            # visible - the primary customer-facing evidence, embedded
+            # directly rather than a second round trip since it's a
+            # handful of rows either way.
+            recent = await published_recent_wins_and_losses(core_pool, window_days=window_days, limit=5)
+            published["recent_wins"] = recent["recent_wins"]
+            published["recent_losses"] = recent["recent_losses"]
+    except Exception:
+        log.warning("published_track_record failed", exc_info=True)
+        published = {"has_published_data": False, "tracking_since": None, "window_days": window_days}
+
+    model_validation = await _model_validation(resolved_window, window_days)
+
+    return {
+        "window": resolved_window,
+        "window_days": window_days,
+        "published": published,
+        "model_validation": model_validation,
+        # Back-compat top-level alias for ai_chat.py and any other
+        # existing consumer of the pre-hotfix shape's `strategies` key.
+        "strategies": model_validation.get("strategies", []),
     }
 
 
