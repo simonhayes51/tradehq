@@ -702,7 +702,6 @@ export default function SmartBuy() {
 
   // Optimized action handlers
   const handleBuyAction = useCallback(async (suggestion) => {
-    console.log("User wants to buy:", suggestion);
     // Could integrate with your add-trade functionality
     alert(`Great choice! Remember to buy ${suggestion.name} around ${suggestion.current_price} coins.`);
   }, []);

@@ -156,16 +156,18 @@ export function computeChemistry(placed, formation) {
         chem: perPlayerChem[p.id] ?? 0
       });
     }
-    // eslint-disable-next-line no-console
-    console.log("[CHEM] tallies:", {
-      clubs: Object.fromEntries(clubMap.entries()),
-      nations: Object.fromEntries(nationMap.entries()),
-      leagues: Object.fromEntries(leagueMap.entries()),
-      icons,
-      heroes,
-      inPosContributors,
-      rows,
-    }, " teamChem:", teamChem);
+    if (import.meta.env.DEV) {
+      // eslint-disable-next-line no-console
+      console.log("[CHEM] tallies:", {
+        clubs: Object.fromEntries(clubMap.entries()),
+        nations: Object.fromEntries(nationMap.entries()),
+        leagues: Object.fromEntries(leagueMap.entries()),
+        icons,
+        heroes,
+        inPosContributors,
+        rows,
+      }, " teamChem:", teamChem);
+    }
   }
 
   return { perPlayerChem, teamChem };
