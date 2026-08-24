@@ -82,7 +82,7 @@ const STRATEGY_BLURBS={
 const STRATEGY_EMPTY_TEXT={
   big_profit:"No live opportunities currently meet the Big Profit criteria. We won't lower the standard just to fill this section.",
 };
-const DEFAULT_STRATEGY_EMPTY_TEXT="No cards qualify for this strategy right now.";
+const DEFAULT_STRATEGY_EMPTY_TEXT="No opportunities currently meet this strategy's live-entry requirements. We won't lower the standard just to fill this section.";
 
 export default function HomeDashboard(){
   const {isAuthenticated,isLoading:authLoading}=useAuth();
@@ -130,7 +130,11 @@ export default function HomeDashboard(){
   // a cardId collision now, for the same reason.
   const baseItems=useMemo(()=>{const map=new Map();[...futggBaseItems,...legacyBaseItems].forEach(item=>{if(item?.cardId&&!map.has(String(item.cardId)))map.set(String(item.cardId),item)});return[...map.values()]},[legacyBaseItems,futggBaseItems]);
   const strategyRaw=(strategyQuery.data?.items??[]).map(normaliseFutgg).filter(Boolean);
-  const ids=[...baseItems,...strategyRaw].map(x=>x.cardId);
+  // Separate, explicitly non-actionable section - server-filtered by
+  // classify_watch_candidate() (tolerance/target/break-even/real-time
+  // profit all enforced backend-side). Never merged into strategyItems.
+  const watchRaw=(strategyQuery.data?.watch_items??[]).map(normaliseFutgg).filter(Boolean);
+  const ids=[...baseItems,...strategyRaw,...watchRaw].map(x=>x.cardId);
   const imageQuery=useGeneratedCardImages(ids);
   const images=imageQuery.data?.images??{};
   const hydrate=(item)=>item?{...item,player:{...item.player,generatedCardUrl:images[String(item.cardId)]||item.player?.generatedCardUrl}}:null;
@@ -162,6 +166,7 @@ export default function HomeDashboard(){
   const queue=opportunities.filter(x=>String(x.cardId)!==String(lead?.cardId)).slice(0,6);
   const shown=new Set([lead,...queue].filter(Boolean).map(x=>String(x.cardId)));
   const strategyItems=strategyRaw.map(hydrate).filter(x=>!shown.has(String(x.cardId))).slice(0,8);
+  const watchItems=watchRaw.map(hydrate).filter(x=>!shown.has(String(x.cardId))).slice(0,6);
   const buyCount=futggItems.filter(x=>x.recommendation==="BUY").length;
   const score=Math.round(Number(dashboard.marketRegime?.confidence||0));
   // Prefer the backend's own expected_profit_after_tax (correct EA price-
@@ -190,7 +195,9 @@ export default function HomeDashboard(){
       <TrackRecordPanel/>
       <section className="queue-section" id="queue"><div className="section-head"><div><span>LIVE OPPORTUNITIES</span><h2>Next best moves</h2></div><Link to="/v2/players">Find a player <ArrowRight size={15}/></Link></div><div className="queue-grid">{queue.length?queue.map((item,index)=><QueueCard key={item.cardId} item={item} rank={index+2} onOpen={setSelected} onWatch={watchItem} watchState={watchStates[String(item.cardId)]}/>):<EmptyState compact text="No additional opportunities right now."/>}{dashboard.locked?.opportunityFeed&&dashboard.locked?.previewCount>0?<LockedPreviewCard count={dashboard.locked.previewCount} navigate={navigate}/>:null}</div></section>
       <section className="lower-grid"><div className="market-map"><div className="section-head compact"><div><span>MARKET MAP</span><h2>Where coins are moving</h2></div></div><div className="map-bars">{futggItems.length?futggItems.slice(0,7).map(item=><button key={item.cardId} onClick={()=>setSelected(item)}><span>{nameOf(item.player)}</span><i><b style={{width:`${Math.min(100,Math.max(8,Math.abs(Number(item.expectedRoi||0))*4))}%`}}/></i><strong>{roi(item)}</strong></button>):<EmptyState compact text="Still building live market data - check back as more cards get priced."/>}</div></div><div className="activity-feed"><div className="section-head compact"><div><span>YOUR FEED</span><h2>Alerts & content</h2></div><Link to="/v2/watchlist">Open</Link></div>{[...(dashboard.watchlistAlerts||[]).slice(0,3),...(dashboard.latestSbcImpact||[]).slice(0,3)].slice(0,5).map((x,index)=><div className="feed-row" key={x.id||x.eventId||index}><i/><div><strong>{x.title||x.message||"Market update"}</strong><span>{x.message||x.estimatedMarketImpact?`${percent(x.estimatedMarketImpact)} estimated impact`:"New market activity"}</span></div></div>)}{!dashboard.watchlistAlerts?.length&&!dashboard.latestSbcImpact?.length?<EmptyState compact text={dashboard.watchedCount>0?"No price alerts yet. We'll let you know when a watched card hits one of your alert conditions.":"Nothing on your watchlist yet. Add a card and we'll track its price for you."}/>:null}</div></section>
-      <section className="strategy-section"><div className="section-head"><div><span>STRATEGY FINDER</span><h2>Find a different angle</h2></div></div><div className="strategy-tabs">{STRATEGIES.map(([key,label])=><button key={key} className={strategy===key?"active":""} onClick={()=>setStrategy(key)}>{label}</button>)}</div><p className="strategy-blurb">{STRATEGY_BLURBS[strategy]||strategyQuery.data?.description}</p><div className="strategy-grid">{strategyQuery.isLoading?<EmptyState compact text="Scanning this strategy…"/>:strategyItems.length?strategyItems.map(item=><StrategyCard key={item.cardId} item={item} onOpen={setSelected} onWatch={watchItem} watchState={watchStates[String(item.cardId)]}/>):<EmptyState compact text={STRATEGY_EMPTY_TEXT[strategy]||DEFAULT_STRATEGY_EMPTY_TEXT}/>}</div></section>
+      <section className="strategy-section"><div className="section-head"><div><span>STRATEGY FINDER</span><h2>Find a different angle</h2></div></div><div className="strategy-tabs">{STRATEGIES.map(([key,label])=><button key={key} className={strategy===key?"active":""} onClick={()=>setStrategy(key)}>{label}</button>)}</div><p className="strategy-blurb">{STRATEGY_BLURBS[strategy]||strategyQuery.data?.description}</p><div className="strategy-grid">{strategyQuery.isLoading?<EmptyState compact text="Scanning this strategy…"/>:strategyItems.length?strategyItems.map(item=><StrategyCard key={item.cardId} item={item} onOpen={setSelected} onWatch={watchItem} watchState={watchStates[String(item.cardId)]}/>):<EmptyState compact text={STRATEGY_EMPTY_TEXT[strategy]||DEFAULT_STRATEGY_EMPTY_TEXT}/>}</div>
+        {!strategyQuery.isLoading&&watchItems.length?<div className="strategy-watch-section"><div className="strategy-watch-head"><span>NEAR ENTRY</span><p>Not yet actionable - within reach of entry, still profitable at today's price. Not a current recommendation.</p></div><div className="strategy-watch-grid">{watchItems.map(item=><WatchCard key={item.cardId} item={item} onOpen={setSelected} onWatch={watchItem} watchState={watchStates[String(item.cardId)]}/>)}</div></div>:null}
+      </section>
       <p className="fut-disclaimer">Recent sales and live listings are used to estimate opportunities. Profit is never guaranteed and EA charges 5% on sales.</p>
     </main>
     {selected&&<AnalysisModal item={selected} onClose={()=>setSelected(null)} navigate={navigate} onWatch={watchItem} watchState={watchStates[String(selected.cardId)]}/>}
@@ -324,6 +331,23 @@ function StrategyCard({item,onOpen,onWatch,watchState}){
     <ChevronRight className="strategy-arrow" size={18}/>
   </div>;
 }
+
+// Compact card for the separate Watch section - deliberately smaller
+// and less prominent than StrategyCard, and never shows "BUY BELOW"/
+// "EXPECTED PROFIT" phrased as if it were current: every number here is
+// explicitly the real-time-from-current-price figure
+// (classify_watch_candidate on the backend), not the engine's
+// prospective trigger-price estimate.
+function WatchCard({item,onOpen,onWatch,watchState}){
+  const open=()=>onOpen(item);
+  return <div className="watch-card" role="button" tabIndex={0} onClick={open} onKeyDown={event=>(event.key==="Enter"||event.key===" ")&&open()}>
+    <div className="watch-card-art"><CardImage player={item.player} compact/></div>
+    <div className="watch-card-copy">
+      <div className="watch-card-title"><strong>{nameOf(item.player)}</strong><EntryStateBadge state="watch"/><button className={`queue-watch ${watchState==="saved"?"saved":""}`} onClick={event=>{event.stopPropagation();onWatch(item)}} aria-label={`Add ${nameOf(item.player)} to watchlist`}><Star size={14} fill={watchState==="saved"?"currentColor":"none"}/></button></div>
+      <p>{item.aboveEntryPct!=null?`${item.aboveEntryPct.toFixed(1)}% above entry`:"Near entry"} · would still net <CoinValue value={item.realTimeExpectedProfitAfterTax} signed/> after tax at today's price</p>
+    </div>
+  </div>;
+}
 function TradeSignal({label,value,tone,signed=false,sub}){return <div className={`trade-signal ${tone}`}><span>{label}</span><strong><CoinValue value={value} signed={signed}/></strong>{sub?<small>{sub}</small>:null}</div>}
 function PlayerMeta({player={}}){return <div className="player-meta-pills"><span>{player.rating||"—"} OVR</span><span>{player.position||"—"}</span><span>{player.version||"Card"}</span></div>}
 function Ticker({items,events}){const rows=[...items.slice(0,7).map(x=>({label:nameOf(x.player),value:roi(x),tone:Number(x.expectedRoi)>=0?"up":"down"})),...(events||[]).slice(0,2).map(x=>({label:x.title,value:"EVENT",tone:"event"}))];return <div className="fut-ticker"><div>{[...rows,...rows].map((x,index)=><span key={`${x.label}-${index}`} className={x.tone}>{x.label} — <b>{x.value}</b></span>)}</div></div>}
@@ -355,6 +379,10 @@ function normaliseFutgg(raw){if(!raw)return null;const cardId=raw.card_id??raw.s
   // machine: buy_now/watch/stale/expired, never "buy_now" once the price
   // is too old to trust.
   liveEntryState:raw.live_entry_state??null,whyThisFits:raw.why_this_fits??null,
+  // Only present on watch_items - real-time numbers computed from the
+  // CURRENT price (classify_watch_candidate), never the prospective
+  // trigger-price number evaluate_card() uses for expectedProfitAfterTax.
+  aboveEntryPct:raw.above_entry_pct??null,realTimeExpectedProfitAfterTax:raw.real_time_expected_profit_after_tax??null,realTimeExpectedRoi:raw.real_time_expected_roi==null?null:Number(raw.real_time_expected_roi)*100,
   reasoning:reasons[0]||"Market signal",player:{name:raw.name,displayName:raw.name,cardName:raw.name,nickname:null,rating:raw.rating,version:raw.rarity||"Card",position:raw.position||raw.primary_position,imageUrl:raw.image_url,cardBgImage:raw.card_design_image_url||null,cardCutoutImage:raw.image_url||raw.player_image_url||null,cardCutoutType:raw.price_tier&&raw.price_tier!=="special"?"base":"special",/* composited_image_url (background+cutout+rating+stats baked in by FUT.GG, mirrored to R2) always wins when present - it's shown as a plain <img> via CardImage()'s player.generatedCardUrl check, never composited/overlaid by PlayerCardArt, which would double the baked-in rating/stats text. Falls back to the pre-existing bgImage-gated logic only when a card hasn't been mirrored yet. */generatedCardUrl:raw.composited_image_url||(raw.card_design_image_url?null:(raw.image_url||raw.player_image_url||null)),nationImage:raw.nation_image_url||null,leagueImage:raw.league_image_url||null,clubImage:raw.club_image_url||null,stats:{pace:raw.pace,shooting:raw.shooting,passing:raw.passing,dribbling:raw.dribbling,defending:raw.defending,physicality:raw.physicality}}}}
 function normalise(item){if(!item)return null;if(item.player)return{...item,player:{...item.player,displayName:item.player.nickname||item.player.cardName||item.player.displayName||item.player.name}};return{...item,cardId:item.cardId??item.card_id,recommendation:item.recommendation??item.status,expectedRoi:toPct(item.likely_net_roi),netRoi:{likely:toPct(item.likely_net_roi)},currentBin:item.currentBin??item.current_bin,fairValue:item.fairValue??item.fair_value_24h,entryPrice:item.entryPrice??item.entry_price,breakEvenPrice:item.breakEvenPrice??item.break_even_sale_price,sales24h:item.sales24h??item.sales_24h,holdingPeriod:item.holdingPeriod??"Flexible",risk:item.risk??riskLabel(item.score_risk),confidence:item.confidence??item.score_confidence??null,updatedAt:item.updatedAt??item.computed_at,reasoning:item.reasoning||statusReason(item.status),player:{name:item.name,displayName:item.nickname||item.card_name||item.display_name||item.name,cardName:item.card_name,nickname:item.nickname,rating:item.rating,version:item.version,position:item.position,imageUrl:item.image_url,cardBgImage:item.card_bg_image,cardCutoutImage:item.card_cutout_image,cardCutoutType:item.card_cutout_type,generatedCardUrl:item.generated_card_url,nationImage:item.nation_image,leagueImage:item.league_image,clubImage:item.club_image,stats:{pace:item.pace,shooting:item.shooting,passing:item.passing,dribbling:item.dribbling,defending:item.defending,physicality:item.physicality}}}}
 function nameOf(player={}){return player.nickname||player.cardName||player.displayName||player.name||"Unknown player"}

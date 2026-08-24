@@ -159,3 +159,78 @@ class TestLiveEntryState:
         assert resp.status_code == 200
         items = resp.json()["items"]
         assert items and all(isinstance(i["why_this_fits"], str) and i["why_this_fits"] for i in items)
+
+
+class TestMainGridNeverContainsWatch:
+    """Hotfix regression: the pre-fix best_overall/low_risk definitions
+    left require_executable at its default (False), which is what let
+    signal='watch' candidates flood the main results grid (reported
+    incident: cards 15-63% above their buy threshold, badged WATCH,
+    sitting in the primary grid next to full trade-signal numbers)."""
+
+    def test_best_overall_items_never_contain_watch_state(self):
+        watch_row = _row(source_card_id=70, current_bin=90000, sales_median=52000,
+                          sales_trimmed_mean=52000, latest_sale_price=52000, sales_count=30)
+        resp = _client([watch_row]).get("/api/v2/trade-finder/strategy/best_overall")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert all(item["live_entry_state"] != "watch" for item in body["items"])
+        # A card that's only "watch" (not executable) with nothing else
+        # in the candidate pool must leave the main grid empty, not fall
+        # back to showing it anyway.
+        assert body["items"] == []
+
+    def test_low_risk_items_never_contain_watch_state(self):
+        watch_row = _row(source_card_id=71, current_bin=90000, sales_median=52000,
+                          sales_trimmed_mean=52000, latest_sale_price=52000, sales_count=30)
+        resp = _client([watch_row]).get("/api/v2/trade-finder/strategy/low_risk")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert all(item["live_entry_state"] != "watch" for item in body["items"])
+
+    def test_watch_items_key_present_and_separate_from_items(self):
+        strong_row = _row(source_card_id=72, current_bin=40000, sales_median=55000,
+                           sales_trimmed_mean=55000, latest_sale_price=55000, sales_count=40)
+        resp = _client([strong_row]).get("/api/v2/trade-finder/strategy/best_overall")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "watch_items" in body
+        assert isinstance(body["watch_items"], list)
+
+
+class TestMainGridPriceInvariants:
+    """Hotfix acceptance criteria: no card whose current price is above
+    its buy threshold (or at/above target, or at/above after-tax
+    break-even) may appear as an actionable main-grid item. These hold
+    structurally because signal='buy'/'strong_buy' is only ever assigned
+    when is_executable (current_bin<=recommended_buy_max) AND
+    expected_roi clears the buy threshold when sold at target from the
+    CURRENT price (see futgg_intelligence.py's evaluate_card) - this
+    test proves it end-to-end through the strategy endpoint rather than
+    trusting that invariant blindly."""
+
+    def test_every_main_grid_item_is_priced_below_its_own_buy_threshold(self):
+        rows = [
+            _row(source_card_id=80, current_bin=40000, sales_median=55000,
+                 sales_trimmed_mean=55000, latest_sale_price=55000, sales_count=40),
+            _row(source_card_id=81, current_bin=90000, sales_median=52000,
+                 sales_trimmed_mean=52000, latest_sale_price=52000, sales_count=30),
+        ]
+        resp = _client(rows).get("/api/v2/trade-finder/strategy/best_overall")
+        assert resp.status_code == 200
+        for item in resp.json()["items"]:
+            buy_threshold = item.get("recommended_buy_max")
+            if buy_threshold is not None:
+                assert item["current_bin"] <= buy_threshold
+
+    def test_every_main_grid_item_has_current_price_below_after_tax_break_even(self):
+        rows = [
+            _row(source_card_id=82, current_bin=40000, sales_median=55000,
+                 sales_trimmed_mean=55000, latest_sale_price=55000, sales_count=40),
+        ]
+        resp = _client(rows).get("/api/v2/trade-finder/strategy/best_overall")
+        assert resp.status_code == 200
+        for item in resp.json()["items"]:
+            target = item.get("recommended_sell_target")
+            if target is not None:
+                assert item["current_bin"] < target * 0.95

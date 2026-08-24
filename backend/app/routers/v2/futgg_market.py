@@ -56,6 +56,7 @@ from app.services.priority_recompute import (
 )
 from app.services.strategy_definitions import (
     STRATEGY_DEFINITIONS,
+    classify_watch_candidate,
     get_strategy,
     why_this_fits,
 )
@@ -1263,11 +1264,17 @@ async def strategy_finder(
     risk_order = {"low": 0, "medium": 1, "high": 2, "avoid": 3}
     max_risk_rank = risk_order.get(definition.risk_tolerance, 2) if definition.risk_tolerance else None
 
+    sales_by_card = await _sales_for_rows(provider, rows)
+
     scored = _score_and_filter(
         rows, min_expected_profit=definition.min_profit, min_roi=definition.min_roi,
         min_confidence=definition.min_confidence, min_liquidity=definition.min_liquidity,
-        signals={"buy", "strong_buy"} if definition.require_executable else {"buy", "strong_buy", "watch"},
-        sales_by_card=await _sales_for_rows(provider, rows),
+        # Every definition is require_executable=True (asserted in
+        # strategy_definitions.py) - the main grid is buy/strong_buy
+        # only, never watch. See classify_watch_candidate() below for the
+        # separate, explicitly non-actionable Watch section.
+        signals={"buy", "strong_buy"},
+        sales_by_card=sales_by_card,
     )
     if max_risk_rank is not None:
         scored = [(row, ci) for row, ci in scored if risk_order.get(ci.risk_level, 3) <= max_risk_rank]
@@ -1294,11 +1301,35 @@ async def strategy_finder(
         item["why_this_fits"] = why_this_fits(definition, row, ci)
         items.append(item)
 
+    # Separate, explicitly non-actionable Watch section - never mixed
+    # into `items` above. classify_watch_candidate() enforces every hard
+    # rule from the hotfix on its own (tolerance, target/break-even
+    # checks, real-time profit from the CURRENT price): a card that
+    # fails any of them is excluded here, not merely hidden client-side.
+    watch_scored = _score_and_filter(
+        rows, min_confidence=definition.min_confidence, min_liquidity=definition.min_liquidity,
+        signals={"watch"}, sales_by_card=sales_by_card,
+    )
+    if max_risk_rank is not None:
+        watch_scored = [(row, ci) for row, ci in watch_scored if risk_order.get(ci.risk_level, 3) <= max_risk_rank]
+    watch_items = []
+    for row, ci in watch_scored:
+        classification = classify_watch_candidate(row, ci)
+        if classification is None:
+            continue
+        watch_item = _item_with_intelligence(row, ci)
+        watch_item["live_entry_state"] = "watch"
+        watch_item.update(classification)
+        watch_items.append(watch_item)
+    watch_items.sort(key=lambda it: it["above_entry_pct"])
+    watch_items = watch_items[:6]
+
     return {
         "strategy": definition.key,
         "label": definition.label,
         "description": definition.description,
         "items": items,
+        "watch_items": watch_items,
         "page": page,
         "page_size": page_size,
         "total": total,
