@@ -762,6 +762,45 @@ def test_feed_pause_never_mentions_billing(monkeypatch):
     assert "unaffected" in reply["content"].lower()
 
 
+def test_feed_preferences_passes_posting_window_options_through(monkeypatch):
+    set_preferences = AsyncMock(return_value={"id": 1, "plan": "server_feed", "feed_channel_id": "chan1"})
+    monkeypatch.setattr(feed_billing, "set_preferences", set_preferences)
+    options = [
+        {"name": "posting_start_hour", "value": 8},
+        {"name": "posting_end_hour", "value": 23},
+        {"name": "posting_timezone", "value": "Europe/London"},
+    ]
+    payload = _feed_payload(subcommand="preferences", options=options)
+    reply = run(_build_reply("feed", payload["data"]["options"], "712239212749127740", "corr", payload))
+    assert "updated" in reply["content"].lower()
+    _, kwargs = set_preferences.call_args
+    assert kwargs["posting_window_start_hour"] == 8
+    assert kwargs["posting_window_end_hour"] == 23
+    assert kwargs["posting_timezone"] == "Europe/London"
+    assert kwargs["clear_posting_window"] is False
+
+
+def test_feed_preferences_can_clear_the_posting_window(monkeypatch):
+    set_preferences = AsyncMock(return_value={"id": 1, "plan": "server_feed", "feed_channel_id": "chan1"})
+    monkeypatch.setattr(feed_billing, "set_preferences", set_preferences)
+    options = [{"name": "clear_posting_window", "value": True}]
+    payload = _feed_payload(subcommand="preferences", options=options)
+    run(_build_reply("feed", payload["data"]["options"], "712239212749127740", "corr", payload))
+    _, kwargs = set_preferences.call_args
+    assert kwargs["clear_posting_window"] is True
+
+
+def test_feed_preferences_reports_posting_window_errors_to_user(monkeypatch):
+    async def raise_error(**kwargs):
+        raise feed_billing.FeedError("Posting window hours must be between 0 and 23.")
+
+    monkeypatch.setattr(feed_billing, "set_preferences", raise_error)
+    options = [{"name": "posting_start_hour", "value": 8}]
+    payload = _feed_payload(subcommand="preferences", options=options)
+    reply = run(_build_reply("feed", payload["data"]["options"], "712239212749127740", "corr", payload))
+    assert "between 0 and 23" in reply["content"]
+
+
 def test_feed_billing_link_is_a_short_redirect_not_the_raw_stripe_url(monkeypatch):
     """/feed billing must not build the Stripe portal session up front
     either - same 512-char button limit applies, and it should be

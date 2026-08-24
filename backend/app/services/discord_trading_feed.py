@@ -559,6 +559,29 @@ async def send_test_opportunity_update(
     return ok, None if ok else f"discord_http_{result_status or 'network'}"
 
 
+def _within_posting_window(
+    start_hour: Optional[int], end_hour: Optional[int], tz_name: Optional[str], *, now: Optional[datetime] = None
+) -> bool:
+    """True when posting is allowed right now. No window configured
+    (either bound unset) means no restriction - always True. Supports an
+    overnight wraparound window where start_hour > end_hour (e.g. 20 -> 6
+    covers 20:00 through 05:59)."""
+    if start_hour is None or end_hour is None:
+        return True
+    try:
+        from zoneinfo import ZoneInfo
+
+        tz = ZoneInfo(tz_name) if tz_name else timezone.utc
+    except Exception:
+        tz = timezone.utc
+    local_hour = (now or _now()).astimezone(tz).hour
+    if start_hour == end_hour:
+        return True
+    if start_hour < end_hour:
+        return start_hour <= local_hour < end_hour
+    return local_hour >= start_hour or local_hour < end_hour
+
+
 async def _settings_for(conn, server_id: int) -> dict[str, Any]:
     row = await conn.fetchrow("SELECT * FROM discord_server_settings WHERE server_id=$1", server_id)
     if row is None:
@@ -595,8 +618,19 @@ async def publish_live_opportunities(pool, server: ServerRecord, client: Optiona
             if elapsed_minutes < settings["cooldown_minutes"]:
                 return 0
         budget_row = await conn.fetchrow(
-            "SELECT budget_low, budget_medium, budget_high FROM discord_servers WHERE id=$1", server.id
+            """
+            SELECT budget_low, budget_medium, budget_high,
+                   posting_window_start_hour, posting_window_end_hour, posting_timezone
+            FROM discord_servers WHERE id=$1
+            """,
+            server.id,
         )
+        if budget_row and not _within_posting_window(
+            budget_row["posting_window_start_hour"],
+            budget_row["posting_window_end_hour"],
+            budget_row["posting_timezone"],
+        ):
+            return 0
         band_budget: Optional[dict[str, int]] = None
         band_used: dict[str, int] = {"low": 0, "medium": 0, "high": 0}
         if budget_row and budget_row["budget_low"] is not None:

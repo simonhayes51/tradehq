@@ -402,6 +402,16 @@ def feed_status_embed(feed: dict[str, Any], *, posts_used: int, channel_ok: bool
             "value": f"{posts_used} of up to {feed.get('max_posts_per_day', 0)}",
             "inline": False,
         },
+        {
+            "name": "POSTING WINDOW",
+            "value": (
+                f"{feed['posting_window_start_hour']:02d}:00–{feed['posting_window_end_hour']:02d}:00 "
+                f"({feed.get('posting_timezone') or 'UTC'})"
+                if feed.get("posting_window_start_hour") is not None and feed.get("posting_window_end_hour") is not None
+                else "Any time"
+            ),
+            "inline": False,
+        },
     ]
     if problems:
         fields.append({"name": "⚠️ ISSUES", "value": "\n".join(f"• {p}" for p in problems), "inline": False})
