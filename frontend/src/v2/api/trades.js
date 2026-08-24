@@ -23,3 +23,18 @@ export const getTradeHistory = (limit = 100) => request(`/history?limit=${limit}
 export const getTradingPerformance = () => request("/performance");
 export const getProfitTimeline = (days = 30) => request(`/profit-timeline?days=${days}`);
 export const getCardCommunity = (cardId) => request(`/community/${cardId}`);
+
+// Not under /api/v2/trades - this hits the shared v1 trades router
+// (app/routers/trade_share.py) since the trades table it reads from is
+// the same one both v1 and v2 write to.
+export async function shareTradeCard(tradeId) {
+  const response = await fetch(`${API_BASE}/api/trades/${tradeId}/share-card`, {
+    method: "POST",
+    credentials: "include",
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw new Error(body?.detail || body?.message || `Request failed (${response.status})`);
+  }
+  return response.json();
+}

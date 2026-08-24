@@ -52,6 +52,9 @@ const Companion = lazy(() => import("./pages/Companion"));
 // no session cookie. Gated instead by a signed token query param the
 // backend mints and verifies per request.
 const PlayerCardExport = lazy(() => import("./pages/internal/PlayerCardExport"));
+// Same pattern, for the Portfolio "Share" button's trade-result card -
+// see app/services/trade_share_render.py.
+const TradeShareExport = lazy(() => import("./pages/internal/TradeShareExport"));
 
 // v2 - AI market-intelligence redesign, self-contained under src/v2/ (see
 // the v2 plan). Own internal routing via V2App's <Routes>, so it's
@@ -110,6 +113,7 @@ function App() {
                   {/* Internal render-only route for card PNG generation -
                       see PlayerCardExport.jsx's header comment. */}
                   <Route path="/internal/render/player-card/:cardId" element={<PlayerCardExport />} />
+                  <Route path="/internal/render/trade-share/:tradeId" element={<TradeShareExport />} />
 
                   {/* v2 - handles its own per-panel gating via
                       useEntitlements/PremiumGate rather than a full-page
