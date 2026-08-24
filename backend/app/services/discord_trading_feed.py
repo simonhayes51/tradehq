@@ -578,6 +578,27 @@ async def publish_live_opportunities(pool, server: ServerRecord, client: Optiona
             elapsed_minutes = (_now() - _aware(last_post_at)).total_seconds() / 60
             if elapsed_minutes < settings["cooldown_minutes"]:
                 return 0
+        budget_row = await conn.fetchrow(
+            "SELECT budget_low, budget_medium, budget_high FROM discord_servers WHERE id=$1", server.id
+        )
+        band_budget: Optional[dict[str, int]] = None
+        band_used: dict[str, int] = {"low": 0, "medium": 0, "high": 0}
+        if budget_row and budget_row["budget_low"] is not None:
+            band_budget = {
+                "low": budget_row["budget_low"],
+                "medium": budget_row["budget_medium"],
+                "high": budget_row["budget_high"],
+            }
+            for band in band_budget:
+                band_used[band] = await conn.fetchval(
+                    """
+                    SELECT COUNT(*) FROM discord_server_posts
+                    WHERE server_id=$1 AND kind='opportunity' AND status='sent'
+                      AND sent_at > NOW() - INTERVAL '24 hours'
+                      AND payload->>'budget_band' = $2
+                    """,
+                    server.id, band,
+                )
 
     core_pool = await get_core_pool()
     provider = FutggMarketDataProvider(core_pool)
@@ -603,6 +624,14 @@ async def publish_live_opportunities(pool, server: ServerRecord, client: Optiona
     for row, ci in scored:
         if posted >= budget:
             break
+        band = None
+        if band_budget is not None:
+            from app.services.discord_feed_billing import classify_budget_band
+
+            price = row.get("current_executable_buy") or ci.recommended_buy_max
+            band = classify_budget_band(float(price) if price is not None else None)
+            if band_used[band] >= band_budget[band]:
+                continue  # this budget band's daily allocation is exhausted
         snapshot_at = row.get("snapshot_computed_at")
         dedup_key = hashlib.sha256(
             f"{row['source_card_id']}:{snapshot_at}".encode()
@@ -610,7 +639,7 @@ async def publish_live_opportunities(pool, server: ServerRecord, client: Optiona
         async with pool.acquire() as conn:
             post_id = await _record_post(
                 conn, server.id, "opportunity", dedup_key,
-                {"source_card_id": row["source_card_id"], "name": row.get("name")},
+                {"source_card_id": row["source_card_id"], "name": row.get("name"), "budget_band": band},
             )
         if post_id is None:
             continue  # already posted this exact snapshot to this server
@@ -627,6 +656,8 @@ async def publish_live_opportunities(pool, server: ServerRecord, client: Optiona
             )
         if ok:
             posted += 1
+            if band is not None:
+                band_used[band] += 1
     return posted
 
 

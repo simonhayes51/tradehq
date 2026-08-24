@@ -31,7 +31,7 @@ def setup_function(_):
 
 
 def run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro)
+    return asyncio.run(coro)
 
 
 # ---------------------------------------------------------------------------
@@ -564,3 +564,164 @@ def test_invalid_signature_is_rejected(monkeypatch):
         headers={"X-Signature-Ed25519": "00" * 64, "X-Signature-Timestamp": "1700000000"},
     )
     assert resp.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# /feed command group: permissions, guild scoping, DM rejection, dispatch
+# ---------------------------------------------------------------------------
+
+from app.services import discord_feed_billing as feed_billing
+
+MANAGE_GUILD = 1 << 5
+
+
+def _feed_payload(*, guild_id="g1", permissions=str(MANAGE_GUILD), subcommand="status", options=None):
+    payload = {
+        "guild_id": guild_id,
+        "member": {"user": {"id": "712239212749127740"}, "permissions": permissions},
+        "data": {"name": "feed", "options": [{"name": subcommand, "options": options or []}]},
+    }
+    return payload
+
+
+def test_feed_ack_is_always_ephemeral(monkeypatch):
+    monkeypatch.setattr(BackgroundTasks, "add_task", lambda self, func, *a, **kw: None)
+    body = {**_feed_payload(), "type": APPLICATION_COMMAND, "token": "tok"}
+    kwargs = _signed_request_kwargs(body)
+    client = _client(monkeypatch, kwargs["public_key"])
+    resp = client.post("/api/discord/interactions", content=kwargs["content"], headers=kwargs["headers"])
+    payload = resp.json()
+    assert payload["data"]["flags"] == EPHEMERAL
+
+
+def test_feed_denies_dm_usage():
+    payload = {"user": {"id": "1"}, "data": {"name": "feed", "options": [{"name": "status", "options": []}]}}
+    reply = run(_build_reply("feed", payload["data"]["options"], "1", "corr", payload))
+    assert "server-only" in reply["embeds"][0]["title"].lower()
+
+
+def test_feed_denies_without_manage_guild():
+    payload = _feed_payload(permissions="0")
+    reply = run(_build_reply("feed", payload["data"]["options"], "712239212749127740", "corr", payload))
+    assert "manage server" in reply["embeds"][0]["title"].lower()
+
+
+def test_feed_ignores_a_spoofed_top_level_permissions_claim():
+    payload = _feed_payload(permissions="0")
+    payload["permissions"] = str(MANAGE_GUILD)  # not where Discord puts it - must be ignored
+    payload["is_admin"] = True
+    reply = run(_build_reply("feed", payload["data"]["options"], "712239212749127740", "corr", payload))
+    assert "manage server" in reply["embeds"][0]["title"].lower()
+
+
+def test_feed_status_uses_the_guild_id_from_the_interaction_not_an_option(monkeypatch):
+    """A user can only manage the guild the command was invoked in -
+    guild_id always comes from the signed interaction context, never a
+    command option, so there is nothing for a malicious option value to
+    override."""
+    seen = {}
+
+    async def fake_get_guild_feed(guild_id):
+        seen["guild_id"] = guild_id
+        return None
+
+    monkeypatch.setattr(feed_billing, "get_guild_feed", fake_get_guild_feed)
+    payload = _feed_payload(guild_id="the-real-guild")
+    run(_build_reply("feed", payload["data"]["options"], "712239212749127740", "corr", payload))
+    assert seen["guild_id"] == "the-real-guild"
+
+
+def test_feed_setup_confirms_channel_before_saving(monkeypatch):
+    confirm = AsyncMock(return_value=(False, "missing_permissions"))
+    monkeypatch.setattr(feed_billing, "confirm_channel_access", confirm)
+    upsert = AsyncMock()
+    monkeypatch.setattr(feed_billing, "upsert_pending_setup", upsert)
+    options = [
+        {"name": "plan", "value": "server_feed"},
+        {"name": "channel", "value": "chan1"},
+        {"name": "platform", "value": "console"},
+        {"name": "budget_mix", "value": "balanced"},
+    ]
+    payload = _feed_payload(subcommand="setup", options=options)
+    reply = run(_build_reply("feed", payload["data"]["options"], "712239212749127740", "corr", payload))
+    confirm.assert_awaited_once()
+    upsert.assert_not_called()
+    assert "View Channel" in reply["content"] or "permission" in reply["content"].lower()
+
+
+def test_feed_setup_happy_path_returns_checkout_link(monkeypatch):
+    monkeypatch.setattr(feed_billing, "confirm_channel_access", AsyncMock(return_value=(True, None)))
+    monkeypatch.setattr(feed_billing, "upsert_pending_setup", AsyncMock(return_value={
+        "plan": "server_feed", "feed_channel_id": "chan1", "platform_scope": "console",
+        "budget_mix": "balanced", "budget_low": 2, "budget_medium": 2, "budget_high": 2,
+    }))
+    monkeypatch.setattr(feed_billing, "create_checkout_session", AsyncMock(return_value="https://checkout.stripe.com/session/abc"))
+    options = [
+        {"name": "plan", "value": "server_feed"},
+        {"name": "channel", "value": "chan1"},
+        {"name": "platform", "value": "console"},
+        {"name": "budget_mix", "value": "balanced"},
+    ]
+    payload = _feed_payload(subcommand="setup", options=options)
+    reply = run(_build_reply("feed", payload["data"]["options"], "712239212749127740", "corr", payload))
+    assert reply["components"][0]["components"][0]["url"] == "https://checkout.stripe.com/session/abc"
+    # No raw database id or secret in the button URL - it's Stripe's own opaque session URL.
+    assert "guild_id=" not in reply["components"][0]["components"][0]["url"]
+
+
+def test_feed_setup_blocks_second_subscription(monkeypatch):
+    monkeypatch.setattr(feed_billing, "confirm_channel_access", AsyncMock(return_value=(True, None)))
+
+    async def raise_already_subscribed(**kwargs):
+        raise feed_billing.FeedError("This server already has an active Server Feed subscription. Use /feed billing to upgrade, downgrade, or manage it.")
+
+    monkeypatch.setattr(feed_billing, "upsert_pending_setup", raise_already_subscribed)
+    options = [
+        {"name": "plan", "value": "server_feed_plus"},
+        {"name": "channel", "value": "chan1"},
+        {"name": "platform", "value": "console"},
+        {"name": "budget_mix", "value": "balanced"},
+    ]
+    payload = _feed_payload(subcommand="setup", options=options)
+    reply = run(_build_reply("feed", payload["data"]["options"], "712239212749127740", "corr", payload))
+    assert "/feed billing" in reply["content"]
+
+
+def test_feed_test_requires_a_configured_channel(monkeypatch):
+    monkeypatch.setattr(feed_billing, "get_guild_feed", AsyncMock(return_value=None))
+    payload = _feed_payload(subcommand="test")
+    reply = run(_build_reply("feed", payload["data"]["options"], "712239212749127740", "corr", payload))
+    assert "setup" in reply["content"].lower()
+
+
+def test_feed_activate_reports_feed_error_to_user(monkeypatch):
+    async def raise_error(**kwargs):
+        raise feed_billing.FeedError("This server needs an active Server Feed subscription first - run /feed setup or /feed billing.")
+
+    monkeypatch.setattr(feed_billing, "activate", raise_error)
+    payload = _feed_payload(subcommand="activate")
+    reply = run(_build_reply("feed", payload["data"]["options"], "712239212749127740", "corr", payload))
+    assert "subscription" in reply["content"].lower()
+
+
+def test_feed_pause_never_mentions_billing(monkeypatch):
+    monkeypatch.setattr(feed_billing, "pause", AsyncMock(return_value={"id": 1}))
+    payload = _feed_payload(subcommand="pause")
+    reply = run(_build_reply("feed", payload["data"]["options"], "712239212749127740", "corr", payload))
+    assert "unaffected" in reply["content"].lower()
+
+
+def test_feed_billing_link_never_exposes_stripe_ids(monkeypatch):
+    monkeypatch.setattr(feed_billing, "create_billing_portal_session", AsyncMock(return_value="https://billing.stripe.com/p/session/xyz"))
+    payload = _feed_payload(subcommand="billing")
+    reply = run(_build_reply("feed", payload["data"]["options"], "712239212749127740", "corr", payload))
+    url = reply["components"][0]["components"][0]["url"]
+    assert url == "https://billing.stripe.com/p/session/xyz"
+    assert "cus_" not in str(reply) and "sub_" not in str(reply)
+
+
+def test_feed_help_explains_up_to_wording_and_no_quota_filling():
+    reply = run(_build_reply("feed", [{"name": "help", "options": []}], "712239212749127740", "corr", _feed_payload(subcommand="help")))
+    text = str(reply["embeds"][0])
+    assert "weak trade" in text.lower()
+    assert "up to" in text.lower()

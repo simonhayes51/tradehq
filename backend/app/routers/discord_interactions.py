@@ -48,6 +48,8 @@ from fastapi.responses import JSONResponse
 
 from app.services import discord_command_data as data
 from app.services import discord_embeds as embeds
+from app.services import discord_feed_billing as feed_billing
+from app.services import discord_permissions as perms
 
 log = logging.getLogger("discord_interactions")
 
@@ -179,8 +181,134 @@ async def _followup(application_id: str, interaction_token: str, payload: Dict[s
         log.warning("Discord follow-up PATCH raised", exc_info=True)
 
 
-async def _build_reply(name: str, options: List[Dict[str, Any]], discord_id: Optional[str], correlation_id: str) -> Dict[str, Any]:
+def _sub_option(sub_options: List[Dict[str, Any]], name: str) -> Optional[Any]:
+    return _option(sub_options, name)
+
+
+async def _build_feed_reply(interaction_payload: Dict[str, Any], options: List[Dict[str, Any]], discord_id: Optional[str]) -> Dict[str, Any]:
+    """/feed subcommand dispatch. Every reply here is ephemeral (enforced
+    in interactions()). Permission and guild-scoping are re-derived from
+    the signed interaction payload on every call - never trusted from a
+    prior state or a client-supplied guild id."""
+    if perms.is_dm_interaction(interaction_payload):
+        return {"embeds": [embeds.feed_dm_not_allowed_embed()]}
+    if not perms.has_manage_guild(interaction_payload):
+        return {"embeds": [embeds.feed_permission_denied_embed()]}
+
+    guild_id = str(interaction_payload["guild_id"])
+    guild_name = ((interaction_payload.get("guild") or {}).get("name")) or f"Guild {guild_id}"
     app_url = _app_url()
+
+    if not options:
+        return {"content": "Usage: `/feed <setup|test|activate|status|channel|preferences|pause|resume|billing|help>`"}
+    sub = options[0]
+    sub_name = str(sub.get("name") or "")
+    sub_options = sub.get("options") or []
+
+    try:
+        if sub_name == "help":
+            return {"embeds": [embeds.feed_help_embed()]}
+
+        if sub_name == "setup":
+            plan = str(_sub_option(sub_options, "plan"))
+            channel_id = str(_sub_option(sub_options, "channel"))
+            platform_scope = str(_sub_option(sub_options, "platform"))
+            budget_mix = str(_sub_option(sub_options, "budget_mix"))
+            ok, reason = await feed_billing.confirm_channel_access(guild_id, channel_id)
+            if not ok:
+                return {"content": feed_billing.CHANNEL_ACCESS_MESSAGES.get(reason, "Couldn't verify that channel.")}
+            feed = await feed_billing.upsert_pending_setup(
+                guild_id=guild_id, guild_name=guild_name, owner_discord_id=str(discord_id),
+                plan=plan, channel_id=channel_id, platform_scope=platform_scope, budget_mix=budget_mix,
+            )
+            success_url = f"{app_url}/#/discord/feed/success?guild_id={guild_id}"
+            cancel_url = f"{app_url}/#/discord/feed/cancel?guild_id={guild_id}"
+            checkout_url = await feed_billing.create_checkout_session(
+                guild_id=guild_id, owner_discord_id=str(discord_id), plan=plan,
+                success_url=success_url, cancel_url=cancel_url,
+            )
+            summary = embeds.feed_setup_summary_embed(feed, feed_billing.PLANS[plan]["price_gbp"])
+            return {"embeds": [summary], "components": [embeds.link_row("Continue to payment", checkout_url)]}
+
+        if sub_name == "test":
+            feed = await feed_billing.get_guild_feed(guild_id)
+            if not feed or not feed.get("feed_channel_id"):
+                return {"content": "Run `/feed setup` first to choose a posting channel."}
+            from app.services.discord_trading_feed import ServerRecord, send_test_post
+
+            server = ServerRecord(
+                id=feed["id"], guild_id=guild_id, name=guild_name, access_level="paid_partner",
+                feed_channel_id=feed["feed_channel_id"], proof_channel_id=None,
+                status=feed["status"], expires_at=feed.get("current_period_end"),
+            )
+            from app.db import get_core_pool
+
+            ok, error = await send_test_post(await get_core_pool(), server)
+            if not ok:
+                return {"content": f"Test post failed: {error or 'unknown error'}"}
+            await feed_billing.mark_test_post_confirmed(guild_id)
+            return {"content": f"✅ Sent a synthetic test post to <#{feed['feed_channel_id']}>. Run `/feed activate` when you're ready to go live."}
+
+        if sub_name == "activate":
+            feed = await feed_billing.activate(guild_id=guild_id, admin_id=str(discord_id))
+            return {"content": f"✅ Server Feed is now **active** in <#{feed['feed_channel_id']}>."}
+
+        if sub_name == "status":
+            feed = await feed_billing.get_guild_feed(guild_id)
+            if not feed:
+                return {"content": "This server hasn't run `/feed setup` yet."}
+            posts_used = await feed_billing.posts_used_today(feed["id"])
+            channel_ok, reason = (True, None)
+            if feed.get("feed_channel_id"):
+                channel_ok, reason = await feed_billing.confirm_channel_access(guild_id, feed["feed_channel_id"])
+            problem_text = feed_billing.CHANNEL_ACCESS_MESSAGES.get(reason) if reason else None
+            return {"embeds": [embeds.feed_status_embed(feed, posts_used=posts_used, channel_ok=channel_ok, channel_problem=problem_text)]}
+
+        if sub_name == "channel":
+            channel_id = str(_sub_option(sub_options, "channel"))
+            feed = await feed_billing.set_channel(guild_id=guild_id, admin_id=str(discord_id), channel_id=channel_id)
+            return {"content": f"✅ Posting channel updated to <#{feed['feed_channel_id']}>."}
+
+        if sub_name == "preferences":
+            platform_scope = _sub_option(sub_options, "platform")
+            budget_mix = _sub_option(sub_options, "budget_mix")
+            min_confidence_raw = _sub_option(sub_options, "min_confidence")
+            min_profit_raw = _sub_option(sub_options, "min_expected_profit")
+            feed = await feed_billing.set_preferences(
+                guild_id=guild_id, admin_id=str(discord_id),
+                platform_scope=str(platform_scope) if platform_scope else None,
+                budget_mix=str(budget_mix) if budget_mix else None,
+                min_confidence=float(min_confidence_raw) if min_confidence_raw else None,
+                min_expected_profit=int(min_profit_raw) if min_profit_raw else None,
+            )
+            return {"content": "✅ Preferences updated.", "embeds": [embeds.feed_status_embed(feed, posts_used=0, channel_ok=True, channel_problem=None)]}
+
+        if sub_name == "pause":
+            await feed_billing.pause(guild_id=guild_id, admin_id=str(discord_id))
+            return {"content": "⏸️ Server Feed posting is paused. Your subscription is unaffected."}
+
+        if sub_name == "resume":
+            feed = await feed_billing.resume(guild_id=guild_id, admin_id=str(discord_id))
+            return {"content": f"▶️ Server Feed resumed in <#{feed['feed_channel_id']}>."}
+
+        if sub_name == "billing":
+            return_url = f"{app_url}/#/discord/feed/billing?guild_id={guild_id}"
+            portal_url = await feed_billing.create_billing_portal_session(guild_id=guild_id, return_url=return_url)
+            return {
+                "content": "Manage your Server Feed subscription securely via Stripe:",
+                "components": [embeds.link_row("Manage billing", portal_url)],
+            }
+
+        return {"content": f"Unknown /feed subcommand: {sub_name}"}
+    except feed_billing.FeedError as exc:
+        return {"content": str(exc)}
+
+
+async def _build_reply(name: str, options: List[Dict[str, Any]], discord_id: Optional[str], correlation_id: str, interaction_payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    app_url = _app_url()
+
+    if name == "feed":
+        return await _build_feed_reply(interaction_payload or {}, options, discord_id)
 
     if name == "help":
         return {"embeds": [embeds.help_embed(app_url)], "components": [embeds.link_row("Open EAFC.Live", app_url)]}
@@ -230,14 +358,17 @@ async def _build_reply(name: str, options: List[Dict[str, Any]], discord_id: Opt
     return {"content": "Unknown command."}
 
 
-async def _run_command(application_id: str, interaction_token: str, name: str, options: List[Dict[str, Any]], discord_id: Optional[str]) -> None:
+async def _run_command(
+    application_id: str, interaction_token: str, name: str, options: List[Dict[str, Any]],
+    discord_id: Optional[str], interaction_payload: Optional[Dict[str, Any]] = None,
+) -> None:
     correlation_id = secrets.token_hex(4)
     try:
-        payload = await _build_reply(name, options, discord_id, correlation_id)
+        reply = await _build_reply(name, options, discord_id, correlation_id, interaction_payload)
     except Exception:
         log.error("Discord command failed: command=%s correlation_id=%s discord_id=%s", name, correlation_id, discord_id, exc_info=True)
-        payload = {"embeds": [embeds.error_embed(correlation_id)]}
-    await _followup(application_id, interaction_token, payload)
+        reply = {"embeds": [embeds.error_embed(correlation_id)]}
+    await _followup(application_id, interaction_token, reply)
 
 
 # ---------------------------------------------------------------------------
@@ -284,7 +415,7 @@ async def interactions(request: Request, background_tasks: BackgroundTasks) -> J
 
     application_id = os.getenv("DISCORD_APPLICATION_ID")
     interaction_token = payload.get("token")
-    ephemeral = name in ACCOUNT_COMMANDS
+    ephemeral = name in ACCOUNT_COMMANDS or name == "feed"
 
     if not application_id or not interaction_token:
         log.error("Cannot defer Discord interaction: missing application_id or interaction token")
@@ -293,7 +424,7 @@ async def interactions(request: Request, background_tasks: BackgroundTasks) -> J
             "data": {"content": "This bot isn't fully configured yet. Please try again shortly.", "flags": EPHEMERAL},
         })
 
-    background_tasks.add_task(_run_command, application_id, interaction_token, name, options, discord_id)
+    background_tasks.add_task(_run_command, application_id, interaction_token, name, options, discord_id, payload)
 
     ack: Dict[str, Any] = {"type": DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE}
     if ephemeral:

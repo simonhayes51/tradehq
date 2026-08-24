@@ -184,6 +184,22 @@ class DiscordClient:
             return False
         return True
 
+    async def get_channel(self, channel_id: str) -> tuple[int, Any]:
+        return await self._request("GET", f"/channels/{channel_id}")
+
+    async def get_guild_roles(self, guild_id: str) -> tuple[int, Any]:
+        return await self._request("GET", f"/guilds/{guild_id}/roles")
+
+    async def get_guild_member_in(self, guild_id: str, discord_user_id: str) -> tuple[int, Any]:
+        """Guild-parameterized twin of get_member(), which is hardcoded to
+        self.config.guild_id (the single Official server). Used for
+        arbitrary partner/self-service guilds - see
+        discord_feed_billing.py's channel permission check."""
+        return await self._request("GET", f"/guilds/{guild_id}/members/{discord_user_id}")
+
+    async def get_bot_user(self) -> tuple[int, Any]:
+        return await self._request("GET", "/users/@me")
+
     async def post_embed(
         self,
         channel_id: str,
