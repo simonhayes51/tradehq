@@ -152,8 +152,13 @@ function ModelValidationSection({ window }) {
 export default function TrackRecordPanel() {
   const [window, setWindow] = useState("90d");
   const [resultFilter, setResultFilter] = useState("all");
+  const [ledgerOpen, setLedgerOpen] = useState(false);
+  // Starts at the required 5, grows by 5 on "Load more" - avoids ever
+  // fetching/rendering an unbounded list up front, per the mobile
+  // rebuild's list-limiting requirement.
+  const [ledgerLimit, setLedgerLimit] = useState(5);
   const { data, isLoading, isError } = useTrackRecord(window);
-  const recentQuery = useRecentOutcomes(window, resultFilter, 12);
+  const recentQuery = useRecentOutcomes(window, resultFilter, ledgerLimit, { enabled: ledgerOpen });
 
   if (isLoading || isError) return null;
 
@@ -232,9 +237,15 @@ export default function TrackRecordPanel() {
         </>
       )}
 
-      <div className="track-record-recent">
-        <div className="track-record-recent-head">
+      <details
+        className="track-record-recent"
+        open={ledgerOpen}
+        onToggle={(e) => setLedgerOpen(e.target.open)}
+      >
+        <summary>
           <h3>Full chronological ledger</h3>
+        </summary>
+        <div className="track-record-recent-head">
           <div className="track-record-result-tabs">
             {RESULT_FILTERS.map(([key, label]) => (
               <button key={key} type="button" className={resultFilter === key ? "active" : ""} onClick={() => setResultFilter(key)}>
@@ -245,24 +256,31 @@ export default function TrackRecordPanel() {
         </div>
         <p className="track-record-disclosure small">
           Every graded model signal in this window (see Model signal validation below for what that
-          means), not limited to published recommendations.
+          means), not limited to published recommendations. Initially limited to {ledgerLimit} rows.
         </p>
         {recentQuery.isLoading ? (
           <EmptyState compact text="Loading…" />
         ) : recentQuery.data?.outcomes?.length ? (
-          <div className="track-record-outcomes">
-            {recentQuery.data.outcomes.slice(0, 6).map((o) => (
-              <LedgerRow key={o.outcome_id} item={{
-                outcome_id: o.outcome_id, player_name: o.player_name, card_rating: o.rating,
-                rarity: o.rarity, detected_at: o.detected_at, entry_price: o.entry_price,
-                net_profit_after_tax: o.net_profit_after_tax, realised_roi_pct: o.realised_roi_pct,
-              }} result={o.result} />
-            ))}
-          </div>
+          <>
+            <div className="track-record-outcomes">
+              {recentQuery.data.outcomes.map((o) => (
+                <LedgerRow key={o.outcome_id} item={{
+                  outcome_id: o.outcome_id, player_name: o.player_name, card_rating: o.rating,
+                  rarity: o.rarity, detected_at: o.detected_at, entry_price: o.entry_price,
+                  net_profit_after_tax: o.net_profit_after_tax, realised_roi_pct: o.realised_roi_pct,
+                }} result={o.result} />
+              ))}
+            </div>
+            {recentQuery.data.outcomes.length >= ledgerLimit ? (
+              <button type="button" className="track-record-load-more" onClick={() => setLedgerLimit((n) => n + 5)}>
+                Load more
+              </button>
+            ) : null}
+          </>
         ) : (
           <EmptyState compact text="No outcomes match this filter in this window yet." />
         )}
-      </div>
+      </details>
 
       <ModelValidationSection window={window} />
 
