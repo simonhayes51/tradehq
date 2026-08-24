@@ -84,8 +84,17 @@ _TRACK_RECORD_LABEL = {
 _TRACK_RECORD_MIN_SAMPLE = 20
 
 
+# window query param -> window_days. "all" is not literally unbounded
+# (an unindexed full-table scan with no lower bound is a real cost for
+# no honest benefit - migration 040 is recent enough that a 2-year
+# window already covers "everything that could exist"), so it is
+# implemented as a generously large, explicit bound instead of a special
+# no-filter code path.
+_TRACK_RECORD_WINDOW_DAYS = {"7d": 7, "30d": 30, "90d": 90, "all": 730}
+
+
 @router.get("/track-record")
-async def track_record(request: Request) -> Dict[str, Any]:
+async def track_record(request: Request, window: str = Query("90d")) -> Dict[str, Any]:
     """Aggregated, honest hit-rate - real closed-window outcomes, not a
     claim invented for marketing copy. Deliberately ungated (no
     require_feature call): this is a trust signal, and a trust signal
@@ -107,17 +116,66 @@ async def track_record(request: Request) -> Dict[str, Any]:
     returns the legacy shape rather than an empty page. Once FUT.GG
     outcomes are flowing this branch stops being reachable and the
     ml_labels query below can be deleted outright.
+
+    WHAT "total_recommendations" ACTUALLY COUNTS (read before changing
+    the response shape): every row here is one background-scanner
+    evaluation pass that scored buy/strong_buy for a card (see
+    app/services/futgg_scanner.py, ~every 10 minutes, up to ~1,500
+    candidates/pass, no dedup across passes) - NOT a distinct,
+    deliberately-published, user-visible recommendation. There is no
+    "published to a user" concept anywhere in this schema. The honest
+    label for this whole endpoint is automated signal validation, not a
+    log of trades a specific person was shown - the frontend copy must
+    not imply the latter. See PR description for the full audit.
+
+    `summary` below is the fields the UI should actually render;
+    `strategies`/`sampleSize`/`hitRatePct` are kept byte-for-byte for the
+    existing AI chat tool (app/routers/v2/ai_chat.py's get_track_record)
+    and any other current consumer - this is an additive change, not a
+    breaking one. Do not remove the `strategies` shape without checking
+    ai_chat.py first.
+
+    IMPORTANT: `sampleSize` in `strategies[0]` is `total_recommendations`
+    (every graded call, including ones that never reached entry), NOT the
+    same base `hitRatePct` is computed over (`entered`). Showing those two
+    numbers side by side without qualification is the exact "75.5% / N
+    closed calls" mislabeling this endpoint used to produce - see
+    `summary.entered` for the true win-rate denominator.
     """
     from app.services.futgg_recommendation_store import track_record as futgg_track_record
 
+    window_days = _TRACK_RECORD_WINDOW_DAYS.get(window, 90)
+
     try:
         core_pool = await get_core_pool()
-        futgg = await futgg_track_record(core_pool, horizon="24h", window_days=90)
+        futgg = await futgg_track_record(core_pool, horizon="24h", window_days=window_days)
         if int(futgg.get("headline", {}).get("total_recommendations") or 0) > 0:
             head = futgg["headline"]
+            no_entry = int(head["total_recommendations"]) - int(head["entered"])
             return {
                 "source": "futgg",
                 "engine": "futgg-outcome-grader",
+                "window": window if window in _TRACK_RECORD_WINDOW_DAYS else "90d",
+                "window_days": window_days,
+                # The fields the rebuilt Track Record UI actually renders.
+                # Every rate here is paired with its real denominator.
+                "summary": {
+                    "total_graded": head["total_recommendations"],
+                    "entered": head["entered"],
+                    "no_entry": no_entry,
+                    "entry_rate_pct": head.get("entry_rate_pct"),
+                    # "win" = realised_roi > 0 among entered trades - see
+                    # futgg_recommendation_store.py's _outcome_result for
+                    # why this, not target_hit, is the primary win/loss
+                    # split shown per-outcome.
+                    "win_rate_pct": head.get("profitable_rate_pct"),
+                    "target_hit_rate_pct": head.get("target_hit_rate_pct"),
+                    "avg_roi_pct": head.get("avg_roi_pct"),
+                    "median_roi_pct": head.get("median_roi_pct"),
+                    "avg_hold_minutes": head.get("avg_hold_minutes"),
+                    "has_enough_data": futgg["has_enough_data"],
+                    "min_sample": futgg["min_sample"],
+                },
                 "strategies": [
                     {
                         "strategy": "mispricing",
@@ -192,6 +250,49 @@ async def track_record(request: Request) -> Dict[str, Any]:
             "actually happened in the real market afterwards - this is not a backtest or a projection, "
             "only closed, already-happened outcomes count."
         ),
+    }
+
+
+_RECENT_OUTCOME_FILTERS = frozenset({"all", "wins", "losses", "no_entry"})
+
+
+@router.get("/track-record/recent")
+async def track_record_recent(
+    window: str = Query("90d"),
+    filter: str = Query("all", description="all|wins|losses|no_entry"),
+    limit: int = Query(20, ge=1, le=100),
+) -> Dict[str, Any]:
+    """Individual recent graded outcomes - the "did our calls actually
+    work" list, not just the aggregate. Deliberately ungated, same
+    trust-signal reasoning as /track-record above.
+
+    Returns an honest empty list (never a synthesized/backfilled one) if
+    migration 040's tables have no graded rows yet - there is no legacy
+    fallback here because the legacy ml_labels pipeline never had
+    per-recommendation card identity worth showing a user (see
+    /track-record's own docstring on why that path is being retired).
+    """
+    if filter not in _RECENT_OUTCOME_FILTERS:
+        raise HTTPException(400, f"filter must be one of {sorted(_RECENT_OUTCOME_FILTERS)}")
+    window_days = _TRACK_RECORD_WINDOW_DAYS.get(window, 90)
+
+    from app.services.futgg_recommendation_store import recent_outcomes as futgg_recent_outcomes
+
+    try:
+        core_pool = await get_core_pool()
+        outcomes = await futgg_recent_outcomes(
+            core_pool, horizon="24h", window_days=window_days,
+            result_filter=filter, limit=limit,
+        )
+    except Exception:
+        log.warning("/track-record/recent failed (likely migration 040 not yet applied)", exc_info=True)
+        outcomes = []
+
+    return {
+        "window": window if window in _TRACK_RECORD_WINDOW_DAYS else "90d",
+        "window_days": window_days,
+        "filter": filter,
+        "outcomes": outcomes,
     }
 
 

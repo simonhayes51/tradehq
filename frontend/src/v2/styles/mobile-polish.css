@@ -138,6 +138,61 @@
 }
 .trade-signal.profit > span,
 .trade-signal.profit > strong { color: #39ff8a !important; }
+.trade-signal.target {
+  border-color: rgba(101,199,255,.3);
+  background: rgba(101,199,255,.06);
+}
+.trade-signal.target > span { color: #65c7ff !important; }
+.trade-signal.current {
+  border-color: #383838;
+  background: #171717;
+}
+
+/* Live-entry-state badge - buy_now/watch/stale/expired, computed
+   server-side (see HomeDashboard.jsx's ENTRY_STATE_COPY /
+   app/services/strategy_definitions.py's _live_entry_state). Colour is
+   never the only signal - the text label always differs too. */
+.entry-state-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 99px;
+  border: 1px solid;
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.entry-state-badge.buy-now {
+  border-color: rgba(57,255,138,.4);
+  background: rgba(57,255,138,.12);
+  color: #39ff8a;
+}
+.entry-state-badge.watch {
+  border-color: rgba(242,201,76,.4);
+  background: rgba(242,201,76,.12);
+  color: #f2c94c;
+}
+.entry-state-badge.stale,
+.entry-state-badge.expired {
+  border-color: rgba(158,158,158,.35);
+  background: rgba(158,158,158,.1);
+  color: #9e9e9e;
+}
+
+.strategy-card-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.strategy-why {
+  margin: 8px 0 0;
+  color: #9e9e9e;
+  font-size: 11px;
+  line-height: 1.4;
+}
 .queue-reason { display: none; }
 .player-meta-pills {
   display: flex;

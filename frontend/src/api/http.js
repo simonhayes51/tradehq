@@ -53,8 +53,7 @@ export async function apiFetch(path, opts = {}) {
 
   const url = buildUrl(path, query);
 
-  // Helpful in Dev/Prod debugging to verify the final absolute URL
-  if (typeof window !== "undefined") {
+  if (import.meta.env.DEV) {
     // eslint-disable-next-line no-console
     console.log("[apiFetch]", method, url);
   }

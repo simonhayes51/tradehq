@@ -360,3 +360,125 @@ async def track_record(
             f"entirely below {min_sample} graded outcomes."
         ),
     }
+
+
+# =============================================================================
+# Recent outcomes - individual graded rows, for a real win/loss list
+# =============================================================================
+# track_record() above only ever returns aggregates. The Track Record UI
+# also needs a small, honestly-mixed list of actual recent closed calls
+# (not cherry-picked wins) with enough detail to show the user what
+# happened on that specific card - this is that query.
+
+# Whitelist of result filters -> SQL fragment. Never interpolate the
+# caller's filter string directly (same discipline as
+# BREAKDOWN_DIMENSIONS above).
+#
+# "win"/"loss" here means realised_roi > 0 / <= 0 among ENTERED trades -
+# the same "profitable" concept track_record()'s headline already reports
+# as profitable_rate_pct - not target_hit, which is a stricter, separate
+# concept (did the recommendation's exact sell target get crossed) also
+# exposed per-row (see `target_hit` in the returned dict) but not used as
+# the primary win/loss split, so a card that was sold for a real profit
+# without technically touching the target price isn't shown as a "loss".
+_RECENT_OUTCOME_FILTERS: Dict[str, str] = {
+    "all": "TRUE",
+    "wins": "o.entry_achieved AND o.realised_roi > 0",
+    "losses": "o.entry_achieved AND o.realised_roi <= 0",
+    "no_entry": "NOT o.entry_achieved",
+}
+
+MAX_RECENT_OUTCOMES = 100
+
+
+def _outcome_result(row) -> str:
+    if not row["entry_achieved"]:
+        return "no_entry"
+    roi = row["realised_roi"]
+    if roi is None:
+        return "flat"
+    if float(roi) > 0:
+        return "win"
+    if float(roi) < 0:
+        return "loss"
+    return "flat"
+
+
+def _outcome_row_to_dict(row) -> Dict[str, Any]:
+    return {
+        "outcome_id": row["id"],
+        "source_card_id": row["source_card_id"],
+        "horizon": row["horizon"],
+        "result": _outcome_result(row),
+        "outcome_status": row["outcome_status"],
+        "target_hit": bool(row["target_hit"]),
+        "downside_hit": bool(row["downside_hit"]),
+
+        "player_name": row["display_name"] or row["name"],
+        "rating": row["rating"],
+        "rarity": row["rarity"],
+        "image_url": row["card_image_stored_url"] or row["card_image_url"] or row["player_image_url"],
+
+        "detected_at": row["evaluated_at"].isoformat() if row["evaluated_at"] else None,
+        "buy_threshold": _num(row["recommended_buy_max"]) or _num(row["buy_below"]),
+        "sell_target": _num(row["recommended_sell_target"]),
+
+        "entry_achieved": bool(row["entry_achieved"]),
+        "entry_at": row["entry_at"].isoformat() if row["entry_at"] else None,
+        "entry_price": row["entry_price"],
+
+        "exit_achieved": bool(row["exit_achieved"]),
+        "exit_at": row["exit_at"].isoformat() if row["exit_at"] else None,
+        "realised_sell_price": row["realised_sell_price"],
+
+        "net_profit_after_tax": _num(row["net_profit_after_tax"]),
+        "realised_roi_pct": round(float(row["realised_roi"]) * 100, 2) if row["realised_roi"] is not None else None,
+        "minutes_to_target": row["minutes_to_target"],
+
+        "graded_at": row["graded_at"].isoformat() if row["graded_at"] else None,
+        "window_start": row["window_start"].isoformat() if row["window_start"] else None,
+        "window_end": row["window_end"].isoformat() if row["window_end"] else None,
+    }
+
+
+async def recent_outcomes(
+    pool, *, horizon: str = "24h", window_days: int = 90,
+    result_filter: str = "all", limit: int = 40,
+) -> List[Dict[str, Any]]:
+    """Individual graded outcome rows, most recently graded first, joined
+    to futgg_market_snapshot purely for display (name/image) - every
+    trading number comes from the frozen snapshot/outcome rows
+    themselves, never from the live snapshot.
+
+    Single query, LIMIT applied in SQL - no per-row follow-up queries.
+    """
+    if result_filter not in _RECENT_OUTCOME_FILTERS:
+        raise ValueError(f"unknown result_filter {result_filter!r} - must be one of {sorted(_RECENT_OUTCOME_FILTERS)}")
+    limit = max(1, min(int(limit), MAX_RECENT_OUTCOMES))
+    clause = _RECENT_OUTCOME_FILTERS[result_filter]
+    interval = timedelta(days=int(window_days))
+
+    query = f"""
+    SELECT
+        o.id, o.source_card_id, o.horizon, o.outcome_status,
+        o.target_hit, o.downside_hit,
+        o.entry_achieved, o.entry_at, o.entry_price,
+        o.exit_achieved, o.exit_at, o.realised_sell_price,
+        o.net_profit_after_tax, o.realised_roi, o.minutes_to_target,
+        o.graded_at, o.window_start, o.window_end,
+        s.evaluated_at, s.recommended_buy_max, s.buy_below, s.recommended_sell_target,
+        s.rating, s.rarity,
+        m.name, m.display_name, m.player_image_url, m.card_image_url, m.card_image_stored_url
+    FROM futgg_recommendation_outcomes o
+    JOIN futgg_recommendation_snapshots s ON s.id = o.snapshot_id
+    LEFT JOIN futgg_market_snapshot m ON m.source_card_id = o.source_card_id
+    WHERE o.horizon = $1
+      AND o.outcome_status <> 'insufficient_observations'
+      AND s.evaluated_at >= now() - $2::interval
+      AND ({clause})
+    ORDER BY o.graded_at DESC
+    LIMIT $3
+    """
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(query, horizon, interval, limit)
+    return [_outcome_row_to_dict(r) for r in rows]

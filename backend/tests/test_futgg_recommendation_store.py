@@ -24,7 +24,7 @@ import uuid
 import asyncpg
 import pytest
 
-from app.services.futgg_recommendation_store import track_record
+from app.services.futgg_recommendation_store import recent_outcomes, track_record
 
 ADMIN_DSN = os.getenv(
     "TEST_ADMIN_DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/postgres"
@@ -103,6 +103,18 @@ CREATE TABLE futgg_recommendation_outcomes (
     grader_version         TEXT NOT NULL,
     UNIQUE (snapshot_id, horizon)
 );
+
+-- Real deployments use the migration-038/041/065 materialized view;
+-- recent_outcomes() only ever LEFT JOINs it for display (name/image), so
+-- a plain table with the same columns is a faithful stand-in here.
+CREATE TABLE futgg_market_snapshot (
+    source_card_id      BIGINT PRIMARY KEY,
+    name                 TEXT,
+    display_name         TEXT,
+    player_image_url     TEXT,
+    card_image_url        TEXT,
+    card_image_stored_url TEXT
+);
 """
 
 
@@ -166,15 +178,20 @@ def dsn():
         _run(_drop_db(name))
 
 
-async def _seed_one(conn, *, source_card_id, horizon, outcome_status, target_hit, realised_roi):
+async def _seed_one(
+    conn, *, source_card_id, horizon, outcome_status, target_hit, realised_roi,
+    entry_achieved=True, evaluated_days_ago=2, player_name=None,
+):
     snapshot_id = await conn.fetchval(
         """
         INSERT INTO futgg_recommendation_snapshots
-            (source_card_id, evaluated_at, signal, status, engine_version, trend_version)
-        VALUES ($1, now() - interval '2 days', 'buy', 'BUY', 'futgg-v1', 'trend-v1')
+            (source_card_id, evaluated_at, signal, status, engine_version, trend_version,
+             recommended_buy_max, recommended_sell_target, rating, rarity)
+        VALUES ($1, now() - ($2 || ' days')::interval, 'buy', 'BUY', 'futgg-v1', 'trend-v1',
+                50000, 55000, 91, 'gold_rare')
         RETURNING id
         """,
-        source_card_id,
+        source_card_id, str(evaluated_days_ago),
     )
     await conn.execute(
         """
@@ -182,10 +199,20 @@ async def _seed_one(conn, *, source_card_id, horizon, outcome_status, target_hit
             (snapshot_id, source_card_id, horizon, window_start, window_end, observation_count,
              entry_achieved, entry_at, entry_price, target_hit, realised_roi, outcome_status, grader_version)
         VALUES ($1, $2, $3, now() - interval '2 days', now() - interval '1 day', 10,
-                true, now() - interval '2 days', 50000, $4, $5, $6, 'grader-v1')
+                $4, CASE WHEN $4 THEN now() - interval '2 days' ELSE NULL END,
+                CASE WHEN $4 THEN 50000 ELSE NULL END, $5, $6, $7, 'grader-v1')
         """,
-        snapshot_id, source_card_id, horizon, target_hit, realised_roi, outcome_status,
+        snapshot_id, source_card_id, horizon, entry_achieved, target_hit, realised_roi, outcome_status,
     )
+    if player_name:
+        await conn.execute(
+            """
+            INSERT INTO futgg_market_snapshot (source_card_id, name, display_name)
+            VALUES ($1, $2, $2)
+            ON CONFLICT (source_card_id) DO UPDATE SET name = EXCLUDED.name
+            """,
+            source_card_id, player_name,
+        )
 
 
 def test_track_record_does_not_raise_and_reflects_real_outcome_data(dsn):
@@ -212,3 +239,102 @@ def test_track_record_does_not_raise_and_reflects_real_outcome_data(dsn):
     assert result["headline"]["total_recommendations"] == 2
     assert result["headline"]["entered"] == 2
     assert result["has_enough_data"] is True
+
+
+def test_recent_outcomes_returns_wins_losses_and_no_entry_correctly(dsn):
+    async def _scenario():
+        pool = await asyncpg.create_pool(dsn, min_size=1, max_size=3)
+        try:
+            async with pool.acquire() as conn:
+                await _seed_one(conn, source_card_id=10, horizon="24h",
+                                 outcome_status="target_hit", target_hit=True,
+                                 realised_roi=0.12, player_name="Winner Card")
+                await _seed_one(conn, source_card_id=11, horizon="24h",
+                                 outcome_status="downside_hit", target_hit=False,
+                                 realised_roi=-0.06, player_name="Loser Card")
+                await _seed_one(conn, source_card_id=12, horizon="24h",
+                                 outcome_status="no_entry", target_hit=False,
+                                 realised_roi=None, entry_achieved=False,
+                                 player_name="Never Entered Card")
+            all_rows = await recent_outcomes(pool, horizon="24h", window_days=90, result_filter="all", limit=40)
+            wins = await recent_outcomes(pool, horizon="24h", window_days=90, result_filter="wins", limit=40)
+            losses = await recent_outcomes(pool, horizon="24h", window_days=90, result_filter="losses", limit=40)
+            no_entry = await recent_outcomes(pool, horizon="24h", window_days=90, result_filter="no_entry", limit=40)
+            return all_rows, wins, losses, no_entry
+        finally:
+            await pool.close()
+
+    all_rows, wins, losses, no_entry = _run(_scenario())
+
+    assert len(all_rows) == 3
+    assert {r["player_name"] for r in all_rows} == {"Winner Card", "Loser Card", "Never Entered Card"}
+
+    assert len(wins) == 1
+    assert wins[0]["player_name"] == "Winner Card"
+    assert wins[0]["result"] == "win"
+    assert wins[0]["entry_achieved"] is True
+
+    assert len(losses) == 1
+    assert losses[0]["player_name"] == "Loser Card"
+    assert losses[0]["result"] == "loss"
+
+    assert len(no_entry) == 1
+    assert no_entry[0]["player_name"] == "Never Entered Card"
+    assert no_entry[0]["result"] == "no_entry"
+    assert no_entry[0]["entry_achieved"] is False
+    # No entry -> no fabricated entry price/time.
+    assert no_entry[0]["entry_price"] is None
+    assert no_entry[0]["entry_at"] is None
+
+
+def test_recent_outcomes_respects_window_days_boundary(dsn):
+    async def _scenario():
+        pool = await asyncpg.create_pool(dsn, min_size=1, max_size=3)
+        try:
+            async with pool.acquire() as conn:
+                await _seed_one(conn, source_card_id=20, horizon="24h",
+                                 outcome_status="target_hit", target_hit=True,
+                                 realised_roi=0.10, evaluated_days_ago=5,
+                                 player_name="Recent Card")
+                await _seed_one(conn, source_card_id=21, horizon="24h",
+                                 outcome_status="target_hit", target_hit=True,
+                                 realised_roi=0.10, evaluated_days_ago=60,
+                                 player_name="Old Card")
+            within_7d = await recent_outcomes(pool, horizon="24h", window_days=7, result_filter="all", limit=40)
+            within_90d = await recent_outcomes(pool, horizon="24h", window_days=90, result_filter="all", limit=40)
+            return within_7d, within_90d
+        finally:
+            await pool.close()
+
+    within_7d, within_90d = _run(_scenario())
+    assert {r["player_name"] for r in within_7d} == {"Recent Card"}
+    assert {r["player_name"] for r in within_90d} == {"Recent Card", "Old Card"}
+
+
+def test_recent_outcomes_limit_is_capped(dsn):
+    async def _scenario():
+        pool = await asyncpg.create_pool(dsn, min_size=1, max_size=3)
+        try:
+            async with pool.acquire() as conn:
+                for i in range(5):
+                    await _seed_one(conn, source_card_id=30 + i, horizon="24h",
+                                     outcome_status="target_hit", target_hit=True,
+                                     realised_roi=0.10, player_name=f"Card {i}")
+            return await recent_outcomes(pool, horizon="24h", window_days=90, result_filter="all", limit=2)
+        finally:
+            await pool.close()
+
+    rows = _run(_scenario())
+    assert len(rows) == 2
+
+
+def test_recent_outcomes_rejects_unknown_filter(dsn):
+    async def _scenario():
+        pool = await asyncpg.create_pool(dsn, min_size=1, max_size=3)
+        try:
+            with pytest.raises(ValueError):
+                await recent_outcomes(pool, horizon="24h", window_days=90, result_filter="not_a_real_filter")
+        finally:
+            await pool.close()
+
+    _run(_scenario())
