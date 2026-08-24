@@ -294,6 +294,24 @@ def test_subscription_created_writes_guild_scoped_fields(monkeypatch):
     assert "g1" in args
 
 
+def test_subscription_created_falls_back_to_item_level_period_end(monkeypatch):
+    """Regression: on newer Stripe API versions (confirmed via a real
+    webhook payload on 2025-08-27.basil) current_period_end is absent
+    from the top-level Subscription object and only present on its first
+    item - without the fallback, /feed status's PAID THROUGH silently
+    showed 'n/a' even for a genuinely active, paid subscription."""
+    conn = _FakeConn()
+    subscription = {
+        "id": "sub_123", "customer": "cus_123", "status": "active",
+        "metadata": {"kind": "discord_feed", "guild_id": "g1"},
+        "items": {"data": [{"current_period_end": 1790244881, "current_period_start": 1787566481}]},
+    }
+    run(billing.handle_discord_feed_subscription_created(subscription, conn))
+    query, args = conn.executed[0]
+    from datetime import datetime, timezone
+    assert datetime.fromtimestamp(1790244881, tz=timezone.utc) in args
+
+
 def test_subscription_deleted_forces_paused_and_canceled(monkeypatch):
     conn = _FakeConn()
     subscription = {"id": "sub_123", "metadata": {"kind": "discord_feed", "guild_id": "g1"}}
