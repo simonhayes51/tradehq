@@ -34,8 +34,12 @@ def _proof_row(
     entry=1_000,
     outcome_price=None,
     graded_at=None,
+    source_card_id=None,
+    evaluated_at=None,
+    card_rating=90,
+    rarity="Special",
 ):
-    detected = PERIOD.start - timedelta(hours=30)
+    detected = evaluated_at or PERIOD.start - timedelta(hours=30)
     entry_at = detected + timedelta(minutes=5)
     outcome_at = entry_at + timedelta(minutes=20)
     prices = {
@@ -50,10 +54,12 @@ def _proof_row(
     roi = result / Decimal(entry)
     return {
         "snapshot_id": snapshot_id,
-        "outcome_source_card_id": 12_000 + snapshot_id,
-        "snapshot_source_card_id": 12_000 + snapshot_id,
-        "player_source_card_id": 12_000 + snapshot_id,
+        "outcome_source_card_id": source_card_id or 12_000 + snapshot_id,
+        "snapshot_source_card_id": source_card_id or 12_000 + snapshot_id,
+        "player_source_card_id": source_card_id or 12_000 + snapshot_id,
         "name": name,
+        "card_rating": card_rating,
+        "rarity": rarity,
         "evaluated_at": detected,
         "graded_at": graded_at or PERIOD.start + timedelta(hours=2),
         "window_end": detected + timedelta(hours=24),
@@ -126,6 +132,64 @@ def test_top_three_wins_are_coin_ranked_and_deterministic():
 
     assert [item["name"] for item in forward["top_wins"]] == ["First", "Second", "Third"]
     assert forward["top_wins"] == reversed_report["top_wins"]
+
+
+def test_repeated_snapshots_for_same_card_are_consolidated_everywhere():
+    earliest = _proof_row(
+        "target_hit",
+        snapshot_id=1,
+        source_card_id=99_001,
+        name="Repeated Card",
+        entry=1_000,
+        outcome_price=1_500,
+    )
+    later = _proof_row(
+        "target_hit",
+        snapshot_id=2,
+        source_card_id=99_001,
+        name="Repeated Card",
+        entry=900,
+        outcome_price=2_000,
+        evaluated_at=earliest["evaluated_at"] + timedelta(hours=1),
+    )
+
+    report = build_daily_proof_report([later, earliest], PERIOD)
+
+    assert report["total"] == 1
+    assert report["wins"] == 1
+    assert report["repeat_snapshots_consolidated"] == 1
+    assert report["combined_result"] == str(earliest["net_profit_after_tax"])
+    assert [item["snapshot_id"] for item in report["top_wins"]] == [1]
+
+
+def test_same_player_name_with_distinct_card_versions_remains_distinct():
+    rows = [
+        _proof_row(
+            "target_hit",
+            snapshot_id=1,
+            source_card_id=99_001,
+            name="Same Player",
+            card_rating=90,
+            rarity="Gold",
+        ),
+        _proof_row(
+            "target_hit",
+            snapshot_id=2,
+            source_card_id=99_002,
+            name="Same Player",
+            card_rating=95,
+            rarity="Special",
+        ),
+    ]
+
+    report = build_daily_proof_report(rows, PERIOD)
+    embed = build_daily_proof_embed(report, "https://app.eafc.live")
+    best_results = next(field for field in embed["fields"] if field["name"] == "BEST RESULTS")
+
+    assert report["total"] == 2
+    assert report["repeat_snapshots_consolidated"] == 0
+    assert "Same Player** (90 Gold)" in best_results["value"]
+    assert "Same Player** (95 Special)" in best_results["value"]
 
 
 def test_worst_loss_is_deterministic():
