@@ -1,8 +1,0 @@
-node_modules/
-www/app.js
-.DS_Store
-
-# ios/ and android/ are intentionally NOT ignored once `cap add` creates
-# them - Capacitor's own convention is to commit the native project
-# folders (they hold Xcode/Android Studio project state and any native
-# customization), not regenerate them from scratch on every checkout.
