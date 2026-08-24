@@ -108,6 +108,51 @@ def bot_can_post_embeds(effective_permissions: int) -> bool:
     return (effective_permissions & REQUIRED_BOT_CHANNEL_PERMISSIONS) == REQUIRED_BOT_CHANNEL_PERMISSIONS
 
 
+async def user_has_manage_guild_live(client, guild_id: str, user_id: str) -> bool:
+    """Live, guild-level (no channel overwrites needed) MANAGE_GUILD check
+    for a web-authenticated user, used to gate the /v2/discord-feed
+    settings page's access to a given guild's feed.
+
+    Deliberately re-checked on every call rather than trusting a stored
+    owner_discord_id from /feed setup: Discord roles/ownership can change
+    after setup, and per-request spec this must reflect the CURRENT state
+    of the guild, not who happened to run /feed setup originally.
+
+    Uses the bot's own token (already required to be in the guild for the
+    feed to function at all) rather than the user's OAuth token, so no
+    extra 'guilds' OAuth scope or stored user access token is needed -
+    same REST calls check_bot_channel_access already relies on, just
+    resolved for an arbitrary member instead of the bot itself.
+
+    Returns False (never raises) on any Discord API failure, missing
+    membership, or bot-not-in-guild - fail-closed, since this gates write
+    access to another server's paid feed settings."""
+    guild_status, guild = await client.get_guild(guild_id)
+    if guild_status == 200 and isinstance(guild, dict) and str(guild.get("owner_id")) == str(user_id):
+        return True
+
+    roles_status, roles = await client.get_guild_roles(guild_id)
+    if roles_status != 200 or not isinstance(roles, list):
+        return False
+
+    member_status, member = await client.get_guild_member_in(guild_id, user_id)
+    if member_status != 200 or not isinstance(member, dict):
+        return False
+
+    everyone_perms = 0
+    role_perms: dict[str, int] = {}
+    for role in roles:
+        role_perms[str(role["id"])] = _perm_int(role.get("permissions"))
+        if str(role["id"]) == str(guild_id):
+            everyone_perms = _perm_int(role.get("permissions"))
+
+    effective = everyone_perms
+    for role_id in member.get("roles") or []:
+        effective |= role_perms.get(str(role_id), 0)
+
+    return bool(effective & (MANAGE_GUILD | ADMINISTRATOR))
+
+
 async def check_bot_channel_access(client, guild_id: str, channel_id: str) -> tuple[bool, Optional[str]]:
     """Fetches everything needed over the REST API and returns
     (ok, reason). reason is None on success, otherwise one of:
