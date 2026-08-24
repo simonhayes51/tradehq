@@ -330,6 +330,39 @@ def test_build_reply_account_never_includes_email(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Regression: link buttons must point at routes that actually exist in
+# frontend/src (App.jsx / v2/App.v2.jsx) - /#/settings/discord, /#/account,
+# and /#/v2/journal never existed and were dead links.
+# ---------------------------------------------------------------------------
+
+
+def test_not_linked_message_points_at_login_not_a_nonexistent_settings_page():
+    reply = run(_build_reply("account", [], None, "corr123"))
+    description = reply["embeds"][0]["description"]
+    assert "/#/login" in description
+    assert "/#/settings/discord" not in description
+
+
+def test_account_button_uses_the_real_v2_account_route(monkeypatch):
+    monkeypatch.setattr(data, "resolve_user_id", AsyncMock(return_value="user-abc"))
+    monkeypatch.setattr(data, "get_account_summary", AsyncMock(return_value={
+        "tier": "pro", "premium_until": None, "watchlist_count": 0, "alerts_count": 0, "trades_count": 0,
+    }))
+    reply = run(_build_reply("account", [], "712239212749127740", "corr123"))
+    url = reply["components"][0]["components"][0]["url"]
+    assert url.endswith("/#/v2/account")
+
+
+def test_results_button_uses_the_real_trades_route_not_a_nonexistent_journal(monkeypatch):
+    monkeypatch.setattr(data, "resolve_user_id", AsyncMock(return_value="user-abc"))
+    monkeypatch.setattr(data, "get_trades", AsyncMock(return_value=[]))
+    reply = run(_build_reply("results", [], "712239212749127740", "corr123"))
+    url = reply["components"][0]["components"][0]["url"]
+    assert url.endswith("/#/trades")
+    assert "journal" not in url
+
+
+# ---------------------------------------------------------------------------
 # Card search: no silent version guessing
 # ---------------------------------------------------------------------------
 

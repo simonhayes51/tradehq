@@ -116,7 +116,7 @@ def not_linked_embed(app_url: str) -> dict[str, Any]:
         "title": "Discord not linked",
         "description": (
             "Your Discord isn't linked to an EAFC.Live account yet. "
-            f"Link it securely at {_app_url(app_url)}/#/settings/discord, then try again."
+            f"Log in to EAFC.Live with Discord at {_app_url(app_url)}/#/login to link your account, then try again."
         ),
         "color": BRAND_COLOR_WARN,
         "author": brand_author(app_url),
