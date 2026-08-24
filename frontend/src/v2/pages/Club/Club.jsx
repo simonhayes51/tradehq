@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { Award, BarChart3, CheckCircle2, Clock3, Coins, Plus, Target, TrendingUp, Trophy, X } from "lucide-react";
-import { closeTrade, getOpenTrades, getProfitTimeline, getTradeHistory, getTradingPerformance } from "../../api/trades";
+import { Award, BarChart3, CheckCircle2, Clock3, Coins, Loader2, Plus, Share2, Target, TrendingUp, Trophy, X } from "lucide-react";
+import { closeTrade, getOpenTrades, getProfitTimeline, getTradeHistory, getTradingPerformance, shareTradeCard } from "../../api/trades";
 import CoinValue from "../../components/CoinValue";
 import EmptyState from "../../components/EmptyState";
 import RecommendationBadge from "../../components/RecommendationBadge";
@@ -83,8 +83,46 @@ function OpenTrades({ trades, onClose }) {
 }
 
 function History({ trades }) {
+  const [sharingId, setSharingId] = useState(null);
+  const [shareError, setShareError] = useState("");
+
+  async function share(trade) {
+    setSharingId(trade.trade_id);
+    setShareError("");
+    try {
+      const { image_data_url, caption } = await shareTradeCard(trade.trade_id);
+      const blob = await (await fetch(image_data_url)).blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `eafc-live-${trade.player.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}.png`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+      if (caption && navigator.clipboard?.writeText) {
+        try { await navigator.clipboard.writeText(caption); } catch { /* clipboard permission denied - image still downloaded */ }
+      }
+    } catch (err) {
+      setShareError(err.message || "Couldn't create the share image.");
+    } finally {
+      setSharingId(null);
+    }
+  }
+
   if (!trades.length) return <EmptyState icon={<CheckCircle2 />} title="No completed sales" text="When you close a trade, the result and EA tax will be stored here." />;
-  return <div className="history-table"><div className="history-head"><span>Player</span><span>Bought</span><span>Sold</span><span>Profit</span><span>Date</span></div>{trades.map((trade) => <div className="history-row" key={trade.trade_id}><div><strong>{trade.player}</strong><small>{trade.version || "Card"} · x{trade.quantity || 1}</small></div><CoinValue value={trade.buy} /><CoinValue value={trade.sell} /><strong className={Number(trade.profit) >= 0 ? "positive" : "negative"}><CoinValue value={trade.profit} signed /></strong><span>{date(trade.sold_at)}</span></div>)}</div>;
+  return <>
+    {shareError ? <p className="club-error">{shareError}</p> : null}
+    <div className="history-table"><div className="history-head"><span>Player</span><span>Bought</span><span>Sold</span><span>Profit</span><span>Date</span><span /></div>{trades.map((trade) => <div className="history-row" key={trade.trade_id}><div><strong>{trade.player}</strong><small>{trade.version || "Card"} · x{trade.quantity || 1}</small></div><CoinValue value={trade.buy} /><CoinValue value={trade.sell} /><strong className={Number(trade.profit) >= 0 ? "positive" : "negative"}><CoinValue value={trade.profit} signed /></strong><span>{date(trade.sold_at)}</span><button
+      type="button"
+      className="history-share"
+      title="Download a shareable image of this trade (and copy a caption)"
+      disabled={sharingId === trade.trade_id}
+      onClick={() => share(trade)}
+    >
+      {sharingId === trade.trade_id ? <Loader2 size={15} className="spin" /> : <Share2 size={15} />}
+    </button></div>)}</div>
+  </>;
 }
 
 function Performance({ data }) {

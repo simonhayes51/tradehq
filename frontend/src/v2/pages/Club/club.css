@@ -217,10 +217,36 @@
 .history-head,
 .history-row {
   display: grid;
-  grid-template-columns: 2fr repeat(4, 1fr);
+  grid-template-columns: 2fr repeat(4, 1fr) 40px;
   gap: 12px;
   align-items: center;
   padding: 14px 18px;
+}
+.history-share {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  background: transparent;
+  border: 1px solid var(--v2-border);
+  border-radius: 4px;
+  color: var(--v2-text);
+  cursor: pointer;
+}
+.history-share:hover:not(:disabled) {
+  border-color: var(--v2-accent);
+  color: var(--v2-accent);
+}
+.history-share:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.history-share .spin {
+  animation: history-share-spin 0.8s linear infinite;
+}
+@keyframes history-share-spin {
+  to { transform: rotate(360deg); }
 }
 .history-head {
   font-size: 11px;
