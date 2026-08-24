@@ -1,6 +1,6 @@
 import asyncio
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -308,3 +308,33 @@ def test_subscription_created_with_no_resolvable_guild_is_a_noop():
     subscription = {"id": "sub_x", "metadata": {"kind": "discord_feed"}}  # no guild_id anywhere
     run(billing.handle_discord_feed_subscription_created(subscription, conn))
     assert conn.executed == []
+
+
+# ---------------------------------------------------------------------------
+# Checkout session must allow promo codes - without this Stripe Checkout
+# shows no promo-code field at all, regardless of any Coupon/Promotion
+# Code configured in the Dashboard.
+# ---------------------------------------------------------------------------
+
+
+def test_checkout_session_allows_promotion_codes(monkeypatch):
+    monkeypatch.setenv("STRIPE_SERVER_FEED_PRICE_ID", "price_test123")
+    conn = _FakeConn()
+    pool = _FakePool(conn)
+
+    async def fake_get_core_pool():
+        return pool
+
+    monkeypatch.setattr(billing, "get_core_pool", fake_get_core_pool)
+
+    import stripe
+
+    fake_session = MagicMock(id="cs_test_1", url="https://checkout.stripe.com/x")
+    create_mock = MagicMock(return_value=fake_session)
+    monkeypatch.setattr(stripe.checkout.Session, "create", create_mock)
+
+    run(billing.create_checkout_session(
+        guild_id="g1", owner_discord_id="1", plan="server_feed",
+        success_url="https://app.eafc.live/success", cancel_url="https://app.eafc.live/cancel",
+    ))
+    assert create_mock.call_args.kwargs["allow_promotion_codes"] is True
