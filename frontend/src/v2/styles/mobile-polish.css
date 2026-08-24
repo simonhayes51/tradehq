@@ -109,6 +109,8 @@
   border-radius:2px;
   background: #171717;
   text-align: left;
+  min-width: 0;
+  overflow: hidden;
 }
 .trade-signal > span {
   color: #909090 !important;
@@ -120,6 +122,10 @@
 .trade-signal > strong {
   font-size: 13px;
   line-height: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .trade-signal > small {
   grid-column: 1 / -1;

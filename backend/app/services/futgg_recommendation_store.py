@@ -179,7 +179,25 @@ async def record_many(pool, pairs: Sequence[Any]) -> int:
 # Track record
 # =============================================================================
 
-_HEADLINE = """
+# Production incident: a handful of graded rows with entry_price below
+# EA's real 200-coin minimum (a glitched/bogus futgg_bin_history reading
+# - see futgg_outcome_grader.py's grade_recommendation(), which now
+# refuses to select such a price as an entry going forward) produced
+# realised_roi in the thousands of percent, which was enough on its own
+# to drag an unweighted AVG() to ~212% while the median stayed a sane
+# ~22%. The grader fix stops NEW poisoned rows; this filter keeps
+# EXISTING poisoned rows already in futgg_recommendation_outcomes out of
+# every count and aggregate below until they're re-graded. A row whose
+# entry_price is known-bad data isn't a trustworthy graded call at all,
+# so it's excluded from `total` too, not just from entered/avg/median -
+# leaving it in `total` while excluding it everywhere else would make it
+# indistinguishable from a legitimate no_entry outcome, which it is not.
+# entry_price is legitimately NULL on a genuine no_entry row, which this
+# must NOT exclude (hence NOT o.entry_achieved OR ... rather than a bare
+# entry_price >= 200).
+VALID_ENTRY_PRICE = "(NOT o.entry_achieved OR o.entry_price >= 200)"
+
+_HEADLINE = f"""
 SELECT
     count(*)                                                      AS total,
     count(*) FILTER (WHERE o.entry_achieved)                      AS entered,
@@ -196,6 +214,7 @@ JOIN futgg_recommendation_snapshots s ON s.id = o.snapshot_id
 WHERE o.horizon = $1
   AND o.outcome_status <> 'insufficient_observations'
   AND s.evaluated_at >= now() - $2::interval
+  AND {VALID_ENTRY_PRICE}
 """
 
 
@@ -217,6 +236,7 @@ def _breakdown_sql(dimension: str) -> str:
     WHERE o.horizon = $1
       AND o.outcome_status <> 'insufficient_observations'
       AND s.evaluated_at >= now() - $2::interval
+      AND {VALID_ENTRY_PRICE}
     GROUP BY 1
     ORDER BY 1
     """
@@ -289,7 +309,7 @@ async def track_record(
         # Reason codes need their own query - the column is an array, so
         # it has to be unnested rather than grouped directly.
         reason_rows = await conn.fetch(
-            """
+            f"""
             SELECT code AS bucket,
                 count(*) AS total,
                 count(*) FILTER (WHERE o.entry_achieved) AS entered,
@@ -302,6 +322,7 @@ async def track_record(
             WHERE o.horizon = $1
               AND o.outcome_status <> 'insufficient_observations'
               AND s.evaluated_at >= now() - $2::interval
+              AND {VALID_ENTRY_PRICE}
             GROUP BY 1
             ORDER BY 2 DESC
             """,
@@ -475,6 +496,7 @@ async def recent_outcomes(
     WHERE o.horizon = $1
       AND o.outcome_status <> 'insufficient_observations'
       AND s.evaluated_at >= now() - $2::interval
+      AND {VALID_ENTRY_PRICE}
       AND ({clause})
     ORDER BY o.graded_at DESC
     LIMIT $3

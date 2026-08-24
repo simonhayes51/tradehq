@@ -8,54 +8,55 @@ vi.mock("../hooks/useTrackRecord", () => ({
   useRecentOutcomes: vi.fn(),
 }));
 
-function trackRecordResult(summary, overrides = {}) {
-  return {
-    isLoading: false,
-    isError: false,
-    data: { summary, ...overrides },
-  };
+function trackRecordResult(published, model_validation = { graded_signals: 0 }) {
+  return { isLoading: false, isError: false, data: { published, model_validation, strategies: [] } };
 }
 
 function recentOutcomesResult(outcomes) {
   return { isLoading: false, isError: false, data: { outcomes } };
 }
 
-const ENOUGH_SUMMARY = {
-  total_graded: 4033,
-  entered: 2500,
-  no_entry: 1533,
-  entry_rate_pct: 62.0,
-  win_rate_pct: 75.5,
-  target_hit_rate_pct: 60.2,
-  avg_roi_pct: 8.1,
-  median_roi_pct: 6.4,
-  avg_hold_minutes: 95,
+const PUBLISHED_WITH_DATA = {
+  has_published_data: true,
   has_enough_data: true,
   min_sample: 20,
+  tracking_since: "2026-06-01",
+  published_opportunities: 60,
+  entry_reached: 60,
+  entry_reached_not_tracked: true,
+  wins: 45,
+  losses: 15,
+  flats: 0,
+  win_rate_pct: 75.0,
+  total_profit_after_tax: 320000,
+  median_profit_after_tax: 5200,
+  median_roi_pct: 8.1,
+  median_time_to_target_minutes: 95,
+  recent_wins: [],
+  recent_losses: [],
 };
 
-const THIN_SUMMARY = {
-  total_graded: 5,
-  entered: 3,
-  no_entry: 2,
-  entry_rate_pct: null,
-  win_rate_pct: null,
-  target_hit_rate_pct: null,
-  avg_roi_pct: null,
-  median_roi_pct: null,
-  avg_hold_minutes: null,
+const PUBLISHED_NO_DATA = {
+  has_published_data: false,
+  tracking_since: null,
+};
+
+const PUBLISHED_THIN = {
+  has_published_data: true,
   has_enough_data: false,
   min_sample: 20,
+  published_opportunities: 5,
+  tracking_since: "2026-08-01",
 };
 
 describe("TrackRecordPanel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    useRecentOutcomes.mockReturnValue(recentOutcomesResult([]));
   });
 
   it("renders nothing while loading or on error", () => {
     useTrackRecord.mockReturnValue({ isLoading: true, isError: false, data: undefined });
-    useRecentOutcomes.mockReturnValue(recentOutcomesResult([]));
     const { container: loadingContainer } = render(<TrackRecordPanel />);
     expect(loadingContainer.firstChild).toBeNull();
 
@@ -64,68 +65,71 @@ describe("TrackRecordPanel", () => {
     expect(errorContainer.firstChild).toBeNull();
   });
 
-  it("shows the true entered-trade base next to the win rate, not the larger total-graded count", () => {
-    // Regression for the exact bug this rebuild fixes: the old panel
-    // showed "75.5% hit target · 40,330 closed calls" where 40,330 was
-    // total graded calls, not the entered count the percentage is
-    // actually computed over.
-    useTrackRecord.mockReturnValue(trackRecordResult(ENOUGH_SUMMARY));
-    useRecentOutcomes.mockReturnValue(recentOutcomesResult([]));
+  it("never conflates published recommendations with internal model signals", () => {
+    // Regression for the exact hotfix bug: the old panel headlined
+    // "DID OUR CALLS ACTUALLY WORK?" over 8,000+ internal model signals
+    // while its own subtitle admitted they weren't real published
+    // recommendations. The rebuilt panel's headline and primary numbers
+    // must come from `published`, never `model_validation`.
+    useTrackRecord.mockReturnValue(trackRecordResult(PUBLISHED_WITH_DATA, {
+      graded_signals: 8134, entry_reached: 8014, entry_not_reached: 120,
+      has_enough_data: true, min_sample: 20, profitable_rate_pct: 63.9,
+      median_roi_pct: 22.0, avg_hold_minutes: 290,
+    }));
     render(<TrackRecordPanel />);
 
-    expect(screen.getByText("75.5%")).toBeInTheDocument();
-    expect(screen.getByText("of 2,500 entered trades")).toBeInTheDocument();
-    // The total-graded figure is shown too, but as its own separate,
-    // correctly-labelled tile - never paired with the win rate.
-    expect(screen.getByText("4,033")).toBeInTheDocument();
+    // Primary numbers are the published ones (45 wins, 75.0% win rate).
+    expect(screen.getByText("45")).toBeInTheDocument();
+    expect(screen.getByText("75.0%")).toBeInTheDocument();
+    // The large internal signal count only appears inside the separate,
+    // collapsed-by-default Model Validation section - not as part of
+    // the primary published summary grid.
+    const publishedGrid = document.querySelector(".track-record-grid.compact-grid");
+    expect(publishedGrid?.textContent).not.toMatch(/8,134|8,014/);
   });
 
-  it("shows the no-entry count separately and never folds it into win rate", () => {
-    useTrackRecord.mockReturnValue(trackRecordResult(ENOUGH_SUMMARY));
-    useRecentOutcomes.mockReturnValue(recentOutcomesResult([]));
+  it("shows an honest empty state instead of fabricating published data", () => {
+    useTrackRecord.mockReturnValue(trackRecordResult(PUBLISHED_NO_DATA));
     render(<TrackRecordPanel />);
-    expect(screen.getByText("1,533")).toBeInTheDocument();
-    expect(screen.getAllByText(/excluded from win rate/i).length).toBeGreaterThan(0);
+    expect(screen.getByText(/no published recommendations tracked yet/i)).toBeInTheDocument();
+    expect(screen.queryByText("75.0%")).not.toBeInTheDocument();
   });
 
-  it("suppresses percentages and shows an honest empty state below the minimum sample", () => {
-    useTrackRecord.mockReturnValue(trackRecordResult(THIN_SUMMARY));
-    useRecentOutcomes.mockReturnValue(recentOutcomesResult([]));
+  it("suppresses published percentages below the minimum sample", () => {
+    useTrackRecord.mockReturnValue(trackRecordResult(PUBLISHED_THIN));
     render(<TrackRecordPanel />);
-    expect(screen.getByText(/not enough graded outcomes/i)).toBeInTheDocument();
-    expect(screen.queryByText("75.5%")).not.toBeInTheDocument();
+    expect(screen.getByText(/not enough published outcomes yet/i)).toBeInTheDocument();
   });
 
-  it("renders a mix of wins and losses in the recent outcomes list, each labelled", () => {
-    useTrackRecord.mockReturnValue(trackRecordResult(ENOUGH_SUMMARY));
-    useRecentOutcomes.mockReturnValue(recentOutcomesResult([
-      {
-        outcome_id: 1, player_name: "Winner Card", rating: 91, rarity: "gold_rare",
-        result: "win", entry_achieved: true, entry_price: 50000,
-        net_profit_after_tax: 5200, realised_roi_pct: 10.4,
-        buy_threshold: 50000, detected_at: "2026-08-01T00:00:00Z", image_url: null,
-      },
-      {
-        outcome_id: 2, player_name: "Loser Card", rating: 88, rarity: "gold_rare",
-        result: "loss", entry_achieved: true, entry_price: 30000,
-        net_profit_after_tax: -1800, realised_roi_pct: -6.0,
-        buy_threshold: 30000, detected_at: "2026-08-02T00:00:00Z", image_url: null,
-      },
-      {
-        outcome_id: 3, player_name: "Never Entered Card", rating: 85, rarity: "gold_rare",
-        result: "no_entry", entry_achieved: false, entry_price: null,
-        net_profit_after_tax: null, realised_roi_pct: null,
-        buy_threshold: 20000, detected_at: "2026-08-03T00:00:00Z", image_url: null,
-      },
-    ]));
+  it("shows both recent wins and recent losses by default, no filter needed", () => {
+    const published = {
+      ...PUBLISHED_WITH_DATA,
+      recent_wins: [
+        { outcome_id: "1:24h", player_name: "Winner Card", card_rating: 91, rarity: "gold_rare",
+          detected_at: "2026-08-01T00:00:00Z", entry_price: 50000, net_profit_after_tax: 5200, realised_roi_pct: 10.4 },
+      ],
+      recent_losses: [
+        { outcome_id: "2:24h", player_name: "Loser Card", card_rating: 88, rarity: "gold_rare",
+          detected_at: "2026-08-02T00:00:00Z", entry_price: 30000, net_profit_after_tax: -1800, realised_roi_pct: -6.0 },
+      ],
+    };
+    useTrackRecord.mockReturnValue(trackRecordResult(published));
     render(<TrackRecordPanel />);
-
+    expect(screen.getByText("Recent wins")).toBeInTheDocument();
+    expect(screen.getByText("Recent losses")).toBeInTheDocument();
     expect(screen.getByText("Winner Card")).toBeInTheDocument();
     expect(screen.getByText("Loser Card")).toBeInTheDocument();
-    expect(screen.getByText("Never Entered Card")).toBeInTheDocument();
-    expect(screen.getByText("Win")).toBeInTheDocument();
-    expect(screen.getByText("Loss")).toBeInTheDocument();
-    expect(screen.getAllByText("No entry").length).toBeGreaterThan(0);
-    expect(screen.getByText("Buy price never reached")).toBeInTheDocument();
+  });
+
+  it("keeps model validation collapsed by default and labelled as signals, not trades", () => {
+    useTrackRecord.mockReturnValue(trackRecordResult(PUBLISHED_WITH_DATA, {
+      graded_signals: 8134, entry_reached: 8014, entry_not_reached: 120,
+      has_enough_data: true, min_sample: 20, profitable_rate_pct: 63.9,
+    }));
+    const { container } = render(<TrackRecordPanel />);
+    const details = container.querySelector(".track-record-model-validation");
+    expect(details).not.toBeNull();
+    expect(details.open).toBe(false);
+    expect(screen.getAllByText(/model signal validation/i).length).toBeGreaterThan(0);
   });
 });

@@ -49,7 +49,10 @@ tab) is exactly the failure mode this whole module exists to prevent.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from decimal import Decimal
 from typing import Any, Dict, List, Optional
+
+from app.services import trading_math as tm
 
 # ---------------------------------------------------------------------
 # Thresholds (see module docstring)
@@ -60,6 +63,25 @@ QUICK_FLIP_MIN_LIQUIDITY = 0.5
 LOW_RISK_MIN_CONFIDENCE = 0.55
 BUDGET_PICKS_MAX_PRICE = 50_000
 BUDGET_PICKS_MIN_PROFIT_AFTER_TAX = 1_000
+
+# HOTFIX: main Strategy Finder grid must contain only genuinely
+# actionable BUY NOW opportunities. Every definition below now sets
+# require_executable=True unconditionally - the pre-hotfix version left
+# best_overall/low_risk at the default (False), which is what let
+# signal="watch" candidates (current price already well above the
+# recommended buy threshold - 15%/22%/60%+ above in the reported
+# incident) flood the main grid, each one relabelled "WATCH" instead of
+# being kept out of the actionable list entirely. A WATCH badge on a
+# card sitting in the primary results grid, next to full BUY BELOW/
+# TARGET/PROFIT numbers, reads as actionable regardless of the badge.
+#
+# WATCH_TOLERANCE_PCT: the only place "near entry" is defined, for the
+# separate, clearly non-actionable Watch section (see
+# app/routers/v2/futgg_market.py's watch_candidates()). A card whose
+# current price is more than this fraction above its buy threshold is
+# not "near" anything and must not appear in Watch either - not shown as
+# WATCH, not hidden-but-technically-included, excluded outright.
+WATCH_TOLERANCE_PCT = 0.10
 
 # How stale a card's price is allowed to be before Strategy Finder
 # refuses to call it "Buy now"/"Watch" and instead reports "Stale /
@@ -103,6 +125,7 @@ STRATEGY_DEFINITIONS: Dict[str, StrategyDefinition] = {
         label="Best overall",
         description="The strongest currently actionable balance of confidence, profit, ROI, liquidity and risk.",
         sort_by="best_opportunity",
+        require_executable=True,
         why_template="Ranks high on confidence ({confidence_pct}%) and expected return ({roi_pct}% ROI) together, not just one metric alone.",
     ),
     "quick_flips": StrategyDefinition(
@@ -121,6 +144,7 @@ STRATEGY_DEFINITIONS: Dict[str, StrategyDefinition] = {
         label="Low risk",
         description="Only the engine's lowest risk tier, at a meaningful confidence bar. Lower risk, not no risk.",
         sort_by="confidence",
+        require_executable=True,
         risk_tolerance="low",
         min_confidence=LOW_RISK_MIN_CONFIDENCE,
         why_template="Risk tier is the engine's lowest (low), and confidence clears {min_confidence_pct}% - still a real trade, not a guarantee.",
@@ -154,8 +178,74 @@ STRATEGY_DEFINITIONS: Dict[str, StrategyDefinition] = {
 }
 
 
+assert all(d.require_executable for d in STRATEGY_DEFINITIONS.values()), (
+    "Every Strategy Finder tab's main grid must be require_executable=True "
+    "- see the HOTFIX comment above WATCH_TOLERANCE_PCT. A False here is "
+    "exactly the regression that let signal='watch' cards flood the main "
+    "grid, so this is asserted at import time rather than left to be "
+    "caught by a test someone might not run."
+)
+
+
 def get_strategy(key: str) -> Optional[StrategyDefinition]:
     return STRATEGY_DEFINITIONS.get(key)
+
+
+def classify_watch_candidate(row: Dict[str, Any], ci: Any) -> Optional[Dict[str, Any]]:
+    """Decide whether a signal='watch' candidate belongs in the separate,
+    clearly non-actionable Watch section - and if so, compute its numbers
+    honestly, from the CURRENT price, not the prospective trigger price.
+
+    Returns None if the candidate must be excluded from Watch entirely
+    (materially above entry, or no longer profitable from where the
+    price actually is right now). Never returns a dict for a card that
+    fails any of the hotfix's hard rules:
+      - current price must be within WATCH_TOLERANCE_PCT of the buy
+        threshold (not 15%/22%/60%+ above it, as the pre-hotfix version
+        allowed by not checking this at all)
+      - current price must never be at or above the sell target
+      - current price must never be at or above the after-tax break-even
+        point (target_price * (1 - EA_TAX), i.e. target_price * 0.95)
+      - real-time expected profit (computed from the CURRENT price, not
+        the trigger price evaluate_card() uses for a prospective watch
+        number) must be positive
+    """
+    buy_threshold = ci.recommended_buy_max
+    target = ci.recommended_sell_target
+    current = row.get("current_bin")
+    if buy_threshold is None or target is None or current is None:
+        return None
+    buy_threshold = Decimal(str(buy_threshold))
+    target = Decimal(str(target))
+    current = Decimal(str(current))
+    if buy_threshold <= 0:
+        return None
+
+    # "Only slightly above entry" - the ONLY tolerance definition in this
+    # codebase for what counts as "near". A card 22%/60% above its buy
+    # threshold is not near anything.
+    above_entry_pct = (current - buy_threshold) / buy_threshold
+    if above_entry_pct <= 0 or above_entry_pct > Decimal(str(WATCH_TOLERANCE_PCT)):
+        return None
+
+    if current >= target:
+        return None
+
+    after_tax_break_even = target * (Decimal("1") - tm.EA_TAX)  # target_price * 0.95
+    if current >= after_tax_break_even:
+        return None
+
+    real_time_profit = tm.net_profit(target, current)  # target_price*0.95 - current_price
+    if real_time_profit <= 0:
+        return None
+
+    real_time_roi = tm.net_roi(target, current)
+
+    return {
+        "above_entry_pct": float(above_entry_pct * 100),
+        "real_time_expected_profit_after_tax": float(real_time_profit),
+        "real_time_expected_roi": float(real_time_roi) if real_time_roi is not None else None,
+    }
 
 
 def why_this_fits(strategy: StrategyDefinition, row: Dict[str, Any], ci: Any) -> str:

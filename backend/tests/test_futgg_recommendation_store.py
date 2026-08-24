@@ -180,7 +180,7 @@ def dsn():
 
 async def _seed_one(
     conn, *, source_card_id, horizon, outcome_status, target_hit, realised_roi,
-    entry_achieved=True, evaluated_days_ago=2, player_name=None,
+    entry_achieved=True, evaluated_days_ago=2, player_name=None, entry_price=50000,
 ):
     snapshot_id = await conn.fetchval(
         """
@@ -200,9 +200,10 @@ async def _seed_one(
              entry_achieved, entry_at, entry_price, target_hit, realised_roi, outcome_status, grader_version)
         VALUES ($1, $2, $3, now() - interval '2 days', now() - interval '1 day', 10,
                 $4, CASE WHEN $4 THEN now() - interval '2 days' ELSE NULL END,
-                CASE WHEN $4 THEN 50000 ELSE NULL END, $5, $6, $7, 'grader-v1')
+                CASE WHEN $4 THEN $8::integer ELSE NULL END, $5, $6, $7, 'grader-v1')
         """,
         snapshot_id, source_card_id, horizon, entry_achieved, target_hit, realised_roi, outcome_status,
+        entry_price,
     )
     if player_name:
         await conn.execute(
@@ -338,3 +339,73 @@ def test_recent_outcomes_rejects_unknown_filter(dsn):
             await pool.close()
 
     _run(_scenario())
+
+
+def test_track_record_excludes_sub_minimum_entry_price_from_averages(dsn):
+    # Production incident: a handful of graded rows with a glitched/bogus
+    # entry_price below EA's real 200-coin minimum produced realised_roi
+    # in the thousands of percent, dragging the reported average ROI to
+    # ~212% while the median stayed a sane ~22%. futgg_outcome_grader.py
+    # no longer selects such a price as an entry going forward, but this
+    # is the read-side guard for rows already poisoned before that fix.
+    async def _scenario():
+        pool = await asyncpg.create_pool(dsn, min_size=1, max_size=3)
+        try:
+            async with pool.acquire() as conn:
+                # Five normal, sane outcomes.
+                for i in range(5):
+                    await _seed_one(
+                        conn, source_card_id=100 + i, horizon="24h",
+                        outcome_status="target_hit", target_hit=True,
+                        realised_roi=0.20, entry_price=50000,
+                    )
+                # One poisoned row: entry_price=1, realised_roi computed
+                # against it comes out absurd (this mirrors what the old,
+                # unguarded grader could have produced/what a pre-fix row
+                # already sitting in the table would look like).
+                await _seed_one(
+                    conn, source_card_id=200, horizon="24h",
+                    outcome_status="target_hit", target_hit=True,
+                    realised_roi=45.0, entry_price=1,
+                )
+            result = await track_record(pool, horizon="24h", window_days=90, min_sample=1)
+            return result
+        finally:
+            await pool.close()
+
+    result = _run(_scenario())
+    head = result["headline"]
+    # The poisoned row must be excluded entirely from entered/avg/median -
+    # only the 5 sane rows count.
+    assert head["entered"] == 5
+    assert head["avg_roi_pct"] == 20.0
+    assert head["median_roi_pct"] == 20.0
+    # The poisoned row is excluded from total_recommendations too, not
+    # just from the ROI/profit aggregates - a row whose entry_price is
+    # known-bad data isn't a trustworthy graded call at all, and leaving
+    # it in `total` while excluding it from `entered` would make the row
+    # look exactly like a legitimate no_entry outcome, which it is not.
+    assert head["total_recommendations"] == 5
+
+
+def test_recent_outcomes_excludes_sub_minimum_entry_price_rows(dsn):
+    async def _scenario():
+        pool = await asyncpg.create_pool(dsn, min_size=1, max_size=3)
+        try:
+            async with pool.acquire() as conn:
+                await _seed_one(conn, source_card_id=300, horizon="24h",
+                                 outcome_status="target_hit", target_hit=True,
+                                 realised_roi=0.15, entry_price=50000,
+                                 player_name="Sane Card")
+                await _seed_one(conn, source_card_id=301, horizon="24h",
+                                 outcome_status="target_hit", target_hit=True,
+                                 realised_roi=45.0, entry_price=1,
+                                 player_name="Poisoned Card")
+            return await recent_outcomes(pool, horizon="24h", window_days=90, result_filter="all", limit=40)
+        finally:
+            await pool.close()
+
+    rows = _run(_scenario())
+    names = {r["player_name"] for r in rows}
+    assert "Sane Card" in names
+    assert "Poisoned Card" not in names
