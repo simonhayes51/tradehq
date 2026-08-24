@@ -98,6 +98,12 @@ export default function Account() {
           <a href={discord?.invite_url || DISCORD_INVITE_URL} target="_blank" rel="noreferrer"><ExternalLink size={15}/> Join EAFC Live Discord</a>
           <button type="button" onClick={refreshDiscordAccess} disabled={discordBusy}><RefreshCw size={15}/>{discordBusy ? "Refreshing..." : "Refresh Discord access"}</button>
         </div>
+        {/* Only relevant to someone with Manage Server somewhere with a
+            Server Feed set up - the page itself resolves that live
+            against Discord and shows "no servers" otherwise, so this
+            link is safe to always show rather than trying to predict
+            eligibility client-side. */}
+        <Link to="/v2/discord-feed" className="v2-discord-feed-link">Manage a server's trading feed &rarr;</Link>
       </section>
     ) : null}
     {isAuthenticated ? <button className="v2-sign-out" onClick={signOut}><LogOut size={17}/> Sign out</button> : null}

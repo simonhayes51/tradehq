@@ -15,6 +15,7 @@ import Investments from "./pages/Investments/Investments";
 import Account from "./pages/Account/Account";
 import Chat from "./pages/Chat/Chat";
 import Billing from "./pages/Billing/Billing";
+import DiscordFeed from "./pages/DiscordFeed/DiscordFeed";
 
 export default function V2App() {
   return (
@@ -43,6 +44,10 @@ export default function V2App() {
           in-app link (PremiumGate, LockedPreviewCard, this public site)
           points here instead. */}
       <Route path="billing" element={<ShellLayout><Billing /></ShellLayout>} />
+      {/* Self-service web settings page for a Discord server's paid
+          Server Feed - a convenience alongside the /feed Discord command
+          group, not a replacement for it (see discord_feed_web.py). */}
+      <Route path="discord-feed" element={<ShellLayout><DiscordFeed /></ShellLayout>} />
       <Route path="club" element={<ShellLayout><ClubRoute /></ShellLayout>} />
       <Route path="admin" element={<ShellLayout><Admin /></ShellLayout>} />
       <Route path="admin/sbc-imports" element={<ShellLayout><AdminSbcImports /></ShellLayout>} />
