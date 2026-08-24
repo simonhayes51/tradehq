@@ -635,10 +635,20 @@ async def publish_live_opportunities(pool, server: ServerRecord, client: Optiona
         )
     )
 
+    # Posts at most ONE opportunity per call. cooldown_minutes is only
+    # checked once, above, against the single most recent post - if this
+    # loop kept posting every qualifying candidate in one pass, a batch of
+    # several qualifying cards would all land in the same instant with no
+    # spacing between them regardless of cooldown_minutes (confirmed live:
+    # several posts landed at the identical minute). Posting one per call
+    # and relying on the periodic worker loop
+    # (DISCORD_TRADING_FEED_POLL_SECONDS) to call this again later makes
+    # cooldown_minutes apply between every single post, not just the first
+    # in a batch.
     posted = 0
     budget = settings["max_posts_per_day"] - already
     for row, ci in scored:
-        if posted >= budget:
+        if posted >= budget or posted >= 1:
             break
         band = None
         if band_budget is not None:

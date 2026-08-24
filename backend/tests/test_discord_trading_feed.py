@@ -201,3 +201,104 @@ def test_fixture_opportunity_update_embed_labels(status):
         assert "TARGET HIT" in embed["title"]
     else:
         assert "LOSS" in embed["title"]
+
+
+# ---------------------------------------------------------------------------
+# publish_live_opportunities must post at most one opportunity per call, so
+# cooldown_minutes (checked once, at the top, against the single most
+# recent post) actually paces every post via the periodic worker loop -
+# not just the first post of a batch. Regression test for several posts
+# landing at the identical timestamp in production.
+# ---------------------------------------------------------------------------
+
+import asyncio
+from unittest.mock import AsyncMock, MagicMock
+
+
+class _FakeAcquireConn:
+    """A minimal asyncpg-shaped fake: fetchrow/fetchval/execute all
+    configurable, pool.acquire() yields the same conn every time."""
+
+    def __init__(self, *, settings_row, posts_sent_today=0, last_post_at=None, budget_row=None):
+        self._settings_row = settings_row
+        self._posts_sent_today = posts_sent_today
+        self._last_post_at = last_post_at
+        self._budget_row = budget_row or {"budget_low": None, "budget_medium": None, "budget_high": None}
+        self.record_calls = 0
+
+    def acquire(self):
+        return self
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def fetchrow(self, query, *args):
+        if "discord_server_settings" in query:
+            return self._settings_row
+        if "budget_low, budget_medium, budget_high" in query:
+            return self._budget_row
+        return None
+
+    async def fetchval(self, query, *args):
+        if "COUNT(*)" in query and "kind='opportunity'" in query and "budget_band" not in query:
+            return self._posts_sent_today
+        if "MAX(sent_at)" in query:
+            return self._last_post_at
+        if "INSERT INTO discord_server_posts" in query:
+            self.record_calls += 1
+            return self.record_calls  # a "new" post id each time - never a duplicate in this test
+        return 0
+
+    async def execute(self, *a, **kw):
+        return None
+
+
+def test_publish_live_opportunities_posts_only_one_per_call(monkeypatch):
+    monkeypatch.setenv("DISCORD_TRADING_FEED_ENABLED", "1")
+    import app.routers.v2.futgg_market as futgg_market
+    import app.db as db
+
+    conn = _FakeAcquireConn(
+        settings_row={"max_posts_per_day": 12, "min_confidence": 0.5, "min_expected_profit": 1000,
+                      "cooldown_minutes": 15, "platform": "ps", "live_opportunities_enabled": True},
+        posts_sent_today=0,
+        last_post_at=None,
+    )
+
+    class CI:
+        def __init__(self, confidence):
+            self.confidence_score = confidence
+            self.expected_profit_after_tax = 5000.0
+            self.recommended_sell_target = 20000
+            self.recommended_buy_max = 15000
+            self.risk_level = "low"
+            self.liquidity_score = 0.8
+
+    rows = [
+        {"source_card_id": 1, "name": "Player A", "current_executable_buy": 15000, "snapshot_computed_at": None},
+        {"source_card_id": 2, "name": "Player B", "current_executable_buy": 16000, "snapshot_computed_at": None},
+        {"source_card_id": 3, "name": "Player C", "current_executable_buy": 17000, "snapshot_computed_at": None},
+    ]
+    scored = [(rows[0], CI(0.9)), (rows[1], CI(0.8)), (rows[2], CI(0.7))]
+
+    monkeypatch.setattr(futgg_market, "_segmented_candidates", AsyncMock(return_value=rows))
+    monkeypatch.setattr(futgg_market, "_sales_for_rows", AsyncMock(return_value={}))
+    monkeypatch.setattr(futgg_market, "_score_and_filter", MagicMock(return_value=scored))
+    monkeypatch.setattr(db, "get_core_pool", AsyncMock(return_value=object()))
+
+    fake_client = MagicMock()
+    fake_client.post_embed = AsyncMock(return_value=(200, {"id": "msg1"}))
+
+    server = ServerRecord(
+        id=1, guild_id="g1", name="Test", access_level="paid_partner", feed_channel_id="chan1",
+        proof_channel_id=None, status="active", expires_at=None,
+    )
+
+    from app.services.discord_trading_feed import publish_live_opportunities
+
+    posted = asyncio.run(publish_live_opportunities(conn, server, fake_client))
+    assert posted == 1
+    assert fake_client.post_embed.await_count == 1
