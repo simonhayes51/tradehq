@@ -22,13 +22,17 @@ export function useTrackRecord(window = "90d") {
 }
 
 // filter: "all" | "wins" | "losses" | "no_entry"
-export function useRecentOutcomes(window = "90d", filter = "all", limit = 20) {
+// enabled: pass false to defer the fetch entirely (e.g. an initially-
+// collapsed "full ledger" accordion has no reason to fetch before the
+// user opens it - avoids an unnecessary request on every page load).
+export function useRecentOutcomes(window = "90d", filter = "all", limit = 20, { enabled = true } = {}) {
   return useQuery({
     queryKey: ["v2", "track-record", "recent", window, filter, limit],
     queryFn: async () => (await api.get("/api/v2/track-record/recent", {
       params: { window, filter, limit },
       ...REQUEST_OPTS,
     })).data,
+    enabled,
     retry: false,
     staleTime: 5 * 60_000,
   });

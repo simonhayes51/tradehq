@@ -4,6 +4,7 @@ import { Activity, ArrowRight, Bell, ChevronRight, Search, Star, Target, X, Zap 
 import { useAuth } from "../../../context/AuthContext";
 import { isPublicHost, PUBLIC_HOSTNAME } from "../../../lib/domains";
 import { useDashboard } from "../../hooks/useDashboard";
+import { useIsMobile } from "../../hooks/useIsMobile";
 import { buildWhyText, sellingSpeedLabel } from "../../lib/tradeNarrative";
 import { formatCountdown } from "../../lib/format";
 import AdvancedRationale from "../../components/AdvancedRationale";
@@ -84,6 +85,21 @@ const STRATEGY_EMPTY_TEXT={
 };
 const DEFAULT_STRATEGY_EMPTY_TEXT="No opportunities currently meet this strategy's live-entry requirements. We won't lower the standard just to fill this section.";
 
+// Mobile section tabs (<=4, per the mobile IA rebuild). "Overview" is
+// the decision-first default: the Top Card verdict plus a compact
+// alerts row, with no further scrolling needed to know whether to buy.
+// Everything else is a deliberate choice, not left over from desktop:
+// Opportunities groups "what else is worth a look right now" (queue +
+// Strategy Finder), Track Record is its own large, distinct concern,
+// and Market groups broader context that doesn't bear on today's
+// single top pick (Market Map + the full Alerts & Content feed).
+const MOBILE_SECTIONS=[
+  ["overview","Overview"],
+  ["opportunities","Opportunities"],
+  ["track-record","Track record"],
+  ["market","Market"],
+];
+
 export default function HomeDashboard(){
   const {isAuthenticated,isLoading:authLoading}=useAuth();
   // Home is the trading app, not the marketing site - a signed-out
@@ -104,6 +120,16 @@ export default function HomeDashboard(){
   const navigate=useNavigate();
   const {pathname}=useLocation();
   const [strategy,setStrategy]=useState("best_overall");
+  // Mobile-only content grouping - the previous mobile layout simply
+  // stacked every desktop panel (Top Card, Market Pulse, Track Record,
+  // Next Best Moves, Market Map, Alerts, Strategy Finder) into one
+  // enormous column, burying the actual buy/watch decision under
+  // dozens of secondary stats. Desktop is untouched: isMobile only ever
+  // gates the tab bar and which section groups mount - the sections
+  // themselves, their data hooks and their calculations are identical
+  // on both, so there's no second implementation to drift.
+  const isMobile=useIsMobile();
+  const [mobileSection,setMobileSection]=useState("overview");
   const [watchStates,setWatchStates]=useState({});
   const [selected,setSelected]=useState(null);
   const strategyQuery=useStrategyFinder(strategy);
@@ -184,20 +210,42 @@ export default function HomeDashboard(){
     return null;
   }
 
+  // Which section groups mount: on desktop everything mounts, same as
+  // before this rebuild. On mobile, only the active tab's group mounts -
+  // not merely hidden with CSS - so a phone never pays to render the
+  // Track Record ledger, Market Map and Strategy Finder simultaneously
+  // just to show the Top Card decision.
+  const showOverview=!isMobile||mobileSection==="overview";
+  const showOpportunities=!isMobile||mobileSection==="opportunities";
+  const showTrackRecord=!isMobile||mobileSection==="track-record";
+  const showMarket=!isMobile||mobileSection==="market";
+  const topAlerts=(dashboard.watchlistAlerts||[]).slice(0,2);
+
   return <div className="fut-dashboard-shell">
     <main className="fut-main home-in-shell">
       <header className="fut-topbar"><button className="fut-search" onClick={()=>navigate("/v2/players")}><Search size={19}/><span>Search player, card or price</span><kbd>/</kbd></button><div className="feed-live"><i/> LIVE</div><button className="bell-btn" onClick={()=>navigate("/v2/watchlist")} aria-label={dashboard.watchlistAlerts?.length?`${dashboard.watchlistAlerts.length} recent price alerts`:"Watchlist"}><Bell size={18}/>{dashboard.watchlistAlerts?.length?<span className="bell-badge">{dashboard.watchlistAlerts.length}</span>:null}</button></header>
       <Ticker items={futggItems} events={dashboard.latestMarketEvents}/>
-      <section className="decision-stage">
-        <div className="lead-trade"><div className="lead-label"><Zap size={15}/> TOP CARD</div>{lead?<div className="lead-layout"><button className="lead-card player-open-button" onClick={()=>setSelected(lead)} aria-label={`Open ${nameOf(lead.player)} analysis`}><CardImage player={lead.player} featured/></button><div className="lead-copy"><div className="lead-head"><div><PlayerMeta player={lead.player} source={lead.source}/><h1>{nameOf(lead.player)}</h1></div><div className="lead-status"><b className={`call ${String(lead.recommendation).toLowerCase()}`}>{lead.recommendation}</b><ConfidenceRing value={lead.confidence}/></div></div>{lead.source==="futgg"?<MarketFreshness priceAgeSeconds={lead.priceAgeSeconds} capturedAt={lead.updatedAt}/>:null}<p>{reason(lead)}</p><div className="lead-numbers"><Metric label="Buy below" value={<CoinValue value={lead.entryPrice??lead.currentBin}/>} sub="Maximum entry" tone="entry"/><Metric label="Expected profit" value={<CoinValue value={expectedProfit(lead)} signed/>} sub="After EA tax" tone="positive"/><Metric label="Risk level" value={lead.risk||"Unknown"} sub={`${sellingSpeedLabel(lead.liquidityScore)} selling speed`}/></div><div className="lead-actions"><button onClick={()=>setSelected(lead)}>View move <ArrowRight size={17}/></button><button className="secondary" onClick={()=>watchItem(lead)} aria-label="Add top card to watchlist"><Star size={16} fill={watchStates[String(lead.cardId)]==="saved"?"currentColor":"none"}/>{watchStates[String(lead.cardId)]==="saved"?"Watching":"Watch"}</button></div></div></div>:<EmptyState compact text="No clean trade has passed the filters yet."/>}</div>
-        <aside className="market-panel"><div className="panel-label"><Activity size={15}/> MARKET PULSE</div><div className="pulse-head"><div><h2>{mood(dashboard.marketRegime?.label,score)}</h2><p>{dashboard.marketRegime?.summary||"Prices and completed sales are being checked now."}</p></div><strong>{score}<small>/100</small></strong></div><div className="pulse-track"><span style={{width:`${Math.max(5,score)}%`}}/></div><div className="pulse-stats"><Metric label="Buy signals" value={buyCount}/><Metric label="Coin potential" value={<CoinValue value={potential} signed/>}/><Metric label="Tracked" value={count(Number(dashboard.marketRegime?.metrics?.liquidCards||0)+Number(freshnessQuery.data?.cards_priced||0))}/></div><PulseFooter nextPromo={dashboard.nextPromo} sbcImpact={dashboard.latestSbcImpact}/></aside>
-      </section>
-      <TrackRecordPanel/>
-      <section className="queue-section" id="queue"><div className="section-head"><div><span>LIVE OPPORTUNITIES</span><h2>Next best moves</h2></div><Link to="/v2/players">Find a player <ArrowRight size={15}/></Link></div><div className="queue-grid">{queue.length?queue.map((item,index)=><QueueCard key={item.cardId} item={item} rank={index+2} onOpen={setSelected} onWatch={watchItem} watchState={watchStates[String(item.cardId)]}/>):<EmptyState compact text="No additional opportunities right now."/>}{dashboard.locked?.opportunityFeed&&dashboard.locked?.previewCount>0?<LockedPreviewCard count={dashboard.locked.previewCount} navigate={navigate}/>:null}</div></section>
-      <section className="lower-grid"><div className="market-map"><div className="section-head compact"><div><span>MARKET MAP</span><h2>Where coins are moving</h2></div></div><div className="map-bars">{futggItems.length?futggItems.slice(0,7).map(item=><button key={item.cardId} onClick={()=>setSelected(item)}><span>{nameOf(item.player)}</span><i><b style={{width:`${Math.min(100,Math.max(8,Math.abs(Number(item.expectedRoi||0))*4))}%`}}/></i><strong>{roi(item)}</strong></button>):<EmptyState compact text="Still building live market data - check back as more cards get priced."/>}</div></div><div className="activity-feed"><div className="section-head compact"><div><span>YOUR FEED</span><h2>Alerts & content</h2></div><Link to="/v2/watchlist">Open</Link></div>{[...(dashboard.watchlistAlerts||[]).slice(0,3),...(dashboard.latestSbcImpact||[]).slice(0,3)].slice(0,5).map((x,index)=><div className="feed-row" key={x.id||x.eventId||index}><i/><div><strong>{x.title||x.message||"Market update"}</strong><span>{x.message||x.estimatedMarketImpact?`${percent(x.estimatedMarketImpact)} estimated impact`:"New market activity"}</span></div></div>)}{!dashboard.watchlistAlerts?.length&&!dashboard.latestSbcImpact?.length?<EmptyState compact text={dashboard.watchedCount>0?"No price alerts yet. We'll let you know when a watched card hits one of your alert conditions.":"Nothing on your watchlist yet. Add a card and we'll track its price for you."}/>:null}</div></section>
-      <section className="strategy-section"><div className="section-head"><div><span>STRATEGY FINDER</span><h2>Find a different angle</h2></div></div><div className="strategy-tabs">{STRATEGIES.map(([key,label])=><button key={key} className={strategy===key?"active":""} onClick={()=>setStrategy(key)}>{label}</button>)}</div><p className="strategy-blurb">{STRATEGY_BLURBS[strategy]||strategyQuery.data?.description}</p><div className="strategy-grid">{strategyQuery.isLoading?<EmptyState compact text="Scanning this strategy…"/>:strategyItems.length?strategyItems.map(item=><StrategyCard key={item.cardId} item={item} onOpen={setSelected} onWatch={watchItem} watchState={watchStates[String(item.cardId)]}/>):<EmptyState compact text={STRATEGY_EMPTY_TEXT[strategy]||DEFAULT_STRATEGY_EMPTY_TEXT}/>}</div>
-        {!strategyQuery.isLoading&&watchItems.length?<div className="strategy-watch-section"><div className="strategy-watch-head"><span>NEAR ENTRY</span><p>Not yet actionable - within reach of entry, still profitable at today's price. Not a current recommendation.</p></div><div className="strategy-watch-grid">{watchItems.map(item=><WatchCard key={item.cardId} item={item} onOpen={setSelected} onWatch={watchItem} watchState={watchStates[String(item.cardId)]}/>)}</div></div>:null}
-      </section>
+      {isMobile?<nav className="mobile-section-tabs" aria-label="Dashboard sections">{MOBILE_SECTIONS.map(([key,label])=><button key={key} type="button" role="tab" aria-selected={mobileSection===key} className={mobileSection===key?"active":""} onClick={()=>setMobileSection(key)}>{label}</button>)}</nav>:null}
+
+      {showOverview?<>
+        <section className="decision-stage">
+          <div className="lead-trade"><div className="lead-label"><Zap size={15}/> TOP CARD</div>{lead?<div className="lead-layout"><button className="lead-card player-open-button" onClick={()=>setSelected(lead)} aria-label={`Open ${nameOf(lead.player)} analysis`}><CardImage player={lead.player} featured/></button><div className="lead-copy"><div className="lead-head"><div><PlayerMeta player={lead.player} source={lead.source}/><h1>{nameOf(lead.player)}</h1></div><div className="lead-status"><b className={`call ${String(lead.recommendation).toLowerCase()}`}>{lead.recommendation}</b><ConfidenceRing value={lead.confidence}/></div></div>{lead.source==="futgg"?<MarketFreshness priceAgeSeconds={lead.priceAgeSeconds} capturedAt={lead.updatedAt}/>:null}<p>{reason(lead)}</p><div className="lead-numbers"><Metric label="Buy below" value={<CoinValue value={lead.entryPrice??lead.currentBin}/>} sub="Maximum entry" tone="entry"/><Metric label="Expected profit" value={<CoinValue value={expectedProfit(lead)} signed/>} sub="After EA tax" tone="positive"/><Metric label="Risk level" value={lead.risk||"Unknown"} sub={`${sellingSpeedLabel(lead.liquidityScore)} selling speed`}/></div><div className="lead-actions"><button onClick={()=>setSelected(lead)}>View move <ArrowRight size={17}/></button><button className="secondary" onClick={()=>watchItem(lead)} aria-label="Add top card to watchlist"><Star size={16} fill={watchStates[String(lead.cardId)]==="saved"?"currentColor":"none"}/>{watchStates[String(lead.cardId)]==="saved"?"Watching":"Watch"}</button></div></div></div>:<EmptyState compact text="No clean trade has passed the filters yet."/>}</div>
+          <aside className="market-panel"><div className="panel-label"><Activity size={15}/> MARKET PULSE</div><div className="pulse-head"><div><h2>{mood(dashboard.marketRegime?.label,score)}</h2><p>{dashboard.marketRegime?.summary||"Prices and completed sales are being checked now."}</p></div><strong>{score}<small>/100</small></strong></div><div className="pulse-track"><span style={{width:`${Math.max(5,score)}%`}}/></div><div className="pulse-stats"><Metric label="Buy signals" value={buyCount}/><Metric label="Coin potential" value={<CoinValue value={potential} signed/>}/><Metric label="Tracked" value={count(Number(dashboard.marketRegime?.metrics?.liquidCards||0)+Number(freshnessQuery.data?.cards_priced||0))}/></div><PulseFooter nextPromo={dashboard.nextPromo} sbcImpact={dashboard.latestSbcImpact}/></aside>
+        </section>
+        {isMobile&&topAlerts.length?<div className="mobile-top-alerts"><div className="section-head compact"><div><span>ALERTS</span><h2>Affecting your watchlist</h2></div><Link to="/v2/watchlist">Open</Link></div>{topAlerts.map((x,index)=><div className="feed-row compact" key={x.id||x.eventId||index}><i/><div><strong>{x.title||x.message||"Market update"}</strong><span>{x.message||x.estimatedMarketImpact?`${percent(x.estimatedMarketImpact)} estimated impact`:"New market activity"}</span></div></div>)}</div>:null}
+      </>:null}
+
+      {showTrackRecord?<TrackRecordPanel/>:null}
+
+      {showOpportunities?<>
+        <section className="queue-section" id="queue"><div className="section-head"><div><span>LIVE OPPORTUNITIES</span><h2>Next best moves</h2></div><Link to="/v2/players">Find a player <ArrowRight size={15}/></Link></div><div className="queue-grid">{queue.length?queue.map((item,index)=><QueueCard key={item.cardId} item={item} rank={index+2} onOpen={setSelected} onWatch={watchItem} watchState={watchStates[String(item.cardId)]}/>):<EmptyState compact text="No additional opportunities right now."/>}{dashboard.locked?.opportunityFeed&&dashboard.locked?.previewCount>0?<LockedPreviewCard count={dashboard.locked.previewCount} navigate={navigate}/>:null}</div></section>
+        <section className="strategy-section"><div className="section-head"><div><span>STRATEGY FINDER</span><h2>Find a different angle</h2></div></div><div className="strategy-tabs">{STRATEGIES.map(([key,label])=><button key={key} className={strategy===key?"active":""} onClick={()=>setStrategy(key)}>{label}</button>)}</div><p className="strategy-blurb">{STRATEGY_BLURBS[strategy]||strategyQuery.data?.description}</p><div className="strategy-grid">{strategyQuery.isLoading?<EmptyState compact text="Scanning this strategy…"/>:strategyItems.length?strategyItems.map(item=><StrategyCard key={item.cardId} item={item} onOpen={setSelected} onWatch={watchItem} watchState={watchStates[String(item.cardId)]}/>):<EmptyState compact text={STRATEGY_EMPTY_TEXT[strategy]||DEFAULT_STRATEGY_EMPTY_TEXT}/>}</div>
+          {!strategyQuery.isLoading&&watchItems.length?<div className="strategy-watch-section"><div className="strategy-watch-head"><span>NEAR ENTRY</span><p>Not yet actionable - within reach of entry, still profitable at today's price. Not a current recommendation.</p></div><div className="strategy-watch-grid">{watchItems.map(item=><WatchCard key={item.cardId} item={item} onOpen={setSelected} onWatch={watchItem} watchState={watchStates[String(item.cardId)]}/>)}</div></div>:null}
+        </section>
+      </>:null}
+
+      {showMarket?<section className="lower-grid"><div className="market-map"><div className="section-head compact"><div><span>MARKET MAP</span><h2>Where coins are moving</h2></div></div><div className="map-bars">{futggItems.length?futggItems.slice(0,7).map(item=><button key={item.cardId} onClick={()=>setSelected(item)}><span>{nameOf(item.player)}</span><i><b style={{width:`${Math.min(100,Math.max(8,Math.abs(Number(item.expectedRoi||0))*4))}%`}}/></i><strong>{roi(item)}</strong></button>):<EmptyState compact text="Still building live market data - check back as more cards get priced."/>}</div></div><div className="activity-feed"><div className="section-head compact"><div><span>YOUR FEED</span><h2>Alerts & content</h2></div><Link to="/v2/watchlist">Open</Link></div>{[...(dashboard.watchlistAlerts||[]).slice(0,3),...(dashboard.latestSbcImpact||[]).slice(0,3)].slice(0,5).map((x,index)=><div className="feed-row" key={x.id||x.eventId||index}><i/><div><strong>{x.title||x.message||"Market update"}</strong><span>{x.message||x.estimatedMarketImpact?`${percent(x.estimatedMarketImpact)} estimated impact`:"New market activity"}</span></div></div>)}{!dashboard.watchlistAlerts?.length&&!dashboard.latestSbcImpact?.length?<EmptyState compact text={dashboard.watchedCount>0?"No price alerts yet. We'll let you know when a watched card hits one of your alert conditions.":"Nothing on your watchlist yet. Add a card and we'll track its price for you."}/>:null}</div></section>:null}
+
       <p className="fut-disclaimer">Recent sales and live listings are used to estimate opportunities. Profit is never guaranteed and EA charges 5% on sales.</p>
     </main>
     {selected&&<AnalysisModal item={selected} onClose={()=>setSelected(null)} navigate={navigate} onWatch={watchItem} watchState={watchStates[String(selected.cardId)]}/>}
