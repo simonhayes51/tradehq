@@ -55,6 +55,7 @@ from app.routers.discord import router as discord_router
 from app.routers.discord_admin import router as discord_admin_router
 from app.routers.discord_interactions import router as discord_interactions_router
 from app.routers.discord_feed_redirect import router as discord_feed_redirect_router
+from app.routers.discord_feed_web import router as discord_feed_web_router
 from app.services.discord_integration import (
     claim_stripe_event,
     discord_worker_loop,
@@ -1181,6 +1182,7 @@ app.include_router(discord_router)          # /api/discord/*
 app.include_router(discord_admin_router)    # /api/admin/discord/* (multi-server trading feed admin)
 app.include_router(discord_interactions_router)  # /api/discord/interactions (slash commands)
 app.include_router(discord_feed_redirect_router)  # /api/discord/feed/{checkout,billing}/{token} (short link-button redirects)
+app.include_router(discord_feed_web_router)  # /api/v2/discord-feed/* (web Server Feed settings page)
 app.include_router(trades_router)           # /api/trades/*
 
 # Public/paid historical-data API

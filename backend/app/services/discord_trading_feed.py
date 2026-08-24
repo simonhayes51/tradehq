@@ -105,6 +105,18 @@ class ServerRecord:
         return True
 
 
+def server_record_from_feed(feed: dict[str, Any], guild_id: str, guild_name: str) -> ServerRecord:
+    """Builds the ServerRecord send_test_post/publish_live_opportunities
+    expect out of a discord_feed_billing.get_guild_feed() dict - shared by
+    the /feed Discord command and the web settings API so both drive the
+    engine identically."""
+    return ServerRecord(
+        id=feed["id"], guild_id=guild_id, name=guild_name, access_level="paid_partner",
+        feed_channel_id=feed.get("feed_channel_id"), proof_channel_id=None,
+        status=feed["status"], expires_at=feed.get("current_period_end"),
+    )
+
+
 async def seed_official_server(pool) -> None:
     """Best-effort convenience seed of the pre-existing Official guild
     (DISCORD_GUILD_ID) as a discord_servers row, so it's managed the same

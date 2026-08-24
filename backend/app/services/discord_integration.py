@@ -190,6 +190,12 @@ class DiscordClient:
     async def get_guild_roles(self, guild_id: str) -> tuple[int, Any]:
         return await self._request("GET", f"/guilds/{guild_id}/roles")
 
+    async def get_guild_channels(self, guild_id: str) -> tuple[int, Any]:
+        """Used by the web Server Feed settings page to populate a channel
+        picker - not needed by the Discord command flow, which already has
+        Discord's own native channel-select autocomplete for free."""
+        return await self._request("GET", f"/guilds/{guild_id}/channels")
+
     async def get_guild_member_in(self, guild_id: str, discord_user_id: str) -> tuple[int, Any]:
         """Guild-parameterized twin of get_member(), which is hardcoded to
         self.config.guild_id (the single Official server). Used for
@@ -199,6 +205,12 @@ class DiscordClient:
 
     async def get_bot_user(self) -> tuple[int, Any]:
         return await self._request("GET", "/users/@me")
+
+    async def get_guild(self, guild_id: str) -> tuple[int, Any]:
+        """Used to read owner_id - a guild's owner has full permissions
+        regardless of roles, and Discord doesn't reflect that in the
+        member/role permission bits."""
+        return await self._request("GET", f"/guilds/{guild_id}")
 
     async def post_embed(
         self,

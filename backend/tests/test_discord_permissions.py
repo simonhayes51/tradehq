@@ -1,3 +1,5 @@
+import asyncio
+
 from app.services.discord_permissions import (
     ADMINISTRATOR,
     EMBED_LINKS,
@@ -8,7 +10,12 @@ from app.services.discord_permissions import (
     has_manage_guild,
     is_dm_interaction,
     resolve_effective_permissions,
+    user_has_manage_guild_live,
 )
+
+
+def run(coro):
+    return asyncio.run(coro)
 
 
 def test_has_manage_guild_true_when_bit_set():
@@ -98,3 +105,74 @@ def test_effective_permissions_member_overwrite_takes_final_precedence():
         ],
     )
     assert bot_can_post_embeds(perms) is True
+
+
+# ---------------------------------------------------------------------------
+# user_has_manage_guild_live: web-authenticated user's live, guild-level
+# permission check (no channel overwrites involved) via the bot's own token.
+# ---------------------------------------------------------------------------
+
+
+class _FakeClient:
+    def __init__(self, *, guild_status=200, owner_id=None, roles_status=200, roles=None,
+                 member_status=200, member_roles=None):
+        self._guild_status = guild_status
+        self._owner_id = owner_id
+        self._roles_status = roles_status
+        self._roles = roles if roles is not None else [{"id": "guild1", "permissions": "0"}]
+        self._member_status = member_status
+        self._member_roles = member_roles or []
+
+    async def get_guild(self, guild_id):
+        return self._guild_status, ({"owner_id": self._owner_id} if self._guild_status == 200 else None)
+
+    async def get_guild_roles(self, guild_id):
+        return self._roles_status, self._roles
+
+    async def get_guild_member_in(self, guild_id, user_id):
+        if self._member_status != 200:
+            return self._member_status, None
+        return 200, {"roles": self._member_roles}
+
+
+def test_user_has_manage_guild_live_true_for_guild_owner():
+    client = _FakeClient(owner_id="42", member_status=404)  # not even a member roster hit needed
+    assert run(user_has_manage_guild_live(client, "guild1", "42")) is True
+
+
+def test_user_has_manage_guild_live_true_via_role_bit():
+    client = _FakeClient(
+        owner_id="someone-else",
+        roles=[{"id": "guild1", "permissions": "0"}, {"id": "role1", "permissions": str(MANAGE_GUILD)}],
+        member_roles=["role1"],
+    )
+    assert run(user_has_manage_guild_live(client, "guild1", "99")) is True
+
+
+def test_user_has_manage_guild_live_true_via_everyone_role_administrator():
+    client = _FakeClient(owner_id="someone-else", roles=[{"id": "guild1", "permissions": str(ADMINISTRATOR)}])
+    assert run(user_has_manage_guild_live(client, "guild1", "99")) is True
+
+
+def test_user_has_manage_guild_live_false_without_the_bit():
+    client = _FakeClient(
+        owner_id="someone-else",
+        roles=[{"id": "guild1", "permissions": "0"}, {"id": "role1", "permissions": str(SEND_MESSAGES)}],
+        member_roles=["role1"],
+    )
+    assert run(user_has_manage_guild_live(client, "guild1", "99")) is False
+
+
+def test_user_has_manage_guild_live_false_when_not_a_guild_member():
+    client = _FakeClient(owner_id="someone-else", member_status=404)
+    assert run(user_has_manage_guild_live(client, "guild1", "99")) is False
+
+
+def test_user_has_manage_guild_live_fails_closed_on_bot_not_in_guild():
+    client = _FakeClient(owner_id="someone-else", roles_status=403, member_status=403)
+    assert run(user_has_manage_guild_live(client, "guild1", "99")) is False
+
+
+def test_user_has_manage_guild_live_fails_closed_on_discord_error():
+    client = _FakeClient(guild_status=500, roles_status=500, member_status=500)
+    assert run(user_has_manage_guild_live(client, "guild1", "99")) is False
