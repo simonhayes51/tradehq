@@ -223,12 +223,18 @@ async def _build_feed_reply(interaction_payload: Dict[str, Any], options: List[D
             )
             success_url = f"{app_url}/#/discord/feed/success?guild_id={guild_id}"
             cancel_url = f"{app_url}/#/discord/feed/cancel?guild_id={guild_id}"
-            checkout_url = await feed_billing.create_checkout_session(
+            await feed_billing.create_checkout_session(
                 guild_id=guild_id, owner_discord_id=str(discord_id), plan=plan,
                 success_url=success_url, cancel_url=cancel_url,
             )
+            # Discord link-button URLs are capped at 512 characters; a
+            # Stripe Checkout Session URL routinely exceeds that, so the
+            # button points at our own short, signed redirect instead of
+            # the raw Stripe URL - see discord_feed_redirect.py.
+            from app.routers.discord_feed_redirect import make_redirect_url
+
             summary = embeds.feed_setup_summary_embed(feed, feed_billing.PLANS[plan]["price_gbp"])
-            return {"embeds": [summary], "components": [embeds.link_row("Continue to payment", checkout_url)]}
+            return {"embeds": [summary], "components": [embeds.link_row("Continue to payment", make_redirect_url(guild_id, "checkout"))]}
 
         if sub_name == "test":
             feed = await feed_billing.get_guild_feed(guild_id)
@@ -292,11 +298,11 @@ async def _build_feed_reply(interaction_payload: Dict[str, Any], options: List[D
             return {"content": f"▶️ Server Feed resumed in <#{feed['feed_channel_id']}>."}
 
         if sub_name == "billing":
-            return_url = f"{app_url}/#/discord/feed/billing?guild_id={guild_id}"
-            portal_url = await feed_billing.create_billing_portal_session(guild_id=guild_id, return_url=return_url)
+            from app.routers.discord_feed_redirect import make_redirect_url
+
             return {
                 "content": "Manage your Server Feed subscription securely via Stripe:",
-                "components": [embeds.link_row("Manage billing", portal_url)],
+                "components": [embeds.link_row("Manage billing", make_redirect_url(guild_id, "billing"))],
             }
 
         return {"content": f"Unknown /feed subcommand: {sub_name}"}

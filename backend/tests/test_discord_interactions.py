@@ -650,12 +650,18 @@ def test_feed_setup_confirms_channel_before_saving(monkeypatch):
 
 
 def test_feed_setup_happy_path_returns_checkout_link(monkeypatch):
+    monkeypatch.setenv("SECRET_KEY", "test-secret")
     monkeypatch.setattr(feed_billing, "confirm_channel_access", AsyncMock(return_value=(True, None)))
     monkeypatch.setattr(feed_billing, "upsert_pending_setup", AsyncMock(return_value={
         "plan": "server_feed", "feed_channel_id": "chan1", "platform_scope": "console",
         "budget_mix": "balanced", "budget_low": 2, "budget_medium": 2, "budget_high": 2,
     }))
-    monkeypatch.setattr(feed_billing, "create_checkout_session", AsyncMock(return_value="https://checkout.stripe.com/session/abc"))
+    # The real Stripe URL is 512+ chars in production and must never
+    # become the button's own URL (Discord rejects buttons over 512
+    # chars outright - this is the exact bug that left /feed setup
+    # stuck on "thinking..." before the redirect indirection was added).
+    long_stripe_url = "https://checkout.stripe.com/c/pay/cs_live_" + "a" * 500
+    monkeypatch.setattr(feed_billing, "create_checkout_session", AsyncMock(return_value=long_stripe_url))
     options = [
         {"name": "plan", "value": "server_feed"},
         {"name": "channel", "value": "chan1"},
@@ -664,9 +670,12 @@ def test_feed_setup_happy_path_returns_checkout_link(monkeypatch):
     ]
     payload = _feed_payload(subcommand="setup", options=options)
     reply = run(_build_reply("feed", payload["data"]["options"], "712239212749127740", "corr", payload))
-    assert reply["components"][0]["components"][0]["url"] == "https://checkout.stripe.com/session/abc"
-    # No raw database id or secret in the button URL - it's Stripe's own opaque session URL.
-    assert "guild_id=" not in reply["components"][0]["components"][0]["url"]
+    button_url = reply["components"][0]["components"][0]["url"]
+    assert len(button_url) <= 512
+    assert button_url != long_stripe_url
+    assert button_url.startswith("https://api.eafc.live/api/discord/feed/checkout/")
+    # No raw database id or secret in the button URL - just a signed, opaque token.
+    assert "guild_id=" not in button_url and "g1" not in button_url
 
 
 def test_feed_setup_blocks_second_subscription(monkeypatch):
@@ -711,12 +720,19 @@ def test_feed_pause_never_mentions_billing(monkeypatch):
     assert "unaffected" in reply["content"].lower()
 
 
-def test_feed_billing_link_never_exposes_stripe_ids(monkeypatch):
-    monkeypatch.setattr(feed_billing, "create_billing_portal_session", AsyncMock(return_value="https://billing.stripe.com/p/session/xyz"))
+def test_feed_billing_link_is_a_short_redirect_not_the_raw_stripe_url(monkeypatch):
+    """/feed billing must not build the Stripe portal session up front
+    either - same 512-char button limit applies, and it should be
+    created fresh at click time, not baked into the Discord reply."""
+    monkeypatch.setenv("SECRET_KEY", "test-secret")
+    create_portal = AsyncMock(return_value="https://billing.stripe.com/p/session/xyz")
+    monkeypatch.setattr(feed_billing, "create_billing_portal_session", create_portal)
     payload = _feed_payload(subcommand="billing")
     reply = run(_build_reply("feed", payload["data"]["options"], "712239212749127740", "corr", payload))
     url = reply["components"][0]["components"][0]["url"]
-    assert url == "https://billing.stripe.com/p/session/xyz"
+    assert url.startswith("https://api.eafc.live/api/discord/feed/billing/")
+    assert len(url) <= 512
+    create_portal.assert_not_called()  # deferred until the redirect endpoint is actually hit
     assert "cus_" not in str(reply) and "sub_" not in str(reply)
 
 
