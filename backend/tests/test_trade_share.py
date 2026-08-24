@@ -94,6 +94,38 @@ def test_card_art_falls_back_to_name_search_without_card_id(monkeypatch):
     assert render_data["image_url"] == "https://x/right.png"
 
 
+def test_render_data_handles_a_string_timestamp(monkeypatch):
+    """Production regression: the pool behind get_core_pool() returned
+    timestamp as a plain str, not a datetime, and trade["timestamp"].isoformat()
+    crashed the whole share-card request with a 500."""
+    monkeypatch.setattr(trade_share_data, "search_cards", AsyncMock(return_value=[]))
+    trade = {
+        "player": "X", "version": "Standard", "buy": 100, "sell": 200, "profit": 90,
+        "timestamp": "2026-08-24T15:08:11+00:00",
+    }
+    render_data = run(trade_share_data.build_trade_share_render_data(trade))
+    assert render_data["timestamp"] == "2026-08-24T15:08:11+00:00"
+
+
+def test_render_data_handles_a_real_datetime_timestamp(monkeypatch):
+    from datetime import datetime, timezone
+
+    monkeypatch.setattr(trade_share_data, "search_cards", AsyncMock(return_value=[]))
+    trade = {
+        "player": "X", "version": "Standard", "buy": 100, "sell": 200, "profit": 90,
+        "timestamp": datetime(2026, 8, 24, 15, 8, 11, tzinfo=timezone.utc),
+    }
+    render_data = run(trade_share_data.build_trade_share_render_data(trade))
+    assert render_data["timestamp"] == "2026-08-24T15:08:11+00:00"
+
+
+def test_render_data_handles_a_missing_timestamp(monkeypatch):
+    monkeypatch.setattr(trade_share_data, "search_cards", AsyncMock(return_value=[]))
+    trade = {"player": "X", "version": "Standard", "buy": 100, "sell": 200, "profit": 90}
+    render_data = run(trade_share_data.build_trade_share_render_data(trade))
+    assert render_data["timestamp"] is None
+
+
 def test_card_art_missing_never_blocks_the_render(monkeypatch):
     monkeypatch.setattr(trade_share_data, "search_cards", AsyncMock(return_value=[]))
     trade = {"player": "Someone Obscure", "version": "Standard", "buy": 100, "sell": 200, "profit": 90}
