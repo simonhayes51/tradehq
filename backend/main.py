@@ -3928,9 +3928,17 @@ async def stripe_webhook(request: Request, conn=Depends(get_db)):
             await conn.execute(
                 "UPDATE stripe_events SET processing_started_at=NULL, processing_error=$2 WHERE event_id=$1",
                 event['id'],
-                type(e).__name__,
+                # Previously just type(e).__name__ - the bare exception
+                # class with no message, which made a failure like this
+                # undiagnosable from the DB alone and required a log line
+                # that may have already scrolled out of a rolling log
+                # buffer by the time anyone looks.
+                f"{type(e).__name__}: {e}"[:500],
             )
-        logger.error(f"Webhook processing error: {e}")
+        # exc_info=True so the full traceback actually lands in the logs -
+        # logger.error(f"...: {e}") alone only logs str(e), never the
+        # traceback, making a failure like this unfindable after the fact.
+        logger.error("Webhook processing error (event_id=%s type=%s): %s", event['id'], event['type'], e, exc_info=True)
         raise HTTPException(status_code=500, detail="Webhook processing failed")
 
 # Webhook handler functions
