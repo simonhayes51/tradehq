@@ -38,3 +38,16 @@ export async function shareTradeCard(tradeId) {
   }
   return response.json();
 }
+
+// period: "today" | "week" | "all"
+export async function shareSummaryCard(period) {
+  const response = await fetch(`${API_BASE}/api/trades/summary-share-card?period=${period}`, {
+    method: "POST",
+    credentials: "include",
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw new Error(body?.detail || body?.message || `Request failed (${response.status})`);
+  }
+  return response.json();
+}

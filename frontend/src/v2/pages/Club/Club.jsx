@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { Award, BarChart3, CheckCircle2, Clock3, Coins, Loader2, Plus, Share2, Target, TrendingUp, Trophy, X } from "lucide-react";
-import { closeTrade, getOpenTrades, getProfitTimeline, getTradeHistory, getTradingPerformance, shareTradeCard } from "../../api/trades";
+import { Award, BarChart3, CheckCircle2, Clock3, Coins, Copy, Download, Loader2, Plus, Target, TrendingUp, Trophy, X } from "lucide-react";
+import { closeTrade, getOpenTrades, getProfitTimeline, getTradeHistory, getTradingPerformance, shareSummaryCard, shareTradeCard } from "../../api/trades";
+import { copyImageToClipboard, copyText, downloadDataUrlAsFile, slugFilename } from "../../lib/shareCard";
 import CoinValue from "../../components/CoinValue";
 import EmptyState from "../../components/EmptyState";
 import RecommendationBadge from "../../components/RecommendationBadge";
@@ -65,6 +66,8 @@ export default function Club() {
         <div className="club-panel"><PanelTitle eyebrow="AT A GLANCE" title="Trading account" /><div className="account-stats"><Stat label="Open positions" value={performance.open_positions || 0} /><Stat label="Coins invested" value={<CoinValue value={invested} />} /><Stat label="Total profit" value={<CoinValue value={performance.total_profit} signed />} /><Stat label="EA tax paid" value={<CoinValue value={performance.total_ea_tax} />} /><Stat label="Average hold" value={hold(performance.average_hold_hours)} /><Stat label="Closed trades" value={performance.closed_trades || 0} /></div></div>
       </section>
 
+      <SummaryShare />
+
       <div className="club-tabs"><button className={tab === "open" ? "active" : ""} onClick={() => setTab("open")}>Open trades <span>{open.length}</span></button><button className={tab === "history" ? "active" : ""} onClick={() => setTab("history")}>Sold players <span>{history.length}</span></button><button className={tab === "performance" ? "active" : ""} onClick={() => setTab("performance")}>Performance</button><button className={tab === "achievements" ? "active" : ""} onClick={() => setTab("achievements")}>Achievements</button></div>
 
       {tab === "open" ? <OpenTrades trades={open} onClose={setClosing} /> : null}
@@ -77,6 +80,64 @@ export default function Club() {
   );
 }
 
+const SUMMARY_PERIODS = [
+  { value: "today", label: "Today" },
+  { value: "week", label: "This Week" },
+  { value: "all", label: "All-Time" },
+];
+
+function SummaryShare() {
+  const [period, setPeriod] = useState("week");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [copyUnsupported, setCopyUnsupported] = useState(false);
+
+  async function withResult(action) {
+    setBusy(true);
+    setError("");
+    setCopyUnsupported(false);
+    try {
+      const result = await shareSummaryCard(period);
+      await action(result);
+    } catch (err) {
+      if (String(err.message || "").includes("copying images")) setCopyUnsupported(true);
+      else setError(err.message || "Couldn't create the share image.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const download = () => withResult(async ({ image_data_url, caption }) => {
+    await downloadDataUrlAsFile(image_data_url, `eafc-live-${period}-recap.png`);
+    await copyText(caption);
+  });
+  const copy = () => withResult(async ({ image_data_url }) => copyImageToClipboard(image_data_url));
+
+  return (
+    <section className="club-panel summary-share">
+      <div className="summary-share-row">
+        <div>
+          <PanelTitle eyebrow="SHARE" title="Share your recap" />
+          <p className="summary-share-hint">A branded image of your record, win rate and best sale for the period below.</p>
+        </div>
+        <div className="summary-share-controls">
+          <select value={period} onChange={(e) => setPeriod(e.target.value)} disabled={busy}>
+            {SUMMARY_PERIODS.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
+          </select>
+          <button type="button" className="summary-share-btn" disabled={busy} onClick={download} title="Download image (and copy a caption)">
+            {busy ? <Loader2 size={16} className="spin" /> : <Download size={16} />} Download
+          </button>
+          <button type="button" className="summary-share-btn" disabled={busy} onClick={copy} title="Copy image to clipboard - paste straight into Discord">
+            {busy ? <Loader2 size={16} className="spin" /> : <Copy size={16} />} Copy
+          </button>
+        </div>
+      </div>
+      {error ? <p className="club-error">{error}</p> : null}
+      {copyUnsupported ? <p className="club-error">Your browser can't copy images - use Download instead.</p> : null}
+    </section>
+  );
+}
+
 function OpenTrades({ trades, onClose }) {
   if (!trades.length) return <EmptyState icon={<Target />} title="No open trades yet" text="Open a recommendation on the dashboard and press Log purchase. It will appear here instantly." action={<a href="#/v2">Browse recommendations</a>} />;
   return <section className="trade-grid">{trades.map((trade) => { const qty = Number(trade.quantity || 1); const target = Number(trade.target_sell || 0); const projected = target ? (Math.floor(target * .95) - Number(trade.buy)) * qty : 0; const liveStatus = trade.current_recommendation_status ? trade.current_recommendation_status.toLowerCase() : null; return <article className="trade-card" key={trade.trade_id}><div className="trade-top"><div><span>{trade.version || "Card"}</span><h3>{trade.player}</h3></div><b>OPEN</b></div><div className="trade-numbers"><Stat label="Bought" value={<CoinValue value={trade.buy} />} /><Stat label="Quantity" value={qty} /><Stat label="Target" value={<CoinValue value={target || null} />} /><Stat label="Projected" value={<CoinValue value={projected} signed />} /></div>{liveStatus ? <div className="trade-verdict"><RecommendationBadge recommendation={liveStatus} /><p>{trade.current_recommendation_reasoning}</p></div> : null}<div className="trade-meta"><span><Clock3 size={14} /> {date(trade.bought_at || trade.timestamp)}</span><span>{String(trade.platform || "ps").toUpperCase()}</span></div><button className="close-trade" onClick={() => onClose(trade)}>Close trade</button></article>; })}</section>;
@@ -85,24 +146,21 @@ function OpenTrades({ trades, onClose }) {
 function History({ trades }) {
   const [sharingId, setSharingId] = useState(null);
   const [shareError, setShareError] = useState("");
+  const [shareCache, setShareCache] = useState({}); // trade_id -> { image_data_url, caption }
 
-  async function share(trade) {
+  async function fetchShare(trade) {
+    if (shareCache[trade.trade_id]) return shareCache[trade.trade_id];
+    const result = await shareTradeCard(trade.trade_id);
+    setShareCache((prev) => ({ ...prev, [trade.trade_id]: result }));
+    return result;
+  }
+
+  async function withResult(trade, action) {
     setSharingId(trade.trade_id);
     setShareError("");
     try {
-      const { image_data_url, caption } = await shareTradeCard(trade.trade_id);
-      const blob = await (await fetch(image_data_url)).blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `eafc-live-${trade.player.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}.png`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 5000);
-      if (caption && navigator.clipboard?.writeText) {
-        try { await navigator.clipboard.writeText(caption); } catch { /* clipboard permission denied - image still downloaded */ }
-      }
+      const result = await fetchShare(trade);
+      await action(result);
     } catch (err) {
       setShareError(err.message || "Couldn't create the share image.");
     } finally {
@@ -110,18 +168,23 @@ function History({ trades }) {
     }
   }
 
+  const download = (trade) => withResult(trade, async ({ image_data_url, caption }) => {
+    await downloadDataUrlAsFile(image_data_url, `eafc-live-${slugFilename(trade.player)}.png`);
+    await copyText(caption);
+  });
+  const copy = (trade) => withResult(trade, async ({ image_data_url }) => copyImageToClipboard(image_data_url));
+
   if (!trades.length) return <EmptyState icon={<CheckCircle2 />} title="No completed sales" text="When you close a trade, the result and EA tax will be stored here." />;
   return <>
     {shareError ? <p className="club-error">{shareError}</p> : null}
-    <div className="history-table"><div className="history-head"><span>Player</span><span>Bought</span><span>Sold</span><span>Profit</span><span>Date</span><span /></div>{trades.map((trade) => <div className="history-row" key={trade.trade_id}><div><strong>{trade.player}</strong><small>{trade.version || "Card"} · x{trade.quantity || 1}</small></div><CoinValue value={trade.buy} /><CoinValue value={trade.sell} /><strong className={Number(trade.profit) >= 0 ? "positive" : "negative"}><CoinValue value={trade.profit} signed /></strong><span>{date(trade.sold_at)}</span><button
-      type="button"
-      className="history-share"
-      title="Download a shareable image of this trade (and copy a caption)"
-      disabled={sharingId === trade.trade_id}
-      onClick={() => share(trade)}
-    >
-      {sharingId === trade.trade_id ? <Loader2 size={15} className="spin" /> : <Share2 size={15} />}
-    </button></div>)}</div>
+    <div className="history-table"><div className="history-head"><span>Player</span><span>Bought</span><span>Sold</span><span>Profit</span><span>Date</span><span /></div>{trades.map((trade) => { const busy = sharingId === trade.trade_id; return <div className="history-row" key={trade.trade_id}><div><strong>{trade.player}</strong><small>{trade.version || "Card"} · x{trade.quantity || 1}</small></div><CoinValue value={trade.buy} /><CoinValue value={trade.sell} /><strong className={Number(trade.profit) >= 0 ? "positive" : "negative"}><CoinValue value={trade.profit} signed /></strong><span>{date(trade.sold_at)}</span><div className="history-share-actions">
+      <button type="button" className="history-share" title="Download a shareable image (and copy a caption)" disabled={busy} onClick={() => download(trade)}>
+        {busy ? <Loader2 size={15} className="spin" /> : <Download size={15} />}
+      </button>
+      <button type="button" className="history-share" title="Copy image to clipboard - paste straight into Discord" disabled={busy} onClick={() => copy(trade)}>
+        {busy ? <Loader2 size={15} className="spin" /> : <Copy size={15} />}
+      </button>
+    </div></div>; })}</div>
   </>;
 }
 
