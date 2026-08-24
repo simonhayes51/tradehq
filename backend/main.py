@@ -3890,7 +3890,18 @@ async def stripe_webhook(request: Request, conn=Depends(get_db)):
         stripe_event_table_ready = False
 
     try:
-        event_object = event['data']['object']
+        # Newer stripe-python releases no longer make resource objects
+        # (Subscription, checkout.Session, ...) dict subclasses - bracket
+        # access (obj['key']) still works, but .get() raises AttributeError
+        # ("'get' is a dict method, but a Subscription is not a dict").
+        # Every handler below (both the discord_feed ones and the
+        # pre-existing per-user ones) calls .get() on this object, so it
+        # must be a genuine plain dict - parsed straight from the raw,
+        # already-signature-verified payload bytes, not the SDK's typed
+        # object, which sidesteps this entirely regardless of stripe-python
+        # version. This was confirmed as the exact cause of the
+        # customer.subscription.created 500s via stripe_events.processing_error.
+        event_object = json.loads(payload)['data']['object']
         # Discord Server Feed subscriptions (metadata.kind == 'discord_feed',
         # set by discord_feed_billing.create_checkout_session) are guild-
         # scoped, not user-scoped - routed to their own handlers rather

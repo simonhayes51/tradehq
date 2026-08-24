@@ -338,3 +338,41 @@ def test_checkout_session_allows_promotion_codes(monkeypatch):
         success_url="https://app.eafc.live/success", cancel_url="https://app.eafc.live/cancel",
     ))
     assert create_mock.call_args.kwargs["allow_promotion_codes"] is True
+
+
+# ---------------------------------------------------------------------------
+# Regression: webhook handlers require a plain dict, not a typed stripe-python
+# resource object. Newer stripe-python releases stopped making Subscription/
+# Session dict subclasses - .get() on one raises AttributeError ("'get' is a
+# dict method, but a Subscription is not a dict"), which is exactly what
+# stripe_events.processing_error recorded for the real failing
+# customer.subscription.created event. main.py's webhook route now parses
+# the raw JSON payload instead of using stripe.Webhook.construct_event()'s
+# typed event.data.object specifically so these handlers always receive a
+# real dict - this test locks in that these handlers require exactly that.
+# ---------------------------------------------------------------------------
+
+
+def test_subscription_created_raises_on_a_typed_stripe_object_not_a_dict():
+    import stripe
+
+    typed_subscription = stripe.Subscription.construct_from(
+        {"id": "sub_123", "customer": "cus_123", "status": "active",
+         "metadata": {"kind": "discord_feed", "guild_id": "g1"}},
+        "sk_test_x",
+    )
+    assert not isinstance(typed_subscription, dict)
+    with pytest.raises(AttributeError):
+        run(billing.handle_discord_feed_subscription_created(typed_subscription, _FakeConn()))
+
+
+def test_subscription_created_succeeds_on_a_plain_dict():
+    """Same payload shape, as a plain dict (what main.py now guarantees
+    by parsing the raw JSON body) - must not raise."""
+    conn = _FakeConn()
+    plain_subscription = {
+        "id": "sub_123", "customer": "cus_123", "status": "active",
+        "metadata": {"kind": "discord_feed", "guild_id": "g1"},
+    }
+    run(billing.handle_discord_feed_subscription_created(plain_subscription, conn))
+    assert len(conn.executed) == 1
