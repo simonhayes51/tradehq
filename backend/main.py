@@ -2165,20 +2165,43 @@ async def _eval_alerts_for_pair(card_id: int, platform: str, price_now: float, m
             logging.warning("alert eval error: %s", e)
     return sent
 
+# Distinct from every other REFRESH_LOCK_KEY/ADVISORY_LOCK_KEY in this
+# codebase (7741001-7741012, plus DAILY_PROOF_CLAIM_LOCK_ID). Added
+# because _eval_alerts_for_pair sends the actual Discord DM/channel
+# alert BEFORE recording anything - it only writes to alerts_log and
+# bumps last_alert_at afterward. Two workers polling the same
+# watchlist_alerts row at once could both read the same stale
+# last_alert_at, both pass the cooloff check, and both send the same
+# price alert to the same user. Locking the whole pass (like the candle
+# aggregator above does) means only one worker ever runs a poll pass at
+# a time, so that race can't happen.
+WATCHLIST_ALERTS_LOCK_KEY = 7741013
+
 async def _alerts_poll_loop():
     await asyncio.sleep(3)
     while True:
         try:
-            async with watchlist_pool.acquire() as w:
-                pairs = await w.fetch(
-                    "SELECT DISTINCT card_id, platform, metric, source FROM watchlist_alerts"
-                )
-            tasks = [
-                _poll_pair_once(int(rec["card_id"]), rec["platform"], rec["metric"], rec["source"])
-                for rec in pairs
-            ]
-            if tasks:
-                await asyncio.gather(*tasks)
+            # Held for the WHOLE pass - fetch, send, and the
+            # last_alert_at bump all happen while this worker holds the
+            # lock, not just the fetch. Releasing early (e.g. right
+            # after the SELECT) would let a second worker acquire the
+            # lock, re-fetch the same still-stale rows, and race the
+            # send/record step exactly as if there were no lock at all.
+            async with watchlist_pool.acquire() as lock_conn:
+                got = await lock_conn.fetchval("SELECT pg_try_advisory_lock($1)", WATCHLIST_ALERTS_LOCK_KEY)
+                if got:
+                    try:
+                        pairs = await lock_conn.fetch(
+                            "SELECT DISTINCT card_id, platform, metric, source FROM watchlist_alerts"
+                        )
+                        tasks = [
+                            _poll_pair_once(int(rec["card_id"]), rec["platform"], rec["metric"], rec["source"])
+                            for rec in pairs
+                        ]
+                        if tasks:
+                            await asyncio.gather(*tasks)
+                    finally:
+                        await lock_conn.execute("SELECT pg_advisory_unlock($1)", WATCHLIST_ALERTS_LOCK_KEY)
         except Exception as e:
             logging.warning("poll loop error: %s", e)
         await asyncio.sleep(WATCHLIST_POLL_INTERVAL)
