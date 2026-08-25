@@ -169,6 +169,7 @@ async def track_record(request: Request, window: str = Query("90d")) -> Dict[str
     doing its job.
     """
     from app.services.discord_daily_proof import (
+        _fetch_published_eligible_rows,
         published_recent_wins_and_losses,
         published_track_record,
     )
@@ -178,13 +179,23 @@ async def track_record(request: Request, window: str = Query("90d")) -> Dict[str
 
     try:
         core_pool = await get_core_pool()
-        published = await published_track_record(core_pool, window_days=window_days)
+        # Fetched once and shared: published_track_record() (the
+        # aggregate) and published_recent_wins_and_losses() (the 5+5
+        # ledger rows below) both derive from the exact same per-sent-day
+        # eligible-outcome fetch. Calling them independently ran that
+        # fetch - one _SELECT_DAILY_OUTCOMES query per sent day in the
+        # window, each with 3 correlated EXISTS subqueries - twice per
+        # request.
+        eligible_rows = await _fetch_published_eligible_rows(core_pool, window_days)
+        published = await published_track_record(core_pool, window_days=window_days, eligible_rows=eligible_rows)
         if published.get("has_published_data"):
             # 5 most recent wins + 5 most recent losses, always both
             # visible - the primary customer-facing evidence, embedded
             # directly rather than a second round trip since it's a
             # handful of rows either way.
-            recent = await published_recent_wins_and_losses(core_pool, window_days=window_days, limit=5)
+            recent = await published_recent_wins_and_losses(
+                core_pool, window_days=window_days, limit=5, eligible_rows=eligible_rows,
+            )
             published["recent_wins"] = recent["recent_wins"]
             published["recent_losses"] = recent["recent_losses"]
     except Exception:
