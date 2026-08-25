@@ -547,15 +547,24 @@
     grid-area: copy;
     min-width: 0;
   }
+  /* Not a 2-col grid: with 3 children (name, entry-state badge, watch
+     star) an "auto" track sized the badge pill first and left the
+     remaining sliver for minmax(0,1fr) to squeeze the name into - a
+     92%-confidence "Rodri" rendered as "R." with a full-width "Buy now"
+     pill beside it. flex-wrap (same pattern .watch-card-title already
+     uses successfully) lets the badge/button wrap to their own line
+     instead of stealing the name's width. */
   .strategy-card-title {
-    display: grid;
-    grid-template-columns: minmax(0,1fr) auto;
-    align-items: start;
-    gap: 10px;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px 10px;
   }
   .strategy-card-title > strong {
     font-size: 17px;
     line-height: 1.2;
+    flex: 1 1 auto;
+    min-width: 60px;
   }
   .strategy-card-copy > p {
     margin: 12px 0 0;
@@ -800,7 +809,15 @@
   }
   .queue-signals .trade-signal > strong {
     display: block;
-    font-size: 19px;
+    /* 19px bold overflowed a typical 6-digit coin value ("+5,200") out
+       of its ~67px column at this breakpoint - scrollWidth measured
+       115px against a 67px box, rendering as "+5,2…". Dropping the
+       coin icon here too (own rule below) - at this width it's pure
+       overhead competing with the digits for the same ~67px. */
+    font-size: 14px;
+  }
+  .queue-signals .trade-signal .coin-value img {
+    display: none;
   }
   .queue-signals .trade-signal.profit {
     padding-left: 18px;
@@ -855,15 +872,20 @@
     grid-area: copy;
     min-width: 0;
   }
+  /* Same fix as the wider breakpoint above: flex-wrap instead of a
+     rigid 2-col grid, so the entry-state badge/watch button wrap to
+     their own line at narrow widths instead of shrinking the name. */
   .strategy-card-title {
-    display: grid;
-    grid-template-columns: minmax(0,1fr) auto;
-    gap: 8px;
-    align-items: start;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px 8px;
   }
   .strategy-card-title > strong {
     font-size: 17px;
     line-height: 1.18;
+    flex: 1 1 auto;
+    min-width: 60px;
   }
   .strategy-card-copy > p {
     margin: 10px 0 0;
@@ -876,9 +898,26 @@
     grid-template-columns: 1fr 1fr;
     gap: 7px;
   }
+  /* Overrides the base .trade-signal{grid-template-columns:1fr auto}
+     (label beside value) - inside a 2-up .strategy-trade grid at this
+     width that left each cell so narrow the label and value overlapped
+     ("CURRENT PRICE" printed over "64,000"). Same stacked label-above-
+     value fix already used by .queue-signals at this breakpoint. */
   .strategy-trade .trade-signal {
+    display: block;
     min-height: 58px;
     padding: 9px 10px;
+  }
+  .strategy-trade .trade-signal > span {
+    display: block;
+    margin-bottom: 5px;
+  }
+  .strategy-trade .trade-signal > strong {
+    display: block;
+    font-size: 14px;
+  }
+  .strategy-trade .trade-signal .coin-value img {
+    display: none;
   }
   .strategy-arrow {
     display: none;

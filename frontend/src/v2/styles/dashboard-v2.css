@@ -212,22 +212,19 @@
 }
 .track-record-outcome-row {
   display: grid;
-  grid-template-columns: 44px minmax(0,1fr) auto;
+  /* LedgerRow never renders a card-art element - only .track-record-
+     outcome-copy and .track-record-outcome-numbers exist in the DOM.
+     A leftover 3rd "art" column here (from before this row had its own
+     layout) meant grid auto-placement put the copy block into that
+     44px sliver instead of its intended 1fr track, truncating every
+     player name down to 2-3 characters ("Per…", "Gle…"). */
+  grid-template-columns: minmax(0,1fr) auto;
   align-items: center;
   gap: 12px;
   padding: 10px 12px;
   border: 1px solid var(--line);
   border-radius: 3px;
   background: #101010;
-}
-.track-record-outcome-art {
-  width: 40px;
-  height: 48px;
-  object-fit: contain;
-}
-.track-record-outcome-art.placeholder {
-  background: #1c1c1c;
-  border-radius: 2px;
 }
 .track-record-outcome-copy { min-width: 0; }
 .track-record-outcome-title {
@@ -277,9 +274,76 @@
 .track-record-outcome-numbers .muted { color: #8e8e8e; }
 @media (max-width: 700px) {
   .track-record-grid { grid-template-columns: 1fr 1fr; }
-  .track-record-outcome-row { grid-template-columns: 36px minmax(0,1fr); }
+  .track-record-outcome-row { grid-template-columns: minmax(0,1fr); }
   .track-record-outcome-numbers { grid-column: 1 / -1; align-items: flex-start; text-align: left; flex-direction: row; flex-wrap: wrap; }
+  /* The section header held the (uppercase, condensed-display-font)
+     h2 title side-by-side with the 4-button window-tabs row via
+     justify-content:space-between, squeezing "Did our published
+     calls actually work?" into roughly half the viewport width and
+     wrapping it onto 5-6 lines. Stack them instead. */
+  .track-record-panel .section-head.compact {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+  }
+  .track-record-panel .section-head.compact h2 {
+    font-size: 19px;
+    line-height: 1.2;
+  }
+  .track-record-window-tabs { flex-wrap: wrap; }
+  /* .pulse-head put the 44px score number on the same row as the
+     regime heading via justify-content:space-between with no width
+     limit on either side - at narrow widths the score got pushed past
+     its own card's right edge and was clipped there (only the "6" of
+     "62" visible). Stack instead of sharing a row at this width. */
+  .pulse-head {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+  .pulse-head > strong {
+    font-size: 34px;
+  }
+  /* Plain `1fr` tracks (not minmax(0,1fr)) floor at each cell's own
+     min-content width - with "+100,200" as an unbreakable token in the
+     middle cell, the 3rd cell ("Tracked"/"8.4k") got pushed past both
+     .pulse-stats' and the card's own right edge instead of sharing an
+     equal third of the row. */
+  .pulse-stats .metric { min-width: 0; padding: 12px 6px; }
+  .pulse-stats .metric strong {
+    font-size: 14px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  /* .strategy-tabs already scrolls horizontally (overflow:auto), but
+     with no visual cue that it does, the row just looks hard-clipped
+     mid-label at the viewport edge ("Big prof|"). An edge fade plus
+     snap points reads as an intentional carousel instead. */
+  .strategy-tabs {
+    scroll-snap-type: x proximity;
+    -webkit-overflow-scrolling: touch;
+    mask-image: linear-gradient(90deg, #000 0, #000 88%, transparent);
+    -webkit-mask-image: linear-gradient(90deg, #000 0, #000 88%, transparent);
+  }
+  .strategy-tabs button { scroll-snap-align: start; }
 }
+
+.strategy-watch-more {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px dashed rgba(242,201,76,.35);
+  border-radius: 4px;
+  color: #f2c94c;
+  font-size: 12px;
+  font-weight: 700;
+  text-decoration: none;
+}
+.strategy-watch-more:hover { border-color: rgba(242,201,76,.6); }
 
 /* Locked-feed preview card (LockedPreviewCard) - free/pro upsell row
    appended after the real preview opportunities on the dashboard. */
