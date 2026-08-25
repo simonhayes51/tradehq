@@ -242,6 +242,46 @@ def test_track_record_does_not_raise_and_reflects_real_outcome_data(dsn):
     assert result["has_enough_data"] is True
 
 
+def test_track_record_include_breakdowns_false_skips_breakdown_queries(dsn):
+    # GET /api/v2/track-record's model-validation section (recommendations.py's
+    # _model_validation) only ever reads `headline` - the 6 per-dimension
+    # breakdown queries plus the reason_code CROSS JOIN LATERAL unnest were
+    # pure wasted work on every single page load (see this function's own
+    # docstring), which is what made a widening outcomes table push the
+    # Track Record tab's load time into minutes. include_breakdowns=False
+    # must skip that work while leaving `headline` identical.
+    async def _scenario():
+        pool = await asyncpg.create_pool(dsn, min_size=1, max_size=3)
+        try:
+            async with pool.acquire() as conn:
+                await _seed_one(
+                    conn, source_card_id=1, horizon="24h",
+                    outcome_status="target_hit", target_hit=True, realised_roi=0.12,
+                )
+                await _seed_one(
+                    conn, source_card_id=2, horizon="24h",
+                    outcome_status="loss_unrealised", target_hit=False, realised_roi=-0.05,
+                )
+            skipped = await track_record(
+                pool, horizon="24h", window_days=90, min_sample=1, include_breakdowns=False,
+            )
+            full = await track_record(
+                pool, horizon="24h", window_days=90, min_sample=1, include_breakdowns=True,
+            )
+            return skipped, full
+        finally:
+            await pool.close()
+
+    skipped, full = _run(_scenario())
+    assert skipped["headline"] == full["headline"]
+    assert skipped["breakdowns"].get("reason_code") == []
+    for dimension in ("confidence_band", "risk_level", "price_tier", "trend_state", "engine_version", "signal"):
+        assert dimension not in skipped["breakdowns"]
+    # The default (True, used by GET /api/v2/market/track-record) must
+    # still populate real breakdown data.
+    assert len(full["breakdowns"]["risk_level"]) > 0
+
+
 def test_recent_outcomes_returns_wins_losses_and_no_entry_correctly(dsn):
     async def _scenario():
         pool = await asyncpg.create_pool(dsn, min_size=1, max_size=3)

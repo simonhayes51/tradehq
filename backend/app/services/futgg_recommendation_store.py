@@ -267,7 +267,7 @@ def _rate(numerator: Optional[int], denominator: Optional[int]) -> Optional[floa
 
 async def track_record(
     pool, *, horizon: str = "24h", window_days: int = 90,
-    min_sample: int = MIN_SAMPLE_FOR_RATE,
+    min_sample: int = MIN_SAMPLE_FOR_RATE, include_breakdowns: bool = True,
 ) -> Dict[str, Any]:
     """Aggregate graded outcomes into the public track record.
 
@@ -275,6 +275,18 @@ async def track_record(
     below `min_sample` reports has_enough_data=False with null metrics
     rather than a number. This is the difference between a track record
     and a marketing claim.
+
+    `include_breakdowns=False` skips the 6 per-dimension GROUP BY scans
+    (confidence_band/risk_level/price_tier/trend_state/engine_version/
+    signal) plus the reason_code CROSS JOIN LATERAL unnest - 7 extra
+    full JOIN scans over futgg_recommendation_outcomes/_snapshots on top
+    of the one headline query. GET /api/v2/track-record's model-
+    validation section (recommendations.py's _model_validation) only
+    ever reads `headline` - it was paying for all 7 of those scans on
+    every single page load and discarding the result, which is what
+    made the Track Record tab take minutes to load as the outcomes
+    table grew. GET /api/v2/market/track-record does use `breakdowns`,
+    so it keeps the default True.
     """
     # Every query below casts this parameter with an explicit `::interval`,
     # which makes asyncpg encode it via its interval codec - that codec
@@ -287,7 +299,7 @@ async def track_record(
     async with pool.acquire() as conn:
         head = await conn.fetchrow(_HEADLINE, horizon, interval)
         breakdowns: Dict[str, List[Dict[str, Any]]] = {}
-        for name, expression in BREAKDOWN_DIMENSIONS.items():
+        for name, expression in (BREAKDOWN_DIMENSIONS.items() if include_breakdowns else []):
             rows = await conn.fetch(_breakdown_sql(expression), horizon, interval)
             breakdowns[name] = [
                 {
@@ -327,7 +339,7 @@ async def track_record(
             ORDER BY 2 DESC
             """,
             horizon, interval,
-        )
+        ) if include_breakdowns else []
         breakdowns["reason_code"] = [
             {
                 "bucket": row["bucket"],

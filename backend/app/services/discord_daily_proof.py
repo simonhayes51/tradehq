@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
@@ -305,6 +306,24 @@ async def _fetch_sent_publications(conn, window_days: int):
     )
 
 
+
+# Bounds how many of _SELECT_DAILY_OUTCOMES' per-period queries (each
+# with 3 correlated EXISTS subqueries) run concurrently. The pool itself
+# would already queue anything beyond its own max_size, but this keeps a
+# wide track-record window (e.g. "All time" with 90+ sent days) from
+# claiming every pool connection and starving unrelated requests while
+# it runs.
+_PERIOD_FETCH_CONCURRENCY = 5
+
+
+async def _fetch_one_period_outcomes(pool, semaphore: asyncio.Semaphore, period: "ReportingPeriod"):
+    async with semaphore, pool.acquire() as conn:
+        rows = await conn.fetch(
+            _SELECT_DAILY_OUTCOMES, period.start, period.end, sorted(PROOF_STATUSES),
+        )
+    return [dict(row) for row in rows if proof_row_is_defensible(dict(row), period)]
+
+
 async def _fetch_published_eligible_rows(pool, window_days: int):
     """Shared fetch for both published_track_record() (aggregates) and
     published_recent_wins_and_losses() (individual rows) - re-derives
@@ -312,7 +331,17 @@ async def _fetch_published_eligible_rows(pool, window_days: int):
     window using the SAME query and SAME row-by-row validation
     (_SELECT_DAILY_OUTCOMES, proof_row_is_defensible) the publish path
     itself uses. Returns (pubs, all_eligible) - pubs is empty if nothing
-    has ever been sent."""
+    has ever been sent.
+
+    Each sent day's query used to run one at a time on a single held
+    connection - a 90-day window with dozens of sent days meant dozens
+    of sequential round trips of a query with 3 correlated EXISTS
+    subqueries each, which is what made the Track Record tab take
+    minutes to load. Every period's query is independent (bounded by
+    its own graded_at range, no shared mutable state), so they're safe
+    to run concurrently instead - see _PERIOD_FETCH_CONCURRENCY for the
+    cap.
+    """
     async with pool.acquire() as conn:
         pubs = await _fetch_sent_publications(conn, window_days)
         if not pubs:
@@ -321,20 +350,20 @@ async def _fetch_published_eligible_rows(pool, window_days: int):
             )
             return pubs, [], earliest
 
-        all_eligible: list[dict[str, Any]] = []
-        for pub in pubs:
-            period = ReportingPeriod(
-                report_date=pub["report_date"],
-                start=_aware(pub["period_start"]),
-                end=_aware(pub["period_end"]),
-                timezone_name=pub["timezone_name"],
-            )
-            rows = await conn.fetch(
-                _SELECT_DAILY_OUTCOMES, period.start, period.end, sorted(PROOF_STATUSES),
-            )
-            all_eligible.extend(
-                dict(row) for row in rows if proof_row_is_defensible(dict(row), period)
-            )
+    periods = [
+        ReportingPeriod(
+            report_date=pub["report_date"],
+            start=_aware(pub["period_start"]),
+            end=_aware(pub["period_end"]),
+            timezone_name=pub["timezone_name"],
+        )
+        for pub in pubs
+    ]
+    semaphore = asyncio.Semaphore(_PERIOD_FETCH_CONCURRENCY)
+    per_period_rows = await asyncio.gather(
+        *(_fetch_one_period_outcomes(pool, semaphore, period) for period in periods)
+    )
+    all_eligible: list[dict[str, Any]] = [row for rows in per_period_rows for row in rows]
     return pubs, all_eligible, None
 
 

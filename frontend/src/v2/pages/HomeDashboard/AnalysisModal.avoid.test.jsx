@@ -24,6 +24,12 @@ const AVOID_ITEM = {
   confidence: 40,
   risk: "High",
   liquidityScore: 0.5,
+  // The full-profit sell target the backend would recommend on a BUY -
+  // deliberately populated here (real FUT.GG payloads always carry
+  // this), since the bug only reproduces when it's present: the modal
+  // used to show THIS number under "Break-even sale / Minimum sale to
+  // cover tax" instead of the actual break-even price.
+  recommendedSellTarget: 690000,
   player: { name: "Erling Haaland", rating: 98, position: "ST", version: "Icon" },
 };
 
@@ -46,5 +52,21 @@ describe("AnalysisModal on an AVOID card", () => {
     // positive/checkmark reason to buy.
     expect(screen.queryByText(/estimated after EA tax/)).not.toBeInTheDocument();
     expect(screen.getByText(/recommendation is to avoid this card/i)).toBeInTheDocument();
+  });
+
+  it("computes the actual break-even price, never the backend's full-profit sell target", () => {
+    render(
+      <AnalysisModal item={AVOID_ITEM} onClose={() => {}} navigate={() => {}} onWatch={() => {}} watchState="" variant="page" />,
+    );
+    // True break-even: ceil(640000 / 0.95 / 250) * 250 = 673,750.
+    // recommendedSellTarget (690,000, the full-profit target a BUY
+    // would use) must never appear under this label.
+    expect(screen.getByText("Break-even sale")).toBeInTheDocument();
+    expect(screen.getAllByText("673,750").length).toBeGreaterThan(0);
+    expect(screen.queryByText("690,000")).not.toBeInTheDocument();
+    const verdict = document.querySelector(".dash-modal-verdict");
+    expect(verdict.textContent).toMatch(/avoid at/i);
+    expect(verdict.textContent).toContain("640,000");
+    expect(verdict.textContent).toContain("673,750");
   });
 });
