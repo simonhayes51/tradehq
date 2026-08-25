@@ -518,239 +518,248 @@ async def lifespan(app: FastAPI):
     # files for the exact DDL; nothing here changed functionally, this only
     # moved schema authority to the migration runner instead of duplicating it.
 
-    # Start alerts loop (defined later)
-    _watchlist_task = asyncio.create_task(_alerts_poll_loop())
-    logging.info("✅ Watchlist alerts loop started (%ss)", WATCHLIST_POLL_INTERVAL)
+    # Background refresher/scanner/Discord-poster loops - gate-able so a
+    # deployment can run this backend as pure HTTP-serving (multiple
+    # uvicorn workers, CPU freed up for request handling) with a SEPARATE
+    # single instance elsewhere actually running these. Defaults to "1"
+    # (unchanged behaviour) so an existing single-instance deployment
+    # needs no config change at all.
+    if os.getenv("RUN_BACKGROUND_WORKERS", "1") != "0":
+        # Start alerts loop (defined later)
+        _watchlist_task = asyncio.create_task(_alerts_poll_loop())
+        logging.info("✅ Watchlist alerts loop started (%ss)", WATCHLIST_POLL_INTERVAL)
 
-    # Fair Value engine: create-if-missing + periodic concurrent refresh of
-    # fair_value_mv on the player DB (advisory-locked, multi-instance safe).
-    fv_interval = int(os.getenv("FAIR_VALUE_REFRESH_SECONDS", "300"))
-    app.state.fair_value_task = asyncio.create_task(
-        fair_value_refresher_loop(player_pool, fv_interval)
-    )
-    logging.info("✅ Fair Value refresher started (%ss)", fv_interval)
-
-    # Event Market Impact: before/after price+volume per (event, card) -
-    # see app/services/event_impact.py.
-    event_impact_interval = int(os.getenv("EVENT_IMPACT_REFRESH_SECONDS", "1800"))
-    app.state.event_impact_task = asyncio.create_task(
-        event_impact_refresher_loop(player_pool, event_impact_interval)
-    )
-    logging.info("✅ Event Impact refresher started (%ss)", event_impact_interval)
-
-    # Analytics Engine: 10 per-card scores into card_scores, self-
-    # synchronized on fair_value_mv's own watermark rather than chained
-    # directly off fair_value_refresher_loop - zero coupling to that
-    # already-shipped file. Also the one place market_states (core DB)
-    # actually gets written now.
-    analytics_poll = int(os.getenv("ANALYTICS_ENGINE_POLL_SECONDS", "60"))
-    app.state.analytics_engine_task = asyncio.create_task(
-        analytics_engine_refresher_loop(pool, player_pool, analytics_poll)
-    )
-    logging.info("✅ Analytics Engine refresher started (poll every %ss)", analytics_poll)
-
-    # AI Recommendation Engine. RECOMMENDATION_ENGINE_VERSION selects
-    # which engine actually writes `recommendations` - defaults to
-    # rule_v1_2 (the tax-aware engine; see app/services/
-    # recommendation_engine_v2.py) now that it exists and is verified.
-    # rule_v1 (recommendation_engine.py's RuleV1Strategy) is left
-    # selectable via this same env var for rollback - a config change,
-    # not a destructive cutover, per the working rules this was built
-    # under. rule_v1's own bug (see recommendation_engine_v2.py's module
-    # docstring for the exact line reference) is why rule_v1_2 exists and
-    # is now the default rather than an opt-in.
-    recommendation_engine_version = os.getenv("RECOMMENDATION_ENGINE_VERSION", "rule_v1_2")
-    recommendation_poll = int(os.getenv("RECOMMENDATION_ENGINE_POLL_SECONDS", "60"))
-    if recommendation_engine_version == "rule_v1":
-        app.state.recommendation_engine_task = asyncio.create_task(
-            recommendation_engine_refresher_loop(pool, player_pool, recommendation_poll)
+        # Fair Value engine: create-if-missing + periodic concurrent refresh of
+        # fair_value_mv on the player DB (advisory-locked, multi-instance safe).
+        fv_interval = int(os.getenv("FAIR_VALUE_REFRESH_SECONDS", "300"))
+        app.state.fair_value_task = asyncio.create_task(
+            fair_value_refresher_loop(player_pool, fv_interval)
         )
-        logging.info("✅ Recommendation Engine refresher started: rule_v1 (poll every %ss)", recommendation_poll)
-    else:
-        app.state.recommendation_engine_task = asyncio.create_task(
-            recommendation_engine_v2_refresher_loop(player_pool, recommendation_poll)
+        logging.info("✅ Fair Value refresher started (%ss)", fv_interval)
+
+        # Event Market Impact: before/after price+volume per (event, card) -
+        # see app/services/event_impact.py.
+        event_impact_interval = int(os.getenv("EVENT_IMPACT_REFRESH_SECONDS", "1800"))
+        app.state.event_impact_task = asyncio.create_task(
+            event_impact_refresher_loop(player_pool, event_impact_interval)
         )
-        logging.info("✅ Recommendation Engine refresher started: rule_v1_2 (poll every %ss)", recommendation_poll)
+        logging.info("✅ Event Impact refresher started (%ss)", event_impact_interval)
 
-    # ML feature snapshot + label filling pipeline (Recommendation Engine
-    # V1.2 Phase 7). Starts collecting training data now, before any
-    # model exists - see app/services/ml_feature_pipeline.py and
-    # ml_label_filler.py's module docstrings. Genuinely hourly (not
-    # watermark-reactive like the engines above), and independent of
-    # RECOMMENDATION_ENGINE_VERSION - runs regardless of which engine is
-    # live, since it's the rule engine's own gate/score logic
-    # (evaluate()) that's used to derive snapshot eligibility either way.
-    ml_snapshot_poll = int(os.getenv("ML_FEATURE_SNAPSHOT_POLL_SECONDS", "3600"))
-    app.state.ml_feature_pipeline_task = asyncio.create_task(
-        ml_feature_pipeline_refresher_loop(player_pool, ml_snapshot_poll)
-    )
-    logging.info("✅ ML feature snapshot pipeline started (poll every %ss)", ml_snapshot_poll)
-
-    ml_label_poll = int(os.getenv("ML_LABEL_FILLER_POLL_SECONDS", "3600"))
-    app.state.ml_label_filler_task = asyncio.create_task(
-        ml_label_filler_refresher_loop(player_pool, ml_label_poll)
-    )
-    logging.info("✅ ML label filler started (poll every %ss)", ml_label_poll)
-
-    # Live verdict on every open (still-held) trade - wires
-    # recommendation_engine_v2.py's _evaluate_held_position to real data
-    # for the first time (migration 035). Independent pool bridge: trades
-    # live in `pool`, card market data lives in `player_pool`.
-    held_position_poll = int(os.getenv("HELD_POSITION_REFRESHER_POLL_SECONDS", "900"))
-    app.state.held_position_refresher_task = asyncio.create_task(
-        held_position_refresher_loop(pool, player_pool, held_position_poll)
-    )
-    logging.info("✅ Held-position refresher started (poll every %ss)", held_position_poll)
-
-    # FUT.GG market-intelligence snapshot (migrations/038): periodic
-    # REFRESH MATERIALIZED VIEW CONCURRENTLY of futgg_market_snapshot on
-    # the CORE db (auto_sync's futgg_players/futgg_bin_history/
-    # futgg_sales_history tables live there, not on player_pool) -
-    # watermark-gated same as the other refreshers above, and tolerates
-    # the underlying tables not existing yet if this backend boots before
-    # auto_sync has ever run (see that loop's own try/except).
-    futgg_snapshot_poll = int(os.getenv("FUTGG_MARKET_SNAPSHOT_REFRESH_SECONDS", "120"))
-    # dsn=DATABASE_URL: the REFRESH itself runs on its own standalone
-    # connection, never one borrowed from `pool` - see
-    # market_data_provider.py's refresh_snapshot() docstring for why a
-    # multi-minute REFRESH holding a shared-pool connection can starve
-    # /health's own pool.acquire() and get this container restarted by
-    # Coolify mid-refresh, which only makes the snapshot staler.
-    app.state.futgg_market_snapshot_task = asyncio.create_task(
-        futgg_market_snapshot_refresher_loop(pool, futgg_snapshot_poll, dsn=DATABASE_URL)
-    )
-    logging.info("✅ FUT.GG market snapshot refresher started (poll every %ss)", futgg_snapshot_poll)
-
-    # FUT.GG evaluation pass (migrations/040). Scores cards across all
-    # liquidity segments and freezes every actionable call as a
-    # recommendation snapshot. Without this nothing is ever recorded, so
-    # the outcome grader below has nothing to grade and the track record
-    # stays empty forever.
-    futgg_scan_poll = int(os.getenv("FUTGG_SCAN_INTERVAL_SECONDS", "600"))
-    app.state.futgg_scanner_task = asyncio.create_task(
-        futgg_scanner_refresher_loop(pool, futgg_scan_poll)
-    )
-    logging.info("✅ FUT.GG evaluation scanner started (poll every %ss)", futgg_scan_poll)
-
-    # Grades those recommendations against what the market actually did,
-    # chronologically and without hindsight. Slow cadence: a horizon
-    # closes once, so re-scanning open rows more often buys nothing.
-    futgg_grader_poll = int(os.getenv("FUTGG_GRADER_INTERVAL_SECONDS", "1800"))
-    app.state.futgg_outcome_grader_task = asyncio.create_task(
-        futgg_outcome_grader_refresher_loop(pool, futgg_grader_poll)
-    )
-    logging.info("✅ FUT.GG outcome grader started (poll every %ss)", futgg_grader_poll)
-
-    # Investment Engine (separate concept from the trade/opportunity
-    # engines above - see app/services/investment_engine/__init__.py).
-    # Entirely inert (INVESTMENT_ENGINE_ENABLED defaults False) until
-    # explicitly turned on, and even then stays in shadow mode
-    # (calculated, never published) until INVESTMENT_ENGINE_PUBLISH_
-    # SIGNALS is also set - see backend/INVESTMENT_ENGINE.md.
-    if INVESTMENT_ENGINE_CONFIG.enabled:
-        investment_poll = INVESTMENT_ENGINE_CONFIG.recompute_interval_seconds
-        # Game year comes from app/services/game_cycle.py - the single
-        # source of truth - NOT from a per-service env var. A split-brain
-        # configuration (ingestion scraping one game year while this
-        # engine queries another) produces no error anywhere, just an
-        # engine that silently never finds any cards, so it is checked
-        # explicitly here and reported loudly rather than left to chance.
-        investment_game_year = game_cycle.investment_game_year()
-        consistency = game_cycle.consistency_report()
-        if not consistency["consistent"]:
-            for problem in consistency["problems"]:
-                logging.error("⚠️  GAME YEAR MISCONFIGURATION: %s", problem)
-        app.state.investment_engine_task = asyncio.create_task(
-            investment_engine_refresher_loop(pool, investment_poll, game_year=investment_game_year)
+        # Analytics Engine: 10 per-card scores into card_scores, self-
+        # synchronized on fair_value_mv's own watermark rather than chained
+        # directly off fair_value_refresher_loop - zero coupling to that
+        # already-shipped file. Also the one place market_states (core DB)
+        # actually gets written now.
+        analytics_poll = int(os.getenv("ANALYTICS_ENGINE_POLL_SECONDS", "60"))
+        app.state.analytics_engine_task = asyncio.create_task(
+            analytics_engine_refresher_loop(pool, player_pool, analytics_poll)
         )
-        logging.info(
-            "✅ Investment Engine started (poll every %ss, game_year=%s, phase=%s, mode=%s)",
-            investment_poll, investment_game_year, game_cycle.GAME_CYCLE.phase(),
-            "PUBLISHING" if INVESTMENT_ENGINE_CONFIG.publish_signals else "SHADOW",
-        )
-        if INVESTMENT_ENGINE_CONFIG.publish_signals:
-            logging.warning(
-                "🔔 Investment Engine is PUBLISHING signals to users "
-                "(INVESTMENT_ENGINE_PUBLISH_SIGNALS is on)"
+        logging.info("✅ Analytics Engine refresher started (poll every %ss)", analytics_poll)
+
+        # AI Recommendation Engine. RECOMMENDATION_ENGINE_VERSION selects
+        # which engine actually writes `recommendations` - defaults to
+        # rule_v1_2 (the tax-aware engine; see app/services/
+        # recommendation_engine_v2.py) now that it exists and is verified.
+        # rule_v1 (recommendation_engine.py's RuleV1Strategy) is left
+        # selectable via this same env var for rollback - a config change,
+        # not a destructive cutover, per the working rules this was built
+        # under. rule_v1's own bug (see recommendation_engine_v2.py's module
+        # docstring for the exact line reference) is why rule_v1_2 exists and
+        # is now the default rather than an opt-in.
+        recommendation_engine_version = os.getenv("RECOMMENDATION_ENGINE_VERSION", "rule_v1_2")
+        recommendation_poll = int(os.getenv("RECOMMENDATION_ENGINE_POLL_SECONDS", "60"))
+        if recommendation_engine_version == "rule_v1":
+            app.state.recommendation_engine_task = asyncio.create_task(
+                recommendation_engine_refresher_loop(pool, player_pool, recommendation_poll)
             )
+            logging.info("✅ Recommendation Engine refresher started: rule_v1 (poll every %ss)", recommendation_poll)
+        else:
+            app.state.recommendation_engine_task = asyncio.create_task(
+                recommendation_engine_v2_refresher_loop(player_pool, recommendation_poll)
+            )
+            logging.info("✅ Recommendation Engine refresher started: rule_v1_2 (poll every %ss)", recommendation_poll)
+
+        # ML feature snapshot + label filling pipeline (Recommendation Engine
+        # V1.2 Phase 7). Starts collecting training data now, before any
+        # model exists - see app/services/ml_feature_pipeline.py and
+        # ml_label_filler.py's module docstrings. Genuinely hourly (not
+        # watermark-reactive like the engines above), and independent of
+        # RECOMMENDATION_ENGINE_VERSION - runs regardless of which engine is
+        # live, since it's the rule engine's own gate/score logic
+        # (evaluate()) that's used to derive snapshot eligibility either way.
+        ml_snapshot_poll = int(os.getenv("ML_FEATURE_SNAPSHOT_POLL_SECONDS", "3600"))
+        app.state.ml_feature_pipeline_task = asyncio.create_task(
+            ml_feature_pipeline_refresher_loop(player_pool, ml_snapshot_poll)
+        )
+        logging.info("✅ ML feature snapshot pipeline started (poll every %ss)", ml_snapshot_poll)
+
+        ml_label_poll = int(os.getenv("ML_LABEL_FILLER_POLL_SECONDS", "3600"))
+        app.state.ml_label_filler_task = asyncio.create_task(
+            ml_label_filler_refresher_loop(player_pool, ml_label_poll)
+        )
+        logging.info("✅ ML label filler started (poll every %ss)", ml_label_poll)
+
+        # Live verdict on every open (still-held) trade - wires
+        # recommendation_engine_v2.py's _evaluate_held_position to real data
+        # for the first time (migration 035). Independent pool bridge: trades
+        # live in `pool`, card market data lives in `player_pool`.
+        held_position_poll = int(os.getenv("HELD_POSITION_REFRESHER_POLL_SECONDS", "900"))
+        app.state.held_position_refresher_task = asyncio.create_task(
+            held_position_refresher_loop(pool, player_pool, held_position_poll)
+        )
+        logging.info("✅ Held-position refresher started (poll every %ss)", held_position_poll)
+
+        # FUT.GG market-intelligence snapshot (migrations/038): periodic
+        # REFRESH MATERIALIZED VIEW CONCURRENTLY of futgg_market_snapshot on
+        # the CORE db (auto_sync's futgg_players/futgg_bin_history/
+        # futgg_sales_history tables live there, not on player_pool) -
+        # watermark-gated same as the other refreshers above, and tolerates
+        # the underlying tables not existing yet if this backend boots before
+        # auto_sync has ever run (see that loop's own try/except).
+        futgg_snapshot_poll = int(os.getenv("FUTGG_MARKET_SNAPSHOT_REFRESH_SECONDS", "120"))
+        # dsn=DATABASE_URL: the REFRESH itself runs on its own standalone
+        # connection, never one borrowed from `pool` - see
+        # market_data_provider.py's refresh_snapshot() docstring for why a
+        # multi-minute REFRESH holding a shared-pool connection can starve
+        # /health's own pool.acquire() and get this container restarted by
+        # Coolify mid-refresh, which only makes the snapshot staler.
+        app.state.futgg_market_snapshot_task = asyncio.create_task(
+            futgg_market_snapshot_refresher_loop(pool, futgg_snapshot_poll, dsn=DATABASE_URL)
+        )
+        logging.info("✅ FUT.GG market snapshot refresher started (poll every %ss)", futgg_snapshot_poll)
+
+        # FUT.GG evaluation pass (migrations/040). Scores cards across all
+        # liquidity segments and freezes every actionable call as a
+        # recommendation snapshot. Without this nothing is ever recorded, so
+        # the outcome grader below has nothing to grade and the track record
+        # stays empty forever.
+        futgg_scan_poll = int(os.getenv("FUTGG_SCAN_INTERVAL_SECONDS", "600"))
+        app.state.futgg_scanner_task = asyncio.create_task(
+            futgg_scanner_refresher_loop(pool, futgg_scan_poll)
+        )
+        logging.info("✅ FUT.GG evaluation scanner started (poll every %ss)", futgg_scan_poll)
+
+        # Grades those recommendations against what the market actually did,
+        # chronologically and without hindsight. Slow cadence: a horizon
+        # closes once, so re-scanning open rows more often buys nothing.
+        futgg_grader_poll = int(os.getenv("FUTGG_GRADER_INTERVAL_SECONDS", "1800"))
+        app.state.futgg_outcome_grader_task = asyncio.create_task(
+            futgg_outcome_grader_refresher_loop(pool, futgg_grader_poll)
+        )
+        logging.info("✅ FUT.GG outcome grader started (poll every %ss)", futgg_grader_poll)
+
+        # Investment Engine (separate concept from the trade/opportunity
+        # engines above - see app/services/investment_engine/__init__.py).
+        # Entirely inert (INVESTMENT_ENGINE_ENABLED defaults False) until
+        # explicitly turned on, and even then stays in shadow mode
+        # (calculated, never published) until INVESTMENT_ENGINE_PUBLISH_
+        # SIGNALS is also set - see backend/INVESTMENT_ENGINE.md.
+        if INVESTMENT_ENGINE_CONFIG.enabled:
+            investment_poll = INVESTMENT_ENGINE_CONFIG.recompute_interval_seconds
+            # Game year comes from app/services/game_cycle.py - the single
+            # source of truth - NOT from a per-service env var. A split-brain
+            # configuration (ingestion scraping one game year while this
+            # engine queries another) produces no error anywhere, just an
+            # engine that silently never finds any cards, so it is checked
+            # explicitly here and reported loudly rather than left to chance.
+            investment_game_year = game_cycle.investment_game_year()
+            consistency = game_cycle.consistency_report()
+            if not consistency["consistent"]:
+                for problem in consistency["problems"]:
+                    logging.error("⚠️  GAME YEAR MISCONFIGURATION: %s", problem)
+            app.state.investment_engine_task = asyncio.create_task(
+                investment_engine_refresher_loop(pool, investment_poll, game_year=investment_game_year)
+            )
+            logging.info(
+                "✅ Investment Engine started (poll every %ss, game_year=%s, phase=%s, mode=%s)",
+                investment_poll, investment_game_year, game_cycle.GAME_CYCLE.phase(),
+                "PUBLISHING" if INVESTMENT_ENGINE_CONFIG.publish_signals else "SHADOW",
+            )
+            if INVESTMENT_ENGINE_CONFIG.publish_signals:
+                logging.warning(
+                    "🔔 Investment Engine is PUBLISHING signals to users "
+                    "(INVESTMENT_ENGINE_PUBLISH_SIGNALS is on)"
+                )
+        else:
+            logging.info("⏸️  Investment Engine disabled (INVESTMENT_ENGINE_ENABLED not set)")
+
+        # Adaptive priority engine. Milestone 1 (always on): rule-classifies
+        # every active FUT.GG card into card_priority (baseline_tier - what
+        # the card IS, liquidity/card-type/opportunity/interest/volatility/
+        # event, with NO freshness/staleness input at all - and effective_
+        # tier, baseline merged with any active priority_triggers row, e.g.
+        # an SBC match). Purely additive - never touches next_sales_due_at/
+        # next_price_due_at. Milestone 1.5 (off by default, behind
+        # PRIORITY_ENGINE_ALLOW_CONSERVATIVE_DEMOTION): pushes
+        # next_sales_due_at LATER, never earlier, for a strictly-eligible
+        # subset of confirmed-inactive tail cards - see priority_recompute.py's
+        # module docstring for the full eligibility list and why it's
+        # anchored to last_sales_status_at rather than now(). Slow, decoupled
+        # cadence (default 15min) so a bug here can never affect either live
+        # scraper's own loop.
+        priority_recompute_poll = int(os.getenv("PRIORITY_RECOMPUTE_INTERVAL_SECONDS", "900"))
+        app.state.priority_recompute_task = asyncio.create_task(
+            priority_recompute_refresher_loop(pool, watchlist_pool, priority_recompute_poll)
+        )
+        logging.info("✅ Adaptive priority engine started (poll every %ss)", priority_recompute_poll)
+
+        # Re-hosts FUT.GG's own pre-composited card image (futgg_players.
+        # card_image_url) into our own R2 storage - see
+        # app/services/futgg_card_image_mirror.py's module docstring for why
+        # (never depend on FUT.GG's CDN for the app's main card image). Cheap
+        # (one HTTP GET + one R2 PUT per card, no browser), so it polls
+        # frequently with a small batch size rather than needing a separate
+        # bulk backfill run to reach a fully-mirrored catalogue.
+        card_image_mirror_poll = int(os.getenv("FUTGG_CARD_IMAGE_MIRROR_INTERVAL_SECONDS", "60"))
+        card_image_mirror_batch = int(os.getenv("FUTGG_CARD_IMAGE_MIRROR_BATCH_SIZE", "50"))
+        app.state.futgg_card_image_mirror_task = asyncio.create_task(
+            futgg_card_image_mirror_loop(pool, card_image_mirror_poll, card_image_mirror_batch)
+        )
+        logging.info("✅ FUT.GG card image mirror started (poll every %ss, batch %s)", card_image_mirror_poll, card_image_mirror_batch)
+
+        discord_poll = int(os.getenv("DISCORD_RECONCILE_INTERVAL_SECONDS", "60"))
+        app.state.discord_integration_task = asyncio.create_task(
+            discord_worker_loop(pool, discord_poll)
+        )
+        logging.info("Discord integration worker started (poll every %ss)", discord_poll)
+
+        # Best-effort: seeds the pre-existing Official guild (DISCORD_GUILD_ID)
+        # as a discord_servers row so it's managed the same way as every other
+        # server. Never overwrites an existing row. Failure here must not
+        # block boot - the env-var fallback in discord_integration.py still
+        # works if this never runs.
+        try:
+            await seed_official_server(pool)
+        except Exception:
+            logging.warning("Discord trading feed: failed to seed Official server row", exc_info=True)
+
+        # Multi-server trading feed (Free daily overview / Paid Partner live
+        # feed / Official superset). A complete no-op unless
+        # DISCORD_TRADING_FEED_ENABLED=1 - see
+        # app/services/discord_trading_feed.py's module docstring. Off by
+        # default; nothing here posts to any server until an admin registers
+        # and activates it AND the env flag is set.
+        discord_feed_poll = int(os.getenv("DISCORD_TRADING_FEED_POLL_SECONDS", "300"))
+
+        async def _discord_trading_feed_loop() -> None:
+            await asyncio.sleep(10)
+            while True:
+                try:
+                    await run_all_server_feeds(pool)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logging.warning("Discord trading feed worker pass failed", exc_info=True)
+                await asyncio.sleep(discord_feed_poll)
+
+        app.state.discord_trading_feed_task = asyncio.create_task(_discord_trading_feed_loop())
+        logging.info(
+            "Discord trading feed worker started (poll every %ss, enabled=%s)",
+            discord_feed_poll,
+            (os.getenv("DISCORD_TRADING_FEED_ENABLED") or "0").strip() == "1",
+        )
     else:
-        logging.info("⏸️  Investment Engine disabled (INVESTMENT_ENGINE_ENABLED not set)")
-
-    # Adaptive priority engine. Milestone 1 (always on): rule-classifies
-    # every active FUT.GG card into card_priority (baseline_tier - what
-    # the card IS, liquidity/card-type/opportunity/interest/volatility/
-    # event, with NO freshness/staleness input at all - and effective_
-    # tier, baseline merged with any active priority_triggers row, e.g.
-    # an SBC match). Purely additive - never touches next_sales_due_at/
-    # next_price_due_at. Milestone 1.5 (off by default, behind
-    # PRIORITY_ENGINE_ALLOW_CONSERVATIVE_DEMOTION): pushes
-    # next_sales_due_at LATER, never earlier, for a strictly-eligible
-    # subset of confirmed-inactive tail cards - see priority_recompute.py's
-    # module docstring for the full eligibility list and why it's
-    # anchored to last_sales_status_at rather than now(). Slow, decoupled
-    # cadence (default 15min) so a bug here can never affect either live
-    # scraper's own loop.
-    priority_recompute_poll = int(os.getenv("PRIORITY_RECOMPUTE_INTERVAL_SECONDS", "900"))
-    app.state.priority_recompute_task = asyncio.create_task(
-        priority_recompute_refresher_loop(pool, watchlist_pool, priority_recompute_poll)
-    )
-    logging.info("✅ Adaptive priority engine started (poll every %ss)", priority_recompute_poll)
-
-    # Re-hosts FUT.GG's own pre-composited card image (futgg_players.
-    # card_image_url) into our own R2 storage - see
-    # app/services/futgg_card_image_mirror.py's module docstring for why
-    # (never depend on FUT.GG's CDN for the app's main card image). Cheap
-    # (one HTTP GET + one R2 PUT per card, no browser), so it polls
-    # frequently with a small batch size rather than needing a separate
-    # bulk backfill run to reach a fully-mirrored catalogue.
-    card_image_mirror_poll = int(os.getenv("FUTGG_CARD_IMAGE_MIRROR_INTERVAL_SECONDS", "60"))
-    card_image_mirror_batch = int(os.getenv("FUTGG_CARD_IMAGE_MIRROR_BATCH_SIZE", "50"))
-    app.state.futgg_card_image_mirror_task = asyncio.create_task(
-        futgg_card_image_mirror_loop(pool, card_image_mirror_poll, card_image_mirror_batch)
-    )
-    logging.info("✅ FUT.GG card image mirror started (poll every %ss, batch %s)", card_image_mirror_poll, card_image_mirror_batch)
-
-    discord_poll = int(os.getenv("DISCORD_RECONCILE_INTERVAL_SECONDS", "60"))
-    app.state.discord_integration_task = asyncio.create_task(
-        discord_worker_loop(pool, discord_poll)
-    )
-    logging.info("Discord integration worker started (poll every %ss)", discord_poll)
-
-    # Best-effort: seeds the pre-existing Official guild (DISCORD_GUILD_ID)
-    # as a discord_servers row so it's managed the same way as every other
-    # server. Never overwrites an existing row. Failure here must not
-    # block boot - the env-var fallback in discord_integration.py still
-    # works if this never runs.
-    try:
-        await seed_official_server(pool)
-    except Exception:
-        logging.warning("Discord trading feed: failed to seed Official server row", exc_info=True)
-
-    # Multi-server trading feed (Free daily overview / Paid Partner live
-    # feed / Official superset). A complete no-op unless
-    # DISCORD_TRADING_FEED_ENABLED=1 - see
-    # app/services/discord_trading_feed.py's module docstring. Off by
-    # default; nothing here posts to any server until an admin registers
-    # and activates it AND the env flag is set.
-    discord_feed_poll = int(os.getenv("DISCORD_TRADING_FEED_POLL_SECONDS", "300"))
-
-    async def _discord_trading_feed_loop() -> None:
-        await asyncio.sleep(10)
-        while True:
-            try:
-                await run_all_server_feeds(pool)
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logging.warning("Discord trading feed worker pass failed", exc_info=True)
-            await asyncio.sleep(discord_feed_poll)
-
-    app.state.discord_trading_feed_task = asyncio.create_task(_discord_trading_feed_loop())
-    logging.info(
-        "Discord trading feed worker started (poll every %ss, enabled=%s)",
-        discord_feed_poll,
-        (os.getenv("DISCORD_TRADING_FEED_ENABLED") or "0").strip() == "1",
-    )
+        logging.info("⏸️  RUN_BACKGROUND_WORKERS=0 - this instance serves HTTP only, no background loops started")
 
     # The "social trading features" users-table ALTER/index block that used
     # to run here is now part of migrations/015_consolidate_core_bootstrap.sql
