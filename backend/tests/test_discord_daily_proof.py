@@ -717,6 +717,51 @@ def test_published_track_record_aggregates_across_multiple_sent_days_concurrentl
     assert result["losses"] == 1
 
 
+def test_published_track_record_and_recent_share_one_fetch_when_given_eligible_rows():
+    # Regression for the double-fetch fix: GET /api/v2/track-record calls
+    # both published_track_record() and published_recent_wins_and_losses()
+    # on every request. Before the fix, each independently called
+    # _fetch_published_eligible_rows() - one _SELECT_DAILY_OUTCOMES query
+    # per sent day in the window, run twice per page load. The router now
+    # fetches once and passes the result via `eligible_rows` to both -
+    # this proves that path produces the exact same output as the
+    # fetch-per-call path, so the sharing is safe.
+    from app.services.discord_daily_proof import (
+        _fetch_published_eligible_rows,
+        published_recent_wins_and_losses,
+        published_track_record,
+    )
+
+    day1 = datetime(2026, 8, 20).date()
+    pubs = [_pub_row(day1, PERIOD.start, PERIOD.end)]
+    rows_by_date = {
+        day1: [
+            _proof_row("target_hit", snapshot_id=1, name="Shared Win", graded_at=PERIOD.start + timedelta(hours=1)),
+            _proof_row("downside_hit", snapshot_id=2, name="Shared Loss", graded_at=PERIOD.start + timedelta(hours=2)),
+        ],
+    }
+    pool = _FakeProofLedgerPool(pubs, rows_by_date)
+
+    async def _via_shared_fetch():
+        eligible_rows = await _fetch_published_eligible_rows(pool, 90)
+        agg = await published_track_record(pool, window_days=90, eligible_rows=eligible_rows)
+        recent = await published_recent_wins_and_losses(pool, window_days=90, limit=5, eligible_rows=eligible_rows)
+        return agg, recent
+
+    async def _via_independent_fetches():
+        agg = await published_track_record(pool, window_days=90)
+        recent = await published_recent_wins_and_losses(pool, window_days=90, limit=5)
+        return agg, recent
+
+    shared_agg, shared_recent = asyncio.run(_via_shared_fetch())
+    independent_agg, independent_recent = asyncio.run(_via_independent_fetches())
+
+    assert shared_agg == independent_agg
+    assert shared_recent == independent_recent
+    assert shared_agg["wins"] == 1
+    assert shared_agg["losses"] == 1
+
+
 def test_published_recent_wins_and_losses_honest_when_nothing_sent():
     from app.services.discord_daily_proof import published_recent_wins_and_losses
 

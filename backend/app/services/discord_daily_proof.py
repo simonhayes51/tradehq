@@ -367,8 +367,22 @@ async def _fetch_published_eligible_rows(pool, window_days: int):
     return pubs, all_eligible, None
 
 
-async def published_track_record(pool, *, window_days: int = 90) -> dict[str, Any]:
-    pubs, all_eligible, earliest_ever = await _fetch_published_eligible_rows(pool, window_days)
+async def published_track_record(
+    pool, *, window_days: int = 90,
+    eligible_rows: "tuple[list, list[dict[str, Any]], Any] | None" = None,
+) -> dict[str, Any]:
+    """`eligible_rows` lets a caller that also needs
+    published_recent_wins_and_losses() (GET /api/v2/track-record does,
+    on every request) pass in an already-fetched
+    _fetch_published_eligible_rows() result instead of triggering a
+    second full re-fetch - each call re-runs one _SELECT_DAILY_OUTCOMES
+    query (3 correlated EXISTS subqueries) per sent day in the window,
+    so calling this twice per request doubled that cost for no reason.
+    """
+    pubs, all_eligible, earliest_ever = (
+        eligible_rows if eligible_rows is not None
+        else await _fetch_published_eligible_rows(pool, window_days)
+    )
     if not pubs:
         return {
             "has_published_data": False,
@@ -393,6 +407,7 @@ async def published_track_record(pool, *, window_days: int = 90) -> dict[str, An
 
 async def published_recent_wins_and_losses(
     pool, *, window_days: int = 90, limit: int = 5,
+    eligible_rows: "tuple[list, list[dict[str, Any]], Any] | None" = None,
 ) -> dict[str, Any]:
     """The 5 most recent published wins and 5 most recent published
     losses, kept in clearly separate lists so losses are always visible
@@ -401,8 +416,15 @@ async def published_recent_wins_and_losses(
     aggregate track record uses - the same card cannot appear twice
     unless it is genuinely two separate published recommendations
     (different snapshot_id/evaluated_at), which stays visible in the
-    output rather than being silently collapsed."""
-    pubs, all_eligible, earliest_ever = await _fetch_published_eligible_rows(pool, window_days)
+    output rather than being silently collapsed.
+
+    See published_track_record()'s `eligible_rows` docstring - same
+    reasoning, same parameter, so GET /api/v2/track-record's two calls
+    into this module share one fetch instead of two."""
+    pubs, all_eligible, earliest_ever = (
+        eligible_rows if eligible_rows is not None
+        else await _fetch_published_eligible_rows(pool, window_days)
+    )
     if not pubs or not all_eligible:
         return {
             "has_published_data": False,
