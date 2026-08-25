@@ -189,7 +189,7 @@ class MarketDataProvider:
 
 _SNAPSHOT_COLUMNS = """
     source_card_id, source_player_id, source_slug, source_url, game_year,
-    name, rating, primary_position, alternate_positions, rarity, squad,
+    name, display_name, full_name, rating, primary_position, alternate_positions, rarity, squad,
     price_tier, club, league, nation, club_source_id, league_source_id,
     nation_source_id, player_image_url, card_design_image_url,
     card_image_url, card_image_stored_url, card_image_stored_status,
@@ -243,6 +243,8 @@ _OPTIONAL_SNAPSHOT_COLUMNS = frozenset({
     "sales_p10",                # migration 050
     "sales_p90",                # migration 050
     "sales_interdecile_ratio",  # migration 050
+    "display_name",             # migration 065
+    "full_name",                # migration 065
 })
 
 #: Resolved once per process against the live view. None until first use.

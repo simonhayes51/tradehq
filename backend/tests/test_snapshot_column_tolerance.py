@@ -116,6 +116,30 @@ class TestColumnResolution:
         assert "current_bin" in caplog.text
 
     @sync
+    async def test_display_name_and_full_name_are_selected_on_a_migrated_view(self):
+        # Regression: migration 065 added display_name/full_name to
+        # futgg_market_snapshot so user-facing surfaces could prefer
+        # FUT.GG's short name ("Marquinhos") over the Player Information
+        # full legal name ("Marcos Aoás Corrêa") - but _SNAPSHOT_COLUMNS
+        # was never updated to actually request them, so
+        # get_player()/get_players_by_ids() silently never selected
+        # either column. _serialize_player()'s COALESCE(display_name,
+        # name) always saw display_name=None as a result and fell back
+        # to the full name for every single player, regardless of how
+        # well-populated the database's own display_name column was.
+        resolved = await mdp.resolve_snapshot_columns(_FakeConn(_all_wanted()))
+        assert "display_name" in resolved
+        assert "full_name" in resolved
+
+    @sync
+    async def test_a_pre_065_view_drops_display_name_and_full_name_only(self):
+        wanted = [c for c in _all_wanted() if c not in {"display_name", "full_name"}]
+        resolved = await mdp.resolve_snapshot_columns(_FakeConn(wanted))
+        assert "display_name" not in resolved
+        assert "full_name" not in resolved
+        assert "current_bin" in resolved
+
+    @sync
     async def test_the_view_is_inspected_once_per_process(self):
         conn = _FakeConn(_all_wanted())
         await mdp.resolve_snapshot_columns(conn)
