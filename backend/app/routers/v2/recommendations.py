@@ -89,7 +89,10 @@ async def _model_validation(window: str, window_days: int) -> Dict[str, Any]:
 
     try:
         core_pool = await get_core_pool()
-        futgg = await futgg_track_record(core_pool, horizon="24h", window_days=window_days)
+        # This response only ever reads `headline` below - never
+        # `breakdowns` - so skip the 7 extra per-dimension/reason-code
+        # GROUP BY scans track_record() otherwise runs on every call.
+        futgg = await futgg_track_record(core_pool, horizon="24h", window_days=window_days, include_breakdowns=False)
         if int(futgg.get("headline", {}).get("total_recommendations") or 0) > 0:
             head = futgg["headline"]
             entry_reached = int(head["entered"])
