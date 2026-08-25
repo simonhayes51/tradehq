@@ -175,6 +175,21 @@ def test_get_player_detail_shape():
     )
 
 
+def test_get_player_detail_prefers_display_name_over_full_legal_name():
+    # Once market_data_provider._SNAPSHOT_COLUMNS actually selects
+    # display_name (see test_snapshot_column_tolerance.py for the other
+    # half of this regression - that column was never in the SELECT list
+    # at all), _serialize_player()'s COALESCE(display_name, name) must
+    # actually surface it: FUT.GG's short display name ("Marquinhos"),
+    # not the Player Information full legal name ("Marcos Aoás Corrêa").
+    row = _row(name="Marcos Aoás Corrêa", display_name="Marquinhos")
+    resp = _client([row]).get("/api/v2/players/1")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["name"] == "Marquinhos"
+    assert body["player"]["name"] == "Marquinhos"
+
+
 def test_get_player_detail_bumps_price_priority_when_stale_for_tier():
     # gold_rare's threshold is 45 minutes - 60 minutes old is stale for
     # this tier even though it's well within the old flat 120-minute cutoff.
