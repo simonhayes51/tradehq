@@ -33,6 +33,22 @@ const WINDOWS = [
   ["all", "All time"],
 ];
 
+// Must match app/routers/v2/recommendations.py's _TRACK_RECORD_WINDOW_DAYS.
+const WINDOW_DAYS = { "7d": 7, "30d": 30, "90d": 90, all: 730 };
+
+// A brand-new Discord Proof Ledger (tracking for less time than the
+// selected window covers) will show byte-identical numbers across every
+// window wider than its actual history - there is nothing older to
+// differ on yet. Without this, that reads as a bug ("7d/30d/90d/All
+// time are all the same, is this broken?") rather than the honest,
+// expected state of a feature that only just started publishing.
+function daysSince(iso) {
+  if (!iso) return null;
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return null;
+  return Math.max(0, Math.floor((Date.now() - then) / 86_400_000));
+}
+
 const RESULT_FILTERS = [
   ["all", "All"],
   ["wins", "Wins"],
@@ -165,6 +181,9 @@ export default function TrackRecordPanel() {
   const published = data?.published;
   if (!published) return null;
 
+  const trackedDays = daysSince(published.tracking_since);
+  const windowNarrowerThanHistory = trackedDays != null && trackedDays < WINDOW_DAYS[window];
+
   return (
     <section className="track-record-panel">
       <div className="section-head compact">
@@ -186,6 +205,14 @@ export default function TrackRecordPanel() {
         scoring. Results are hypothetical (based on real market data) and don't guarantee any
         individual user achieved these exact prices.
       </p>
+
+      {published.has_published_data && windowNarrowerThanHistory ? (
+        <p className="track-record-disclosure small track-record-tracking-note">
+          Tracking published recommendations since {fmtDate(published.tracking_since)}
+          {trackedDays === 0 ? " (today)" : ` (${trackedDays} day${trackedDays === 1 ? "" : "s"})`} - this window
+          shows the same numbers as any shorter one until more history builds up, not a bug.
+        </p>
+      ) : null}
 
       {!published.has_published_data ? (
         <PublishedEmptyState published={published} />

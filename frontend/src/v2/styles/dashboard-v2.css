@@ -75,6 +75,9 @@
   font-size: 11px;
   color: #8e8e8e;
 }
+.track-record-tracking-note {
+  color: #f2c94c;
+}
 .track-record-recent-split {
   display: grid;
   grid-template-columns: 1fr 1fr;
