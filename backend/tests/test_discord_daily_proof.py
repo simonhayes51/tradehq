@@ -683,6 +683,40 @@ def test_published_recent_wins_and_losses_are_split_and_sorted_most_recent_first
     assert loss_names == ["A Loss"]
 
 
+def test_published_track_record_aggregates_across_multiple_sent_days_concurrently():
+    # Regression for the N+1 fix: _fetch_published_eligible_rows() used
+    # to fetch each sent day's outcomes one at a time on a single held
+    # connection - a 90-day window with dozens of sent days meant dozens
+    # of sequential round trips, which is what made the Track Record tab
+    # take minutes to load. The per-day fetches now run concurrently
+    # (bounded by _PERIOD_FETCH_CONCURRENCY); this proves that switching
+    # to asyncio.gather still aggregates every day's rows correctly,
+    # not just the fastest/first one to resolve.
+    from app.services.discord_daily_proof import published_track_record
+
+    day1 = datetime(2026, 8, 19).date()
+    day1_start = PERIOD.start - timedelta(days=1)
+    day1_end = PERIOD.end - timedelta(days=1)
+    day2 = datetime(2026, 8, 20).date()
+    day2_start = PERIOD.start
+    day2_end = PERIOD.end
+    pubs = [_pub_row(day1, day1_start, day1_end), _pub_row(day2, day2_start, day2_end)]
+    rows_by_date = {
+        day1: [_proof_row("target_hit", snapshot_id=1, name="Day One Win", graded_at=day1_start + timedelta(hours=1))],
+        day2: [
+            _proof_row("target_hit", snapshot_id=2, name="Day Two Win", graded_at=day2_start + timedelta(hours=1)),
+            _proof_row("downside_hit", snapshot_id=3, name="Day Two Loss", graded_at=day2_start + timedelta(hours=2)),
+        ],
+    }
+    pool = _FakeProofLedgerPool(pubs, rows_by_date)
+    result = asyncio.run(published_track_record(pool, window_days=90))
+
+    assert result["has_published_data"] is True
+    assert result["published_opportunities"] == 3
+    assert result["wins"] == 2
+    assert result["losses"] == 1
+
+
 def test_published_recent_wins_and_losses_honest_when_nothing_sent():
     from app.services.discord_daily_proof import published_recent_wins_and_losses
 
