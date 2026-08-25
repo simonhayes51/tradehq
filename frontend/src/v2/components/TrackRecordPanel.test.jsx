@@ -121,6 +121,25 @@ describe("TrackRecordPanel", () => {
     expect(screen.getByText("Loser Card")).toBeInTheDocument();
   });
 
+  it("explains identical numbers across windows when tracking history is younger than the selected window", () => {
+    // Regression: a Discord Proof Ledger that only started sending 3
+    // days ago shows byte-identical stats for 7d/30d/90d/All time -
+    // there's nothing older to differ on. Without an explanation this
+    // reads as a bug rather than the honest, expected state of a young
+    // feature.
+    const threeDaysAgo = new Date(Date.now() - 3 * 86_400_000).toISOString();
+    useTrackRecord.mockReturnValue(trackRecordResult({ ...PUBLISHED_WITH_DATA, tracking_since: threeDaysAgo }));
+    render(<TrackRecordPanel />); // default window is 90d, well past 3 days of history
+    expect(screen.getByText(/tracking published recommendations since/i)).toBeInTheDocument();
+    expect(screen.getByText(/not a bug/i)).toBeInTheDocument();
+  });
+
+  it("does not show the tracking-history note once history covers the selected window", () => {
+    useTrackRecord.mockReturnValue(trackRecordResult({ ...PUBLISHED_WITH_DATA, tracking_since: "2020-01-01" }));
+    render(<TrackRecordPanel />);
+    expect(screen.queryByText(/tracking published recommendations since/i)).not.toBeInTheDocument();
+  });
+
   it("keeps model validation collapsed by default and labelled as signals, not trades", () => {
     useTrackRecord.mockReturnValue(trackRecordResult(PUBLISHED_WITH_DATA, {
       graded_signals: 8134, entry_reached: 8014, entry_not_reached: 120,
