@@ -11,6 +11,21 @@ const CHECK_INTERVAL = 5 * 60 * 1000; // 5 minutes
 const MIN_REFRESH_GAP = 15 * 1000;
 
 const DEFAULT_LIMITS = { watchlist_max: 3, trending: { timeframes: ["24h"], limit: 5, smart: false } };
+const DEFAULT_CAPABILITIES = {
+  is_premium: false,
+  all_live_opportunities: false,
+  daily_opportunity_limit: null,
+  daily_finder_limit: null,
+  watchlist_limit: null,
+  active_alert_limit: null,
+  open_trade_limit: null,
+  portfolio_history_days: null,
+  ai_chat_daily_limit: null,
+  full_price_history: false,
+  full_history: false,
+  companion_access: false,
+  invest_full_feed: false,
+};
 
 export function EntitlementsProvider({ children }) {
   const [state, setState] = useState({
@@ -19,6 +34,7 @@ export function EntitlementsProvider({ children }) {
     isAdmin: false,
     features: [],
     limits: DEFAULT_LIMITS,
+    capabilities: DEFAULT_CAPABILITIES,
     roles: [],
     lastCheck: null,
   });
@@ -61,6 +77,7 @@ export function EntitlementsProvider({ children }) {
         isAdmin: Boolean(data?.is_admin),
         features: Array.isArray(data?.features) ? data.features : [],
         limits: data?.limits || DEFAULT_LIMITS,
+        capabilities: data?.capabilities || DEFAULT_CAPABILITIES,
         roles: Array.isArray(data?.roles) ? data.roles : [],
         lastCheck: new Date(),
       });

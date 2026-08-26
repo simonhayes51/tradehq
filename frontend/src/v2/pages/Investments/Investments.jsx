@@ -15,7 +15,8 @@
 // state here, never an error banner, since "nothing published yet" is
 // the expected steady state before/just after a launch.
 import { useState } from "react";
-import { AlertTriangle, ArrowRight, Gauge, LineChart, ShieldAlert, ShieldCheck, Wallet } from "lucide-react";
+import { Link } from "react-router-dom";
+import { AlertTriangle, ArrowRight, Gauge, LineChart, Lock, ShieldAlert, ShieldCheck, Wallet } from "lucide-react";
 import CoinValue from "../../components/CoinValue";
 import EmptyState from "../../components/EmptyState";
 import {
@@ -84,6 +85,10 @@ export default function Investments() {
   const notDeployed = [marketQuery, signalsQuery].some(
     (q) => q.isError && [404, undefined].includes(q.error?.response?.status),
   );
+  // Free callers get a `locked` block alongside exactly one real preview
+  // signal in `signals` (see backend/app/routers/v2/investments.py's
+  // list_signals) - Premium's response never has this key.
+  const locked = signalsQuery.data?.locked;
 
   return (
     <main className="v2-destination investments-page">
@@ -139,6 +144,17 @@ export default function Investments() {
         ) : null}
       </section>
 
+      {locked ? (
+        <div className="opp-locked-banner">
+          <Lock size={15} />
+          <span>
+            Free plan: {locked.unlockedToday ?? 0} labelled preview signal
+            {locked.previewCount ? ` — ${locked.previewCount} more with Premium` : ""}
+          </span>
+          <Link className="opp-locked-cta" to="/v2/billing?unlock=Investments">Upgrade to Premium</Link>
+        </div>
+      ) : null}
+
       <div className="finder-result-head">
         <div>
           <LineChart size={16} />
@@ -164,13 +180,38 @@ export default function Investments() {
           {signals
             .filter((s) => !budgetAmount || (s.max_buy != null && s.max_buy <= budgetAmount))
             .map((signal) => (
-              <InvestmentCard key={signal.id} signal={signal} />
+              <InvestmentCard key={signal.id} signal={signal} isFreePreview={Boolean(locked)} />
             ))}
         </section>
       ) : (
         <NoCallsState states={states} />
       )}
+
+      {locked?.previews?.length ? (
+        <section className="opp-locked-section">
+          <h3>More investment signals — Premium only</h3>
+          <div className="finder-grid inv-grid">
+            {locked.previews.map((p, i) => <LockedInvestmentCard key={i} preview={p} />)}
+          </div>
+        </section>
+      ) : null}
     </main>
+  );
+}
+
+function LockedInvestmentCard({ preview }) {
+  return (
+    <Link className="finder-card inv-card opp-card-locked" to="/v2/billing?unlock=Investments">
+      <div className="opp-locked-head">
+        <Lock size={16} />
+        <strong>{preview.budgetCategory ? `${preview.budgetCategory[0].toUpperCase()}${preview.budgetCategory.slice(1)} budget` : "Locked signal"}</strong>
+      </div>
+      <div className="opp-targets inv-targets">
+        <div><span>Liquidity</span><b>{preview.riskCategory || "unknown"}</b></div>
+        <div><span>Profit band</span><b>{preview.profitBand || "Varies"}</b></div>
+      </div>
+      <p className="opp-why">{preview.message || "Upgrade to Premium to unlock this signal."}</p>
+    </Link>
   );
 }
 
@@ -240,7 +281,7 @@ function RegimeCard({ state }) {
   );
 }
 
-function InvestmentCard({ signal }) {
+function InvestmentCard({ signal, isFreePreview }) {
   const roi = signal.expected_roi_pct != null ? Number(signal.expected_roi_pct) : null;
   const confidence = CONFIDENCE_LABEL(signal.confidence);
   const supply = TIER_LABEL(signal.investability);
@@ -251,6 +292,7 @@ function InvestmentCard({ signal }) {
 
   return (
     <div className="finder-card inv-card">
+      {isFreePreview ? <div className="inv-free-preview-badge">Your free preview investment</div> : null}
       <div className="finder-card-top">
         <div>
           <h2>{signal.name || "Unknown player"}</h2>

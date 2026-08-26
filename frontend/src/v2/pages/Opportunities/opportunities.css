@@ -64,3 +64,38 @@
   .opp-crosslinks { flex-direction: column; }
   .opp-crosslinks .opp-crosslink { width: 100%; }
 }
+
+/* Free-tier locked banner + preview cards (see backend's `locked` block
+   on GET /api/v2/opportunities for a Free caller). */
+.opp-locked-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 14px 0;
+  padding: 12px 16px;
+  border: 1px solid rgba(57,255,138,.35);
+  border-radius: 4px;
+  background: rgba(57,255,138,.08);
+  color: #d8d8d8;
+  font-size: 13px;
+  flex-wrap: wrap;
+}
+.opp-locked-banner svg { flex: 0 0 auto; color: var(--v2-accent, #39ff8a); }
+.opp-locked-banner span { flex: 1; min-width: 200px; }
+.opp-locked-cta {
+  flex: 0 0 auto;
+  padding: 8px 14px;
+  border-radius: 3px;
+  background: var(--v2-accent, #39ff8a);
+  color: #101010;
+  font-weight: 800;
+  font-size: 12px;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.opp-locked-section { margin-top: 22px; }
+.opp-locked-section h3 { margin: 0 0 12px; font-size: 15px; color: #b8b8b8; }
+.opp-card-locked { border-style: dashed; opacity: .92; }
+.opp-locked-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.opp-locked-head svg { color: var(--v2-accent, #39ff8a); }
+.opp-locked-head strong { font-size: 14px; }

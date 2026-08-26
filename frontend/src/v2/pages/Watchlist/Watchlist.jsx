@@ -36,16 +36,24 @@ export default function Watchlist() {
   const [alertTarget, setAlertTarget] = useState(null);
   const [alertForm, setAlertForm] = useState({ metric: "price", rise_pct: 10, fall_pct: 10, cooloff_minutes: 30 });
   const [busyAlert, setBusyAlert] = useState(false);
+  // POST /api/watchlist-alerts 402s once Free's active_alert_limit (1) is
+  // hit (see backend/main.py's create_watchlist_alert) - axios already
+  // dispatches `premium:blocked` for any 402, but nothing in v2 actually
+  // listens for that event yet, so without this the create call would
+  // reject unhandled and the modal would just look stuck on "Saving…".
+  const [alertLimitError, setAlertLimitError] = useState(null);
 
   function openAlertModal(item) {
     setAlertTarget(item);
     setAlertForm({ metric: "price", rise_pct: 10, fall_pct: 10, cooloff_minutes: 30 });
+    setAlertLimitError(null);
   }
 
   async function handleCreateAlert(e) {
     e.preventDefault();
     if (!alertTarget) return;
     setBusyAlert(true);
+    setAlertLimitError(null);
     try {
       await createAlert({
         card_id: Number(alertTarget.card_id),
@@ -58,6 +66,16 @@ export default function Watchlist() {
       setAlertTarget(null);
       refreshAlerts();
       setAlertsOpen(true);
+    } catch (err) {
+      const detail = err?.response?.data?.detail;
+      if (err?.response?.status === 402 && detail?.feature) {
+        setAlertLimitError({
+          message: detail.message || "Free plan allows up to 1 active price alert.",
+          upgradeUrl: detail.upgrade_url || "/v2/billing",
+        });
+      } else {
+        setAlertLimitError({ message: err?.userMessage || "Could not save this alert. Please try again." });
+      }
     } finally {
       setBusyAlert(false);
     }
@@ -151,6 +169,14 @@ export default function Watchlist() {
               <h2>Set Alert — {alertTarget.player_name}</h2>
               <button type="button" className="v2-modal-close" onClick={() => setAlertTarget(null)} aria-label="Close">✕</button>
             </div>
+            {alertLimitError ? (
+              <div className="v2-alert-limit-banner">
+                <span>{alertLimitError.message}</span>
+                {alertLimitError.upgradeUrl ? (
+                  <Link className="v2-alerts-upgrade-cta" to={alertLimitError.upgradeUrl}>Upgrade to Premium</Link>
+                ) : null}
+              </div>
+            ) : null}
             <form onSubmit={handleCreateAlert}>
               <p className="muted v2-alert-modal-intro">
                 Notify me when this card{alertTarget.current_price != null ? <> (reference: <strong>{Number(alertTarget.current_price).toLocaleString()}</strong> coins)</> : null}:

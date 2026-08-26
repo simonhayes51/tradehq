@@ -22,7 +22,7 @@ import "../../styles/dashboard-v2.css";
 import "../../styles/dashboard-analysis-modal.css";
 import "../../styles/mobile-polish.css";
 
-const EMPTY={marketRegime:{label:"Unknown",confidence:0,summary:"",metrics:{}},todaysOpportunities:[],highConfidenceInvestments:[],cardsToAvoid:[],biggestMovers:[],watchlistAlerts:[],watchedCount:0,nextPromo:null,latestMarketEvents:[],latestSbcImpact:[],locked:{opportunityFeed:false,previewCount:0}};
+const EMPTY={marketRegime:{label:"Unknown",confidence:0,summary:"",metrics:{}},todaysOpportunities:[],highConfidenceInvestments:[],cardsToAvoid:[],biggestMovers:[],watchlistAlerts:[],watchedCount:0,nextPromo:null,latestMarketEvents:[],latestSbcImpact:[],locked:{opportunityFeed:false,previewCount:0,dailyLimit:null,unlockedToday:0,previews:[]}};
 // Strategy Finder used to hit the legacy FUTBIN engine's
 // /api/v2/recommendations/strategy/{name} - that pipeline's fair_value_mv
 // is broken (see the comment above baseItems below), so every tab always
@@ -243,7 +243,7 @@ export default function HomeDashboard(){
       {showTrackRecord?<TrackRecordPanel/>:null}
 
       {showOpportunities?<>
-        <section className="queue-section" id="queue"><div className="section-head"><div><span>LIVE OPPORTUNITIES</span><h2>Next best moves</h2></div><Link to="/v2/players">Find a player <ArrowRight size={15}/></Link></div><div className="queue-grid">{queue.length?queue.map((item,index)=><QueueCard key={item.cardId} item={item} rank={index+2} onOpen={setSelected} onWatch={watchItem} watchState={watchStates[String(item.cardId)]}/>):<EmptyState compact text="No additional opportunities right now."/>}{dashboard.locked?.opportunityFeed&&dashboard.locked?.previewCount>0?<LockedPreviewCard count={dashboard.locked.previewCount} navigate={navigate}/>:null}</div></section>
+        <section className="queue-section" id="queue"><div className="section-head"><div><span>LIVE OPPORTUNITIES</span><h2>Next best moves</h2>{dashboard.locked?.opportunityFeed?<p className="locked-usage-line">{dashboard.locked.unlockedToday||0} of {dashboard.locked.dailyLimit??"?"} unlocked today</p>:null}</div><Link to="/v2/players">Find a player <ArrowRight size={15}/></Link></div><div className="queue-grid">{queue.length?queue.map((item,index)=><QueueCard key={item.cardId} item={item} rank={index+2} onOpen={setSelected} onWatch={watchItem} watchState={watchStates[String(item.cardId)]}/>):<EmptyState compact text="No additional opportunities right now."/>}{dashboard.locked?.opportunityFeed&&dashboard.locked?.previewCount>0?<LockedPreviewCard previews={dashboard.locked.previews} count={dashboard.locked.previewCount} navigate={navigate}/>:null}</div></section>
         <section className="strategy-section"><div className="section-head"><div><span>STRATEGY FINDER</span><h2>Find a different angle</h2></div></div><div className="strategy-tabs">{STRATEGIES.map(([key,label])=><button key={key} className={strategy===key?"active":""} onClick={()=>setStrategy(key)}>{label}</button>)}</div><p className="strategy-blurb">{STRATEGY_BLURBS[strategy]||strategyQuery.data?.description}</p><div className="strategy-grid">{strategyQuery.isLoading?<EmptyState compact text="Scanning this strategy…"/>:strategyItems.length?strategyItems.map(item=><StrategyCard key={item.cardId} item={item} onOpen={setSelected} onWatch={watchItem} watchState={watchStates[String(item.cardId)]}/>):<EmptyState compact text={STRATEGY_EMPTY_TEXT[strategy]||DEFAULT_STRATEGY_EMPTY_TEXT}/>}</div>
           {!strategyQuery.isLoading&&watchItems.length?<div className="strategy-watch-section"><div className="strategy-watch-head"><span>NEAR ENTRY</span><p>Not yet actionable - within reach of entry, still profitable at today's price. Not a current recommendation.</p></div><div className="strategy-watch-grid">{visibleWatchItems.map(item=><WatchCard key={item.cardId} item={item} onOpen={setSelected} onWatch={watchItem} watchState={watchStates[String(item.cardId)]}/>)}</div>{watchItems.length>visibleWatchItems.length?<Link className="strategy-watch-more" to="/v2/trade-finder">View {watchItems.length-visibleWatchItems.length} more near-entry cards <ArrowRight size={14}/></Link>:null}</div>:null}
         </section>
@@ -353,7 +353,21 @@ function PulseFooter({nextPromo,sbcImpact}){
 }
 function Metric({label,value,sub,tone}){return <div className={`metric ${tone||""}`}><span>{label}</span><strong>{value}</strong>{sub?<small>{sub}</small>:null}</div>}
 function ConfidenceRing({value,compact=false}){const score=value==null?null:Math.max(0,Math.min(100,Math.round(Number(value))));return <div className={`confidence-ring ${compact?"compact":""}${score==null?" no-data":""}`} style={{"--confidence":`${(score??0)*3.6}deg`}}><span>{score==null?"—":score}{score==null?null:<small>%</small>}</span></div>}
-function LockedPreviewCard({count,navigate}){return <button className="queue-card locked-preview" onClick={()=>navigate(`/v2/billing?unlock=${encodeURIComponent("the full Opportunities feed")}`)}><div className="locked-preview-copy"><strong>{count} more {count===1?"opportunity":"opportunities"} today</strong><span>Upgrade to see the full live feed, updated as the market moves.</span></div><ChevronRight className="queue-arrow" size={18}/></button>}
+function LockedPreviewCard({count,previews,navigate}){
+  const shown=(previews||[]).slice(0,3);
+  const goUpgrade=()=>navigate(`/v2/billing?unlock=${encodeURIComponent("the full Opportunities feed")}`);
+  return <div className="locked-preview-group">
+    {shown.map((p,i)=><button key={i} className="queue-card locked-preview" onClick={goUpgrade}>
+      <div className="locked-preview-copy">
+        <strong>{p.budgetCategory?`${p.budgetCategory[0].toUpperCase()}${p.budgetCategory.slice(1)} budget`:"Locked opportunity"} · {p.riskCategory||"unknown"} risk</strong>
+        <span>{p.profitBand||"Profit potential varies"}</span>
+        <span>{p.message||"Upgrade to see the full live feed."}</span>
+      </div>
+      <ChevronRight className="queue-arrow" size={18}/>
+    </button>)}
+    {count>shown.length?<button className="queue-card locked-preview" onClick={goUpgrade}><div className="locked-preview-copy"><strong>{count-shown.length} more {count-shown.length===1?"opportunity":"opportunities"} today</strong><span>Upgrade to see the full live feed, updated as the market moves.</span></div><ChevronRight className="queue-arrow" size={18}/></button>:null}
+  </div>;
+}
 function QueueCard({item,rank,onOpen,onWatch,watchState}){const open=()=>onOpen(item);return <div className="queue-card" role="button" tabIndex={0} onClick={open} onKeyDown={event=>(event.key==="Enter"||event.key===" ")&&open()}><span className="rank">#{rank}</span><div className="queue-art"><CardImage player={item.player} compact/></div><div className="queue-name"><strong>{nameOf(item.player)}</strong><PlayerMeta player={item.player} source={item.source}/><small>{reason(item)}</small>{item.source==="futgg"?<MarketFreshness priceAgeSeconds={item.priceAgeSeconds} capturedAt={item.updatedAt} compact/>:null}</div><button className={`queue-watch ${watchState==="saved"?"saved":""}`} onClick={event=>{event.stopPropagation();onWatch(item)}} aria-label={watchState==="saved"?`${nameOf(item.player)} is on your watchlist`:`Add ${nameOf(item.player)} to watchlist`}><Star size={17} fill={watchState==="saved"?"currentColor":"none"}/></button><div className="queue-reason"><b>WHY THIS MOVE</b><span>{reason(item)}</span></div><div className="queue-signals"><TradeSignal label="BUY BELOW" value={item.entryPrice??item.currentBin} tone="entry"/><TradeSignal label="EXPECTED PROFIT" value={expectedProfit(item)} tone="profit" signed sub={`${roi(item)} after tax`}/></div><ConfidenceRing value={item.confidence} compact/><ChevronRight className="queue-arrow" size={18}/></div>}
 // Live-entry-state badge - the server-computed answer to "can I act on
 // this right now" (app/services/strategy_definitions.py's

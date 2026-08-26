@@ -361,9 +361,11 @@
   text-align: left;
 }
 .queue-card.locked-preview:hover { border-color: var(--green); }
+.locked-preview-group { display: grid; gap: 10px; grid-column: 1 / -1; }
 .locked-preview-copy { display: grid; gap: 4px; }
 .locked-preview-copy strong { font-size: 15px; color: var(--green); }
 .locked-preview-copy span { font-size: 12px; color: #8e8e8e; }
+.locked-usage-line { margin: 4px 0 0; color: var(--muted); font-size: 12px; font-weight: 700; }
 
 /* First-time-visitor intro strip (IntroBanner) - only rendered when
    signed out, above the live ticker. */

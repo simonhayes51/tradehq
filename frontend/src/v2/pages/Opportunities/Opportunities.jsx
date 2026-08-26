@@ -7,7 +7,7 @@
 // a new page rather than an edit of an existing one.
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { ArrowRight, LineChart, RotateCcw, ShieldAlert, SlidersHorizontal, TrendingUp } from "lucide-react";
+import { ArrowRight, Lock, LineChart, RotateCcw, ShieldAlert, SlidersHorizontal, TrendingUp } from "lucide-react";
 import CoinValue from "../../components/CoinValue";
 import EmptyState from "../../components/EmptyState";
 import MarketFreshness from "../../components/MarketFreshness";
@@ -42,6 +42,10 @@ export default function Opportunities() {
     : Array.isArray(query.data?.results) ? query.data.results
     : Array.isArray(query.data) ? query.data
     : [];
+  // Free-tier callers get an additional `locked` block on the response
+  // (see backend/app/routers/v2/futgg_market.py's list_opportunities) -
+  // Premium's response never has this key at all.
+  const locked = query.data?.locked;
 
   const set = (key) => (event) => setFilters((current) => ({ ...current, [key]: event.target.value }));
   const filtersActive = Object.keys(DEFAULTS).some((key) => filters[key] !== DEFAULTS[key]);
@@ -91,6 +95,17 @@ export default function Opportunities() {
         </div>
       </section>
 
+      {locked ? (
+        <div className="opp-locked-banner">
+          <Lock size={15} />
+          <span>
+            2 daily opportunities included — {locked.unlockedToday ?? 0} unlocked today
+            {locked.previewCount ? ` — ${locked.previewCount} more with Premium` : ""}
+          </span>
+          <Link className="opp-locked-cta" to="/v2/billing?unlock=the%20full%20Opportunities%20feed">Upgrade to Premium</Link>
+        </div>
+      ) : null}
+
       <div className="finder-result-head">
         <div><TrendingUp size={16} /><strong>{query.isLoading ? "Scanning for opportunities…" : `${items.length} matching ${items.length === 1 ? "opportunity" : "opportunities"}`}</strong></div>
         {filtersActive ? <button onClick={() => setFilters(DEFAULTS)}><RotateCcw size={14} /> Reset filters</button> : null}
@@ -109,7 +124,33 @@ export default function Opportunities() {
       ) : (
         <EmptyState icon={<TrendingUp size={25} />} text="No current opportunities match those filters." action={filtersActive ? <button onClick={() => setFilters(DEFAULTS)}>Clear filters</button> : null} />
       )}
+
+      {locked?.previews?.length ? (
+        <section className="opp-locked-section">
+          <h3>More opportunities today — Premium only</h3>
+          <div className="finder-grid opp-grid">
+            {locked.previews.map((p, i) => <LockedOpportunityCard key={i} preview={p} />)}
+          </div>
+        </section>
+      ) : null}
     </main>
+  );
+}
+
+function LockedOpportunityCard({ preview }) {
+  return (
+    <Link className="finder-card opp-card opp-card-locked" to="/v2/billing?unlock=the%20full%20Opportunities%20feed">
+      <div className="opp-locked-head">
+        <Lock size={16} />
+        <strong>{preview.budgetCategory ? `${preview.budgetCategory[0].toUpperCase()}${preview.budgetCategory.slice(1)} budget` : "Locked opportunity"}</strong>
+      </div>
+      <div className="opp-targets">
+        <div><span>Risk</span><b>{preview.riskCategory || "unknown"}</b></div>
+        <div><span>Profit band</span><b>{preview.profitBand || "Varies"}</b></div>
+        <div><span>Age</span><b>{preview.ageMinutes != null ? `${preview.ageMinutes}m` : "—"}</b></div>
+      </div>
+      <p className="opp-why">{preview.message || "Upgrade to Premium to unlock this opportunity."}</p>
+    </Link>
   );
 }
 

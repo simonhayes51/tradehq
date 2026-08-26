@@ -8,7 +8,7 @@
 // see the FUTBIN -> FUT.GG migration plan.
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { ArrowRight, RotateCcw, ShieldAlert, SlidersHorizontal, TrendingUp } from "lucide-react";
+import { ArrowRight, Lock, RotateCcw, ShieldAlert, SlidersHorizontal, TrendingUp } from "lucide-react";
 import CoinValue from "../../components/CoinValue";
 import EmptyState from "../../components/EmptyState";
 import MarketFreshness from "../../components/MarketFreshness";
@@ -16,6 +16,11 @@ import { useFutggTradeFinder } from "../../hooks/useFutggMarket";
 import { buildWhyText } from "../../lib/tradeNarrative";
 import { PageHead } from "../Players/Players";
 import "./trade-finder.css";
+// Reuses the locked-banner/locked-card styles Opportunities.jsx already
+// defines (.opp-locked-banner/.opp-locked-cta/.opp-card-locked etc.) -
+// same visual language for the same Free/Premium concept rather than a
+// second copy of the same rules.
+import "../Opportunities/opportunities.css";
 
 const DEFAULTS = {
   budget: "", min_profit: "", min_roi: "", risk: "", min_confidence: "",
@@ -59,6 +64,16 @@ export default function TradeFinder() {
   const set = (key) => (event) => setFilters((current) => ({ ...current, [key]: event.target.value }));
   const filtersActive = Object.keys(DEFAULTS).some((key) => filters[key] !== DEFAULTS[key]);
   const notDeployed = query.isError && [404, undefined].includes(query.error?.response?.status);
+
+  // Free's daily search allowance ran out - the backend 402s the whole
+  // request rather than returning a locked/preview shape (see
+  // futgg_market.py's trade_finder), so this needs its own branch rather
+  // than reusing the generic query.isError copy below.
+  const limitDetail = query.error?.response?.status === 402 ? query.error.response.data?.detail : null;
+  // A successful Free response instead carries `locked: true` plus
+  // remaining-search counters and preview-shaped items (see that same
+  // endpoint's Free branch) - never the full actionable fields.
+  const isLockedResult = query.data?.locked === true;
 
   return <main className="v2-destination trade-finder-page">
     <PageHead eyebrow="TRADE FINDER" title="Search every trade, your way" copy="Set your budget, minimum return, risk, position, rarity and sort order — every current live-priced trade is in scope here, not just the pre-filtered buy signals. Just want today's top picks with no setup? Try Opportunities." />
@@ -132,6 +147,16 @@ export default function TradeFinder() {
       </div>
     </section>
 
+    {isLockedResult ? (
+      <div className="opp-locked-banner">
+        <Lock size={15} />
+        <span>
+          {query.data.searchesRemainingToday ?? 0} of {query.data.dailySearchLimit ?? "?"} searches remaining today
+        </span>
+        <Link className="opp-locked-cta" to="/v2/billing?unlock=Trade%20Finder">Upgrade to Premium</Link>
+      </div>
+    ) : null}
+
     <div className="finder-result-head">
       <div><SlidersHorizontal size={16}/><strong>{query.isLoading ? "Scanning for trades…" : `${items.length} matching ${items.length === 1 ? "trade" : "trades"}`}</strong></div>
       {filtersActive ? <button onClick={() => setFilters(DEFAULTS)}><RotateCcw size={14}/> Reset filters</button> : null}
@@ -139,13 +164,39 @@ export default function TradeFinder() {
 
     {query.isLoading ? (
       <EmptyState icon={<SlidersHorizontal size={25}/>} text="Checking the latest trade opportunities…" />
+    ) : limitDetail ? (
+      <EmptyState
+        icon={<Lock size={25}/>}
+        text={limitDetail.message || `You've used today's ${limitDetail.limit ?? ""} free Trade Finder searches.`}
+        action={<Link className="opp-locked-cta" to={limitDetail.upgrade_url || "/v2/billing?unlock=Trade%20Finder"}>Upgrade to Premium — or come back tomorrow</Link>}
+      />
     ) : notDeployed ? (
       <EmptyState icon={<ShieldAlert size={25}/>} error text="Trade Finder isn't available right now. Please check back shortly." action={<button onClick={() => query.refetch()}>Try again</button>} />
     ) : query.isError ? (
       <EmptyState icon={<ShieldAlert size={25}/>} error text="Trade Finder could not load the opportunity feed." action={<button onClick={() => query.refetch()}>Try again</button>} />
     ) : items.length ? (
       <section className="finder-grid">
-        {items.map((item) => {
+        {items.map((item, index) => {
+          if (item.locked) {
+            // Free-tier preview item: none of the normal actionable
+            // fields exist on this shape (see futgg_market.py's
+            // locked_opportunity_preview) - render a locked teaser
+            // instead of attempting to read undefined card/price fields.
+            return (
+              <Link className="finder-card opp-card-locked" key={index} to="/v2/billing?unlock=Trade%20Finder">
+                <div className="opp-locked-head">
+                  <Lock size={16} />
+                  <strong>{item.budgetCategory ? `${item.budgetCategory[0].toUpperCase()}${item.budgetCategory.slice(1)} budget` : "Locked trade"}</strong>
+                </div>
+                <div className="opp-targets">
+                  <div><span>Risk</span><b>{item.riskCategory || "unknown"}</b></div>
+                  <div><span>Profit band</span><b>{item.profitBand || "Varies"}</b></div>
+                  <div><span>Age</span><b>{item.ageMinutes != null ? `${item.ageMinutes}m` : "—"}</b></div>
+                </div>
+                <p className="opp-why">{item.message || "Upgrade to Premium to unlock this trade."}</p>
+              </Link>
+            );
+          }
           const cardId = item.card_id ?? item.source_card_id;
           const confidence = item.confidence_score != null ? Math.round(Number(item.confidence_score) * 100) : null;
           const roi = item.expected_roi != null ? Number(item.expected_roi) * 100 : null;
