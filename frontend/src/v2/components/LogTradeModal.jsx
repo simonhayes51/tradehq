@@ -63,7 +63,14 @@ export default function LogTradeModal({ item, onClose, onSaved }) {
       setState("saved");
       onSaved?.(result);
     } catch (err) {
-      setError(err.message || "Could not log this purchase.");
+      // Free's open_trade_limit (app/routers/v2/trades.py) 402s with a
+      // structured detail object once the cap is hit - surface its
+      // message/upgrade_url rather than a generic failure.
+      if (err?.status === 402 && err?.detail?.feature) {
+        setError(err.detail.message || "Free plan allows a limited number of open trades. Upgrade to track more.");
+      } else {
+        setError(err.message || "Could not log this purchase.");
+      }
       setState("idle");
     }
   }

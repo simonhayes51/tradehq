@@ -11,7 +11,17 @@ async function request(path, options = {}) {
   });
   if (!response.ok) {
     const body = await response.json().catch(() => null);
-    throw new Error(body?.detail || body?.message || `Request failed (${response.status})`);
+    // body.detail is a structured object on the 402s this router raises
+    // for Free-tier limits (limit_reached - see app/routers/v2/trades.py),
+    // not a string - keep it intact (plus the status) on the thrown Error
+    // rather than collapsing it into the message, so callers can branch
+    // on detail.feature/upgrade_url instead of parsing message text.
+    const detail = body?.detail;
+    const message = (typeof detail === "string" ? detail : detail?.message) || body?.message || `Request failed (${response.status})`;
+    const err = new Error(message);
+    err.status = response.status;
+    err.detail = typeof detail === "object" ? detail : null;
+    throw err;
   }
   return response.json();
 }

@@ -361,6 +361,15 @@
   margin-left: 10px;
   text-decoration: underline;
 }
+.club-history-limit-note {
+  color: var(--v2-muted);
+  font-size: 13px;
+  margin: 0 0 12px;
+}
+.club-history-limit-note a {
+  color: inherit;
+  text-decoration: underline;
+}
 .club-modal-backdrop {
   position: fixed;
   inset: 0;

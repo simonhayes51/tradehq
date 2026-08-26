@@ -14,6 +14,7 @@ export default function Club() {
   const [tab, setTab] = useState("open");
   const [open, setOpen] = useState([]);
   const [history, setHistory] = useState([]);
+  const [historyLimitedToDays, setHistoryLimitedToDays] = useState(null);
   const [performance, setPerformance] = useState({});
   const [timeline, setTimeline] = useState([]);
   const [closing, setClosing] = useState(null);
@@ -29,6 +30,7 @@ export default function Club() {
       ]);
       setOpen(openData.trades || []);
       setHistory(historyData.trades || []);
+      setHistoryLimitedToDays(historyData.historyLimitedToDays ?? null);
       setPerformance(performanceData || {});
       setTimeline(timelineData.items || []);
     } catch (err) {
@@ -71,8 +73,26 @@ export default function Club() {
       <div className="club-tabs"><button className={tab === "open" ? "active" : ""} onClick={() => setTab("open")}>Open trades <span>{open.length}</span></button><button className={tab === "history" ? "active" : ""} onClick={() => setTab("history")}>Sold players <span>{history.length}</span></button><button className={tab === "performance" ? "active" : ""} onClick={() => setTab("performance")}>Performance</button><button className={tab === "achievements" ? "active" : ""} onClick={() => setTab("achievements")}>Achievements</button></div>
 
       {tab === "open" ? <OpenTrades trades={open} onClose={setClosing} /> : null}
-      {tab === "history" ? <History trades={history} /> : null}
-      {tab === "performance" ? <Performance data={performance} /> : null}
+      {tab === "history" ? (
+        <>
+          {historyLimitedToDays ? (
+            <p className="club-history-limit-note">
+              Free shows the last {historyLimitedToDays} days · <a href="#/v2/billing">Upgrade for full history</a>
+            </p>
+          ) : null}
+          <History trades={history} />
+        </>
+      ) : null}
+      {tab === "performance" ? (
+        <>
+          {performance.historyLimitedToDays ? (
+            <p className="club-history-limit-note">
+              Free shows basic totals for the last {performance.historyLimitedToDays} days · <a href="#/v2/billing">Upgrade for full performance analytics</a>
+            </p>
+          ) : null}
+          <Performance data={performance} />
+        </>
+      ) : null}
       {tab === "achievements" ? <Achievements items={achievements} /> : null}
 
       {closing ? <CloseModal trade={closing} onCancel={() => setClosing(null)} onClosed={async () => { setClosing(null); await load(); }} /> : null}
