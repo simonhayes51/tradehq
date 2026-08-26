@@ -281,6 +281,71 @@ def test_a_futgg_only_watchlist_never_queries_the_legacy_table(monkeypatch):
     assert pdb.fetch_calls == 0
 
 
+class FakeWatchDBWithCount(FakeWatchDB):
+    """Extends FakeWatchDB with a settable watchlist row-count for
+    add_watch_item's watchlist_max gate - the plain FakeWatchDB.fetchval
+    always returns 0, which can never actually reach the cap."""
+
+    def __init__(self, rows=None, existing_count: int = 0):
+        super().__init__(rows)
+        self.existing_count = existing_count
+
+    async def fetchval(self, query: str, *args):
+        if "COUNT(*) FROM watchlist WHERE user_id" in query:
+            return self.existing_count
+        return await super().fetchval(query, *args)
+
+
+def _free_entitlements(_request):
+    async def _inner():
+        return {
+            "user_id": "u1", "is_premium": False,
+            "limits": {"watchlist_max": 3},
+        }
+    return _inner()
+
+
+def test_add_watch_item_rejected_once_at_the_free_watchlist_cap(monkeypatch):
+    # Scenario 6: the Free watchlist add-limit 402 path had no test at
+    # all before this - list_watch_items/refresh_watch_item are covered
+    # above, but POST /api/watchlist (add_watch_item) never was.
+    monkeypatch.setattr(watchlist_router, "compute_entitlements", _free_entitlements)
+    wdb = FakeWatchDBWithCount(existing_count=3)  # already at watchlist_max
+    pdb = FakePlayerDB()
+    payload = watchlist_router.WatchlistCreate(
+        card_id=555, player_name="Haaland", version=None, platform="ps", notes=None,
+    )
+
+    async def run():
+        return await watchlist_router.add_watch_item(payload, FakeRequest(), wdb=wdb)
+
+    try:
+        run_async(run)
+        assert False, "expected a 402 once at the Free watchlist cap"
+    except Exception as exc:
+        from fastapi import HTTPException
+        assert isinstance(exc, HTTPException)
+        assert exc.status_code == 402
+        assert exc.detail["error"] == "limit_reached"
+        assert exc.detail["feature"] == "watchlist"
+
+
+def test_add_watch_item_allowed_below_the_free_watchlist_cap(monkeypatch):
+    monkeypatch.setattr(watchlist_router, "compute_entitlements", _free_entitlements)
+    fake_provider = FakeFutggProvider({555: _futgg_row()})
+    monkeypatch.setattr(watchlist_router, "_futgg_provider", lambda: _async_return(fake_provider))
+    wdb = FakeWatchDBWithCount(existing_count=2)  # one below watchlist_max=3
+    payload = watchlist_router.WatchlistCreate(
+        card_id=555, player_name="Haaland", version=None, platform="ps", notes=None, source="futgg",
+    )
+
+    async def run():
+        return await watchlist_router.add_watch_item(payload, FakeRequest(), wdb=wdb)
+
+    result = run_async(run)
+    assert result["ok"] is True
+
+
 def test_a_broken_legacy_table_degrades_the_row_not_the_whole_watchlist(monkeypatch):
     """Reported as "Your watchlist could not be loaded." A legacy-metadata
     lookup failing must cost that row its card art, not cost the user
