@@ -1,2 +1,5 @@
 research/fc26_launch_market/scripts/__pycache__/
 __pycache__/
+
+# Local Claude Code agent worktree scaffolding - not project source
+.claude/worktrees/
