@@ -59,17 +59,57 @@ Feature = Literal[
     "advanced_api_v2",
     "trade_journal",
     "opportunity_feed",
-    # Real per-message LLM cost (unlike ai_copilot's free keyword matcher),
-    # so this is gated Pro+ from day one rather than free.
+    # Real per-message LLM cost (unlike ai_copilot's free keyword matcher).
+    # Free gets a small daily trial allowance rather than a hard block -
+    # see FREE_AI_CHAT_DAILY_LIMIT - so this is listed "free" below, with
+    # the tier distinction expressed as a limit, not a require_feature gate.
     "ai_chat",
+    # Browser-extension overlay (companion.py) - full fair-value/buy-below/
+    # sell-target data, so it needs the same protection as fair_value/
+    # deal_confidence. No free tier at all per product spec (locked
+    # explanation only), unlike the other Pro features above.
+    "companion",
+    # Invest section (investments.py) - Free gets exactly one labeled
+    # preview investment (enforced in-route, not via require_feature, since
+    # the preview itself must stay servable to Free callers); this feature
+    # name gates the *full* feed/analysis.
+    "invest_feed",
 ]
 
 Tier = Literal["free", "pro", "elite"]
+
+# Consumer-facing: "pro" and "elite" both mean Premium. Elite has no real
+# Stripe SKU today (see module docstring history) - it only exists as an
+# internal ceiling for admin/manual-grant overrides. Partner, Founding
+# Member, staff, and any other complimentary grant map onto "pro"/"elite"
+# via users.tier/premium_until (see _resolve_tier) - there is no separate
+# consumer-facing plan for any of them.
+PREMIUM_TIERS: Set[Tier] = {"pro", "elite"}
+
+
+def is_premium_tier(tier: Tier) -> bool:
+    return tier in PREMIUM_TIERS
+
 
 # ---- Limits (overridable via env) -------------------------------------------
 FREE_WATCHLIST_MAX = int(os.getenv("WATCHLIST_FREE_MAX", os.getenv("WATCHLIST_BASIC_MAX", "3")))
 PRO_WATCHLIST_MAX = int(os.getenv("WATCHLIST_PRO_MAX", "25"))
 ELITE_WATCHLIST_MAX = int(os.getenv("WATCHLIST_ELITE_MAX", "500"))
+
+# Free-tier daily/standing allowances for the Free vs Premium redesign.
+# Premium (pro/elite) gets None (unlimited) for every one of these - see
+# _limits_for(). All overridable via env for tuning without a redeploy.
+FREE_DAILY_OPPORTUNITY_LIMIT = int(os.getenv("FREE_DAILY_OPPORTUNITY_LIMIT", "2"))
+FREE_DAILY_FINDER_LIMIT = int(os.getenv("FREE_DAILY_FINDER_LIMIT", "3"))
+FREE_ACTIVE_ALERT_LIMIT = int(os.getenv("FREE_ACTIVE_ALERT_LIMIT", "1"))
+FREE_OPEN_TRADE_LIMIT = int(os.getenv("FREE_OPEN_TRADE_LIMIT", "3"))
+FREE_PORTFOLIO_HISTORY_DAYS = int(os.getenv("FREE_PORTFOLIO_HISTORY_DAYS", "7"))
+FREE_AI_CHAT_DAILY_LIMIT = int(os.getenv("FREE_AI_CHAT_DAILY_LIMIT", "3"))
+# Opportunity/finder/AI-chat daily allowances reset at this UTC hour.
+# EAFC Live has no other "day boundary" convention in use anywhere else in
+# the codebase, so this documents UTC as the standard rather than inventing
+# a new one.
+DAILY_RESET_TIMEZONE = "UTC"
 
 # Legacy aliases still imported elsewhere
 BASIC_WATCHLIST_MAX = FREE_WATCHLIST_MAX
@@ -93,9 +133,11 @@ FEATURE_MIN_TIER: Dict[Feature, Tier] = {
     "leaderboard": "free",
     "referrals": "free",
     "watchlist": "free",          # size still limited by tier below
+    "trade_journal": "free",      # open-trade count still limited by tier below
+    "ai_chat": "free",            # daily message count still limited by tier below
+    "trade_finder": "free",       # daily search count still limited by tier below
     # Pro — the daily-driver tools
     "smart_buy": "pro",
-    "trade_finder": "pro",
     "deal_confidence": "pro",
     "backtest": "pro",
     "smart_trending": "pro",
@@ -114,10 +156,16 @@ FEATURE_MIN_TIER: Dict[Feature, Tier] = {
     "investment_score_history": "pro",
     "portfolio_performance": "pro",
     "daily_ai_briefing": "pro",
-    "trade_journal": "pro",
-    "ai_chat": "pro",
+    # Premium (pro) gets every eligible opportunity immediately per the
+    # Free/Premium product spec - this used to be "elite" (meaning no real
+    # Stripe customer ever actually got it, since elite has no SKU - see
+    # module docstring). Free itself is handled via FREE_DAILY_OPPORTUNITY_LIMIT
+    # + in-route locked previews, not by excluding "opportunity_feed" from
+    # free's feature set entirely.
+    "opportunity_feed": "pro",
+    "companion": "pro",
+    "invest_feed": "pro",
     # v2 - Elite (the edge)
-    "opportunity_feed": "elite",
     "advanced_backtesting": "elite",
     "early_data_refresh": "elite",
     "advanced_api_v2": "elite",
@@ -267,23 +315,68 @@ def _resolve_tier(state: Dict[str, Any]) -> Tier:
     return "pro" if paid else "free"
 
 
+# Premium (pro/elite) allowances that are simply "no cap" - represented as
+# None (rather than a large finite number) so callers can tell "unlimited"
+# apart from "a generous limit" without hardcoding a magic threshold.
+_PREMIUM_DAILY_LIMITS = {
+    "daily_opportunity_limit": None,
+    "daily_finder_limit": None,
+    "active_alert_limit": None,
+    "open_trade_limit": None,
+    "portfolio_history_days": None,
+    "ai_chat_daily_limit": None,
+}
+
+
 def _limits_for(tier: Tier) -> Dict[str, Any]:
     if tier == "elite":
         return {
             "watchlist_max": ELITE_WATCHLIST_MAX,
             "trending": ELITE_TRENDING,
             "bulk_trades_max": 100,
+            **_PREMIUM_DAILY_LIMITS,
         }
     if tier == "pro":
         return {
             "watchlist_max": PRO_WATCHLIST_MAX,
             "trending": PRO_TRENDING,
             "bulk_trades_max": 25,
+            **_PREMIUM_DAILY_LIMITS,
         }
     return {
         "watchlist_max": FREE_WATCHLIST_MAX,
         "trending": FREE_TRENDING,
         "bulk_trades_max": 10,
+        "daily_opportunity_limit": FREE_DAILY_OPPORTUNITY_LIMIT,
+        "daily_finder_limit": FREE_DAILY_FINDER_LIMIT,
+        "active_alert_limit": FREE_ACTIVE_ALERT_LIMIT,
+        "open_trade_limit": FREE_OPEN_TRADE_LIMIT,
+        "portfolio_history_days": FREE_PORTFOLIO_HISTORY_DAYS,
+        "ai_chat_daily_limit": FREE_AI_CHAT_DAILY_LIMIT,
+    }
+
+
+def _capabilities_for(tier: Tier, limits: Dict[str, Any]) -> Dict[str, Any]:
+    """A consumer-facing summary of `limits`/`features`, in the shape the
+    frontend actually wants (named capabilities rather than `plan ===`
+    checks scattered across components). Derived entirely from the same
+    tier/limits this module already computes - not a second, competing
+    source of truth."""
+    premium = is_premium_tier(tier)
+    return {
+        "is_premium": premium,
+        "all_live_opportunities": premium,
+        "daily_opportunity_limit": limits["daily_opportunity_limit"],
+        "daily_finder_limit": limits["daily_finder_limit"],
+        "watchlist_limit": limits["watchlist_max"],
+        "active_alert_limit": limits["active_alert_limit"],
+        "open_trade_limit": limits["open_trade_limit"],
+        "portfolio_history_days": limits["portfolio_history_days"],
+        "ai_chat_daily_limit": limits["ai_chat_daily_limit"],
+        "full_price_history": premium,
+        "full_history": premium,
+        "companion_access": premium,
+        "invest_full_feed": premium,
     }
 
 
@@ -293,11 +386,19 @@ def features_for_tier(tier: Tier) -> Set[Feature]:
 
 
 async def compute_entitlements(req: Request) -> Dict[str, Any]:
-    sess = req.session or {}
+    # req.session raises AssertionError if SessionMiddleware isn't
+    # installed on this app (rather than just returning {}) - true for
+    # every real deployment (main.py installs it), but not for a bare
+    # FastAPI() test app exercising a router in isolation. Treating that
+    # case as anonymous/free (not raising) means routes that call this can
+    # be exercised in tests that never wire up SessionMiddleware, and a
+    # genuinely session-less internal caller degrades safely too.
+    sess = (req.session or {}) if "session" in req.scope else {}
     user_id = sess.get("user_id") or (sess.get("user") or {}).get("id")
 
     if not user_id:
         tier: Tier = "free"
+        limits = _limits_for(tier)
         return {
             "user_id": None,
             "plan": None,
@@ -307,7 +408,8 @@ async def compute_entitlements(req: Request) -> Dict[str, Any]:
             "is_premium": False,
             "is_admin": False,
             "features": sorted(features_for_tier(tier)),
-            "limits": _limits_for(tier),
+            "limits": limits,
+            "capabilities": _capabilities_for(tier, limits),
         }
 
     cached = _ENT_CACHE.get(str(user_id))
@@ -321,12 +423,13 @@ async def compute_entitlements(req: Request) -> Dict[str, Any]:
 
     is_admin = _is_admin(state, str(user_id), str(discord_id) if discord_id else None)
     tier = "elite" if is_admin else _resolve_tier(state)
-    is_premium = tier in ("pro", "elite")
+    is_premium = is_premium_tier(tier)
 
     premium_until = state.get("premium_until") or (
         state.get("profile_premium_until") if state.get("active_subscription") else None
     )
 
+    limits = _limits_for(tier)
     ent = {
         "user_id": str(user_id),
         "plan": state.get("plan"),
@@ -336,7 +439,8 @@ async def compute_entitlements(req: Request) -> Dict[str, Any]:
         "is_premium": is_premium,
         "is_admin": is_admin,
         "features": sorted(features_for_tier(tier)),
-        "limits": _limits_for(tier),
+        "limits": limits,
+        "capabilities": _capabilities_for(tier, limits),
     }
     _ENT_CACHE[str(user_id)] = {"at": time.time(), "ent": dict(ent)}
     return ent
@@ -351,7 +455,14 @@ async def explain_entitlements(req: Request) -> Dict[str, Any]:
     """Self-serve diagnosis: every raw signal the tier decision reads, plus
     Answers 'why am I not premium?' without anyone having to read server logs. Exposed (for the
     logged-in user only) at /api/entitlements/debug."""
-    sess = req.session or {}
+    # req.session raises AssertionError if SessionMiddleware isn't
+    # installed on this app (rather than just returning {}) - true for
+    # every real deployment (main.py installs it), but not for a bare
+    # FastAPI() test app exercising a router in isolation. Treating that
+    # case as anonymous/free (not raising) means routes that call this can
+    # be exercised in tests that never wire up SessionMiddleware, and a
+    # genuinely session-less internal caller degrades safely too.
+    sess = (req.session or {}) if "session" in req.scope else {}
     user_id = sess.get("user_id") or (sess.get("user") or {}).get("id")
     if not user_id:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -385,6 +496,62 @@ async def explain_entitlements(req: Request) -> Dict[str, Any]:
             "(ADMIN_DISCORD_IDS / account_type='admin')."
         ),
     }
+
+
+def _current_reset_day():
+    return _now().date()
+
+
+async def increment_daily_usage(pool: asyncpg.Pool, user_id: str, usage_key: str, *, limit: Optional[int]) -> Dict[str, Any]:
+    """Atomically records one use of `usage_key` for `user_id` today (UTC -
+    see DAILY_RESET_TIMEZONE) and reports whether it was within `limit`.
+
+    `limit=None` means unlimited (Premium) - skips the table write entirely
+    since there's nothing to enforce or count against.
+
+    Concurrency-safe: the INSERT .. ON CONFLICT DO UPDATE .. RETURNING count
+    is a single atomic statement, so two simultaneous requests from the same
+    user (two tabs, a retry) can't both observe "count was 2, now allowed"
+    for what should have been the 3rd and 4th use - Postgres serializes the
+    two writers on that row and each sees the other's increment.
+    """
+    if limit is None:
+        return {"allowed": True, "used": None, "limit": None, "remaining": None}
+
+    day = _current_reset_day()
+    row = await pool.fetchrow(
+        """
+        INSERT INTO daily_usage_counters (user_id, usage_key, day, count)
+        VALUES ($1, $2, $3, 1)
+        ON CONFLICT (user_id, usage_key, day)
+        DO UPDATE SET count = daily_usage_counters.count + 1, updated_at = now()
+        RETURNING count
+        """,
+        str(user_id), usage_key, day,
+    )
+    used = row["count"]
+    return {
+        "allowed": used <= limit,
+        "used": min(used, limit),
+        "limit": limit,
+        "remaining": max(0, limit - used),
+    }
+
+
+async def get_daily_usage(pool: asyncpg.Pool, user_id: str, usage_key: str, *, limit: Optional[int]) -> Dict[str, Any]:
+    """Read-only version of increment_daily_usage - for status/usage
+    endpoints (e.g. the Account page's counters) that must not themselves
+    consume an allowance just by being viewed."""
+    if limit is None:
+        return {"used": None, "limit": None, "remaining": None}
+
+    day = _current_reset_day()
+    row = await pool.fetchrow(
+        "SELECT count FROM daily_usage_counters WHERE user_id=$1 AND usage_key=$2 AND day=$3",
+        str(user_id), usage_key, day,
+    )
+    used = row["count"] if row else 0
+    return {"used": min(used, limit), "limit": limit, "remaining": max(0, limit - used)}
 
 
 def require_feature(feature: Feature):

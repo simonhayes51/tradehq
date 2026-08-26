@@ -22,7 +22,8 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from app.auth.entitlements import compute_entitlements, require_feature
+from app.auth.entitlements import compute_entitlements, increment_daily_usage, require_feature
+from app.db import get_core_pool
 from app.routers.trade_finder import trade_finder
 from app.routers.v2.recommendations import get_player_recommendation, track_record
 from app.services.player_resolver import resolve_card
@@ -203,12 +204,34 @@ async def _run_tool(request: Request, name: str, args: Dict[str, Any]) -> Dict[s
 
 @router.post("/chat")
 async def chat(body: ChatRequest, request: Request) -> Dict[str, Any]:
+    # ai_chat is a "free" feature in FEATURE_MIN_TIER (see entitlements.py) -
+    # Free gets a small daily trial allowance rather than the hard 402
+    # block this used to be, Premium keeps the existing per-minute-only
+    # rate limit with no daily cap (ai_chat_daily_limit is None for
+    # pro/elite - see _limits_for).
     await require_feature("ai_chat")(request)
     ent = await compute_entitlements(request)
     user_id = ent.get("user_id")
     if not user_id:
         raise HTTPException(401, "Not authenticated")
     await _check_rate_limit(str(user_id))
+
+    daily_limit = ent["limits"].get("ai_chat_daily_limit")
+    if daily_limit is not None:
+        core_pool = await get_core_pool()
+        usage = await increment_daily_usage(core_pool, str(user_id), "ai_chat_message", limit=daily_limit)
+        if not usage["allowed"]:
+            raise HTTPException(
+                402,
+                detail={
+                    "error": "daily_limit_reached",
+                    "feature": "ai_chat",
+                    "limit": daily_limit,
+                    "remaining": 0,
+                    "message": f"Free plan allows {daily_limit} AI chat messages per day - resets at midnight UTC.",
+                    "upgrade_url": "/billing",
+                },
+            )
 
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:

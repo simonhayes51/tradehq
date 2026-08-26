@@ -2247,8 +2247,16 @@ async def list_watchlist_alerts(user_id: str = Depends(get_current_user)):
 
 @app.post("/api/watchlist-alerts")
 async def create_watchlist_alert(
-    payload: WatchlistAlertCreate, user_id: str = Depends(get_current_user)
+    payload: WatchlistAlertCreate, request: Request, user_id: str = Depends(get_current_user)
 ):
+    # Free: max active_alert_limit alerts, enforced server-side (this used
+    # to have no limit at all despite Billing.jsx marketing "Price alerts"
+    # as Premium-only). Checked against the existing (card_id, platform,
+    # metric) row below - editing an existing alert never counts as a new
+    # one, only a genuinely new rule does, since the INSERT below is an
+    # upsert on that same key.
+    ent = await compute_entitlements(request)
+    alert_limit = ent["limits"].get("active_alert_limit")
     qs = None
     qe = None
     if payload.quiet_start:
@@ -2291,6 +2299,27 @@ async def create_watchlist_alert(
             ref_price = live.get("price")
         if ref_price is None:
             raise HTTPException(400, "No sales data yet to set a liquidity baseline for this card")
+
+    if alert_limit is not None:
+        async with watchlist_pool.acquire() as w:
+            already_exists = await w.fetchval(
+                "SELECT 1 FROM watchlist_alerts WHERE user_id=$1 AND card_id=$2 AND platform=$3 AND metric=$4",
+                user_id, int(payload.card_id), plat, metric,
+            )
+            if not already_exists:
+                active_count = await w.fetchval(
+                    "SELECT COUNT(*) FROM watchlist_alerts WHERE user_id=$1", user_id
+                )
+                if int(active_count or 0) >= alert_limit:
+                    raise HTTPException(
+                        402,
+                        detail={
+                            "error": "limit_reached",
+                            "feature": "watchlist_alerts",
+                            "message": f"Free plan allows up to {alert_limit} active price alert(s).",
+                            "upgrade_url": "/billing",
+                        },
+                    )
 
     # Upsert on (user_id, card_id, platform, metric) - see migration 055.
     # A resubmission (double-click, or the user genuinely editing their

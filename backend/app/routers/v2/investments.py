@@ -8,12 +8,15 @@ accumulation windows), never "is there money in this one listing right
 now" - see app/services/investment_engine/__init__.py's module docstring
 for the full Trade-vs-Investment distinction.
 
-Ungated (no entitlement check), mirroring the precedent already set by
-GET /api/v2/market/regime and this file's sibling futgg_market.py: new,
-provider-neutral surface, not a replacement for any gated feature. If
-product wants a paid split later, follow fair_value.py's _teaser()
-convention on top of this router - nothing below needs to change for
-that.
+GET /investments/signals (the live feed) is gated for the Free/Premium
+(£3/mo) split: Premium gets the full feed; Free gets exactly one real,
+clearly-labelled preview signal (deterministic per user per UTC day - see
+app/services/free_tier_gating.py) plus locked, non-actionable previews of
+the rest. Every other endpoint here (strategies list, market-state,
+ledger/summary track record, a single signal by id, shadow-report,
+budget-plan) stays as before - this file previously documented the whole
+router as ungated by design; that was true before there was a Free/
+Premium product split for this feature to serve.
 
 Publishing: GET /signals and /candidates only ever return rows with
 shadow = false (i.e. INVESTMENT_ENGINE_PUBLISH_SIGNALS was on when the
@@ -30,8 +33,15 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
+from app.auth.entitlements import compute_entitlements
 from app.db import get_core_pool
 from app.routers.admin import require_admin
+from app.services.free_tier_gating import (
+    age_minutes,
+    budget_category,
+    pick_deterministic_indices,
+    profit_band,
+)
 from app.services.investment_engine import ledger
 from app.services.investment_engine.config import INVESTMENT_ENGINE_CONFIG
 from app.services.investment_engine.strategies import STRATEGIES
@@ -71,6 +81,28 @@ def _row_to_signal(row: Dict[str, Any]) -> Dict[str, Any]:
         "after_tax_profit": float(row["after_tax_profit"]) if row.get("after_tax_profit") is not None else None,
         "after_tax_roi_pct": float(row["after_tax_roi_pct"]) if row.get("after_tax_roi_pct") is not None else None,
         "exit_reason": row.get("exit_reason"),
+    }
+
+
+def _locked_signal_preview(row: Dict[str, Any]) -> Dict[str, Any]:
+    """Free-tier teaser for an investment signal outside today's one-item
+    preview allowance - same non-actionable shape as
+    free_tier_gating.locked_opportunity_preview, adapted to this row's own
+    fields (max_buy/target_price/expected_roi_pct rather than a
+    CardIntelligence object)."""
+    max_buy = float(row["max_buy"]) if row.get("max_buy") is not None else None
+    profit_amount = None
+    if max_buy is not None and row.get("expected_roi_pct") is not None:
+        profit_amount = max_buy * (float(row["expected_roi_pct"]) / 100.0)
+    minutes = age_minutes(row.get("opened_at"))
+    age_text = f"{minutes} minute{'s' if minutes != 1 else ''} ago" if minutes is not None else "recently"
+    return {
+        "locked": True,
+        "budgetCategory": budget_category(int(max_buy) if max_buy is not None else None),
+        "riskCategory": (row.get("liquidity") or "unknown"),
+        "profitBand": profit_band(profit_amount),
+        "ageMinutes": minutes,
+        "message": f"Premium members received this investment signal {age_text}.",
     }
 
 
@@ -146,6 +178,9 @@ async def list_signals(
     if include_shadow:
         await require_admin(request)
 
+    ent = await compute_entitlements(request)
+    is_premium = bool(ent.get("is_premium"))
+
     where = ["TRUE"]
     args: List[Any] = []
 
@@ -168,7 +203,28 @@ async def list_signals(
         args.append(budget)
         where.append(f"s.max_buy <= ${len(args)}")
 
-    args.extend([page_size, (page - 1) * page_size])
+    if is_premium:
+        args.extend([page_size, (page - 1) * page_size])
+        query = f"""
+            SELECT s.*, COALESCE(p.display_name, p.name) AS name, p.rating, p.primary_position, m.current_bin
+            FROM investment_signals s
+            LEFT JOIN futgg_players p ON p.source_card_id = s.source_card_id
+            LEFT JOIN futgg_market_snapshot m ON m.source_card_id = s.source_card_id
+            WHERE {' AND '.join(where)}
+            ORDER BY s.confidence DESC NULLS LAST, s.opened_at DESC
+            LIMIT ${len(args) - 1} OFFSET ${len(args)}
+        """
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(query, *args)
+        return {"signals": [_row_to_signal(dict(r)) for r in rows], "page": page, "page_size": page_size}
+
+    # Free: exactly one real, clearly-labelled preview signal - the same
+    # pick all day regardless of refresh/device/repeat calls (see
+    # pick_deterministic_indices) - plus locked, non-actionable previews
+    # of everything else currently eligible. Pagination isn't meaningful
+    # for Free's fixed one-item allowance, so page/page_size are ignored;
+    # the candidate scan is capped at MAX_PAGE_SIZE rows (matching the
+    # existing per-page ceiling) rather than the whole table.
     query = f"""
         SELECT s.*, COALESCE(p.display_name, p.name) AS name, p.rating, p.primary_position, m.current_bin
         FROM investment_signals s
@@ -176,11 +232,25 @@ async def list_signals(
         LEFT JOIN futgg_market_snapshot m ON m.source_card_id = s.source_card_id
         WHERE {' AND '.join(where)}
         ORDER BY s.confidence DESC NULLS LAST, s.opened_at DESC
-        LIMIT ${len(args) - 1} OFFSET ${len(args)}
+        LIMIT {MAX_PAGE_SIZE}
     """
     async with pool.acquire() as conn:
         rows = await conn.fetch(query, *args)
-    return {"signals": [_row_to_signal(dict(r)) for r in rows], "page": page, "page_size": page_size}
+    rows = [dict(r) for r in rows]
+    picked_idx = pick_deterministic_indices(len(rows), ent.get("user_id"), 1, salt="invest")
+    preview_signals = [_row_to_signal(rows[i]) for i in picked_idx]
+    locked_previews = [_locked_signal_preview(r) for i, r in enumerate(rows) if i not in picked_idx]
+    return {
+        "signals": preview_signals,
+        "page": 1,
+        "page_size": len(preview_signals),
+        "locked": {
+            "investFeed": True,
+            "unlockedToday": len(preview_signals),
+            "previewCount": len(locked_previews),
+            "previews": locked_previews,
+        },
+    }
 
 
 @router.get("/investments/signals/{signal_id}")

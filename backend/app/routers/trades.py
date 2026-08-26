@@ -23,24 +23,42 @@ async def get_my_trades(
     if not user_id:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
-    offset = (page - 1) * limit
-    
-    # Get total count
-    total = await db.fetchval(
-        "SELECT COUNT(*) FROM trades WHERE user_id=$1",
-        user_id
-    )
+    # Free: full history stays in the database (never deleted/hidden -
+    # a downgrade must not lose data), but only the last
+    # portfolio_history_days of it is served here; Premium gets
+    # everything. None means unlimited (Premium).
+    history_days = ent["limits"].get("portfolio_history_days")
 
-    # Get paginated trades
-    rows = await db.fetch(
-        """
-        SELECT * FROM trades
-        WHERE user_id=$1
-        ORDER BY timestamp DESC
-        LIMIT $2 OFFSET $3
-        """,
-        user_id, limit, offset
-    )
+    offset = (page - 1) * limit
+
+    if history_days is None:
+        total = await db.fetchval(
+            "SELECT COUNT(*) FROM trades WHERE user_id=$1",
+            user_id
+        )
+        rows = await db.fetch(
+            """
+            SELECT * FROM trades
+            WHERE user_id=$1
+            ORDER BY timestamp DESC
+            LIMIT $2 OFFSET $3
+            """,
+            user_id, limit, offset
+        )
+    else:
+        total = await db.fetchval(
+            "SELECT COUNT(*) FROM trades WHERE user_id=$1 AND timestamp >= now() - ($2 || ' days')::interval",
+            user_id, history_days,
+        )
+        rows = await db.fetch(
+            """
+            SELECT * FROM trades
+            WHERE user_id=$1 AND timestamp >= now() - ($4 || ' days')::interval
+            ORDER BY timestamp DESC
+            LIMIT $2 OFFSET $3
+            """,
+            user_id, limit, offset, history_days,
+        )
 
     total_pages = (total + limit - 1) // limit if total > 0 else 1
 
@@ -53,7 +71,8 @@ async def get_my_trades(
             "total_pages": total_pages,
             "has_next": page < total_pages,
             "has_prev": page > 1
-        }
+        },
+        "historyLimitedToDays": history_days,
     }
 
 class TradeItem(BaseModel):
@@ -88,6 +107,31 @@ async def create_trade(
     user_id = ent.get("user_id")
     if not user_id:
         raise HTTPException(status_code=401, detail="Not authenticated")
+
+    # Free: max open_trade_limit open trades, enforced server-side (this
+    # used to have no limit at all despite trade_journal being listed as a
+    # pro feature in entitlements.py - see FEATURE_MIN_TIER). Checked
+    # against trades.status='open' (migration 032) - this endpoint only
+    # ever creates status='closed' rows (sell is a required field on
+    # TradeCreate), so today this check has no live trigger; it's wired
+    # up correctly for whenever an open-position entry point exists (see
+    # migration 032's bought_at/target_sell/nullable-sell columns, added
+    # for exactly that and never finished on the create side).
+    open_trade_limit = ent["limits"].get("open_trade_limit")
+    if open_trade_limit is not None:
+        open_count = await db.fetchval(
+            "SELECT COUNT(*) FROM trades WHERE user_id=$1 AND status='open'", user_id
+        )
+        if int(open_count or 0) >= open_trade_limit:
+            raise HTTPException(
+                status_code=402,
+                detail={
+                    "error": "limit_reached",
+                    "feature": "trade_journal",
+                    "message": f"Free plan allows up to {open_trade_limit} open trade(s).",
+                    "upgrade_url": "/billing",
+                },
+            )
 
     # Calculate profit/tax
     ea_tax_rate = 0.05

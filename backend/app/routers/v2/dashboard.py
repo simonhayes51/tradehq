@@ -20,11 +20,15 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Request
 
 from app.auth.entitlements import compute_entitlements
+from app.services.free_tier_gating import (
+    locked_opportunity_preview,
+    pick_free_daily_opportunities,
+)
 from app.db import get_core_pool, get_player_pool, get_watchlist_db
 from app.routers.v2.futgg_market import (
     _score_and_filter,
@@ -590,12 +594,12 @@ async def get_dashboard(request: Request) -> Dict[str, Any]:
     # always included (never a fabricated example); PREVIEW_LOCKED_COUNT
     # exists purely so the frontend can render "N more, upgrade to see
     # them" instead of the feed just looking short.
-    FREE_PREVIEW_COUNT = 1
     todays_opportunities: List[Dict[str, Any]] = []
     high_confidence: List[Dict[str, Any]] = []
     cards_to_avoid: List[Dict[str, Any]] = []
     recent_predictions: List[Dict[str, Any]] = []
-    preview_locked_count = 0
+    locked_previews: List[Dict[str, Any]] = []
+    daily_opportunity_limit = ent["limits"].get("daily_opportunity_limit")
 
     # FUT.GG-native candidate scan - the exact same source and scoring
     # helpers app/routers/v2/futgg_market.py's already-working Trade
@@ -677,7 +681,8 @@ async def get_dashboard(request: Request) -> Dict[str, Any]:
     except Exception:
         sbc_demand = None
 
-    all_opportunities = [_futgg_to_recommendation(row, ci, sbc_demand) for row, ci in buy_scored[:8]]
+    eligible_pairs = buy_scored[:8]
+    all_opportunities = [_futgg_to_recommendation(row, ci, sbc_demand) for row, ci in eligible_pairs]
     all_high_confidence = [d for d in all_opportunities if (d.get("confidence") or 0) >= 70]
 
     if opportunities_unlocked:
@@ -686,12 +691,21 @@ async def get_dashboard(request: Request) -> Dict[str, Any]:
         cards_to_avoid = [_futgg_to_recommendation(row, ci, sbc_demand) for row, ci in avoid_scored[:6]]
         recent_predictions = [_futgg_to_recommendation(row, ci, sbc_demand) for row, ci in recent_scored[:8]]
     else:
-        # Free/Pro preview: a real BUY call, not a fabricated example, so
-        # the free tier can actually see the product work before paying
-        # for the full feed - see `locked.previewCount` below for what's
-        # still behind the paywall.
-        todays_opportunities = all_opportunities[:FREE_PREVIEW_COUNT]
-        preview_locked_count = max(0, len(all_opportunities) - FREE_PREVIEW_COUNT)
+        # Free: a fixed, deterministic 2-per-day mix of real BUY calls
+        # (never fabricated examples) - the same pick all day regardless
+        # of refresh/device/repeat calls (see pick_free_daily_opportunities).
+        # Everything else eligible today is shown as a locked, non-
+        # actionable preview so Free can see more exists without it being
+        # usable - never a hard "nothing else today" wall.
+        picked_idx = pick_free_daily_opportunities(
+            eligible_pairs, ent.get("user_id"), daily_opportunity_limit or 0,
+        )
+        todays_opportunities = [all_opportunities[i] for i in picked_idx]
+        locked_previews = [
+            locked_opportunity_preview(ci)
+            for i, (row, ci) in enumerate(eligible_pairs)
+            if i not in picked_idx
+        ]
 
     # No generated-card-art step needed for FUT.GG cards (unlike the
     # legacy FUTBIN pipeline's async ensure_cards_requested()) -
@@ -871,6 +885,9 @@ async def get_dashboard(request: Request) -> Dict[str, Any]:
         "latestSbcImpact": latest_sbc_impact,
         "locked": {
             "opportunityFeed": not opportunities_unlocked,
-            "previewCount": preview_locked_count,
+            "previewCount": len(locked_previews),
+            "dailyLimit": daily_opportunity_limit,
+            "unlockedToday": len(todays_opportunities),
+            "previews": locked_previews,
         },
     }

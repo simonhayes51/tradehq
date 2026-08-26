@@ -15,12 +15,16 @@ themselves reading only futgg_players/futgg_bin_history/
 futgg_sales_history/futgg_market_snapshot (migrations/038) - never the
 legacy fut_players/sales_history/bin_history tables.
 
-Ungated (no entitlement check): this is new provider-neutral surface,
-not a replacement for any existing gated feature - mirrors the precedent
-already set by GET /api/v2/market/regime (see app/routers/v2/market.py's
-own comment on why that route is free). If/when product wants a teaser/
-paid split here, follow app/routers/fair_value.py's _teaser() convention
-on top of this router rather than inside the provider/intelligence layers.
+/opportunities and /trade-finder are now gated for the Free/Premium (£3/mo)
+tier split (see app/auth/entitlements.py's daily_opportunity_limit/
+daily_finder_limit and app/services/free_tier_gating.py's selection/
+redaction helpers): Premium gets the full, immediate, unpaginated-limit
+behaviour documented below unchanged; Free gets a small deterministic
+daily allowance of real, fully-detailed opportunities plus non-actionable
+locked previews of the rest, and a hard server-side daily search cap on
+/trade-finder. This replaced the "ungated, new provider-neutral surface"
+design this file previously documented - that was true when this router
+had no Free/Premium product split to serve yet.
 """
 from __future__ import annotations
 
@@ -31,10 +35,16 @@ from typing import Any, Dict, List, Optional
 
 import asyncpg
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
+from app.auth.entitlements import compute_entitlements, increment_daily_usage
 from app.db import get_core_pool
 from app.routers.admin import require_admin
+from app.services.free_tier_gating import (
+    entry_price_of,
+    locked_opportunity_preview,
+    pick_free_daily_opportunities,
+)
 from app.services.futgg_intelligence import (
     DEFAULT_MAX_ACCEPTABLE_PRICE_AGE_MINUTES,
     MAX_ACCEPTABLE_PRICE_AGE_MINUTES_BY_TIER,
@@ -597,8 +607,11 @@ async def list_opportunities(
     min_liquidity: Optional[float] = Query(None, ge=0, le=1),
     page: int = Query(1, ge=1),
     page_size: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
+    request: Request = None,
     provider: FutggMarketDataProvider = ProviderDep,
 ) -> Dict[str, Any]:
+    ent = await compute_entitlements(request)
+    daily_opportunity_limit = ent["limits"].get("daily_opportunity_limit")
     rating_min, rating_max = _resolve_rating_bounds(rating, rating_min, rating_max)
     max_price_age_minutes = max_price_age_minutes if max_price_age_minutes is not None else max_price_age
     filters = _filters_from_query(
@@ -631,9 +644,38 @@ async def list_opportunities(
         )
     )
     total = len(scored)
-    window = scored[(page - 1) * page_size: page * page_size]
-    items = [_item_with_intelligence(row, ci) for row, ci in window]
-    return {"items": items, "page": page, "page_size": page_size, "total": total}
+
+    if daily_opportunity_limit is None:
+        # Premium: every eligible opportunity, immediately - unchanged.
+        window = scored[(page - 1) * page_size: page * page_size]
+        items = [_item_with_intelligence(row, ci) for row, ci in window]
+        return {"items": items, "page": page, "page_size": page_size, "total": total}
+
+    # Free: a fixed, deterministic daily allowance of real, fully-detailed
+    # opportunities (see pick_free_daily_opportunities - same pick all day
+    # regardless of refresh/device/repeat calls/pagination), plus locked,
+    # non-actionable previews of everything else currently eligible so
+    # Free can see more real opportunities exist without being able to act
+    # on them. Pagination is not meaningful for Free's tiny fixed set, so
+    # page/page_size are accepted but ignored here.
+    picked_idx = pick_free_daily_opportunities(scored, ent.get("user_id"), daily_opportunity_limit)
+    items = [_item_with_intelligence(row, ci) for i, (row, ci) in enumerate(scored) if i in picked_idx]
+    locked_previews = [
+        locked_opportunity_preview(ci) for i, (row, ci) in enumerate(scored) if i not in picked_idx
+    ]
+    return {
+        "items": items,
+        "page": 1,
+        "page_size": len(items),
+        "total": total,
+        "locked": {
+            "opportunityFeed": True,
+            "dailyLimit": daily_opportunity_limit,
+            "unlockedToday": len(items),
+            "previewCount": len(locked_previews),
+            "previews": locked_previews,
+        },
+    }
 
 
 # The public homepage (eafc.live, no account) may show a card exists and
@@ -778,12 +820,42 @@ async def trade_finder(
     meaningful_profit: bool = Query(False, description="Apply a profit floor relative to price, not just an ROI%, so a trivial coin move on a cheap card can't rank as a headline opportunity"),
     page: int = Query(1, ge=1),
     page_size: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
+    request: Request = None,
     provider: FutggMarketDataProvider = ProviderDep,
 ) -> Dict[str, Any]:
     if sort is not None:
         sort_by = _SORT_ALIASES.get(sort, sort)
     if sort_by not in _TRADE_FINDER_SORTS:
         raise HTTPException(400, f"sort_by must be one of {sorted(_TRADE_FINDER_SORTS)}")
+
+    # Free: max FREE_DAILY_FINDER_LIMIT searches/day, enforced server-side
+    # (this used to be entirely open, even to anonymous callers - see the
+    # module docstring). Each call that actually runs a search consumes
+    # one of today's allowance; a user must be identified to meter against,
+    # so Free/anonymous callers need to be logged in to use Finder at all.
+    ent = await compute_entitlements(request)
+    daily_finder_limit = ent["limits"].get("daily_finder_limit")
+    usage = None
+    if daily_finder_limit is not None:
+        if not ent.get("user_id"):
+            raise HTTPException(401, "Log in to use Trade Finder")
+        core_pool = await get_core_pool()
+        usage = await increment_daily_usage(
+            core_pool, ent["user_id"], "trade_finder_search", limit=daily_finder_limit,
+        )
+        if not usage["allowed"]:
+            raise HTTPException(
+                402,
+                detail={
+                    "error": "daily_limit_reached",
+                    "feature": "trade_finder",
+                    "limit": daily_finder_limit,
+                    "remaining": 0,
+                    "message": f"Free plan allows {daily_finder_limit} Trade Finder searches per day - resets at midnight UTC.",
+                    "upgrade_url": "/billing",
+                },
+            )
+
     risk_tolerance = risk_tolerance if risk_tolerance is not None else risk
     rating_min, rating_max = _resolve_rating_bounds(rating, rating_min, rating_max)
     max_price_age_minutes = max_price_age_minutes if max_price_age_minutes is not None else max_price_age
@@ -846,9 +918,28 @@ async def trade_finder(
         scored.sort(key=_TRADE_FINDER_SORTS[sort_by])
 
     total = len(scored)
-    window = scored[(page - 1) * page_size: page * page_size]
-    items = [_item_with_intelligence(row, ci) for row, ci in window]
-    return {"items": items, "page": page, "page_size": page_size, "total": total, "sort_by": sort_by}
+
+    if daily_finder_limit is None:
+        # Premium: unlimited searches, full results, all filters - unchanged.
+        window = scored[(page - 1) * page_size: page * page_size]
+        items = [_item_with_intelligence(row, ci) for row, ci in window]
+        return {"items": items, "page": page, "page_size": page_size, "total": total, "sort_by": sort_by}
+
+    # Free: prove matching candidates exist (so the tool is understandable
+    # and trustworthy) without handing over actionable buy prices/targets -
+    # those stay reserved for the 2 opportunities Free already gets for
+    # free on the Opportunities feed, not an unlimited Finder browse.
+    preview_items = [locked_opportunity_preview(ci) for _row, ci in scored[:20]]
+    return {
+        "items": preview_items,
+        "page": 1,
+        "page_size": len(preview_items),
+        "total": total,
+        "sort_by": sort_by,
+        "locked": True,
+        "searchesRemainingToday": usage["remaining"] if usage else daily_finder_limit,
+        "dailySearchLimit": daily_finder_limit,
+    }
 
 
 @router.get("/market/freshness")

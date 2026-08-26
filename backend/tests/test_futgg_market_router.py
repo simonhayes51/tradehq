@@ -15,8 +15,36 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+import app.routers.v2.futgg_market as futgg_market_module
 from app.routers.v2.futgg_market import get_provider, router as futgg_router
 from app.services.market_data_provider import PlayerFilters
+
+# Pre-dates the Free/Premium tier gating this router now has (see
+# futgg_market.py's module docstring) - every test below that doesn't
+# specifically exercise that gating (test_free_tier_gating.py does)
+# was written against the router's full, unlimited behaviour, so it runs
+# as an authenticated Premium caller rather than the real
+# compute_entitlements(), which would otherwise 401/lock these as
+# anonymous/Free and break tests that were never about tier gating.
+_PREMIUM_ENT = {
+    "user_id": "test-user", "plan": "pro", "tier": "pro", "premium_until": None,
+    "roles": [], "is_premium": True, "is_admin": False,
+    "features": ["opportunity_feed", "trade_finder", "smart_buy"],
+    "limits": {
+        "watchlist_max": 25, "daily_opportunity_limit": None,
+        "daily_finder_limit": None, "active_alert_limit": None,
+        "open_trade_limit": None, "portfolio_history_days": None,
+        "ai_chat_daily_limit": None,
+    },
+    "capabilities": {"is_premium": True},
+}
+
+
+async def _fake_premium_entitlements(_request):
+    return dict(_PREMIUM_ENT)
+
+
+futgg_market_module.compute_entitlements = _fake_premium_entitlements
 
 AS_OF = datetime.now(timezone.utc)
 
