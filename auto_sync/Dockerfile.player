@@ -29,4 +29,4 @@ COPY . .
 ENV PYTHONUNBUFFERED=1
 ENV PLAYWRIGHT_HEADLESS=true
 
-CMD ["python", "futgg_player_sync.py"]
+CMD ["sleep", "infinity"]
