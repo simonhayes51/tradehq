@@ -57,4 +57,4 @@ COPY . .
 
 ENV PYTHONUNBUFFERED=1
 
-CMD ["python", "easysbc_sbc_sync.py"]
+CMD ["sleep", "infinity"]
