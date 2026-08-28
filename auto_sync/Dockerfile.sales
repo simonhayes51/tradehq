@@ -72,3 +72,4 @@ RUN chmod +x /app/docker-entrypoint-sales.sh
 ENV PLAYWRIGHT_HEADLESS=false
 
 CMD ["/app/docker-entrypoint-sales.sh"]
+CMD ["sleep", "infinity"]
