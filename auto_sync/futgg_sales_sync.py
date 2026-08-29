@@ -2529,15 +2529,29 @@ def _parse_diagnostic_proxy(raw: str) -> dict[str, str] | None:
     from urllib.parse import urlsplit
 
     parsed = urlsplit(raw)
-    if not parsed.scheme or not parsed.hostname:
+    try:
+        # .hostname/.port are lazy properties on SplitResult - a
+        # malformed port segment (non-numeric, out of range) raises
+        # ValueError here, not at urlsplit() itself, so both accesses
+        # are guarded together rather than trusted as plain attributes.
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        log.warning(
+            "FUTGG_SALES_DIAGNOSTIC_PROXY has an invalid host/port - "
+            "diagnostic proxy disabled (value not logged: it may carry "
+            "embedded credentials)"
+        )
+        return None
+    if not parsed.scheme or not hostname:
         log.warning(
             "FUTGG_SALES_DIAGNOSTIC_PROXY is set but not a valid proxy URL "
             "(expected scheme://[user:pass@]host:port) - diagnostic proxy disabled"
         )
         return None
-    server = f"{parsed.scheme}://{parsed.hostname}"
-    if parsed.port:
-        server += f":{parsed.port}"
+    server = f"{parsed.scheme}://{hostname}"
+    if port:
+        server += f":{port}"
     proxy: dict[str, str] = {"server": server}
     if parsed.username:
         proxy["username"] = parsed.username
@@ -2850,13 +2864,19 @@ async def run_diagnostic_card(card_id: int) -> bool:
 async def main() -> bool | None:
     if DIAGNOSTIC_CARD_ID:
         try:
-            return await run_diagnostic_card(int(DIAGNOSTIC_CARD_ID))
+            card_id = int(DIAGNOSTIC_CARD_ID)
         except ValueError:
             log.error(
                 "FUTGG_SALES_DIAGNOSTIC_CARD_ID=%r is not a valid integer card id",
                 DIAGNOSTIC_CARD_ID,
             )
             return False
+        # Outside the try/except above on purpose: a ValueError raised
+        # from anywhere INSIDE run_diagnostic_card() (e.g. a malformed
+        # FUTGG_SALES_DIAGNOSTIC_PROXY caught deeper than intended) must
+        # never be misreported as "not a valid integer card id" - that
+        # message is true only for the int() conversion directly above.
+        return await run_diagnostic_card(card_id)
     await run_forever()
     return None
 
