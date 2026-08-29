@@ -179,6 +179,15 @@ APPLY = env_bool("FUTGG_SALES_APPLY", True)
 #: FUTGG_SALES_APPLY=false to guarantee no database write either way.
 DIAGNOSTIC_CARD_ID = (os.getenv("FUTGG_SALES_DIAGNOSTIC_CARD_ID") or "").strip()
 
+#: Optional outbound proxy, diagnostic-mode ONLY - never read by
+#: run_forever()/production SalesSync. Exists purely to A/B test the
+#: same Coolify container/browser fingerprint through a different
+#: egress IP, after fingerprint-level causes (headless, navigator.
+#: webdriver, UA/Client-Hints mismatch) were each tested and ruled out
+#: in turn. scheme://[user:pass@]host:port - see
+#: _parse_diagnostic_proxy().
+DIAGNOSTIC_PROXY_URL = (os.getenv("FUTGG_SALES_DIAGNOSTIC_PROXY") or "").strip()
+
 #: A previously-read card whose refresh attempt fails gets retried again
 #: soon rather than waiting out its full rating-based interval - but this
 #: must never be confused with a successful read (see sales_interval_minutes,
@@ -2494,15 +2503,96 @@ def _attach_network_diagnostics(page, label: str = "NETDIAG") -> list[asyncio.Ta
     return pending
 
 
+# ---------------------------------------------------------------------
+# Diagnostic-only proxy (item 6/7 of the proxy A/B test) - read ONLY by
+# _run_diagnostic_signed_fetch()/_run_diagnostic_page_capture(). Every
+# fingerprint-level cause (headless, navigator.webdriver, UA/Client-Hints
+# mismatch) has now been tested and ruled out in turn on Coolify while
+# the identical player-prices endpoint still returns cf-mitigated:
+# challenge - this exists purely to test egress IP/ASN as the remaining
+# variable, without touching run_forever() or the production browser at
+# all.
+# ---------------------------------------------------------------------
+
+def _parse_diagnostic_proxy(raw: str) -> dict[str, str] | None:
+    """Parse FUTGG_SALES_DIAGNOSTIC_PROXY into Playwright's proxy shape.
+
+    Accepts a plain server URL or one with embedded user:pass@
+    credentials (the common way a proxy is handed out) - Playwright's
+    `server` field wants the credentials split out separately, not
+    embedded in the URL. Returns None (proxy disabled, unchanged
+    diagnostic behaviour) for an empty/unset value or anything that
+    doesn't parse as scheme://host[:port].
+    """
+    if not raw:
+        return None
+    from urllib.parse import urlsplit
+
+    parsed = urlsplit(raw)
+    if not parsed.scheme or not parsed.hostname:
+        log.warning(
+            "FUTGG_SALES_DIAGNOSTIC_PROXY is set but not a valid proxy URL "
+            "(expected scheme://[user:pass@]host:port) - diagnostic proxy disabled"
+        )
+        return None
+    server = f"{parsed.scheme}://{parsed.hostname}"
+    if parsed.port:
+        server += f":{parsed.port}"
+    proxy: dict[str, str] = {"server": server}
+    if parsed.username:
+        proxy["username"] = parsed.username
+    if parsed.password:
+        proxy["password"] = parsed.password
+    return proxy
+
+
+def _log_diagnostic_proxy_state(proxy: dict[str, str] | None) -> None:
+    """Announces whether diagnostic proxying is active, without ever
+    logging credentials (item 6) - only the scheme/host/port, which
+    proxy['server'] already holds separately from username/password."""
+    if proxy:
+        log.warning("DIAGNOSTIC: proxy ENABLED, server=%s", proxy["server"])
+    else:
+        log.info("DIAGNOSTIC: proxy disabled (FUTGG_SALES_DIAGNOSTIC_PROXY not set)")
+
+
+async def _log_external_egress_ip(page, label: str = "DIAGNOSTIC") -> None:
+    """Best-effort external IP/ASN check (item 7), routed through the
+    same page/context - and therefore the same proxy, if one is active -
+    as the FUT.GG requests, so it reflects the actual egress path under
+    test. A different, unrelated domain (never fut.gg), so it can never
+    touch fut.gg cookies/state. Any failure (network, timeout, unexpected
+    response shape) is caught and logged, never raised - this check must
+    never affect the real FUT.GG diagnostic result."""
+    try:
+        result = await asyncio.wait_for(
+            page.evaluate(
+                "async () => { const r = await fetch('https://ifconfig.co/json'); "
+                "return await r.json(); }"
+            ),
+            timeout=10,
+        )
+        log.info("%s: external egress IP/ASN check: %s", label, result)
+    except Exception as exc:
+        log.warning(
+            "%s: external egress IP/ASN check failed (non-fatal, does not "
+            "affect the FUT.GG diagnostic): %s", label, exc,
+        )
+
+
 async def _run_diagnostic_signed_fetch(pool: asyncpg.Pool, row, card_id: int, anchor: str) -> tuple[bool, dict]:
     """The original signed_fetch diagnostic path - anchor page + injected
     fetch() against the sign/data endpoints, with full network
     diagnostics attached."""
     from playwright.async_api import async_playwright
 
+    diagnostic_proxy = _parse_diagnostic_proxy(DIAGNOSTIC_PROXY_URL)
+    _log_diagnostic_proxy_state(diagnostic_proxy)
+
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(
-            headless=HEADLESS, args=["--no-sandbox", "--disable-dev-shm-usage"]
+            headless=HEADLESS, args=["--no-sandbox", "--disable-dev-shm-usage"],
+            proxy=diagnostic_proxy,
         )
         try:
             # user_agent intentionally omitted (diagnostic-only A/B test):
@@ -2516,6 +2606,7 @@ async def _run_diagnostic_signed_fetch(pool: asyncpg.Pool, row, card_id: int, an
                 "Object.defineProperty(Navigator.prototype, 'webdriver', {get: () => false});"
             )
             page = await context.new_page()
+            await _log_external_egress_ip(page)
             await page.goto(anchor, wait_until="domcontentloaded", timeout=TIMEOUT_MS)
             log.info("DIAGNOSTIC: anchor page loaded: %s", anchor)
 
@@ -2592,9 +2683,13 @@ async def _run_diagnostic_page_capture(pool: asyncpg.Pool, row, card_id: int) ->
     log.info("DIAGNOSTIC: navigating to card's own source_url: %s", url)
     started = time.perf_counter()
 
+    diagnostic_proxy = _parse_diagnostic_proxy(DIAGNOSTIC_PROXY_URL)
+    _log_diagnostic_proxy_state(diagnostic_proxy)
+
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(
-            headless=HEADLESS, args=["--no-sandbox", "--disable-dev-shm-usage"]
+            headless=HEADLESS, args=["--no-sandbox", "--disable-dev-shm-usage"],
+            proxy=diagnostic_proxy,
         )
         try:
             # user_agent intentionally omitted (diagnostic-only A/B test):
@@ -2608,6 +2703,7 @@ async def _run_diagnostic_page_capture(pool: asyncpg.Pool, row, card_id: int) ->
                 "Object.defineProperty(Navigator.prototype, 'webdriver', {get: () => false});"
             )
             page = await context.new_page()
+            await _log_external_egress_ip(page)
             context_diag = await capture_context_diagnostics(context, page, browser=browser)
             log.info("DIAGNOSTIC: browser/context state: %s", context_diag)
 
