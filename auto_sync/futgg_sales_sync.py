@@ -2594,6 +2594,27 @@ async def _log_external_egress_ip(page, label: str = "DIAGNOSTIC") -> None:
         )
 
 
+#: Matches the trailing .../<gameYear>-<cardId>/ segment of a FUT.GG
+#: player page URL (e.g. .../players/245037-eric-garcia/26-84131117/
+#: -> 84131117) - lets diagnostic logging state explicitly which card
+#: the CURRENTLY LOADED PAGE belongs to, since that is exactly the
+#: thing item under investigation here (referer/page-context match)
+#: needs to be visible without cross-referencing the DB by hand.
+_PLAYER_PAGE_CARD_ID_RE = re.compile(r"/(\d+)-(\d+)/?$")
+
+
+def _card_id_from_player_page_url(url: str | None) -> int | None:
+    if not url:
+        return None
+    match = _PLAYER_PAGE_CARD_ID_RE.search(url.split("?")[0])
+    if not match:
+        return None
+    try:
+        return int(match.group(2))
+    except ValueError:
+        return None
+
+
 async def _run_diagnostic_signed_fetch(pool: asyncpg.Pool, row, card_id: int, anchor: str) -> tuple[bool, dict]:
     """The original signed_fetch diagnostic path - anchor page + injected
     fetch() against the sign/data endpoints, with full network
@@ -2624,10 +2645,39 @@ async def _run_diagnostic_signed_fetch(pool: asyncpg.Pool, row, card_id: int, an
             await page.goto(anchor, wait_until="domcontentloaded", timeout=TIMEOUT_MS)
             log.info("DIAGNOSTIC: anchor page loaded: %s", anchor)
 
+            # Investigating whether the protected endpoint requires the
+            # request to originate from THAT card's own page (referer/
+            # page-context match) - the anchor is picked independently by
+            # run_diagnostic_card()'s own DB query (highest-rated active
+            # card), so it is very likely a DIFFERENT card than the one
+            # under test. Made explicit here rather than left for the
+            # reader to cross-reference.
+            anchor_card_id = _card_id_from_player_page_url(anchor)
+            log.warning(
+                "DIAGNOSTIC: anchor page belongs to card=%s - synthetic "
+                "sign+fetch below targets card=%d (%s)",
+                anchor_card_id, card_id,
+                "SAME card as anchor" if anchor_card_id == card_id
+                else "DIFFERENT card than anchor",
+            )
+
             context_diag = await capture_context_diagnostics(context, page, browser=browser)
             log.info("DIAGNOSTIC: browser/context state: %s", context_diag)
 
+            cookies_before_signed_call = await context.cookies()
+            cf_cookies_before_signed_call = sorted(
+                {c["name"] for c in cookies_before_signed_call if _is_cf_cookie(c["name"])}
+            )
+            log.info(
+                "DIAGNOSTIC: cloudflare cookies immediately BEFORE synthetic "
+                "sign+fetch=%s", cf_cookies_before_signed_call,
+            )
+
             pending_network_logs = _attach_network_diagnostics(page)
+            log.warning(
+                "DIAGNOSTIC: FIRING SYNTHETIC sign+fetch for card=%d "
+                "(injected page.evaluate, not a page navigation)", card_id,
+            )
             results = await page.evaluate(
                 _FETCH_SCRIPT,
                 {
@@ -2648,9 +2698,62 @@ async def _run_diagnostic_signed_fetch(pool: asyncpg.Pool, row, card_id: int, an
                 {c["name"] for c in cookies_after if _is_cf_cookie(c["name"])}
             )
             log.info(
-                "DIAGNOSTIC: cloudflare cookies AFTER request=%s (were %s BEFORE)",
+                "DIAGNOSTIC: cloudflare cookies AFTER synthetic request=%s (were %s BEFORE)",
                 cf_cookies_after, context_diag["cloudflare_cookies_present_before_request"],
             )
+
+            # THE DECISIVE TEST (per this investigation's own finding: the
+            # anchor page's own organic hydration request for ITS card
+            # succeeded with 200 in the same session where our synthetic
+            # request for a DIFFERENT card 403'd). Navigate the SAME
+            # page/context - already warmed up, same cookies, same proxy -
+            # to the DIAGNOSTIC card's own page and let FUT.GG's own
+            # frontend request that card's player-prices data naturally,
+            # exactly as fetch_via_page_capture already does. No new
+            # fetch/capture logic: reusing the existing organic-capture
+            # path IS "capture/reuse that response rather than
+            # synthesising a separate protected request".
+            organic_url = row["source_url"] if row is not None else None
+            if organic_url and organic_url != anchor:
+                log.warning(
+                    "DIAGNOSTIC: FIRING ORGANIC NAVIGATION to card=%d's own "
+                    "page (same context/cookies/proxy as above): %s",
+                    card_id, organic_url,
+                )
+                cookies_before_organic = await context.cookies()
+                organic_result = await fetch_via_page_capture(
+                    page, card_id, organic_url, diagnostic=True
+                )
+                cookies_after_organic = await context.cookies()
+                log.warning(
+                    "DIAGNOSTIC: organic same-session result for card=%d: %s "
+                    "(cf_cookies before=%s after=%s)",
+                    card_id, organic_result,
+                    sorted({c["name"] for c in cookies_before_organic if _is_cf_cookie(c["name"])}),
+                    sorted({c["name"] for c in cookies_after_organic if _is_cf_cookie(c["name"])}),
+                )
+            elif not organic_url:
+                log.warning(
+                    "DIAGNOSTIC: skipping organic same-session test for "
+                    "card=%d - no source_url on record", card_id,
+                )
+            else:
+                log.warning(
+                    "DIAGNOSTIC: skipping organic same-session test - "
+                    "card=%d's own page is already the anchor page", card_id,
+                )
+
+            # _attach_network_diagnostics()'s listeners stay attached to
+            # `page` for its lifetime, so the organic navigation above
+            # queued MORE background logging tasks onto the same
+            # pending_network_logs list - flush those too before the
+            # browser (and the CDP connection they need) closes under
+            # them. Gathering already-finished tasks from the first flush
+            # is a harmless no-op, not a re-log.
+            if pending_network_logs:
+                await asyncio.wait_for(
+                    asyncio.gather(*pending_network_logs, return_exceptions=True), timeout=15
+                )
         finally:
             await browser.close()
 
