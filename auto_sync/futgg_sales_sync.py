@@ -179,27 +179,6 @@ APPLY = env_bool("FUTGG_SALES_APPLY", True)
 #: FUTGG_SALES_APPLY=false to guarantee no database write either way.
 DIAGNOSTIC_CARD_ID = (os.getenv("FUTGG_SALES_DIAGNOSTIC_CARD_ID") or "").strip()
 
-#: Optional outbound proxy, diagnostic-mode ONLY - never read by
-#: run_forever()/production SalesSync. Exists purely to A/B test the
-#: same Coolify container/browser fingerprint through a different
-#: egress IP, after fingerprint-level causes (headless, navigator.
-#: webdriver, UA/Client-Hints mismatch) were each tested and ruled out
-#: in turn. scheme://[user:pass@]host:port - see
-#: _parse_diagnostic_proxy().
-DIAGNOSTIC_PROXY_URL = (os.getenv("FUTGG_SALES_DIAGNOSTIC_PROXY") or "").strip()
-
-#: Optional outbound proxy for SalesSync's PRODUCTION Playwright browser
-#: (run_forever() only) - disabled by default. Separate server/username/
-#: password vars, not one credential-bearing URL, so a copied env-var
-#: dump or log line can never contain a full proxy credential string in
-#: one piece. Confirmed necessary by a same-code, same-card Railway-vs-
-#: Coolify A/B test: browser fingerprint, headless mode, and request
-#: construction are all IDENTICAL between the two and Railway succeeds -
-#: only the egress path differs. See _build_production_proxy().
-PROXY_SERVER = (os.getenv("FUTGG_SALES_PROXY_SERVER") or "").strip()
-PROXY_USERNAME = os.getenv("FUTGG_SALES_PROXY_USERNAME")
-PROXY_PASSWORD = os.getenv("FUTGG_SALES_PROXY_PASSWORD")
-
 #: A previously-read card whose refresh attempt fails gets retried again
 #: soon rather than waiting out its full rating-based interval - but this
 #: must never be confused with a successful read (see sales_interval_minutes,
@@ -2053,100 +2032,6 @@ def _on_shutdown_signal(sig: "signal.Signals", shutdown_event: asyncio.Event) ->
     shutdown_event.set()
 
 
-_SUPPORTED_PROXY_SCHEMES = frozenset({"http", "https", "socks5"})
-
-
-def _build_production_proxy() -> dict[str, str] | None:
-    """Playwright proxy dict for run_forever()'s browser, or None
-    (disabled, direct connection - unchanged default behaviour) when
-    FUTGG_SALES_PROXY_SERVER is unset.
-
-    Reads three SEPARATE env vars rather than parsing one URL, unlike
-    the diagnostic-only _parse_diagnostic_proxy() - credentials must
-    never be assembled into or logged as a single string here.
-    FUTGG_SALES_PROXY_SERVER itself must be a bare scheme://host:port
-    with no embedded userinfo at all: username/password are only ever
-    accepted from FUTGG_SALES_PROXY_USERNAME/FUTGG_SALES_PROXY_PASSWORD,
-    so a credential can never end up inside the value this function
-    might otherwise need to echo back in a validation error.
-
-    The raw value is NEVER logged on a validation failure - only that
-    validation failed and why (a static description of what was wrong
-    -invalid scheme, missing host, malformed port, embedded
-    credentials - never a copy of the input itself, which could itself
-    be credential-bearing even though it's not supposed to be).
-    """
-    if not PROXY_SERVER:
-        return None
-
-    from urllib.parse import urlsplit
-
-    parsed = urlsplit(PROXY_SERVER)
-
-    if parsed.scheme not in _SUPPORTED_PROXY_SCHEMES:
-        log.error(
-            "FUTGG_SALES_PROXY_SERVER has an unsupported or missing scheme "
-            "(expected one of %s) - production proxy disabled, falling "
-            "back to a direct connection",
-            sorted(_SUPPORTED_PROXY_SCHEMES),
-        )
-        return None
-
-    try:
-        hostname = parsed.hostname
-        port = parsed.port
-    except ValueError:
-        # .port raises ValueError for a non-numeric/out-of-range port
-        # segment - caught here rather than trusted as a plain attribute.
-        log.error(
-            "FUTGG_SALES_PROXY_SERVER has an invalid port - production "
-            "proxy disabled, falling back to a direct connection"
-        )
-        return None
-
-    if not hostname:
-        log.error(
-            "FUTGG_SALES_PROXY_SERVER has no hostname - production proxy "
-            "disabled, falling back to a direct connection"
-        )
-        return None
-
-    if not port:
-        log.error(
-            "FUTGG_SALES_PROXY_SERVER has no port - production proxy "
-            "disabled, falling back to a direct connection"
-        )
-        return None
-
-    if parsed.username or parsed.password:
-        log.error(
-            "FUTGG_SALES_PROXY_SERVER must not embed credentials - use "
-            "FUTGG_SALES_PROXY_USERNAME/FUTGG_SALES_PROXY_PASSWORD instead "
-            "- production proxy disabled, falling back to a direct "
-            "connection"
-        )
-        return None
-
-    proxy: dict[str, str] = {"server": f"{parsed.scheme}://{hostname}:{port}"}
-    if PROXY_USERNAME:
-        proxy["username"] = PROXY_USERNAME
-    if PROXY_PASSWORD:
-        proxy["password"] = PROXY_PASSWORD
-    return proxy
-
-
-def _log_production_proxy_state(proxy: dict[str, str] | None) -> None:
-    """Never logs username/password - only proxy['server'] is either
-    field that could reach a log line."""
-    if proxy:
-        log.warning("SalesSync outbound proxy ENABLED, server=%s", proxy["server"])
-    else:
-        log.info(
-            "SalesSync outbound proxy disabled (FUTGG_SALES_PROXY_SERVER "
-            "not set) - direct connection"
-        )
-
-
 async def run_forever() -> None:
     from playwright.async_api import async_playwright
 
@@ -2202,13 +2087,9 @@ async def run_forever() -> None:
     need_signed = TRANSPORT_MODE in ("signed_fetch", "auto")
     need_page_capture = TRANSPORT_MODE in ("page_capture", "auto")
 
-    production_proxy = _build_production_proxy()
-    _log_production_proxy_state(production_proxy)
-
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(
-            headless=HEADLESS, args=["--no-sandbox", "--disable-dev-shm-usage"],
-            proxy=production_proxy,
+            headless=HEADLESS, args=["--no-sandbox", "--disable-dev-shm-usage"]
         )
         try:
             context = await browser.new_context(user_agent=USER_AGENT, locale="en-GB")
@@ -2463,48 +2344,12 @@ def _is_cf_cookie(name: str) -> bool:
     return lowered in {c.lower() for c in _CF_COOKIE_NAMES} or lowered.startswith("cf_") or lowered.startswith("__cf")
 
 
-#: navigator.userAgentData.getHighEntropyValues() field list (item 5) -
-#: these are exactly the fields Chromium's Client Hints API can reveal
-#: about the REAL underlying browser build, none of which the
-#: configured USER_AGENT string or the earlier navigator.webdriver patch
-#: can override - see the module docstring's own note that Playwright's
-#: UA override patches the header, not the Client Hints API.
-_HIGH_ENTROPY_CLIENT_HINT_FIELDS = [
-    "architecture", "bitness", "fullVersionList", "model",
-    "platformVersion", "uaFullVersion",
-]
-
-_CLIENT_HINTS_SCRIPT = """
-async () => {
-    const uaData = navigator.userAgentData;
-    if (!uaData) {
-        return { supported: false };
-    }
-    let highEntropyValues = null;
-    try {
-        highEntropyValues = await uaData.getHighEntropyValues(%s);
-    } catch (e) {
-        highEntropyValues = { error: String(e && e.message ? e.message : e) };
-    }
-    return {
-        supported: true,
-        brands: uaData.brands,
-        mobile: uaData.mobile,
-        platform: uaData.platform,
-        highEntropyValues,
-    };
-}
-""" % json.dumps(_HIGH_ENTROPY_CLIENT_HINT_FIELDS)
-
-
-async def capture_context_diagnostics(context, page, browser=None) -> dict[str, Any]:
+async def capture_context_diagnostics(context, page) -> dict[str, Any]:
     """One-time snapshot of everything about the browser/context that
     bot-detection could key off, independent of any single request -
     navigator.webdriver, the actual (not just configured) user agent,
-    the navigator.userAgentData Client Hints the UA-string override
-    cannot touch (items 1-5), the real Playwright/Chromium build (item
-    6), context launch options, and which Cloudflare-shaped cookies
-    exist BEFORE any signed request is made."""
+    context launch options, and which Cloudflare-shaped cookies exist
+    BEFORE any signed request is made."""
     try:
         webdriver_flag = await page.evaluate("() => navigator.webdriver")
     except Exception:
@@ -2513,10 +2358,6 @@ async def capture_context_diagnostics(context, page, browser=None) -> dict[str, 
         runtime_ua = await page.evaluate("() => navigator.userAgent")
     except Exception:
         runtime_ua = "<page.evaluate failed>"
-    try:
-        client_hints = await page.evaluate(_CLIENT_HINTS_SCRIPT)
-    except Exception:
-        client_hints = "<page.evaluate failed>"
 
     cookies = await context.cookies()
     cf_cookies_before = sorted({c["name"] for c in cookies if _is_cf_cookie(c["name"])})
@@ -2524,8 +2365,6 @@ async def capture_context_diagnostics(context, page, browser=None) -> dict[str, 
     return {
         "navigator_webdriver": webdriver_flag,
         "runtime_user_agent": runtime_ua,
-        "navigator_user_agent_data": client_hints,
-        "playwright_browser_version": browser.version if browser is not None else None,
         "configured_user_agent": USER_AGENT,
         "configured_locale": "en-GB",
         "headless": HEADLESS,
@@ -2572,22 +2411,6 @@ def _attach_network_diagnostics(page, label: str = "NETDIAG") -> list[asyncio.Ta
                 label, request.method, redact_url(request.url), request.resource_type,
                 "cookie" in {k.lower() for k in headers}, sec_fetch, redact_headers(headers),
             )
-            # Client Hints headers are not credential-shaped, but
-            # redact_headers()'s allow-list omits them for every OTHER
-            # caller of this module's redaction helpers - logged here,
-            # UNREDACTED, only for the two endpoints this investigation
-            # is actually about, rather than widening that shared
-            # allow-list's behaviour for every diagnostic caller.
-            if "/price-access/sign/" in request.url or "/player-prices/" in request.url:
-                lowered = {k.lower(): v for k, v in headers.items()}
-                log.info(
-                    "%s CLIENT-HINTS (unredacted) url=%s sec-ch-ua=%r "
-                    "sec-ch-ua-mobile=%r sec-ch-ua-platform=%r "
-                    "sec-ch-ua-full-version-list=%r",
-                    label, redact_url(request.url),
-                    lowered.get("sec-ch-ua"), lowered.get("sec-ch-ua-mobile"),
-                    lowered.get("sec-ch-ua-platform"), lowered.get("sec-ch-ua-full-version-list"),
-                )
         pending.append(asyncio.ensure_future(_log()))
 
     def on_response(response) -> None:
@@ -2613,181 +2436,26 @@ def _attach_network_diagnostics(page, label: str = "NETDIAG") -> list[asyncio.Ta
     return pending
 
 
-# ---------------------------------------------------------------------
-# Diagnostic-only proxy (item 6/7 of the proxy A/B test) - read ONLY by
-# _run_diagnostic_signed_fetch()/_run_diagnostic_page_capture(). Every
-# fingerprint-level cause (headless, navigator.webdriver, UA/Client-Hints
-# mismatch) has now been tested and ruled out in turn on Coolify while
-# the identical player-prices endpoint still returns cf-mitigated:
-# challenge - this exists purely to test egress IP/ASN as the remaining
-# variable, without touching run_forever() or the production browser at
-# all.
-# ---------------------------------------------------------------------
-
-def _parse_diagnostic_proxy(raw: str) -> dict[str, str] | None:
-    """Parse FUTGG_SALES_DIAGNOSTIC_PROXY into Playwright's proxy shape.
-
-    Accepts a plain server URL or one with embedded user:pass@
-    credentials (the common way a proxy is handed out) - Playwright's
-    `server` field wants the credentials split out separately, not
-    embedded in the URL. Returns None (proxy disabled, unchanged
-    diagnostic behaviour) for an empty/unset value or anything that
-    doesn't parse as scheme://host[:port].
-    """
-    if not raw:
-        return None
-    from urllib.parse import urlsplit
-
-    parsed = urlsplit(raw)
-    try:
-        # .hostname/.port are lazy properties on SplitResult - a
-        # malformed port segment (non-numeric, out of range) raises
-        # ValueError here, not at urlsplit() itself, so both accesses
-        # are guarded together rather than trusted as plain attributes.
-        hostname = parsed.hostname
-        port = parsed.port
-    except ValueError:
-        log.warning(
-            "FUTGG_SALES_DIAGNOSTIC_PROXY has an invalid host/port - "
-            "diagnostic proxy disabled (value not logged: it may carry "
-            "embedded credentials)"
-        )
-        return None
-    if not parsed.scheme or not hostname:
-        log.warning(
-            "FUTGG_SALES_DIAGNOSTIC_PROXY is set but not a valid proxy URL "
-            "(expected scheme://[user:pass@]host:port) - diagnostic proxy disabled"
-        )
-        return None
-    server = f"{parsed.scheme}://{hostname}"
-    if port:
-        server += f":{port}"
-    proxy: dict[str, str] = {"server": server}
-    if parsed.username:
-        proxy["username"] = parsed.username
-    if parsed.password:
-        proxy["password"] = parsed.password
-    return proxy
-
-
-def _log_diagnostic_proxy_state(proxy: dict[str, str] | None) -> None:
-    """Announces whether diagnostic proxying is active, without ever
-    logging credentials (item 6) - only the scheme/host/port, which
-    proxy['server'] already holds separately from username/password."""
-    if proxy:
-        log.warning("DIAGNOSTIC: proxy ENABLED, server=%s", proxy["server"])
-    else:
-        log.info("DIAGNOSTIC: proxy disabled (FUTGG_SALES_DIAGNOSTIC_PROXY not set)")
-
-
-async def _log_external_egress_ip(page, label: str = "DIAGNOSTIC") -> None:
-    """Best-effort external IP/ASN check (item 7), routed through the
-    same page/context - and therefore the same proxy, if one is active -
-    as the FUT.GG requests, so it reflects the actual egress path under
-    test. A different, unrelated domain (never fut.gg), so it can never
-    touch fut.gg cookies/state. Any failure (network, timeout, unexpected
-    response shape) is caught and logged, never raised - this check must
-    never affect the real FUT.GG diagnostic result."""
-    try:
-        result = await asyncio.wait_for(
-            page.evaluate(
-                "async () => { const r = await fetch('https://ifconfig.co/json'); "
-                "return await r.json(); }"
-            ),
-            timeout=10,
-        )
-        log.info("%s: external egress IP/ASN check: %s", label, result)
-    except Exception as exc:
-        log.warning(
-            "%s: external egress IP/ASN check failed (non-fatal, does not "
-            "affect the FUT.GG diagnostic): %s", label, exc,
-        )
-
-
-#: Matches the trailing .../<gameYear>-<cardId>/ segment of a FUT.GG
-#: player page URL (e.g. .../players/245037-eric-garcia/26-84131117/
-#: -> 84131117) - lets diagnostic logging state explicitly which card
-#: the CURRENTLY LOADED PAGE belongs to, since that is exactly the
-#: thing item under investigation here (referer/page-context match)
-#: needs to be visible without cross-referencing the DB by hand.
-_PLAYER_PAGE_CARD_ID_RE = re.compile(r"/(\d+)-(\d+)/?$")
-
-
-def _card_id_from_player_page_url(url: str | None) -> int | None:
-    if not url:
-        return None
-    match = _PLAYER_PAGE_CARD_ID_RE.search(url.split("?")[0])
-    if not match:
-        return None
-    try:
-        return int(match.group(2))
-    except ValueError:
-        return None
-
-
 async def _run_diagnostic_signed_fetch(pool: asyncpg.Pool, row, card_id: int, anchor: str) -> tuple[bool, dict]:
     """The original signed_fetch diagnostic path - anchor page + injected
     fetch() against the sign/data endpoints, with full network
     diagnostics attached."""
     from playwright.async_api import async_playwright
 
-    diagnostic_proxy = _parse_diagnostic_proxy(DIAGNOSTIC_PROXY_URL)
-    _log_diagnostic_proxy_state(diagnostic_proxy)
-
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(
-            headless=HEADLESS, args=["--no-sandbox", "--disable-dev-shm-usage"],
-            proxy=diagnostic_proxy,
+            headless=HEADLESS, args=["--no-sandbox", "--disable-dev-shm-usage"]
         )
         try:
-            # user_agent intentionally omitted (diagnostic-only A/B test):
-            # the client-hints diagnostic showed the configured UA string
-            # claiming Chrome/150 while navigator.userAgentData/sec-ch-ua
-            # report the real Chromium 149 build - leaving Playwright's
-            # native UA in place keeps the HTTP User-Agent consistent with
-            # the Client Hints, which the UA-string override cannot touch.
-            context = await browser.new_context(locale="en-GB")
-            await context.add_init_script(
-                "Object.defineProperty(Navigator.prototype, 'webdriver', {get: () => false});"
-            )
+            context = await browser.new_context(user_agent=USER_AGENT, locale="en-GB")
             page = await context.new_page()
-            await _log_external_egress_ip(page)
             await page.goto(anchor, wait_until="domcontentloaded", timeout=TIMEOUT_MS)
             log.info("DIAGNOSTIC: anchor page loaded: %s", anchor)
 
-            # Investigating whether the protected endpoint requires the
-            # request to originate from THAT card's own page (referer/
-            # page-context match) - the anchor is picked independently by
-            # run_diagnostic_card()'s own DB query (highest-rated active
-            # card), so it is very likely a DIFFERENT card than the one
-            # under test. Made explicit here rather than left for the
-            # reader to cross-reference.
-            anchor_card_id = _card_id_from_player_page_url(anchor)
-            log.warning(
-                "DIAGNOSTIC: anchor page belongs to card=%s - synthetic "
-                "sign+fetch below targets card=%d (%s)",
-                anchor_card_id, card_id,
-                "SAME card as anchor" if anchor_card_id == card_id
-                else "DIFFERENT card than anchor",
-            )
-
-            context_diag = await capture_context_diagnostics(context, page, browser=browser)
+            context_diag = await capture_context_diagnostics(context, page)
             log.info("DIAGNOSTIC: browser/context state: %s", context_diag)
 
-            cookies_before_signed_call = await context.cookies()
-            cf_cookies_before_signed_call = sorted(
-                {c["name"] for c in cookies_before_signed_call if _is_cf_cookie(c["name"])}
-            )
-            log.info(
-                "DIAGNOSTIC: cloudflare cookies immediately BEFORE synthetic "
-                "sign+fetch=%s", cf_cookies_before_signed_call,
-            )
-
             pending_network_logs = _attach_network_diagnostics(page)
-            log.warning(
-                "DIAGNOSTIC: FIRING SYNTHETIC sign+fetch for card=%d "
-                "(injected page.evaluate, not a page navigation)", card_id,
-            )
             results = await page.evaluate(
                 _FETCH_SCRIPT,
                 {
@@ -2808,62 +2476,9 @@ async def _run_diagnostic_signed_fetch(pool: asyncpg.Pool, row, card_id: int, an
                 {c["name"] for c in cookies_after if _is_cf_cookie(c["name"])}
             )
             log.info(
-                "DIAGNOSTIC: cloudflare cookies AFTER synthetic request=%s (were %s BEFORE)",
+                "DIAGNOSTIC: cloudflare cookies AFTER request=%s (were %s BEFORE)",
                 cf_cookies_after, context_diag["cloudflare_cookies_present_before_request"],
             )
-
-            # THE DECISIVE TEST (per this investigation's own finding: the
-            # anchor page's own organic hydration request for ITS card
-            # succeeded with 200 in the same session where our synthetic
-            # request for a DIFFERENT card 403'd). Navigate the SAME
-            # page/context - already warmed up, same cookies, same proxy -
-            # to the DIAGNOSTIC card's own page and let FUT.GG's own
-            # frontend request that card's player-prices data naturally,
-            # exactly as fetch_via_page_capture already does. No new
-            # fetch/capture logic: reusing the existing organic-capture
-            # path IS "capture/reuse that response rather than
-            # synthesising a separate protected request".
-            organic_url = row["source_url"] if row is not None else None
-            if organic_url and organic_url != anchor:
-                log.warning(
-                    "DIAGNOSTIC: FIRING ORGANIC NAVIGATION to card=%d's own "
-                    "page (same context/cookies/proxy as above): %s",
-                    card_id, organic_url,
-                )
-                cookies_before_organic = await context.cookies()
-                organic_result = await fetch_via_page_capture(
-                    page, card_id, organic_url, diagnostic=True
-                )
-                cookies_after_organic = await context.cookies()
-                log.warning(
-                    "DIAGNOSTIC: organic same-session result for card=%d: %s "
-                    "(cf_cookies before=%s after=%s)",
-                    card_id, organic_result,
-                    sorted({c["name"] for c in cookies_before_organic if _is_cf_cookie(c["name"])}),
-                    sorted({c["name"] for c in cookies_after_organic if _is_cf_cookie(c["name"])}),
-                )
-            elif not organic_url:
-                log.warning(
-                    "DIAGNOSTIC: skipping organic same-session test for "
-                    "card=%d - no source_url on record", card_id,
-                )
-            else:
-                log.warning(
-                    "DIAGNOSTIC: skipping organic same-session test - "
-                    "card=%d's own page is already the anchor page", card_id,
-                )
-
-            # _attach_network_diagnostics()'s listeners stay attached to
-            # `page` for its lifetime, so the organic navigation above
-            # queued MORE background logging tasks onto the same
-            # pending_network_logs list - flush those too before the
-            # browser (and the CDP connection they need) closes under
-            # them. Gathering already-finished tasks from the first flush
-            # is a harmless no-op, not a re-log.
-            if pending_network_logs:
-                await asyncio.wait_for(
-                    asyncio.gather(*pending_network_logs, return_exceptions=True), timeout=15
-                )
         finally:
             await browser.close()
 
@@ -2910,28 +2525,14 @@ async def _run_diagnostic_page_capture(pool: asyncpg.Pool, row, card_id: int) ->
     log.info("DIAGNOSTIC: navigating to card's own source_url: %s", url)
     started = time.perf_counter()
 
-    diagnostic_proxy = _parse_diagnostic_proxy(DIAGNOSTIC_PROXY_URL)
-    _log_diagnostic_proxy_state(diagnostic_proxy)
-
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(
-            headless=HEADLESS, args=["--no-sandbox", "--disable-dev-shm-usage"],
-            proxy=diagnostic_proxy,
+            headless=HEADLESS, args=["--no-sandbox", "--disable-dev-shm-usage"]
         )
         try:
-            # user_agent intentionally omitted (diagnostic-only A/B test):
-            # the client-hints diagnostic showed the configured UA string
-            # claiming Chrome/150 while navigator.userAgentData/sec-ch-ua
-            # report the real Chromium 149 build - leaving Playwright's
-            # native UA in place keeps the HTTP User-Agent consistent with
-            # the Client Hints, which the UA-string override cannot touch.
-            context = await browser.new_context(locale="en-GB")
-            await context.add_init_script(
-                "Object.defineProperty(Navigator.prototype, 'webdriver', {get: () => false});"
-            )
+            context = await browser.new_context(user_agent=USER_AGENT, locale="en-GB")
             page = await context.new_page()
-            await _log_external_egress_ip(page)
-            context_diag = await capture_context_diagnostics(context, page, browser=browser)
+            context_diag = await capture_context_diagnostics(context, page)
             log.info("DIAGNOSTIC: browser/context state: %s", context_diag)
 
             pending_network_logs = _attach_network_diagnostics(page)
@@ -3077,19 +2678,13 @@ async def run_diagnostic_card(card_id: int) -> bool:
 async def main() -> bool | None:
     if DIAGNOSTIC_CARD_ID:
         try:
-            card_id = int(DIAGNOSTIC_CARD_ID)
+            return await run_diagnostic_card(int(DIAGNOSTIC_CARD_ID))
         except ValueError:
             log.error(
                 "FUTGG_SALES_DIAGNOSTIC_CARD_ID=%r is not a valid integer card id",
                 DIAGNOSTIC_CARD_ID,
             )
             return False
-        # Outside the try/except above on purpose: a ValueError raised
-        # from anywhere INSIDE run_diagnostic_card() (e.g. a malformed
-        # FUTGG_SALES_DIAGNOSTIC_PROXY caught deeper than intended) must
-        # never be misreported as "not a valid integer card id" - that
-        # message is true only for the int() conversion directly above.
-        return await run_diagnostic_card(card_id)
     await run_forever()
     return None
 
