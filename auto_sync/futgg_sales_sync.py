@@ -2505,7 +2505,13 @@ async def _run_diagnostic_signed_fetch(pool: asyncpg.Pool, row, card_id: int, an
             headless=HEADLESS, args=["--no-sandbox", "--disable-dev-shm-usage"]
         )
         try:
-            context = await browser.new_context(user_agent=USER_AGENT, locale="en-GB")
+            # user_agent intentionally omitted (diagnostic-only A/B test):
+            # the client-hints diagnostic showed the configured UA string
+            # claiming Chrome/150 while navigator.userAgentData/sec-ch-ua
+            # report the real Chromium 149 build - leaving Playwright's
+            # native UA in place keeps the HTTP User-Agent consistent with
+            # the Client Hints, which the UA-string override cannot touch.
+            context = await browser.new_context(locale="en-GB")
             await context.add_init_script(
                 "Object.defineProperty(Navigator.prototype, 'webdriver', {get: () => false});"
             )
@@ -2591,7 +2597,13 @@ async def _run_diagnostic_page_capture(pool: asyncpg.Pool, row, card_id: int) ->
             headless=HEADLESS, args=["--no-sandbox", "--disable-dev-shm-usage"]
         )
         try:
-            context = await browser.new_context(user_agent=USER_AGENT, locale="en-GB")
+            # user_agent intentionally omitted (diagnostic-only A/B test):
+            # the client-hints diagnostic showed the configured UA string
+            # claiming Chrome/150 while navigator.userAgentData/sec-ch-ua
+            # report the real Chromium 149 build - leaving Playwright's
+            # native UA in place keeps the HTTP User-Agent consistent with
+            # the Client Hints, which the UA-string override cannot touch.
+            context = await browser.new_context(locale="en-GB")
             await context.add_init_script(
                 "Object.defineProperty(Navigator.prototype, 'webdriver', {get: () => false});"
             )
