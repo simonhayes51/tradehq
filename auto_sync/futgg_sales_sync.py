@@ -2344,12 +2344,48 @@ def _is_cf_cookie(name: str) -> bool:
     return lowered in {c.lower() for c in _CF_COOKIE_NAMES} or lowered.startswith("cf_") or lowered.startswith("__cf")
 
 
-async def capture_context_diagnostics(context, page) -> dict[str, Any]:
+#: navigator.userAgentData.getHighEntropyValues() field list (item 5) -
+#: these are exactly the fields Chromium's Client Hints API can reveal
+#: about the REAL underlying browser build, none of which the
+#: configured USER_AGENT string or the earlier navigator.webdriver patch
+#: can override - see the module docstring's own note that Playwright's
+#: UA override patches the header, not the Client Hints API.
+_HIGH_ENTROPY_CLIENT_HINT_FIELDS = [
+    "architecture", "bitness", "fullVersionList", "model",
+    "platformVersion", "uaFullVersion",
+]
+
+_CLIENT_HINTS_SCRIPT = """
+async () => {
+    const uaData = navigator.userAgentData;
+    if (!uaData) {
+        return { supported: false };
+    }
+    let highEntropyValues = null;
+    try {
+        highEntropyValues = await uaData.getHighEntropyValues(%s);
+    } catch (e) {
+        highEntropyValues = { error: String(e && e.message ? e.message : e) };
+    }
+    return {
+        supported: true,
+        brands: uaData.brands,
+        mobile: uaData.mobile,
+        platform: uaData.platform,
+        highEntropyValues,
+    };
+}
+""" % json.dumps(_HIGH_ENTROPY_CLIENT_HINT_FIELDS)
+
+
+async def capture_context_diagnostics(context, page, browser=None) -> dict[str, Any]:
     """One-time snapshot of everything about the browser/context that
     bot-detection could key off, independent of any single request -
     navigator.webdriver, the actual (not just configured) user agent,
-    context launch options, and which Cloudflare-shaped cookies exist
-    BEFORE any signed request is made."""
+    the navigator.userAgentData Client Hints the UA-string override
+    cannot touch (items 1-5), the real Playwright/Chromium build (item
+    6), context launch options, and which Cloudflare-shaped cookies
+    exist BEFORE any signed request is made."""
     try:
         webdriver_flag = await page.evaluate("() => navigator.webdriver")
     except Exception:
@@ -2358,6 +2394,10 @@ async def capture_context_diagnostics(context, page) -> dict[str, Any]:
         runtime_ua = await page.evaluate("() => navigator.userAgent")
     except Exception:
         runtime_ua = "<page.evaluate failed>"
+    try:
+        client_hints = await page.evaluate(_CLIENT_HINTS_SCRIPT)
+    except Exception:
+        client_hints = "<page.evaluate failed>"
 
     cookies = await context.cookies()
     cf_cookies_before = sorted({c["name"] for c in cookies if _is_cf_cookie(c["name"])})
@@ -2365,6 +2405,8 @@ async def capture_context_diagnostics(context, page) -> dict[str, Any]:
     return {
         "navigator_webdriver": webdriver_flag,
         "runtime_user_agent": runtime_ua,
+        "navigator_user_agent_data": client_hints,
+        "playwright_browser_version": browser.version if browser is not None else None,
         "configured_user_agent": USER_AGENT,
         "configured_locale": "en-GB",
         "headless": HEADLESS,
@@ -2411,6 +2453,22 @@ def _attach_network_diagnostics(page, label: str = "NETDIAG") -> list[asyncio.Ta
                 label, request.method, redact_url(request.url), request.resource_type,
                 "cookie" in {k.lower() for k in headers}, sec_fetch, redact_headers(headers),
             )
+            # Client Hints headers are not credential-shaped, but
+            # redact_headers()'s allow-list omits them for every OTHER
+            # caller of this module's redaction helpers - logged here,
+            # UNREDACTED, only for the two endpoints this investigation
+            # is actually about, rather than widening that shared
+            # allow-list's behaviour for every diagnostic caller.
+            if "/price-access/sign/" in request.url or "/player-prices/" in request.url:
+                lowered = {k.lower(): v for k, v in headers.items()}
+                log.info(
+                    "%s CLIENT-HINTS (unredacted) url=%s sec-ch-ua=%r "
+                    "sec-ch-ua-mobile=%r sec-ch-ua-platform=%r "
+                    "sec-ch-ua-full-version-list=%r",
+                    label, redact_url(request.url),
+                    lowered.get("sec-ch-ua"), lowered.get("sec-ch-ua-mobile"),
+                    lowered.get("sec-ch-ua-platform"), lowered.get("sec-ch-ua-full-version-list"),
+                )
         pending.append(asyncio.ensure_future(_log()))
 
     def on_response(response) -> None:
@@ -2455,7 +2513,7 @@ async def _run_diagnostic_signed_fetch(pool: asyncpg.Pool, row, card_id: int, an
             await page.goto(anchor, wait_until="domcontentloaded", timeout=TIMEOUT_MS)
             log.info("DIAGNOSTIC: anchor page loaded: %s", anchor)
 
-            context_diag = await capture_context_diagnostics(context, page)
+            context_diag = await capture_context_diagnostics(context, page, browser=browser)
             log.info("DIAGNOSTIC: browser/context state: %s", context_diag)
 
             pending_network_logs = _attach_network_diagnostics(page)
@@ -2538,7 +2596,7 @@ async def _run_diagnostic_page_capture(pool: asyncpg.Pool, row, card_id: int) ->
                 "Object.defineProperty(Navigator.prototype, 'webdriver', {get: () => false});"
             )
             page = await context.new_page()
-            context_diag = await capture_context_diagnostics(context, page)
+            context_diag = await capture_context_diagnostics(context, page, browser=browser)
             log.info("DIAGNOSTIC: browser/context state: %s", context_diag)
 
             pending_network_logs = _attach_network_diagnostics(page)
