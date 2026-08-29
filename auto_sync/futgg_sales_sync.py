@@ -2448,6 +2448,9 @@ async def _run_diagnostic_signed_fetch(pool: asyncpg.Pool, row, card_id: int, an
         )
         try:
             context = await browser.new_context(user_agent=USER_AGENT, locale="en-GB")
+            await context.add_init_script(
+                "Object.defineProperty(Navigator.prototype, 'webdriver', {get: () => false});"
+            )
             page = await context.new_page()
             await page.goto(anchor, wait_until="domcontentloaded", timeout=TIMEOUT_MS)
             log.info("DIAGNOSTIC: anchor page loaded: %s", anchor)
@@ -2531,6 +2534,9 @@ async def _run_diagnostic_page_capture(pool: asyncpg.Pool, row, card_id: int) ->
         )
         try:
             context = await browser.new_context(user_agent=USER_AGENT, locale="en-GB")
+            await context.add_init_script(
+                "Object.defineProperty(Navigator.prototype, 'webdriver', {get: () => false});"
+            )
             page = await context.new_page()
             context_diag = await capture_context_diagnostics(context, page)
             log.info("DIAGNOSTIC: browser/context state: %s", context_diag)
