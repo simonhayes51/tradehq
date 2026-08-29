@@ -188,6 +188,18 @@ DIAGNOSTIC_CARD_ID = (os.getenv("FUTGG_SALES_DIAGNOSTIC_CARD_ID") or "").strip()
 #: _parse_diagnostic_proxy().
 DIAGNOSTIC_PROXY_URL = (os.getenv("FUTGG_SALES_DIAGNOSTIC_PROXY") or "").strip()
 
+#: Optional outbound proxy for SalesSync's PRODUCTION Playwright browser
+#: (run_forever() only) - disabled by default. Separate server/username/
+#: password vars, not one credential-bearing URL, so a copied env-var
+#: dump or log line can never contain a full proxy credential string in
+#: one piece. Confirmed necessary by a same-code, same-card Railway-vs-
+#: Coolify A/B test: browser fingerprint, headless mode, and request
+#: construction are all IDENTICAL between the two and Railway succeeds -
+#: only the egress path differs. See _build_production_proxy().
+PROXY_SERVER = (os.getenv("FUTGG_SALES_PROXY_SERVER") or "").strip()
+PROXY_USERNAME = os.getenv("FUTGG_SALES_PROXY_USERNAME")
+PROXY_PASSWORD = os.getenv("FUTGG_SALES_PROXY_PASSWORD")
+
 #: A previously-read card whose refresh attempt fails gets retried again
 #: soon rather than waiting out its full rating-based interval - but this
 #: must never be confused with a successful read (see sales_interval_minutes,
@@ -2041,6 +2053,100 @@ def _on_shutdown_signal(sig: "signal.Signals", shutdown_event: asyncio.Event) ->
     shutdown_event.set()
 
 
+_SUPPORTED_PROXY_SCHEMES = frozenset({"http", "https", "socks5"})
+
+
+def _build_production_proxy() -> dict[str, str] | None:
+    """Playwright proxy dict for run_forever()'s browser, or None
+    (disabled, direct connection - unchanged default behaviour) when
+    FUTGG_SALES_PROXY_SERVER is unset.
+
+    Reads three SEPARATE env vars rather than parsing one URL, unlike
+    the diagnostic-only _parse_diagnostic_proxy() - credentials must
+    never be assembled into or logged as a single string here.
+    FUTGG_SALES_PROXY_SERVER itself must be a bare scheme://host:port
+    with no embedded userinfo at all: username/password are only ever
+    accepted from FUTGG_SALES_PROXY_USERNAME/FUTGG_SALES_PROXY_PASSWORD,
+    so a credential can never end up inside the value this function
+    might otherwise need to echo back in a validation error.
+
+    The raw value is NEVER logged on a validation failure - only that
+    validation failed and why (a static description of what was wrong
+    -invalid scheme, missing host, malformed port, embedded
+    credentials - never a copy of the input itself, which could itself
+    be credential-bearing even though it's not supposed to be).
+    """
+    if not PROXY_SERVER:
+        return None
+
+    from urllib.parse import urlsplit
+
+    parsed = urlsplit(PROXY_SERVER)
+
+    if parsed.scheme not in _SUPPORTED_PROXY_SCHEMES:
+        log.error(
+            "FUTGG_SALES_PROXY_SERVER has an unsupported or missing scheme "
+            "(expected one of %s) - production proxy disabled, falling "
+            "back to a direct connection",
+            sorted(_SUPPORTED_PROXY_SCHEMES),
+        )
+        return None
+
+    try:
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        # .port raises ValueError for a non-numeric/out-of-range port
+        # segment - caught here rather than trusted as a plain attribute.
+        log.error(
+            "FUTGG_SALES_PROXY_SERVER has an invalid port - production "
+            "proxy disabled, falling back to a direct connection"
+        )
+        return None
+
+    if not hostname:
+        log.error(
+            "FUTGG_SALES_PROXY_SERVER has no hostname - production proxy "
+            "disabled, falling back to a direct connection"
+        )
+        return None
+
+    if not port:
+        log.error(
+            "FUTGG_SALES_PROXY_SERVER has no port - production proxy "
+            "disabled, falling back to a direct connection"
+        )
+        return None
+
+    if parsed.username or parsed.password:
+        log.error(
+            "FUTGG_SALES_PROXY_SERVER must not embed credentials - use "
+            "FUTGG_SALES_PROXY_USERNAME/FUTGG_SALES_PROXY_PASSWORD instead "
+            "- production proxy disabled, falling back to a direct "
+            "connection"
+        )
+        return None
+
+    proxy: dict[str, str] = {"server": f"{parsed.scheme}://{hostname}:{port}"}
+    if PROXY_USERNAME:
+        proxy["username"] = PROXY_USERNAME
+    if PROXY_PASSWORD:
+        proxy["password"] = PROXY_PASSWORD
+    return proxy
+
+
+def _log_production_proxy_state(proxy: dict[str, str] | None) -> None:
+    """Never logs username/password - only proxy['server'] is either
+    field that could reach a log line."""
+    if proxy:
+        log.warning("SalesSync outbound proxy ENABLED, server=%s", proxy["server"])
+    else:
+        log.info(
+            "SalesSync outbound proxy disabled (FUTGG_SALES_PROXY_SERVER "
+            "not set) - direct connection"
+        )
+
+
 async def run_forever() -> None:
     from playwright.async_api import async_playwright
 
@@ -2096,9 +2202,13 @@ async def run_forever() -> None:
     need_signed = TRANSPORT_MODE in ("signed_fetch", "auto")
     need_page_capture = TRANSPORT_MODE in ("page_capture", "auto")
 
+    production_proxy = _build_production_proxy()
+    _log_production_proxy_state(production_proxy)
+
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(
-            headless=HEADLESS, args=["--no-sandbox", "--disable-dev-shm-usage"]
+            headless=HEADLESS, args=["--no-sandbox", "--disable-dev-shm-usage"],
+            proxy=production_proxy,
         )
         try:
             context = await browser.new_context(user_agent=USER_AGENT, locale="en-GB")
