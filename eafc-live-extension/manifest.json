@@ -39,5 +39,10 @@
       ],
       "run_at": "document_start"
     }
-  ]
+  ],
+  "externally_connectable": {
+    "matches": [
+      "https://app.eafc.live/*"
+    ]
+  }
 }

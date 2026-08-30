@@ -52,6 +52,36 @@
 import { CONFIG } from "./config.js";
 import { createIntelligenceCache } from "./intelligence-cache.js";
 
+// The companion token, pasted in by the member from their account page.
+//
+// Held in GM storage, which is manager-private - the EA Web App page
+// cannot read it. Short-lived by design (app/auth/companion_token.py):
+// when it expires the overlay simply gets the anonymous payload and shows
+// the reconnect prompt, which is the correct outcome rather than an error.
+//
+// GM_getValue is used through the same both-spellings dance as
+// GM_xmlhttpRequest, for the same reason: managers differ on which one
+// they implement.
+function getCompanionToken() {
+  try {
+    let stored = null;
+    if (typeof GM_getValue === "function") {
+      stored = GM_getValue("companionToken", null);
+    } else if (typeof GM !== "undefined" && GM && typeof GM.getValue === "function") {
+      // The namespaced form is a promise, which this synchronous call
+      // site cannot await. The cached copy below covers that manager.
+      stored = globalThis.__EAFC_LIVE_TOKEN__ || null;
+    }
+    if (!stored) return "";
+    const entry = typeof stored === "string" ? JSON.parse(stored) : stored;
+    if (!entry || !entry.token) return "";
+    if (entry.expiresAt && entry.expiresAt * 1000 <= Date.now()) return "";
+    return entry.token;
+  } catch {
+    return "";
+  }
+}
+
 function log(...args) {
   if (typeof window !== "undefined" && window.EAFC_LIVE_DEBUG) console.log("[EAFC Live]", ...args);
 }
@@ -165,7 +195,16 @@ async function getJson(url, label) {
       method: "GET",
       url,
       timeout: CONFIG.REQUEST_TIMEOUT_MS,
-      headers: { Accept: "application/json" },
+      headers: {
+        Accept: "application/json",
+        // The bearer token is the RELIABLE path. withCredentials below is
+        // the convenient one, and it is the one that cannot be trusted:
+        // support for that flag differs BETWEEN userscript managers, and
+        // this file already documents one live case where two managers
+        // disagreed about a GM API (see the GM.xmlHttpRequest note above).
+        // A header cannot be declined by any of them.
+        ...(getCompanionToken() ? { Authorization: `Bearer ${getCompanionToken()}` } : {}),
+      },
       // Sends the EAFC Live session cookie so an Elite member's overlay
       // shows their trade plan. The companion endpoint used to be
       // ungated, so this request being anonymous still returned the full

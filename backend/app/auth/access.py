@@ -17,11 +17,15 @@
 # add it to a blocklist.
 from __future__ import annotations
 
+import logging
+
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 
 from app.auth.entitlements import Viewer, anonymous_viewer, get_viewer
+
+log = logging.getLogger("access")
 
 
 # Viewer and get_viewer live in entitlements.py, not here. There is one
@@ -34,6 +38,7 @@ __all__ = [
     "limit_reached",
     "require_account",
     "get_viewer",
+    "get_companion_viewer",
     "anonymous_viewer",
     "preview_opportunity",
     "public_card_preview",
@@ -460,6 +465,47 @@ def serialise_card_detail(
 # ---------------------------------------------------------------------------
 # Allowance limits
 # ---------------------------------------------------------------------------
+
+
+async def get_companion_viewer(req: "Request") -> Viewer:
+    """get_viewer, plus an Authorization: Bearer companion token.
+
+    Only the companion endpoints use this. The rest of the product is
+    cookie-only on purpose - a bearer path is one more way to be
+    authenticated, and it belongs where it is needed rather than
+    everywhere.
+
+    The cookie wins when both are present: someone signed in on this
+    browser is who they are, and a stale token in an extension should not
+    quietly override a live session.
+    """
+    from app.auth.companion_token import bearer_from, verify
+
+    viewer = await get_viewer(req)
+    if viewer.is_authenticated:
+        return viewer
+
+    user_id = verify(bearer_from(req) or "")
+    if not user_id:
+        return viewer
+
+    # Entitlements are resolved from stored state exactly as they are for
+    # a cookie session - the token says WHO, never WHAT they may do. A
+    # token minted while someone was Elite gives them nothing once the
+    # subscription lapses.
+    try:
+        from app.auth.entitlements import features_for_tier, resolve_user_tier
+        from app.db import get_core_pool
+
+        pool = await get_core_pool()
+        tier = await resolve_user_tier(pool, user_id)
+        return Viewer(
+            user_id=str(user_id), tier=tier, is_admin=False,
+            features=frozenset(features_for_tier(tier)),
+        )
+    except Exception:
+        log.warning("companion token: could not resolve entitlements", exc_info=True)
+        return viewer
 
 
 def require_account(viewer: Viewer, what: str) -> None:

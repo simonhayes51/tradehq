@@ -67,12 +67,15 @@ class FakeProvider:
 def _make_app(provider: FakeProvider) -> TestClient:
     """The overlay's payload SHAPE, as an Elite viewer sees it. The access
     states themselves are covered at the bottom of this file."""
-    from app.auth.access import Viewer as _Viewer, get_viewer as _get_viewer
+    from app.auth.access import Viewer as _Viewer, get_companion_viewer as _get_viewer
     from app.auth.entitlements import features_for_tier as _features
 
     app = FastAPI()
     app.include_router(companion_router, prefix="/api/v2")
     app.dependency_overrides[get_provider] = lambda: provider
+    # The companion endpoint resolves its viewer from the cookie OR a
+    # short-lived bearer token (see app/auth/companion_token.py), so the
+    # override targets that resolver rather than get_viewer.
     app.dependency_overrides[_get_viewer] = lambda: _Viewer(
         user_id="elite", tier="elite", is_admin=False,
         features=frozenset(_features("elite")),
@@ -132,7 +135,7 @@ def test_companion_card_includes_risk_and_signal_without_second_engine():
 # extension shipped with `credentials: "omit"`, so nothing about the
 # design even suggested a session was expected.
 
-from app.auth.access import Viewer, get_viewer  # noqa: E402
+from app.auth.access import Viewer, get_companion_viewer  # noqa: E402
 from app.auth.entitlements import features_for_tier  # noqa: E402
 
 TRADE_PLAN_KEYS = {
@@ -150,7 +153,7 @@ def _client_as(viewer):
     app = FastAPI()
     app.include_router(companion_router, prefix="/api/v2")
     app.dependency_overrides[get_provider] = lambda: FakeProvider()
-    app.dependency_overrides[get_viewer] = lambda: viewer
+    app.dependency_overrides[get_companion_viewer] = lambda: viewer
     return TestClient(app)
 
 

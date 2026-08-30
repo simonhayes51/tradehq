@@ -42,7 +42,50 @@ importScripts("debug-flag.js", "config.js", "intelligence-cache.js");
     if (globalThis.EAFC_LIVE_DEBUG) console.log("[EAFC Live:bg]", ...args);
   }
 
+  // The companion token, minted by the app at app.eafc.live where the
+  // session cookie is first-party and unambiguous, and stored here rather
+  // than in the page: chrome.storage.local is extension-private, so the
+  // EA Web App cannot read it.
+  //
+  // It is short-lived by design (see app/auth/companion_token.py). When it
+  // expires the overlay falls back to the anonymous payload and the
+  // reconnect prompt, which is the correct outcome - not an error.
+  let cachedToken = null;
+
+  async function getToken() {
+    if (cachedToken !== null) return cachedToken;
+    try {
+      const stored = await chrome.storage.local.get("companionToken");
+      const entry = stored?.companionToken;
+      if (entry && entry.token && entry.expiresAt * 1000 > Date.now()) {
+        cachedToken = entry.token;
+      } else {
+        cachedToken = "";
+        if (entry) await chrome.storage.local.remove("companionToken");
+      }
+    } catch {
+      cachedToken = "";
+    }
+    return cachedToken;
+  }
+
+  // The app posts the token here after the member connects the companion.
+  chrome.runtime.onMessageExternal?.addListener((message, _sender, sendResponse) => {
+    if (message?.type !== "eafc-live:companion-token") return false;
+    const { token, expiresAt } = message;
+    if (typeof token !== "string" || typeof expiresAt !== "number") {
+      sendResponse({ ok: false });
+      return true;
+    }
+    chrome.storage.local.set({ companionToken: { token, expiresAt } }).then(() => {
+      cachedToken = token;
+      sendResponse({ ok: true });
+    });
+    return true;
+  });
+
   async function fetchIntelligence(sourceCardId) {
+    const token = await getToken();
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
     try {
@@ -63,6 +106,16 @@ importScripts("debug-flag.js", "config.js", "intelligence-cache.js");
         // succeeds, just anonymously, and the overlay renders its locked
         // state rather than breaking.
         credentials: "include",
+        // The bearer token is the RELIABLE path; the cookie above is the
+        // convenient one. Both are sent: whichever the browser honours
+        // wins, and the server prefers a live cookie session over a
+        // token that might be stale (see get_companion_viewer).
+        //
+        // This matters because the cookie has to travel THIRD-PARTY -
+        // this page is www.ea.com and the API is api.eafc.live - and
+        // third-party cookie behaviour has changed repeatedly and is
+        // changing again. A bearer header cannot be declined.
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
         headers: { Accept: "application/json" },
       });
 

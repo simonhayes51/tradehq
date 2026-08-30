@@ -30,6 +30,17 @@
 //                         attacker- or page-supplied ones, so it's not
 //                         widening what this script can be made to fetch
 //                         by anything untrusted.
+//   @grant GM_getValue
+//   @grant GM_setValue
+//   @grant GM.getValue
+//   @grant GM.setValue
+//                       - storage for the short-lived companion token
+//                         (see api-client.js's getCompanionToken). GM
+//                         storage is manager-private, so the EA Web App
+//                         page cannot read it - which is the whole reason
+//                         the token is not kept in page storage. Both
+//                         spellings again, same manager-difference
+//                         reasoning as the request API below.
 //   @grant GM_xmlhttpRequest
 //   @grant GM.xmlHttpRequest
 //                       - the privileged APIs this script needs (see
@@ -79,6 +90,10 @@ export const METADATA_BLOCK = `// ==UserScript==
 // @connect      *
 // @grant        GM_xmlhttpRequest
 // @grant        GM.xmlHttpRequest
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM.getValue
+// @grant        GM.setValue
 // @run-at       document-start
 // @downloadURL  https://app.eafc.live/companion/eafc-live.user.js
 // @updateURL    https://app.eafc.live/companion/eafc-live.user.js

@@ -8,6 +8,7 @@ import { useEntitlements } from "../../../context/EntitlementsContext";
 import { deleteAccount } from "../../../api/account";
 import { PageHead } from "../Players/Players";
 import { FREE_LIMITS, PAID_PLAN_NAME } from "../../lib/limits";
+import CompanionConnect from "../../components/CompanionConnect";
 import "./account.css";
 
 // The v1 tools that still work on live data and aren't duplicated by a
@@ -132,6 +133,7 @@ export default function Account() {
         </Link>
       ))}
     </section>
+    {isAuthenticated ? <CompanionConnect /> : null}
     {isAuthenticated ? (
       <section className="v2-discord-panel">
         <div className="v2-discord-heading"><MessageCircle size={18}/><span>DISCORD</span></div>
