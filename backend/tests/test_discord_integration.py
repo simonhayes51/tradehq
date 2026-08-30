@@ -139,7 +139,7 @@ def test_public_opportunity_message_contains_no_actionable_fields():
     assert "Buy target" not in rendered
     assert "Sell target" not in rendered
     assert "profit" not in rendered.lower()
-    assert "#/v2/opportunities" in rendered
+    assert "#/opportunities" in rendered
 
 
 def test_actionable_public_payload_is_rejected():

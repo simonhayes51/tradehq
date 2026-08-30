@@ -22,7 +22,7 @@ export default function MarketEventsTab() {
             <li key={e.id} className="flex items-center justify-between py-2 text-xs">
               <div>
                 {e.kind === "sbc" ? (
-                  <Link to={`/v2/sbc/${e.id}`} className="font-medium hover:text-[var(--v2-accent)]">
+                  <Link to={`/sbc/${e.id}`} className="font-medium hover:text-[var(--v2-accent)]">
                     {e.title}
                   </Link>
                 ) : (

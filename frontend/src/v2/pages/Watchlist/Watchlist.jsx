@@ -120,7 +120,7 @@ export default function Watchlist() {
               Alert rules
               {alerts.length > 0 && <span className="v2-alerts-count">{alerts.length}</span>}
             </button>
-            <Link className="v2-primary-link" to="/v2/players">Add a player</Link>
+            <Link className="v2-primary-link" to="/players">Add a player</Link>
           </div>
         }
       />
@@ -169,7 +169,7 @@ export default function Watchlist() {
           {items.map((item) => (
             <article className="v2-watch-card" key={item.id}>
               <div className="v2-watch-top"><Star size={17} fill="currentColor"/><span>WATCHING</span><small>{String(item.platform || "ps").toUpperCase()}</small></div>
-              <Link className="v2-watch-identity" to={`/v2/players/${item.card_id}`}>
+              <Link className="v2-watch-identity" to={`/players/${item.card_id}`}>
                 <img src={item.generated_card_url || item.composited_image_url || item.image_url || "/img/card-placeholder.png"} alt="" />
                 <div><h2>{item.player_name}</h2><div className="v2-meta-pills"><span>{item.rating || "—"} OVR</span><span>{versionLabel(item.version)}</span></div></div>
                 <ArrowRight size={18}/>
@@ -187,7 +187,7 @@ export default function Watchlist() {
             </article>
           ))}
         </section>
-      ) : <EmptyState icon={<Star size={28} />} text="Your watchlist is empty." action={<Link to="/v2/players">Find a player</Link>} />}
+      ) : <EmptyState icon={<Star size={28} />} text="Your watchlist is empty." action={<Link to="/players">Find a player</Link>} />}
 
       {alertTarget && (
         <div className="v2-modal-backdrop" onClick={() => setAlertTarget(null)}>

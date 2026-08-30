@@ -21,7 +21,7 @@ export default function V2App() {
   return (
     <Routes>
       <Route index element={<ShellLayout><HomeDashboard /></ShellLayout>} />
-      {/* FUT.GG migration: was a redirect to /v2/trade-finder (no
+      {/* FUT.GG migration: was a redirect to /trade-finder (no
           dedicated opportunities page existed); now a real page wired to
           GET /api/v2/opportunities. */}
       <Route path="opportunities" element={<ShellLayout><Opportunities /></ShellLayout>} />
@@ -39,14 +39,14 @@ export default function V2App() {
           real, tested work that is genuinely mid-validation. What is
           removed is the claim to users that it is a shipped feature.
           Old links land on Opportunities rather than a dead route. */}
-      <Route path="investments" element={<Navigate to="/v2/opportunities" replace />} />
+      <Route path="investments" element={<Navigate to="/opportunities" replace />} />
       {/* The full performance record. Was the largest section of the
           homepage; it is reference material, so it is a page. */}
       <Route path="track-record" element={<ShellLayout><TrackRecord /></ShellLayout>} />
       <Route path="trade-finder" element={<ShellLayout><TradeFinder /></ShellLayout>} />
       <Route path="players" element={<ShellLayout><Players /></ShellLayout>} />
       <Route path="players/:cardId" element={<ShellLayout><PlayerPage /></ShellLayout>} />
-      <Route path="market" element={<Navigate to="/v2/trade-finder" replace />} />
+      <Route path="market" element={<Navigate to="/trade-finder" replace />} />
       <Route path="chat" element={<ShellLayout><Chat /></ShellLayout>} />
       <Route path="watchlist" element={<ShellLayout><Watchlist /></ShellLayout>} />
       <Route path="portfolio" element={<ShellLayout><ClubRoute /></ShellLayout>} />
@@ -65,7 +65,7 @@ export default function V2App() {
       <Route path="club" element={<ShellLayout><ClubRoute /></ShellLayout>} />
       <Route path="admin" element={<ShellLayout><Admin /></ShellLayout>} />
       <Route path="admin/sbc-imports" element={<ShellLayout><AdminSbcImports /></ShellLayout>} />
-      {/* No catch-all previously existed - an unmatched /v2/* path (a
+      {/* No catch-all previously existed - an unmatched in-app path (a
           stale bookmark, a typo, a removed route) rendered nothing at
           all inside these <Routes>, i.e. a blank page with the sidebar
           still up. */}
@@ -79,7 +79,7 @@ function NotFound() {
     <main className="v2-destination">
       <div className="v2-page-state">
         <p>We couldn't find that page.</p>
-        <Link to="/v2" className="v2-icon-action">Back to Home</Link>
+        <Link to="/" className="v2-icon-action">Back to Home</Link>
       </div>
     </main>
   );

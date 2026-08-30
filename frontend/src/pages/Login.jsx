@@ -23,7 +23,7 @@ const Login = () => {
   return (
     <div className="min-h-screen bg-black text-white flex items-center justify-center px-4">
       <div className="w-full max-w-sm text-center">
-        <Link to="/v2" className="inline-block mb-8 text-sm font-bold text-[#91db32]">EAFC Live</Link>
+        <Link to="/" className="inline-block mb-8 text-sm font-bold text-[#91db32]">EAFC Live</Link>
         <h1 className="text-3xl font-extrabold mb-2">Welcome back</h1>
         <p className="text-gray-400 mb-8 text-sm">Log in to see your watchlist, trades and alerts.</p>
         <button

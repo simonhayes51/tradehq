@@ -210,7 +210,7 @@ export default function TrackRecordPanel() {
       <div className="section-head compact">
         <div>
           {/* No eyebrow/title here any more: this panel now only renders
-              inside /v2/track-record, whose PageHead already says what
+              inside /track-record, whose PageHead already says what
               the page is. Repeating it produced two headings for one
               thing. The homepage's summary is TrackRecordSummary. */}
           <span>PUBLISHED RESULTS</span>

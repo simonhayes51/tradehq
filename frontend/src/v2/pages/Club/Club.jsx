@@ -50,7 +50,7 @@ export default function Club() {
     <div className="club-page">
       <header className="club-hero">
         <div><span>PORTFOLIO</span><h1>Your trades. Your results.</h1><p>Track every purchase, close sales properly and learn which EAFC Live calls actually make you coins.</p></div>
-        <a href="#/v2" className="club-add"><Plus size={18} /> Find a trade</a>
+        <a href="#" className="club-add"><Plus size={18} /> Find a trade</a>
       </header>
 
       {error ? <div className="club-alert">{error}<button onClick={load}>Try again</button></div> : null}
@@ -140,7 +140,7 @@ function SummaryShare() {
 }
 
 function OpenTrades({ trades, onClose }) {
-  if (!trades.length) return <EmptyState icon={<Target />} title="No open trades yet" text="Open a recommendation on the dashboard and press Log purchase. It will appear here instantly." action={<a href="#/v2">Browse recommendations</a>} />;
+  if (!trades.length) return <EmptyState icon={<Target />} title="No open trades yet" text="Open a recommendation on the dashboard and press Log purchase. It will appear here instantly." action={<a href="#">Browse recommendations</a>} />;
   return <section className="trade-grid">{trades.map((trade) => { const qty = Number(trade.quantity || 1); const target = Number(trade.target_sell || 0); const projected = target ? (Math.floor(target * .95) - Number(trade.buy)) * qty : 0; const liveStatus = trade.current_recommendation_status ? trade.current_recommendation_status.toLowerCase() : null; return <article className="trade-card" key={trade.trade_id}><div className="trade-top"><div><span>{versionLabel(trade.version)}</span><h3>{trade.player}</h3></div><b>OPEN</b></div><div className="trade-numbers"><Stat label="Bought" value={<CoinValue value={trade.buy} />} /><Stat label="Quantity" value={qty} /><Stat label="Target" value={<CoinValue value={target || null} />} /><Stat label="Projected" value={<CoinValue value={projected} signed />} /></div>{liveStatus ? <div className="trade-verdict"><RecommendationBadge recommendation={liveStatus} /><p>{trade.current_recommendation_reasoning}</p></div> : null}<div className="trade-meta"><span><Clock3 size={14} /> {date(trade.bought_at || trade.timestamp)}</span><span>{String(trade.platform || "ps").toUpperCase()}</span></div><button className="close-trade" onClick={() => onClose(trade)}>Close trade</button></article>; })}</section>;
 }
 

@@ -167,7 +167,7 @@ def build_alert_item(
         # >1 means "this rule fired N times on this card recently"; the UI
         # shows one row and says so, instead of N near-identical rows.
         "repeatCount": repeat_count,
-        "href": f"/v2/players/{int(row['card_id'])}",
+        "href": f"/players/{int(row['card_id'])}",
     }
 
 
@@ -196,16 +196,16 @@ def collapse_repeats(rows: Sequence[Dict[str, Any]], *, window_hours: int = REPE
     return out
 
 
+# No join. `metric` is recorded on the alert itself (migration 072)
+# because a card can carry both a price rule and a liquidity rule, so
+# joining back to watchlist_alerts duplicated every row - one copy of
+# each notification describing the wrong measurement.
 _SELECT_LIVE_ALERTS = """
-    SELECT al.id, al.card_id, al.platform, al.direction, al.pct, al.price,
-           al.ref_price, al.sent_at, al.read_at, al.source,
-           COALESCE(wa.metric, 'price') AS metric
-    FROM alerts_log al
-    LEFT JOIN watchlist_alerts wa
-           ON wa.user_id = al.user_id AND wa.card_id = al.card_id
-          AND wa.platform = al.platform
-    WHERE al.user_id = $1 AND al.dismissed_at IS NULL
-    ORDER BY al.sent_at DESC
+    SELECT id, card_id, platform, direction, pct, price,
+           ref_price, sent_at, read_at, source, metric
+    FROM alerts_log
+    WHERE user_id = $1 AND dismissed_at IS NULL
+    ORDER BY sent_at DESC
     LIMIT $2
 """
 

@@ -76,7 +76,7 @@ class TestBuildAlertItem:
         assert build_alert_item(_row(read_at=NOW), now=NOW)["unread"] is False
 
     def test_links_to_the_card_it_is_about(self):
-        assert build_alert_item(_row(), now=NOW)["href"] == "/v2/players/117493814"
+        assert build_alert_item(_row(), now=NOW)["href"] == "/players/117493814"
 
 
 class TestCollapseRepeats:

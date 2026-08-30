@@ -153,7 +153,7 @@ function ToolResult({ toolResult }) {
     return (
       <div className="v2-chat-tool-list">
         {result.candidates.map((c) => (
-          <Link className="v2-chat-tool-row" key={c.card_id} to={`/v2/players/${c.card_id}`}>
+          <Link className="v2-chat-tool-row" key={c.card_id} to={`/players/${c.card_id}`}>
             <span>{c.name} {c.rating}{c.version ? ` · ${String(c.version).replace(/_/g, " ")}` : ""}</span>
           </Link>
         ))}
@@ -180,7 +180,7 @@ function priceAgeLabel(minutes) {
 function ToolCard({ card, compact = false }) {
   const age = priceAgeLabel(card.price_age_minutes);
   return (
-    <Link className={`v2-chat-tool-card${compact ? " compact" : ""}`} to={`/v2/players/${card.card_id}`}>
+    <Link className={`v2-chat-tool-card${compact ? " compact" : ""}`} to={`/players/${card.card_id}`}>
       <div className="v2-chat-tool-head">
         <strong>{card.name} {card.rating}</strong>
         {card.verdict ? <RecommendationBadge recommendation={String(card.verdict).toLowerCase()} /> : null}

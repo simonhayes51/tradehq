@@ -147,13 +147,27 @@ def proof_row_is_defensible(row: dict[str, Any], period: ReportingPeriod) -> boo
             elapsed = int((outcome_at - entry_at).total_seconds() // 60)
             return row.get("minutes_to_target") == elapsed
 
+        # Mirrors futgg_outcome_grader.grade_recommendation()'s
+        # classification exactly - this is the independent re-derivation
+        # that proves a stored row was graded by the rules we publish.
+        #
+        # It has to move with that function. The grader used to let
+        # downside_hit override the realised result outright, which
+        # produced rows counted as a LOSS while carrying a positive
+        # profit and ROI. Now the realised result decides win/loss/flat
+        # and downside_hit only chooses WHICH loss label applies, so a
+        # position that dipped past the threshold and recovered is
+        # legitimately `profitable_unrealised` WITH downside_hit set.
+        # Keeping the old "and not downside_hit" clauses here would
+        # silently reject exactly those rows as indefensible and drop
+        # them from the published record.
+        deep_drawdown = bool(row.get("downside_hit"))
         status_matches_engine = {
-            "profitable_unrealised": expected_roi > Decimal("0.005")
-            and not row.get("downside_hit"),
-            "loss_unrealised": expected_roi < Decimal("-0.005")
-            and not row.get("downside_hit"),
-            "flat": abs(expected_roi) <= Decimal("0.005") and not row.get("downside_hit"),
-            "downside_hit": bool(row.get("downside_hit"))
+            "profitable_unrealised": expected_roi > Decimal("0.005"),
+            "loss_unrealised": expected_roi < Decimal("-0.005") and not deep_drawdown,
+            "flat": abs(expected_roi) <= Decimal("0.005"),
+            "downside_hit": deep_drawdown
+            and expected_roi < Decimal("-0.005")
             and Decimal(str(row.get("max_adverse_excursion"))) <= Decimal("-0.10"),
         }
     except (TypeError, ValueError, ArithmeticError):
@@ -613,7 +627,7 @@ def build_daily_proof_embed(report: dict[str, Any], app_url: str) -> dict[str, A
     color = 0x22C55E if result > 0 else 0xEF4444 if result < 0 else 0xEAB308
     return {
         "title": "EAFC LIVE - DAILY TRADING REVIEW",
-        "url": app_url.rstrip("/") + "/#/v2/opportunities",
+        "url": app_url.rstrip("/") + "/#/opportunities",
         "description": period_end.astimezone(zone).strftime("%d %B %Y"),
         "color": color,
         "fields": fields,

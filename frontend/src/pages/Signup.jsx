@@ -30,7 +30,7 @@ const Signup = () => {
   return (
     <div className="min-h-screen bg-black text-white flex items-center justify-center px-4">
       <div className="w-full max-w-sm text-center">
-        <Link to="/v2" className="inline-block mb-8 text-sm font-bold text-[#91db32]">EAFC Live</Link>
+        <Link to="/" className="inline-block mb-8 text-sm font-bold text-[#91db32]">EAFC Live</Link>
         <h1 className="text-3xl font-extrabold mb-6">Create your free account</h1>
         <ul className="text-left space-y-3 mb-8">
           {BENEFITS.map((b) => (

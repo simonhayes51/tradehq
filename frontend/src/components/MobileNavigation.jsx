@@ -141,10 +141,10 @@ export default function MobileNavigation() {
         </svg>
       ),
     },
-    // Was "/smart-buy", which now redirects to /v2/opportunities - point
+    // Was "/smart-buy", which now redirects to /opportunities - point
     // the tab straight at the destination rather than through a bounce.
     {
-      to: "/v2/opportunities",
+      to: "/opportunities",
       label: "Opportunities",
       premium: true,
       icon: (

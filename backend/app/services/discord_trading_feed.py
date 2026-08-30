@@ -276,7 +276,7 @@ def build_free_overview_embed(stats: dict[str, Any], app_url: str) -> dict[str, 
     fields.append({"name": "EAFC.LIVE PREMIUM", "value": PROMO_MESSAGE, "inline": False})
     return {
         "title": "EAFC LIVE — DAILY TRADING OVERVIEW",
-        "url": app_url.rstrip("/") + "/#/v2/opportunities",
+        "url": app_url.rstrip("/") + "/#/opportunities",
         "color": color,
         "fields": fields,
         "footer": {
@@ -429,7 +429,7 @@ def build_opportunity_post_embed(row: dict[str, Any], ci: Any, *, test: bool = F
     components: list[dict[str, Any]] = []
     card_id = row.get("source_card_id")
     if not test and card_id is not None and int(card_id) > 0:
-        components = [embeds.link_row("View in EAFC.Live", f"{app_url.rstrip('/')}/#/v2/players/{card_id}")]
+        components = [embeds.link_row("View in EAFC.Live", f"{app_url.rstrip('/')}/#/players/{card_id}")]
     return embed, components
 
 

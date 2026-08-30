@@ -56,7 +56,7 @@ export default function Opportunities() {
       />
 
       <div className="opp-crosslinks">
-        <Link className="opp-crosslink" to="/v2/trade-finder">
+        <Link className="opp-crosslink" to="/trade-finder">
           <SlidersHorizontal size={15} /> Need more control? Open Trade Finder <ArrowRight size={14} />
         </Link>
       </div>
@@ -118,7 +118,7 @@ function OpportunityCard({ item }) {
   const why = buildWhyText(item);
 
   return (
-    <Link className="finder-card opp-card" to={`/v2/players/${cardId}`} state={{ from: "opportunities" }}>
+    <Link className="finder-card opp-card" to={`/players/${cardId}`} state={{ from: "opportunities" }}>
       <div className="finder-card-top">
         <img src={item.composited_image_url || item.image_url || "/img/card-placeholder.png"} alt="" />
         <div>

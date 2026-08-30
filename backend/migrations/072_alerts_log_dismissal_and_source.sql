@@ -26,14 +26,25 @@
 --      down 13%". Recording the source ON the alert row at write time
 --      makes the resolution independent of state that can change later.
 --
--- Reversible: all three are additive nullable/defaulted columns plus two
--- indexes. `DROP COLUMN dismissed_at, read_at, source` and the two
+-- Reversible: all four are additive nullable/defaulted columns plus two
+-- indexes. `DROP COLUMN dismissed_at, read_at, source, metric` and the two
 -- `DROP INDEX`es restore the previous schema exactly; no existing column
 -- is altered and no row is deleted.
 
 ALTER TABLE alerts_log ADD COLUMN IF NOT EXISTS dismissed_at TIMESTAMPTZ;
 ALTER TABLE alerts_log ADD COLUMN IF NOT EXISTS read_at TIMESTAMPTZ;
 ALTER TABLE alerts_log ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'futbin';
+-- Fourth missing column, same class of problem as `source`.
+--
+-- A fired alert did not record WHICH metric it was about, so rendering
+-- "price move" vs "sales activity" meant joining back to
+-- watchlist_alerts. But a card can legitimately carry BOTH a price rule
+-- and a liquidity rule (migration 055's unique index is on
+-- (user_id, card_id, platform, METRIC)), so that join duplicated every
+-- alerts_log row once per rule - the same notification appearing twice,
+-- one of the two describing the wrong measurement. Recording it on the
+-- alert removes both the duplication and the join.
+ALTER TABLE alerts_log ADD COLUMN IF NOT EXISTS metric TEXT NOT NULL DEFAULT 'price';
 
 -- Backfill `source` from the rule that produced each alert, then from the
 -- user's watchlist row, before falling back to the column default. Rows
@@ -59,6 +70,22 @@ WHERE w.user_id = al.user_id
       SELECT 1 FROM watchlist_alerts wa
       WHERE wa.user_id = al.user_id AND wa.card_id = al.card_id AND wa.platform = al.platform
   );
+
+-- Best-effort backfill for historical rows: only where the card has
+-- exactly one rule, so there is no ambiguity about which metric fired.
+-- Everything else keeps the 'price' default, which is what the alert
+-- evaluator's own default metric has always been.
+UPDATE alerts_log al
+SET metric = wa.metric
+FROM watchlist_alerts wa
+WHERE wa.user_id = al.user_id
+  AND wa.card_id = al.card_id
+  AND wa.platform = al.platform
+  AND wa.metric <> al.metric
+  AND (
+      SELECT COUNT(*) FROM watchlist_alerts w2
+      WHERE w2.user_id = al.user_id AND w2.card_id = al.card_id AND w2.platform = al.platform
+  ) = 1;
 
 -- The feed query is "this user's undismissed alerts, newest first", which
 -- idx_alerts_user_time (user_id, sent_at) cannot serve without also

@@ -46,7 +46,7 @@ export default function ImpactSection({ impact, status }) {
           <li key={i} className="flex items-center gap-3 py-2 text-xs">
             <CardArtThumb card={it} widthClass="w-9" />
             <div className="flex-1 min-w-0">
-              <Link to={`/v2/players/${it.card_id}`} className="font-medium hover:text-[var(--v2-accent)]">
+              <Link to={`/players/${it.card_id}`} className="font-medium hover:text-[var(--v2-accent)]">
                 {it.name || it.card_id}
               </Link>
               <p className="text-[var(--v2-muted)]">{RELATION_LABEL[it.relation] || it.relation}</p>

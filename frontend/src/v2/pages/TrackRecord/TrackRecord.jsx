@@ -18,7 +18,7 @@ export default function TrackRecord() {
         eyebrow="TRACK RECORD"
         title="Every published call, graded"
         copy="Recommendations we actually sent to users, graded against the real chronological price history. Results are hypothetical - they show what the market did, not what any individual made."
-        action={<Link className="v2-primary-link" to="/v2"><ArrowLeft size={15} /> Back to Home</Link>}
+        action={<Link className="v2-primary-link" to="/"><ArrowLeft size={15} /> Back to Home</Link>}
       />
       <TrackRecordPanel />
     </main>

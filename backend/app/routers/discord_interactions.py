@@ -349,7 +349,7 @@ async def _build_reply(name: str, options: List[Dict[str, Any]], discord_id: Opt
                 return {"embeds": [embeds.no_card_found_embed(str(player_option), app_url)]}
             _, ci = result
             embed = embeds.fairvalue_embed(row, ci, app_url, platform=platform)
-        card_url = f"{app_url.rstrip('/')}/#/v2/players/{row['source_card_id']}"
+        card_url = f"{app_url.rstrip('/')}/#/players/{row['source_card_id']}"
         return {"embeds": [embed], "components": [embeds.link_row("View in EAFC.Live", card_url)]}
 
     # Everything past this point needs a linked account.
@@ -361,16 +361,16 @@ async def _build_reply(name: str, options: List[Dict[str, Any]], discord_id: Opt
 
     if name == "watchlist":
         items = await data.get_watchlist(user_id)
-        return {"embeds": [embeds.watchlist_embed(items, app_url)], "components": [embeds.link_row("Manage watchlist", f"{app_url.rstrip('/')}/#/v2/watchlist")]}
+        return {"embeds": [embeds.watchlist_embed(items, app_url)], "components": [embeds.link_row("Manage watchlist", f"{app_url.rstrip('/')}/#/watchlist")]}
     if name == "alerts":
         items = await data.get_alerts(user_id)
-        return {"embeds": [embeds.alerts_embed(items, app_url)], "components": [embeds.link_row("Manage alerts", f"{app_url.rstrip('/')}/#/v2/watchlist")]}
+        return {"embeds": [embeds.alerts_embed(items, app_url)], "components": [embeds.link_row("Manage alerts", f"{app_url.rstrip('/')}/#/watchlist")]}
     if name == "results":
         trades = await data.get_trades(user_id)
         return {"embeds": [embeds.results_embed(trades, app_url)], "components": [embeds.link_row("View trade journal", f"{app_url.rstrip('/')}/#/trades")]}
     if name == "account":
         summary = await data.get_account_summary(user_id)
-        return {"embeds": [embeds.account_embed(summary, app_url)], "components": [embeds.link_row("Open account page", f"{app_url.rstrip('/')}/#/v2/account")]}
+        return {"embeds": [embeds.account_embed(summary, app_url)], "components": [embeds.link_row("Open account page", f"{app_url.rstrip('/')}/#/account")]}
 
     return {"content": "Unknown command."}
 

@@ -166,3 +166,23 @@ def test_feed_query_excludes_dismissed_rows():
     # The single most important line: a dismissed alert must not come
     # back on the next load, which is what "it didn't stay deleted" was.
     assert "dismissed_at IS NULL" in " ".join(alerts_feed._SELECT_LIVE_ALERTS.split())
+
+
+def test_feed_query_does_not_join_the_rules_table():
+    """A card can carry BOTH a price rule and a liquidity rule (migration
+    055's unique index is on (user_id, card_id, platform, metric)), so
+    joining alerts_log to watchlist_alerts to recover the metric returned
+    every notification twice - once labelled with the wrong measurement.
+    The metric is recorded on the alert instead (migration 072)."""
+    query = " ".join(alerts_feed._SELECT_LIVE_ALERTS.split())
+    assert "watchlist_alerts" not in query
+    assert "JOIN" not in query.upper()
+    assert "metric" in query
+
+
+def test_feed_labels_a_liquidity_alert_as_sales_activity(monkeypatch):
+    conn = FakeConn([_row(metric="liquidity", direction="fall", price=1.2, ref_price=None)])
+    _install(monkeypatch, conn)
+    item = asyncio.run(alerts_router.list_alerts(FakeRequest(), limit=20))["items"][0]
+    assert "sales activity" in item["title"]
+    assert "coins" not in item["movement"]

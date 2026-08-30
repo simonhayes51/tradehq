@@ -31,7 +31,7 @@ describe("public homepage navigation", () => {
 
   it("keeps the launch links wired to their intended destinations", () => {
     render(<PublicSite />);
-    expect(screen.getAllByRole("link", { name: "Pricing" })[0]).toHaveAttribute("href", "https://app.eafc.live/#/v2/billing");
+    expect(screen.getAllByRole("link", { name: "Pricing" })[0]).toHaveAttribute("href", "https://app.eafc.live/#/billing");
     expect(screen.getAllByRole("link", { name: "Log in" })[0]).toHaveAttribute("href", "https://app.eafc.live/#/login");
     expect(screen.getAllByRole("link", { name: /Start free/ })[0]).toHaveAttribute("href", "https://app.eafc.live/#/signup");
     expect(screen.getAllByRole("link", { name: "Discord" })[0].getAttribute("href")).toMatch(/^https:\/\/discord\.gg\//);

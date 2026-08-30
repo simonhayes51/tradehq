@@ -40,7 +40,7 @@ export default function SbcListSection({ events }) {
         return (
           <Link
             key={ev.id}
-            to={`/v2/sbc/${ev.id}`}
+            to={`/sbc/${ev.id}`}
             className="rounded-[var(--v2-radius)] border border-[var(--v2-border)] bg-[var(--v2-card)] p-4 flex flex-col gap-2 hover:border-[var(--v2-accent)] transition-colors"
           >
             <div className="flex items-start justify-between gap-2">

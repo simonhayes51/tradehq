@@ -109,12 +109,12 @@ export default function NotificationsPanel({ open, onClose, onUnreadCount }) {
               ? "Nothing has moved enough to alert you yet. We'll let you know when a watched card hits one of your conditions."
               : "You're not watching any cards yet. Add one and we'll tell you when its price moves."
           }
-          action={<Link to="/v2/watchlist" onClick={onClose}>Open watchlist</Link>}
+          action={<Link to="/watchlist" onClick={onClose}>Open watchlist</Link>}
         />
       )}
 
       <footer className="v2-notifications-foot">
-        <Link to="/v2/watchlist" onClick={onClose}>Manage alert rules</Link>
+        <Link to="/watchlist" onClick={onClose}>Manage alert rules</Link>
       </footer>
     </div>
   );

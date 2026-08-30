@@ -71,7 +71,7 @@ export default function Account() {
 
   async function signOut() {
     await logout();
-    navigate("/v2", { replace: true });
+    navigate("/", { replace: true });
   }
 
   async function confirmDeleteAccount() {
@@ -83,7 +83,7 @@ export default function Account() {
       // to a fresh, fully signed-out load rather than a client-side
       // route change, so nothing stale from AuthContext/EntitlementsContext
       // lingers in memory after an account that no longer exists.
-      window.location.href = "/v2";
+      window.location.href = "/";
     } catch (e) {
       setDeleting(false);
       setDeleteError(e?.response?.data?.detail || "Couldn't delete your account - try again, or contact support if this keeps happening.");
@@ -103,8 +103,8 @@ export default function Account() {
       </article>
     </section>
     <section className="v2-account-links">
-      <Link to="/v2/watchlist"><Star/><div><strong>Watchlist</strong><span>Review cards you’re tracking</span></div></Link>
-      <Link to="/v2/portfolio"><Briefcase/><div><strong>Portfolio</strong><span>See open and completed trades</span></div></Link>
+      <Link to="/watchlist"><Star/><div><strong>Watchlist</strong><span>Review cards you’re tracking</span></div></Link>
+      <Link to="/portfolio"><Briefcase/><div><strong>Portfolio</strong><span>See open and completed trades</span></div></Link>
       {/* This was a single "More tools - Smart Buy, Portfolio Optimizer,
           Trade Copilot and more" link pointing at /add-trade, which drops
           the user into the OLD app shell and its sidebar. Three of the
@@ -153,7 +153,7 @@ export default function Account() {
             against Discord and shows "no servers" otherwise, so this
             link is safe to always show rather than trying to predict
             eligibility client-side. */}
-        <Link to="/v2/discord-feed" className="v2-discord-feed-link">Manage a server's trading feed &rarr;</Link>
+        <Link to="/discord-feed" className="v2-discord-feed-link">Manage a server's trading feed &rarr;</Link>
       </section>
     ) : null}
     {isAuthenticated ? <button className="v2-sign-out" onClick={signOut}><LogOut size={17}/> Sign out</button> : null}

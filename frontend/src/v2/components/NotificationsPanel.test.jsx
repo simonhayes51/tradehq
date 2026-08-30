@@ -26,7 +26,7 @@ const ALERT = {
   age: "10 min ago",
   unread: true,
   repeatCount: 1,
-  href: "/v2/players/117493814",
+  href: "/players/117493814",
   severity: "medium",
 };
 

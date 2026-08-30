@@ -1,7 +1,7 @@
 // src/App.jsx
 
 import { lazy, Suspense } from "react";
-import { HashRouter as Router, Routes, Route, Navigate } from "react-router-dom";
+import { HashRouter as Router, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { Toaster } from "react-hot-toast";
 import { AuthProvider } from "./context/AuthContext";
 import { DashboardProvider } from "./context/DashboardContext";
@@ -15,6 +15,7 @@ import PrivateRoute from "./components/PrivateRoute";
 import PremiumRoute from "./components/PremiumRoute";
 import PublicSite from "./PublicSite";
 import { isPublicHost } from "./lib/domains";
+import { legacyV2Target } from "./lib/routes";
 
 // Eager pages
 import SquadBuilder from "./pages/SquadBuilder";
@@ -31,7 +32,6 @@ const ProfitGraph   = lazy(() => import("./pages/ProfitGraph"));
 const PriceCheck    = lazy(() => import("./pages/PriceCheck"));
 const Login         = lazy(() => import("./pages/Login"));
 const AccessDenied  = lazy(() => import("./pages/AccessDenied"));
-const NotFound      = lazy(() => import("./pages/NotFound"));
 const PlayerCompare = lazy(() => import("./pages/PlayerCompare"));
 
 // NEW pages
@@ -58,7 +58,7 @@ const TradeSummaryExport = lazy(() => import("./pages/internal/TradeSummaryExpor
 
 // v2 - AI market-intelligence redesign, self-contained under src/v2/ (see
 // the v2 plan). Own internal routing via V2App's <Routes>, so it's
-// mounted with a /v2/* wildcard rather than nested child routes here.
+// mounted with a root wildcard rather than nested child routes here.
 const V2App = lazy(() => import("./v2/App.v2"));
 
 // ENHANCED features
@@ -67,6 +67,16 @@ const ProfitCalculator = lazy(() => import("./pages/ProfitCalculator"));
 const Leaderboard = lazy(() => import("./pages/Leaderboard"));
 const ReferralProgram = lazy(() => import("./pages/ReferralProgram"));
 const MarketMaker = lazy(() => import("./pages/MarketMaker"));
+
+// Permanent redirect from every historical /v2/* URL to its current,
+// unversioned equivalent. Deep links carrying the old prefix exist in
+// Discord messages this product has already posted and in Stripe return
+// URLs, so this stays indefinitely - it is a URL contract, not a
+// migration step to clean up later.
+function LegacyV2Redirect() {
+  const { pathname, search, hash } = useLocation();
+  return <Navigate to={`${legacyV2Target(pathname)}${search}${hash}`} replace />;
+}
 
 function App() {
   // eafc.live (the public marketing site) and app.eafc.live (the trading
@@ -79,10 +89,10 @@ function App() {
   }
 
   return (
-    <ErrorBoundary>
-      <AuthProvider>
-        <EntitlementsProvider>
-          <Router>
+    <AuthProvider>
+      <EntitlementsProvider>
+        <Router>
+          <RoutedErrorBoundary>
             <div id="app-shell-bg" className="bg-black min-h-screen text-white">
               {/* Mounted once here (not inside v1's Layout) so toasts -
                   e.g. EntitlementsContext's premium-expiry notice - render
@@ -114,36 +124,55 @@ function App() {
                   <Route path="/internal/render/trade-share/:tradeId" element={<TradeShareExport />} />
                   <Route path="/internal/render/trade-summary/:period" element={<TradeSummaryExport />} />
 
-                  {/* v2 - handles its own per-panel gating via
-                      useEntitlements/PremiumGate rather than a full-page
-                      PrivateRoute redirect, so it sits outside the
-                      protected shell below like /demo does. */}
-                  <Route path="/v2/*" element={<V2App />} />
+                  {/* "" was internal versioning leaking into every URL
+                      a customer sees, shares or bookmarks - #/players/123
+                      tells a trader nothing except that there is presumably
+                      a v1 somewhere. The app it named IS the product now,
+                      so the version is gone from the address: the current
+                      app is mounted at the root (see the catch-all at the
+                      bottom of this list, ranked below every explicit
+                      route so it only takes what nothing else claims),
+                      and every /v2/* URL permanently redirects to its
+                      clean equivalent.
 
-                  {/* v2 is now the public entry point: the root domain and
-                      every v1 page it has replaced (dashboard home,
-                      watchlist, player search, trade finder) redirect
-                      straight into it, ungated - v2 handles its own
-                      per-panel entitlement gating rather than the
-                      all-or-nothing PrivateRoute login redirect below,
-                      which must never fire for a first-time visitor
-                      landing on "/". The v1 tools that still run on live
-                      data and aren't duplicated by a v2 screen (trade
+                      That redirect is not optional cleanup: /#/... deep
+                      links are already out in the world, in Discord
+                      messages this backend posts (discord_trading_feed,
+                      discord_daily_proof) and in Stripe return URLs. They
+                      have to keep working indefinitely.
+
+                      The current app still handles its own per-panel
+                      gating via useEntitlements/PremiumGate rather than a
+                      full-page PrivateRoute redirect, so it sits outside
+                      the protected shell below like /demo does - the
+                      all-or-nothing login redirect must never fire for a
+                      first-time visitor landing on "/". The v1 tools that
+                      still run on live data and aren't duplicated (trade
                       logging, Profit Calculator, bulk trade entry, Squad
                       Builder, Leaderboard, Referrals, Portfolio
-                      Optimizer) stay reachable at their existing v1 URLs
-                      below and are linked individually from the v2
-                      Account page. The ones backed by dead or divergent
-                      data are retired - see the RETIRED v1 TOOLS block
-                      further down. */}
-                  <Route path="/" element={<Navigate to="/v2" replace />} />
-                  <Route path="/watchlist" element={<Navigate to="/v2/watchlist" replace />} />
-                  <Route path="/player-search" element={<Navigate to="/v2/players" replace />} />
-                  <Route path="/trade-finder" element={<Navigate to="/v2/trade-finder" replace />} />
+                      Optimizer) keep their existing URLs below and are
+                      linked individually from the Account page. The ones
+                      backed by dead or divergent data are retired - see
+                      the RETIRED v1 TOOLS block further down. */}
+                  <Route path="/v2/*" element={<LegacyV2Redirect />} />
 
-                  {/* Protected shell */}
+                  {/* v1 names for pages the current app replaced. Kept as
+                      redirects for old bookmarks. "/watchlist" and
+                      "/trade-finder" no longer need one - those ARE the
+                      current URLs now. */}
+                  <Route path="/player-search" element={<Navigate to="/players" replace />} />
+
+                  {/* Protected shell.
+                      Deliberately PATHLESS (no `path` prop). It used to be
+                      `path="/"`, which meant the layout route itself
+                      matched the bare "/" and rendered the old app shell
+                      around an empty <Outlet/> - previously masked by an
+                      explicit "/" redirect defined above it, which no
+                      longer exists now that "/" is the app's own home.
+                      A pathless layout route contributes no path segment,
+                      so its children keep their absolute URLs and nothing
+                      claims "/" but the app itself. */}
                   <Route
-                    path="/"
                     element={
                       <PrivateRoute>
                         <SettingsProvider>
@@ -157,8 +186,8 @@ function App() {
                     {/* "/" itself is claimed by the public v2 redirect
                         above - no index route here. "overview"/"dashboard"
                         keep working as v2 redirects too, for old bookmarks. */}
-                    <Route path="overview" element={<Navigate to="/v2" replace />} />
-                    <Route path="dashboard" element={<Navigate to="/v2" replace />} />
+                    <Route path="overview" element={<Navigate to="/" replace />} />
+                    <Route path="dashboard" element={<Navigate to="/" replace />} />
 
                     {/* Free tier pages */}
                     <Route path="add-trade" element={<AddTrade />} />
@@ -169,16 +198,13 @@ function App() {
                     <Route path="analytics" element={<ProfitGraph />} />
                     <Route path="pricecheck" element={<PriceCheck />} />
                     <Route path="squad" element={<SquadBuilder />} />
-                    {/* v1 Billing (purple gradients, "Smart Buy AI"/"Sharpe
-                        ratio" copy that doesn't describe what v2 actually
-                        ships) is no longer part of the launch funnel - both
-                        this and /pricing now redirect to the real v2
-                        Billing page. The old <Billing/> import/component
-                        file is left in place (nothing deletes it) in case
-                        anything outside this app still deep-links here,
-                        but no in-app path leads to it any more. */}
-                    <Route path="billing" element={<Navigate to="/v2/billing" replace />} />
-                    <Route path="pricing" element={<Navigate to="/v2/billing" replace />} />
+                    {/* "billing" is deliberately NOT listed here any more.
+                        /billing is now the current Billing page itself
+                        (served by the catch-all below); a v1 child route
+                        claiming the same path would out-rank it and
+                        redirect the page to itself. Only the old alias
+                        still needs a redirect. */}
+                    <Route path="pricing" element={<Navigate to="/billing" replace />} />
                     <Route path="profit-calculator" element={<ProfitCalculator />} />
                     <Route path="leaderboard" element={<Leaderboard />} />
                     <Route path="referrals" element={<ReferralProgram />} />
@@ -213,7 +239,7 @@ function App() {
                                              second market read competing
                                              with Home's Market Pulse
                           trade-copilot   -> the v1 keyword matcher,
-                                             superseded by /v2/chat
+                                             superseded by /chat  
 
                         Each goes to the v2 screen that answers the same
                         question, so an old bookmark lands somewhere
@@ -222,13 +248,13 @@ function App() {
                         history keeps them) - leaving unrouted JSX in the
                         tree is how a codebase accumulates screens nobody
                         can reach and nobody dares remove. */}
-                    <Route path="smart-buy" element={<Navigate to="/v2/opportunities" replace />} />
-                    <Route path="smart-buyer-ai" element={<Navigate to="/v2/opportunities" replace />} />
-                    <Route path="best-buys" element={<Navigate to="/v2/opportunities" replace />} />
-                    <Route path="trending" element={<Navigate to="/v2/players" replace />} />
-                    <Route path="undervalued" element={<Navigate to="/v2/opportunities" replace />} />
-                    <Route path="market-sentiment" element={<Navigate to="/v2" replace />} />
-                    <Route path="trade-copilot" element={<Navigate to="/v2/chat" replace />} />
+                    <Route path="smart-buy" element={<Navigate to="/opportunities" replace />} />
+                    <Route path="smart-buyer-ai" element={<Navigate to="/opportunities" replace />} />
+                    <Route path="best-buys" element={<Navigate to="/opportunities" replace />} />
+                    <Route path="trending" element={<Navigate to="/players" replace />} />
+                    <Route path="undervalued" element={<Navigate to="/opportunities" replace />} />
+                    <Route path="market-sentiment" element={<Navigate to="/" replace />} />
+                    <Route path="trade-copilot" element={<Navigate to="/chat" replace />} />
 
                     {/* Optional premium analytics alias */}
                     <Route
@@ -260,16 +286,36 @@ function App() {
                     />
                   </Route>
 
-                  {/* 404 fallback */}
-                  <Route path="*" element={<NotFound />} />
+                  {/* The current app, mounted last and at the lowest
+                      possible route rank so every explicit route above -
+                      /login, /demo, the v1 tools, the internal render
+                      routes - still wins. It supplies its own not-found
+                      page for anything none of them claim, inside the app
+                      shell, which is a better landing than the bare v1
+                      404 page this used to be (now deleted). */}
+                  <Route path="*" element={<V2App />} />
                 </Routes>
               </Suspense>
             </div>
-          </Router>
-        </EntitlementsProvider>
-      </AuthProvider>
-    </ErrorBoundary>
+          </RoutedErrorBoundary>
+        </Router>
+      </EntitlementsProvider>
+    </AuthProvider>
   );
+}
+
+// ErrorBoundary sits INSIDE the Router so it can see navigation. It used
+// to sit outside: once any page threw, `hasError` stayed true for the
+// life of the mount, so every subsequent route - including the back
+// button - rendered "Something went wrong" until the user manually
+// reloaded. One broken page took down the whole session.
+//
+// main.jsx keeps its own outer boundary for failures during the very
+// first render (a provider throwing before any router exists); this one
+// handles everything after that.
+function RoutedErrorBoundary({ children }) {
+  const location = useLocation();
+  return <ErrorBoundary resetKey={location.pathname}>{children}</ErrorBoundary>;
 }
 
 export default App;

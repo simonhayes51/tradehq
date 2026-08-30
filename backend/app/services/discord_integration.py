@@ -463,7 +463,7 @@ def build_opportunity_digest(
         if confidences
         else "Average confidence: unavailable"
     )
-    opportunity_url = app_url.rstrip("/") + "/#/v2/opportunities"
+    opportunity_url = app_url.rstrip("/") + "/#/opportunities"
     return {
         "title": "EAFC LIVE - OPPORTUNITY UPDATE",
         "url": opportunity_url,

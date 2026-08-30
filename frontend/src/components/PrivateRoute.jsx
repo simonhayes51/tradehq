@@ -15,7 +15,7 @@ const PrivateRoute = ({ children }) => {
   }
 
   if (!isAuthenticated) {
-    // Preserve where the user was headed (e.g. a shared /v2/players/:id
+    // Preserve where the user was headed (e.g. a shared /players/:id
     // link) so login() can send them back there instead of stranding
     // them on Home after auth - see AuthContext.login's returnTo.
     const current = window.location.hash.slice(1) || '/';

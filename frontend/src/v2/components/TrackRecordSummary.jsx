@@ -11,7 +11,7 @@
 //
 // What survives here is the four numbers that answer that question, over
 // one fixed window, with the caveat that must always accompany them.
-// Everything else moved to /v2/track-record (TrackRecordPanel), one click
+// Everything else moved to /track-record (TrackRecordPanel), one click
 // away, unchanged.
 import { Link } from "react-router-dom";
 import { ArrowRight } from "lucide-react";
@@ -49,7 +49,7 @@ export default function TrackRecordSummary() {
             ? `We started publishing recommendations on ${fmtDate(published.tracking_since)}. Results are withheld until enough have been graded to report them honestly (${published.published_opportunities ?? 0} of ${published.min_sample ?? 20} so far).`
             : "Results appear here once published recommendations have been graded against real market prices."}
         </p>
-        <Link className="track-record-strip-link" to="/v2/track-record">
+        <Link className="track-record-strip-link" to="/track-record">
           How this is measured <ArrowRight size={14} />
         </Link>
       </section>
@@ -91,7 +91,7 @@ export default function TrackRecordSummary() {
         Hypothetical results from real market prices for recommendations we actually sent. They are
         not a record of what any individual made.
       </p>
-      <Link className="track-record-strip-link" to="/v2/track-record">
+      <Link className="track-record-strip-link" to="/track-record">
         See every call and how this is measured <ArrowRight size={14} />
       </Link>
     </section>

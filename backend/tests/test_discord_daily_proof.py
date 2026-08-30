@@ -770,3 +770,42 @@ def test_published_recent_wins_and_losses_honest_when_nothing_sent():
     assert result["has_published_data"] is False
     assert result["recent_wins"] == []
     assert result["recent_losses"] == []
+
+
+class TestDefensibilityTracksTheGrader:
+    """proof_row_is_defensible() independently re-derives the grader's
+    classification; if the two drift, real graded outcomes are silently
+    dropped from the published record with no error anywhere."""
+
+    def test_recovered_drawdown_stays_defensible_as_a_profit(self):
+        # Dipped past the 10% downside threshold, then finished above
+        # entry. Under the old rules the grader labelled this
+        # downside_hit (a LOSS) despite a positive profit; under the
+        # fixed rules it is profitable_unrealised WITH downside_hit set,
+        # and this validator has to accept that combination.
+        from app.services.discord_daily_proof import proof_row_is_defensible
+
+        row = _proof_row("profitable_unrealised", snapshot_id=9)
+        row["downside_hit"] = True
+        row["max_adverse_excursion"] = Decimal("-0.14")
+        assert proof_row_is_defensible(row, PERIOD) is True
+
+    def test_a_loss_labelled_downside_hit_must_actually_be_down(self):
+        from app.services.discord_daily_proof import proof_row_is_defensible
+
+        row = _proof_row("downside_hit", snapshot_id=10)
+        assert proof_row_is_defensible(row, PERIOD) is True
+
+        # Same deep drawdown, but the position finished UP. Calling that
+        # a downside_hit is exactly the contradiction being prevented, so
+        # the row must be rejected rather than published as a loss.
+        contradictory = _proof_row("downside_hit", snapshot_id=11, outcome_price=1_400)
+        assert proof_row_is_defensible(contradictory, PERIOD) is False
+
+    def test_flat_after_a_deep_drawdown_is_still_flat(self):
+        from app.services.discord_daily_proof import proof_row_is_defensible
+
+        row = _proof_row("flat", snapshot_id=12)
+        row["downside_hit"] = True
+        row["max_adverse_excursion"] = Decimal("-0.20")
+        assert proof_row_is_defensible(row, PERIOD) is True
