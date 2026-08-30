@@ -1026,7 +1026,24 @@ async def fetch_via_page_capture(
         # Same idiom as PriceSync's HYDRATION_WAIT_MS: the price request
         # fires during hydration, after domcontentloaded - minimum wait,
         # not full page load (item 3).
-        await page.wait_for_timeout(PAGE_SETTLE_MS)
+        #
+        # Guarded like the navigation step above it, unlike before: a
+        # crashed Chromium renderer (Playwright surfaces this as
+        # "Page crashed") raised straight out of this await, uncaught,
+        # all the way through process_batch_page_capture()'s
+        # asyncio.gather() and into run_forever()'s main loop - killing
+        # the ENTIRE worker process over a single bad page, not just
+        # this one card. Confirmed in production: repeated
+        # "Page.wait_for_timeout: Page crashed" crash-loops with zero
+        # sales written for 24h straight, each cron run dying here
+        # before completing any work. A crashed page can't reliably
+        # continue past this point either way, so failing just this
+        # card - exactly like a failed navigation already does - is the
+        # right outcome, not a process-wide crash.
+        try:
+            await page.wait_for_timeout(PAGE_SETTLE_MS)
+        except Exception as exc:
+            return {"eaId": card_id, "error": f"page_capture_crashed:{type(exc).__name__}"}
 
         if pending:
             try:
