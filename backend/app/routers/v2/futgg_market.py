@@ -15,12 +15,25 @@ themselves reading only futgg_players/futgg_bin_history/
 futgg_sales_history/futgg_market_snapshot (migrations/038) - never the
 legacy fut_players/sales_history/bin_history tables.
 
-Ungated (no entitlement check): this is new provider-neutral surface,
-not a replacement for any existing gated feature - mirrors the precedent
-already set by GET /api/v2/market/regime (see app/routers/v2/market.py's
-own comment on why that route is free). If/when product wants a teaser/
-paid split here, follow app/routers/fair_value.py's _teaser() convention
-on top of this router rather than inside the provider/intelligence layers.
+ACCESS. This router used to be entirely ungated, which meant an
+anonymous `curl /api/v2/opportunities` returned the complete paid feed -
+every recommended entry, sell target, expected profit and confidence
+score - to anyone who asked. The engine and the scoring are unchanged;
+what changed is that every response now passes through
+app/auth/access.py's serialiser, which builds a narrow preview shape for
+callers who have not paid rather than sending the full payload and
+trusting the client to hide it.
+
+  /opportunities        all three states; Free sees the day's free picks
+                        in full and previews of the rest
+  /trade-finder         Elite only (402 otherwise)
+  /trade-finder/strategy Elite only (402 otherwise)
+  /players              search and identity are free; per-card
+                        intelligence is unlocked per viewer
+  /players/{id}         as above - the card page is the free hook
+
+See app/services/free_picks.py for how the daily free picks are chosen
+and why they are persisted.
 """
 from __future__ import annotations
 
@@ -33,8 +46,12 @@ import asyncpg
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
+from app.auth.access import Viewer, get_viewer, serialise_opportunities
+from app.auth.entitlements import require_feature
 from app.db import get_core_pool
 from app.routers.admin import require_admin
+from app.services.content_day import content_day_key
+from app.services.free_picks import free_pick_meta, resolve_pick_ids
 from app.services.futgg_intelligence import (
     DEFAULT_MAX_ACCEPTABLE_PRICE_AGE_MINUTES,
     MAX_ACCEPTABLE_PRICE_AGE_MINUTES_BY_TIER,
@@ -62,6 +79,13 @@ from app.services.strategy_definitions import (
 )
 
 router = APIRouter(tags=["v2-futgg-market"])
+
+# Named so it is overridable in tests via app.dependency_overrides.
+# require_feature() builds a new closure per call, and an anonymous
+# closure buried in a Depends() cannot be addressed by identity - which
+# would leave the only way to test these handlers being to weaken the
+# gate itself.
+require_trade_finder = require_feature("trade_finder")
 log = logging.getLogger("futgg_market")
 
 DEFAULT_PAGE_SIZE = 25
@@ -598,6 +622,7 @@ async def list_opportunities(
     page: int = Query(1, ge=1),
     page_size: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
     provider: FutggMarketDataProvider = ProviderDep,
+    viewer: Viewer = Depends(get_viewer),
 ) -> Dict[str, Any]:
     rating_min, rating_max = _resolve_rating_bounds(rating, rating_min, rating_max)
     max_price_age_minutes = max_price_age_minutes if max_price_age_minutes is not None else max_price_age
@@ -633,7 +658,27 @@ async def list_opportunities(
     total = len(scored)
     window = scored[(page - 1) * page_size: page * page_size]
     items = [_item_with_intelligence(row, ci) for row, ci in window]
-    return {"items": items, "page": page, "page_size": page_size, "total": total}
+
+    # The gate. Elite gets `items` as-is; everyone else gets the same list
+    # re-serialised through the preview allow-list, with the current
+    # content day's free picks left whole for signed-in Free members.
+    #
+    # The free picks are resolved from the FULL scored list, not from this
+    # page - otherwise a Free member's two picks would depend on which
+    # page they happened to request, which is exactly the "whichever two
+    # pagination returns first" behaviour this replaces.
+    unlocked: List[int] = []
+    if viewer.is_free:
+        unlocked = await resolve_pick_ids(
+            lambda: [_item_with_intelligence(r, c) for r, c in scored],
+        )
+    payload = serialise_opportunities(items, viewer, unlocked_ids=unlocked)
+    payload.update({"page": page, "page_size": page_size, "total": total})
+    if not viewer.has("opportunity_feed"):
+        payload["free_picks"] = free_pick_meta(
+            unlocked=len([i for i in items if not i.get("locked")]) if viewer.is_free else 0,
+        )
+    return payload
 
 
 # The public homepage (eafc.live, no account) may show a card exists and
@@ -779,6 +824,11 @@ async def trade_finder(
     page: int = Query(1, ge=1),
     page_size: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
     provider: FutggMarketDataProvider = ProviderDep,
+    # Elite only, enforced here rather than by hiding the nav item.
+    # Trade Finder is the power-search over the WHOLE eligible universe -
+    # it is the paid feature, and a 402 is the honest answer to an
+    # unauthorised call, not an empty list that looks like a bad market.
+    _ent: Dict[str, Any] = Depends(require_trade_finder),
 ) -> Dict[str, Any]:
     if sort is not None:
         sort_by = _SORT_ALIASES.get(sort, sort)
@@ -1250,6 +1300,10 @@ async def strategy_finder(
     page: int = Query(1, ge=1),
     page_size: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
     provider: FutggMarketDataProvider = ProviderDep,
+    # Same gate as /trade-finder: the strategy tabs are the same paid
+    # search with a preset applied, so leaving them open would have made
+    # the Trade Finder gate decorative.
+    _ent: Dict[str, Any] = Depends(require_trade_finder),
 ) -> Dict[str, Any]:
     definition = get_strategy(strategy)
     if definition is None:

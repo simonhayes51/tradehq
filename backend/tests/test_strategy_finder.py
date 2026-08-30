@@ -18,20 +18,29 @@ from typing import Any, Dict, List, Optional
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.routers.v2.futgg_market import get_provider, router as futgg_router
+from app.routers.v2.futgg_market import (
+    get_provider, require_trade_finder, router as futgg_router,
+)
 from app.services.strategy_definitions import (
     BIG_PROFIT_MIN_ABS_PROFIT_AFTER_TAX,
     BUDGET_PICKS_MAX_PRICE,
 )
-from tests.test_futgg_market_router import FakeProvider, _row
+from app.auth.access import get_viewer
+from tests.test_futgg_market_router import ELITE_VIEWER, FakeProvider, _row
 
 AS_OF = datetime.now(timezone.utc)
 
 
 def _client(rows: Optional[List[Dict[str, Any]]] = None) -> TestClient:
+    # Strategy Finder is Elite-only. This file tests the strategy
+    # DEFINITIONS (floors, sorts, watch separation), so it runs as Elite;
+    # that the gate itself fires for Free and anonymous callers is proved
+    # in tests/test_access_control.py.
     app = FastAPI()
     app.include_router(futgg_router, prefix="/api/v2")
     app.dependency_overrides[get_provider] = lambda: FakeProvider(rows)
+    app.dependency_overrides[get_viewer] = lambda: ELITE_VIEWER
+    app.dependency_overrides[require_trade_finder] = lambda: {"tier": "elite"}
     return TestClient(app)
 
 

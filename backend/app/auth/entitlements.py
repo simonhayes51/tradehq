@@ -24,7 +24,9 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Set, Literal
 
 import asyncpg
-from fastapi import HTTPException, Request
+from dataclasses import dataclass
+
+from fastapi import Depends, HTTPException, Request
 
 Feature = Literal[
     "smart_buy",
@@ -59,68 +61,114 @@ Feature = Literal[
     "advanced_api_v2",
     "trade_journal",
     "opportunity_feed",
-    # Real per-message LLM cost (unlike ai_copilot's free keyword matcher),
-    # so this is gated Pro+ from day one rather than free.
+    # Real per-message LLM cost (unlike ai_copilot's free keyword matcher).
     "ai_chat",
+    # The complete graded ledger and every time window. The recent headline
+    # summary stays public as a trust signal - see track_record().
+    "full_track_record",
 ]
 
-Tier = Literal["free", "pro", "elite"]
+# The product sells exactly two states to a signed-in customer: Free and
+# Elite. "pro" survives only as an INPUT alias - `users.plan`/`users.tier`
+# rows already say 'pro' or 'premium' in production, and a Stripe
+# subscription resolved to "pro" - and every one of those now resolves to
+# elite. See _resolve_tier() for why that is a bug fix, not a giveaway.
+Tier = Literal["free", "elite"]
 
-# ---- Limits (overridable via env) -------------------------------------------
-FREE_WATCHLIST_MAX = int(os.getenv("WATCHLIST_FREE_MAX", os.getenv("WATCHLIST_BASIC_MAX", "3")))
-PRO_WATCHLIST_MAX = int(os.getenv("WATCHLIST_PRO_MAX", "25"))
+# Accepted spellings of "this row is paid", from manual grants, legacy
+# columns and older plan names. All mean elite.
+_PAID_PLAN_VALUES = {"pro", "premium", "elite"}
+
+# ---- Limits ------------------------------------------------------------------
+# ONE place. Every allowance the product enforces is here, env-overridable,
+# and exported to the frontend through /api/entitlements so no component
+# hardcodes a number that can drift from what the server actually enforces.
+FREE_WATCHLIST_MAX = int(os.getenv("WATCHLIST_FREE_MAX", os.getenv("WATCHLIST_BASIC_MAX", "10")))
 ELITE_WATCHLIST_MAX = int(os.getenv("WATCHLIST_ELITE_MAX", "500"))
 
-# Legacy aliases still imported elsewhere
+FREE_ALERT_MAX = int(os.getenv("ALERTS_FREE_MAX", "3"))
+ELITE_ALERT_MAX = int(os.getenv("ALERTS_ELITE_MAX", "100"))
+
+FREE_OPEN_TRADE_MAX = int(os.getenv("PORTFOLIO_FREE_OPEN_TRADES", "5"))
+ELITE_OPEN_TRADE_MAX = int(os.getenv("PORTFOLIO_ELITE_OPEN_TRADES", "1000"))
+
+# How long a past_due subscription keeps access while Stripe retries the
+# charge. Stripe's default dunning schedule runs about a week; this is
+# deliberately a little shorter than that so the grace ends before Stripe
+# gives up, and it is one documented number rather than an accident of a
+# SQL predicate.
+PAST_DUE_GRACE_DAYS = int(os.getenv("SUBSCRIPTION_PAST_DUE_GRACE_DAYS", "5"))
+
+# How many complete opportunities a Free member gets per FC content day.
+# See app/services/free_picks.py for how the specific picks are chosen.
+FREE_DAILY_PICKS = int(os.getenv("FREE_DAILY_PICKS", "2"))
+
+# Track Record: Free sees a headline summary over a recent window; Elite
+# sees every window and the full ledger.
+FREE_TRACK_RECORD_WINDOW_DAYS = int(os.getenv("FREE_TRACK_RECORD_WINDOW_DAYS", "30"))
+
+# Portfolio history depth for Free, in days. Elite is unbounded.
+FREE_PORTFOLIO_HISTORY_DAYS = int(os.getenv("FREE_PORTFOLIO_HISTORY_DAYS", "30"))
+
+# Legacy aliases still imported elsewhere in the codebase.
 BASIC_WATCHLIST_MAX = FREE_WATCHLIST_MAX
 PREMIUM_WATCHLIST_MAX = ELITE_WATCHLIST_MAX
+PRO_WATCHLIST_MAX = ELITE_WATCHLIST_MAX
 
 FREE_TRENDING = {"timeframes": {"24h"}, "limit": 5, "smart": False}
-PRO_TRENDING = {"timeframes": {"6h", "24h"}, "limit": 15, "smart": True}
 ELITE_TRENDING = {"timeframes": {"4h", "6h", "24h"}, "limit": 50, "smart": True}
 
 # Legacy aliases
 BASIC_TRENDING = FREE_TRENDING
 PREMIUM_TRENDING = ELITE_TRENDING
+PRO_TRENDING = ELITE_TRENDING
 
 # Feature -> minimum tier. Everything not listed here is free.
-_TIER_ORDER: Dict[str, int] = {"free": 0, "pro": 1, "elite": 2}
+#
+# There is no "pro" row any more. Every paid feature is "elite", because
+# the product sells one paid plan. Previously `smart_buy`, `trade_finder`,
+# `ai_chat` and friends were min_tier "pro" while `opportunity_feed` was
+# "elite" - and _resolve_tier() returned "pro" for a Stripe subscriber, so
+# a paying customer was denied the opportunity feed they had just paid
+# for. Collapsing the ladder removes the class of bug entirely: there is
+# one paid tier, and it has everything.
+_TIER_ORDER: Dict[str, int] = {"free": 0, "elite": 1}
 
 FEATURE_MIN_TIER: Dict[Feature, Tier] = {
-    # Free — the hook
+    # ---- Free: enough to judge the product, not enough to replace it ----
     "ai_copilot": "free",
     "market_sentiment": "free",
     "leaderboard": "free",
     "referrals": "free",
-    "watchlist": "free",          # size still limited by tier below
-    # Pro — the daily-driver tools
-    "smart_buy": "pro",
-    "trade_finder": "pro",
-    "deal_confidence": "pro",
-    "backtest": "pro",
-    "smart_trending": "pro",
-    "portfolio_optimizer": "pro",
-    "advanced_analytics": "pro",
-    "fair_value": "pro",
-    "undervalued_board": "pro",
-    "realtime_alerts": "pro",
-    # Elite — the edge
+    "watchlist": "free",          # size limited by tier, see _limits_for
+    "fair_value": "free",         # fair value on a card you searched for
+    "trade_journal": "free",      # basic portfolio, capped at FREE_OPEN_TRADE_MAX
+    "portfolio_performance": "free",
+    # ---- Elite: the paid product ----
+    "opportunity_feed": "elite",
+    "trade_finder": "elite",
+    "smart_buy": "elite",
+    "deal_confidence": "elite",
+    "backtest": "elite",
+    "smart_trending": "elite",
+    "portfolio_optimizer": "elite",
+    "advanced_analytics": "elite",
+    "undervalued_board": "elite",
+    "realtime_alerts": "elite",
     "market_maker": "elite",
     "bulk_trades": "elite",
     "anomaly_alerts": "elite",
-    # v2 - Pro (daily-driver AI tools)
-    "ai_recommendations": "pro",
-    "sbc_impact_predictions": "pro",
-    "investment_score_history": "pro",
-    "portfolio_performance": "pro",
-    "daily_ai_briefing": "pro",
-    "trade_journal": "pro",
-    "ai_chat": "pro",
-    # v2 - Elite (the edge)
-    "opportunity_feed": "elite",
+    "ai_recommendations": "elite",
+    "sbc_impact_predictions": "elite",
+    "investment_score_history": "elite",
+    "daily_ai_briefing": "elite",
+    "ai_chat": "elite",
     "advanced_backtesting": "elite",
     "early_data_refresh": "elite",
     "advanced_api_v2": "elite",
+    # Full Track Record ledger and every window. The recent summary is
+    # public (it is a trust signal); the complete history is not.
+    "full_track_record": "elite",
 }
 
 # Kept importable for older code paths that referenced the matrix by name.
@@ -224,11 +272,30 @@ async def _load_billing_state(pool: asyncpg.Pool, user_id: str) -> Dict[str, Any
             """
             SELECT 1 FROM subscriptions
             WHERE user_id = $1
-              AND status IN ('active', 'trialing', 'trial', 'past_due')
-              AND (current_period_end IS NULL OR current_period_end > NOW())
+              AND (
+                    -- Active, and inside the period that was paid for.
+                    -- `cancel_at_period_end` deliberately does NOT appear
+                    -- here: a customer who cancelled keeps everything they
+                    -- paid for until the period actually ends, which is
+                    -- exactly what "current_period_end > NOW()" says.
+                    (status IN ('active', 'trialing', 'trial')
+                     AND (current_period_end IS NULL OR current_period_end > NOW()))
+                 OR
+                    -- Documented dunning grace. Stripe retries a failed
+                    -- renewal for days while the subscription sits in
+                    -- past_due, usually with current_period_end already in
+                    -- the past. Cutting a paying customer off the instant a
+                    -- card expires - before Stripe has even finished
+                    -- retrying - is a worse failure than a few days of
+                    -- access we might not collect for.
+                    (status = 'past_due'
+                     AND (current_period_end IS NULL
+                          OR current_period_end > NOW() - ($2::int * INTERVAL '1 day')))
+              )
             LIMIT 1
             """,
             user_id,
+            PAST_DUE_GRACE_DAYS,
         )
         out["active_subscription"] = sub is not None
     except Exception:
@@ -247,41 +314,68 @@ def _is_admin(state: Dict[str, Any], user_id: str, discord_id: Optional[str]) ->
 
 
 def _resolve_tier(state: Dict[str, Any]) -> Tier:
+    """Free or Elite. There is no third answer.
+
+    This used to return "pro" for anyone whose only signal was an active
+    Stripe subscription, while `opportunity_feed` required "elite" - so a
+    paying customer was refused the feed they had just bought. Every paid
+    signal now resolves to elite:
+
+      * users.plan / users.tier in {pro, premium, elite} - the manual-grant
+        channel, so `UPDATE users SET tier='elite'` just works.
+      * an entitled subscriptions row (see _load_billing_state for which
+        statuses count, and why past_due is among them).
+      * users.premium_until / user_profiles.premium_until in the future -
+        the Stripe-webhook-independent grant, which is what carries a user
+        across a webhook delay.
+
+    Deliberately NOT a signal: whether the account has a linked Discord id.
+    Discord is a benefit of paying, never a condition of it.
+    """
     plan = (state.get("plan") or "").lower()
-    # users.tier is honored as a manual-grant channel: an admin running
-    # UPDATE users SET tier='elite' WHERE ... should just work, without
-    # having to fake a Stripe subscription. ('basic' means nothing here -
-    # it's the column's legacy default, not a grant.)
     tier_col = (state.get("tier_column") or "").lower()
     now = _now()
 
-    if plan == "elite" or tier_col == "elite":
-        return "elite"
-
     paid = (
-        plan in {"pro", "premium"}
-        or tier_col in {"pro", "premium"}
-        or state.get("active_subscription")
-        or (state.get("premium_until") and state["premium_until"] > now)
+        plan in _PAID_PLAN_VALUES
+        or tier_col in _PAID_PLAN_VALUES
+        or bool(state.get("active_subscription"))
+        or bool(state.get("premium_until") and state["premium_until"] > now)
+        or bool(state.get("profile_premium_until") and state["profile_premium_until"] > now)
+        # user_profiles.is_premium is a manual grant flag with no expiry of
+        # its own; honour it only when it hasn't been superseded by an
+        # explicitly expired premium_until.
+        or bool(state.get("profile_premium") and not _profile_grant_expired(state, now))
     )
-    return "pro" if paid else "free"
+    return "elite" if paid else "free"
+
+
+def _profile_grant_expired(state: Dict[str, Any], now: datetime) -> bool:
+    until = state.get("profile_premium_until")
+    return bool(until and until <= now)
 
 
 def _limits_for(tier: Tier) -> Dict[str, Any]:
+    """Everything the frontend needs to render a limit, and everything the
+    backend enforces, from one function."""
     if tier == "elite":
         return {
             "watchlist_max": ELITE_WATCHLIST_MAX,
+            "alerts_max": ELITE_ALERT_MAX,
+            "open_trades_max": ELITE_OPEN_TRADE_MAX,
+            "portfolio_history_days": None,   # unbounded
+            "daily_opportunities": None,      # the whole feed
+            "track_record_window_days": None, # every window
             "trending": ELITE_TRENDING,
             "bulk_trades_max": 100,
         }
-    if tier == "pro":
-        return {
-            "watchlist_max": PRO_WATCHLIST_MAX,
-            "trending": PRO_TRENDING,
-            "bulk_trades_max": 25,
-        }
     return {
         "watchlist_max": FREE_WATCHLIST_MAX,
+        "alerts_max": FREE_ALERT_MAX,
+        "open_trades_max": FREE_OPEN_TRADE_MAX,
+        "portfolio_history_days": FREE_PORTFOLIO_HISTORY_DAYS,
+        "daily_opportunities": FREE_DAILY_PICKS,
+        "track_record_window_days": FREE_TRACK_RECORD_WINDOW_DAYS,
         "trending": FREE_TRENDING,
         "bulk_trades_max": 10,
     }
@@ -318,8 +412,20 @@ async def user_is_entitled(conn_or_pool, user_id: str, *, discord_id: Optional[s
     return await resolve_user_tier(conn_or_pool, user_id, discord_id=discord_id) in ("pro", "elite")
 
 
+def _session_of(req: Request) -> Dict[str, Any]:
+    """Starlette raises AssertionError from `request.session` when
+    SessionMiddleware is not installed. Treat that as "nobody is signed
+    in" rather than letting it 500: the safe interpretation of "we cannot
+    identify this caller" is anonymous, and a crash here would turn a
+    misconfigured mount into an outage instead of a locked door."""
+    try:
+        return req.session or {}
+    except (AssertionError, AttributeError):
+        return {}
+
+
 async def compute_entitlements(req: Request) -> Dict[str, Any]:
-    sess = req.session or {}
+    sess = _session_of(req)
     user_id = sess.get("user_id") or (sess.get("user") or {}).get("id")
 
     if not user_id:
@@ -413,15 +519,71 @@ async def explain_entitlements(req: Request) -> Dict[str, Any]:
     }
 
 
+@dataclass(frozen=True)
+class Viewer:
+    """Who is asking, in the only terms the product has: signed out, Free,
+    or Elite."""
+
+    user_id: Optional[str]
+    tier: str
+    is_admin: bool
+    features: frozenset
+
+    @property
+    def is_authenticated(self) -> bool:
+        return self.user_id is not None
+
+    @property
+    def is_elite(self) -> bool:
+        return self.tier == "elite"
+
+    @property
+    def is_free(self) -> bool:
+        return self.is_authenticated and not self.is_elite
+
+    def has(self, feature: str) -> bool:
+        return feature in self.features
+
+
+def anonymous_viewer() -> "Viewer":
+    return Viewer(user_id=None, tier="free", is_admin=False,
+                  features=frozenset(features_for_tier("free")))
+
+
+async def get_viewer(req: Request) -> "Viewer":
+    """The ONE resolution path.
+
+    Never raises: an endpoint that serves all three states needs to know
+    which one it is serving, and "signed out" is a supported response
+    here, not an error. Anything that goes wrong resolves to anonymous -
+    least privilege, never accidental elite.
+
+    require_feature() below is built on top of this rather than doing its
+    own compute_entitlements() call, so there is a single place to
+    override in tests and a single place for a bug to live.
+    """
+    try:
+        ent = await compute_entitlements(req)
+    except Exception:
+        return anonymous_viewer()
+    return Viewer(
+        user_id=ent.get("user_id"),
+        tier=ent.get("tier") or "free",
+        is_admin=bool(ent.get("is_admin")),
+        features=frozenset(ent.get("features") or ()),
+    )
+
+
 def require_feature(feature: Feature):
     """FastAPI dependency: 401 if anonymous, 402 if tier doesn't cover it."""
 
-    async def _dep(req: Request) -> Dict[str, Any]:
-        ent = await compute_entitlements(req)
+    async def _dep(viewer: "Viewer" = Depends(get_viewer)) -> Dict[str, Any]:
+        ent = {"user_id": viewer.user_id, "tier": viewer.tier,
+               "is_admin": viewer.is_admin, "features": sorted(viewer.features)}
         if not ent["user_id"]:
             raise HTTPException(status_code=401, detail="Not authenticated")
-        if feature not in ent["features"]:
-            min_tier = FEATURE_MIN_TIER.get(feature, "pro")
+        if feature not in viewer.features:
+            min_tier = FEATURE_MIN_TIER.get(feature, "elite")
             raise HTTPException(
                 status_code=402,
                 detail={
@@ -438,10 +600,14 @@ def require_feature(feature: Feature):
 
 
 def require_tier(min_tier: Tier):
-    """FastAPI dependency for tier-gated (rather than feature-gated) routes."""
+    """FastAPI dependency for tier-gated (rather than feature-gated) routes.
 
-    async def _dep(req: Request) -> Dict[str, Any]:
-        ent = await compute_entitlements(req)
+    Built on get_viewer for the same reason require_feature is: one
+    resolution path, one place to override, one place for a bug."""
+
+    async def _dep(viewer: "Viewer" = Depends(get_viewer)) -> Dict[str, Any]:
+        ent = {"user_id": viewer.user_id, "tier": viewer.tier,
+               "is_admin": viewer.is_admin, "features": sorted(viewer.features)}
         if not ent["user_id"]:
             raise HTTPException(status_code=401, detail="Not authenticated")
         if _TIER_ORDER[ent["tier"]] < _TIER_ORDER[min_tier]:

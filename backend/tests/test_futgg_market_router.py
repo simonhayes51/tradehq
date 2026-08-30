@@ -15,7 +15,11 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.routers.v2.futgg_market import get_provider, router as futgg_router
+from app.auth.access import Viewer, get_viewer
+from app.auth.entitlements import features_for_tier
+from app.routers.v2.futgg_market import (
+    get_provider, require_trade_finder, router as futgg_router,
+)
 from app.services.market_data_provider import PlayerFilters
 
 AS_OF = datetime.now(timezone.utc)
@@ -148,10 +152,35 @@ class FakeProvider:
         }
 
 
-def _client(rows: Optional[List[Dict[str, Any]]] = None) -> TestClient:
+# These tests are about the ENGINE - ranking, filters, price invariants -
+# so they run as an Elite viewer, which is the only state that sees the
+# unredacted payload they assert on. The access gates themselves are
+# tested separately and adversarially in tests/test_access_control.py;
+# overriding them here keeps this file testing one thing.
+ELITE_VIEWER = Viewer(user_id="elite-user", tier="elite", is_admin=False,
+                      features=frozenset(features_for_tier("elite")))
+FREE_VIEWER = Viewer(user_id="free-user", tier="free", is_admin=False,
+                     features=frozenset(features_for_tier("free")))
+ANON_VIEWER = Viewer(user_id=None, tier="free", is_admin=False,
+                     features=frozenset(features_for_tier("free")))
+
+
+def _client(rows: Optional[List[Dict[str, Any]]] = None, viewer: Viewer = ELITE_VIEWER) -> TestClient:
     app = FastAPI()
     app.include_router(futgg_router, prefix="/api/v2")
     app.dependency_overrides[get_provider] = lambda: FakeProvider(rows)
+    app.dependency_overrides[get_viewer] = lambda: viewer
+    app.dependency_overrides[require_trade_finder] = lambda: {"tier": viewer.tier}
+    return TestClient(app)
+
+
+def _ungated_client(rows: Optional[List[Dict[str, Any]]] = None, viewer: Viewer = ANON_VIEWER) -> TestClient:
+    """A client with the real gates in place - only the data provider is
+    faked. Used by the access tests to prove the gate actually fires."""
+    app = FastAPI()
+    app.include_router(futgg_router, prefix="/api/v2")
+    app.dependency_overrides[get_provider] = lambda: FakeProvider(rows)
+    app.dependency_overrides[get_viewer] = lambda: viewer
     return TestClient(app)
 
 
@@ -197,6 +226,8 @@ def test_get_player_detail_bumps_price_priority_when_stale_for_tier():
     app = FastAPI()
     app.include_router(futgg_router, prefix="/api/v2")
     app.dependency_overrides[get_provider] = lambda: provider
+    app.dependency_overrides[get_viewer] = lambda: ELITE_VIEWER
+    app.dependency_overrides[require_trade_finder] = lambda: {'tier': 'elite'}
     resp = TestClient(app).get("/api/v2/players/1")
     assert resp.status_code == 200
     assert provider.bumped_card_ids == [1]
@@ -207,6 +238,8 @@ def test_get_player_detail_does_not_bump_when_fresh_for_tier():
     app = FastAPI()
     app.include_router(futgg_router, prefix="/api/v2")
     app.dependency_overrides[get_provider] = lambda: provider
+    app.dependency_overrides[get_viewer] = lambda: ELITE_VIEWER
+    app.dependency_overrides[require_trade_finder] = lambda: {'tier': 'elite'}
     resp = TestClient(app).get("/api/v2/players/1")
     assert resp.status_code == 200
     assert provider.bumped_card_ids == []
@@ -347,6 +380,8 @@ class TestSegmentedCandidateScan:
         app.include_router(futgg_router, prefix="/api/v2")
         provider = FakeProvider([_row()])
         app.dependency_overrides[get_provider] = lambda: provider
+        app.dependency_overrides[get_viewer] = lambda: ELITE_VIEWER
+        app.dependency_overrides[require_trade_finder] = lambda: {'tier': 'elite'}
         client = TestClient(app)
         resp = client.get("/api/v2/opportunities")
         assert resp.status_code == 200
@@ -358,6 +393,8 @@ class TestSegmentedCandidateScan:
         app.include_router(futgg_router, prefix="/api/v2")
         provider = FakeProvider([_row()])
         app.dependency_overrides[get_provider] = lambda: provider
+        app.dependency_overrides[get_viewer] = lambda: ELITE_VIEWER
+        app.dependency_overrides[require_trade_finder] = lambda: {'tier': 'elite'}
         client = TestClient(app)
         resp = client.get("/api/v2/trade-finder")
         assert resp.status_code == 200
@@ -379,6 +416,8 @@ class TestSegmentedCandidateScan:
         app.include_router(futgg_router, prefix="/api/v2")
         provider = FakeProvider([thin_market_row])
         app.dependency_overrides[get_provider] = lambda: provider
+        app.dependency_overrides[get_viewer] = lambda: ELITE_VIEWER
+        app.dependency_overrides[require_trade_finder] = lambda: {'tier': 'elite'}
         client = TestClient(app)
         resp = client.get("/api/v2/opportunities")
         assert resp.status_code == 200
@@ -389,6 +428,8 @@ class TestSegmentedCandidateScan:
         app.include_router(futgg_router, prefix="/api/v2")
         provider = FakeProvider([_row()])
         app.dependency_overrides[get_provider] = lambda: provider
+        app.dependency_overrides[get_viewer] = lambda: ELITE_VIEWER
+        app.dependency_overrides[require_trade_finder] = lambda: {'tier': 'elite'}
         client = TestClient(app)
         # Any intelligence-derived filter (min_roi/min_confidence/etc.)
         # routes /players through the same candidate-scan path.
@@ -413,6 +454,8 @@ class TestStrategyFinderParams:
         app.include_router(futgg_router, prefix="/api/v2")
         provider = FakeProvider([tiny_row])
         app.dependency_overrides[get_provider] = lambda: provider
+        app.dependency_overrides[get_viewer] = lambda: ELITE_VIEWER
+        app.dependency_overrides[require_trade_finder] = lambda: {'tier': 'elite'}
         client = TestClient(app)
         resp = client.get("/api/v2/trade-finder?sort_by=budget&meaningful_profit=true")
         assert resp.status_code == 200
@@ -428,6 +471,8 @@ class TestStrategyFinderParams:
         app.include_router(futgg_router, prefix="/api/v2")
         provider = FakeProvider([watch_row])
         app.dependency_overrides[get_provider] = lambda: provider
+        app.dependency_overrides[get_viewer] = lambda: ELITE_VIEWER
+        app.dependency_overrides[require_trade_finder] = lambda: {'tier': 'elite'}
         client = TestClient(app)
         resp = client.get("/api/v2/trade-finder?require_executable=true")
         assert resp.status_code == 200
@@ -519,6 +564,8 @@ class TestPublicOpportunityPreview:
         app.include_router(futgg_router, prefix="/api/v2")
         provider = FakeProvider([self._buy_row()])
         app.dependency_overrides[get_provider] = lambda: provider
+        app.dependency_overrides[get_viewer] = lambda: ELITE_VIEWER
+        app.dependency_overrides[require_trade_finder] = lambda: {'tier': 'elite'}
         client = TestClient(app)
         resp = client.get("/api/v2/opportunities/preview")
         assert resp.status_code == 200
@@ -532,6 +579,8 @@ class TestPublicOpportunityPreview:
         app.include_router(futgg_router, prefix="/api/v2")
         provider = FakeProvider([self._buy_row(current_bin=40123)])
         app.dependency_overrides[get_provider] = lambda: provider
+        app.dependency_overrides[get_viewer] = lambda: ELITE_VIEWER
+        app.dependency_overrides[require_trade_finder] = lambda: {'tier': 'elite'}
         client = TestClient(app)
         item = client.get("/api/v2/opportunities/preview").json()["item"]
         assert item["current_bin_approx"] == 40000
@@ -542,6 +591,8 @@ class TestPublicOpportunityPreview:
         app.include_router(futgg_router, prefix="/api/v2")
         provider = FakeProvider([self._buy_row(source_card_id=1), self._buy_row(source_card_id=2, name="Second Card")])
         app.dependency_overrides[get_provider] = lambda: provider
+        app.dependency_overrides[get_viewer] = lambda: ELITE_VIEWER
+        app.dependency_overrides[require_trade_finder] = lambda: {'tier': 'elite'}
         client = TestClient(app)
         body = client.get("/api/v2/opportunities/preview").json()
         assert "items" not in body
@@ -552,6 +603,8 @@ class TestPublicOpportunityPreview:
         app.include_router(futgg_router, prefix="/api/v2")
         provider = FakeProvider([_row()])
         app.dependency_overrides[get_provider] = lambda: provider
+        app.dependency_overrides[get_viewer] = lambda: ELITE_VIEWER
+        app.dependency_overrides[require_trade_finder] = lambda: {'tier': 'elite'}
         client = TestClient(app)
         client.get("/api/v2/opportunities/preview")
         assert provider.segment_scan_calls == 1
@@ -563,5 +616,7 @@ class TestPublicOpportunityPreview:
         # No sales at all -> evaluate_card can't produce a buy/strong_buy signal.
         provider = FakeProvider([_row(sales_count=0, latest_sale_price=None, latest_sale_at=None)])
         app.dependency_overrides[get_provider] = lambda: provider
+        app.dependency_overrides[get_viewer] = lambda: ELITE_VIEWER
+        app.dependency_overrides[require_trade_finder] = lambda: {'tier': 'elite'}
         client = TestClient(app)
         assert client.get("/api/v2/opportunities/preview").json()["item"] is None
