@@ -616,6 +616,53 @@ async def get_player_sales(
     }
 
 
+# The candidate pool the day's free picks are chosen from.
+#
+# Deliberately takes NO caller filters. /opportunities used to resolve the
+# picks from whatever the requester had filtered to, and because the
+# selection is persisted once per content day with ON CONFLICT DO NOTHING,
+# the first Free member of the day to load the page with (say) risk=low
+# decided everyone else's picks from a pool nobody else was looking at.
+# "The same two picks for every Free member" cannot be true if the pool
+# depends on the requester.
+#
+# Home (dashboard.py) resolves through this same function rather than its
+# own scan, so whichever page a Free member opens first lands on the
+# identical answer - both the ranking and the pool are the same, and the
+# selection itself is a pure function of (pool, content day).
+async def free_pick_candidates(provider: "FutggMarketDataProvider") -> List[Dict[str, Any]]:
+    rows = _apply_filters_in_python(
+        await _segmented_candidates(provider),
+        _filters_from_query(None, None, None, None, None, None, None, None, None, None, None),
+    )
+    scored = _score_and_filter(
+        rows, signals={"buy", "strong_buy"},
+        sales_by_card=await _sales_for_rows(provider, rows),
+    )
+    scored.sort(key=_opportunity_sort_key)
+    return [_item_with_intelligence(row, ci) for row, ci in scored]
+
+
+# The one opportunity ranking, named once so /opportunities and the free
+# pick pool cannot drift apart. strong_buy first, then expected ROI, then
+# expected profit and confidence, then card_id as a final deterministic
+# tiebreak. Every sort in this file ends in card_id for the same reason:
+# two candidates that score identically on every real field used to fall
+# back to whatever order Postgres happened to return them in for ties on
+# the live "ORDER BY sales_count DESC" scan - not a stable order across
+# requests - which is why the same page could show a different #1 on
+# every refresh with no underlying data change at all.
+def _opportunity_sort_key(pair):
+    row, ci = pair
+    return (
+        0 if ci.signal == "strong_buy" else 1,
+        -(float(ci.expected_roi) if ci.expected_roi is not None else 0.0),
+        -(float(ci.expected_profit_after_tax) if ci.expected_profit_after_tax is not None else 0.0),
+        -(ci.confidence_score or 0.0),
+        int(row["source_card_id"]),
+    )
+
+
 @router.get("/opportunities")
 async def list_opportunities(
     rating: Optional[int] = Query(None, ge=0, le=99),
@@ -653,24 +700,7 @@ async def list_opportunities(
         signals={"buy", "strong_buy"},
         sales_by_card=await _sales_for_rows(provider, rows),
     )
-    # Sort by opportunity strength: strong_buy first, then by expected ROI,
-    # then expected profit and confidence as further tiebreakers, then
-    # card_id as a final deterministic tiebreak. Every sort in this file
-    # ends in card_id for the same reason: two candidates that score
-    # identically on every real field used to fall back to whatever order
-    # Postgres happened to return them in for ties on the live "ORDER BY
-    # sales_count DESC" scan - not a stable order across requests - which
-    # is why the same page could show a different #1 on every refresh
-    # with no underlying data change at all.
-    scored.sort(
-        key=lambda pair: (
-            0 if pair[1].signal == "strong_buy" else 1,
-            -(float(pair[1].expected_roi) if pair[1].expected_roi is not None else 0.0),
-            -(float(pair[1].expected_profit_after_tax) if pair[1].expected_profit_after_tax is not None else 0.0),
-            -(pair[1].confidence_score or 0.0),
-            int(pair[0]["source_card_id"]),
-        )
-    )
+    scored.sort(key=_opportunity_sort_key)  # see _opportunity_sort_key
     total = len(scored)
     window = scored[(page - 1) * page_size: page * page_size]
     items = [_item_with_intelligence(row, ci) for row, ci in window]
@@ -679,15 +709,15 @@ async def list_opportunities(
     # re-serialised through the preview allow-list, with the current
     # content day's free picks left whole for signed-in Free members.
     #
-    # The free picks are resolved from the FULL scored list, not from this
-    # page - otherwise a Free member's two picks would depend on which
-    # page they happened to request, which is exactly the "whichever two
-    # pagination returns first" behaviour this replaces.
+    # The free picks are resolved from the day's own unfiltered candidate
+    # pool (free_pick_candidates), never from this request's filtered,
+    # paginated list - otherwise a Free member's two picks would depend on
+    # which page they asked for and which filters they happened to have
+    # set, which is exactly the "whichever two the query returns first"
+    # behaviour this replaces.
     unlocked: List[int] = []
     if viewer.is_free:
-        unlocked = await resolve_pick_ids(
-            lambda: [_item_with_intelligence(r, c) for r, c in scored],
-        )
+        unlocked = await resolve_pick_ids(lambda: free_pick_candidates(provider))
     payload = serialise_opportunities(items, viewer, unlocked_ids=unlocked)
     payload.update({"page": page, "page_size": page_size, "total": total})
     if not viewer.has("opportunity_feed"):

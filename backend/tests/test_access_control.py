@@ -193,3 +193,104 @@ class TestPreviewSerialiserIsAnAllowList:
     def test_the_leak_detector_actually_detects_a_leak(self):
         with pytest.raises(AssertionError):
             assert_no_premium_fields({"items": [{"expected_roi": 0.2}]})
+
+
+# ---------------------------------------------------------------------------
+# Home (the dashboard feed)
+# ---------------------------------------------------------------------------
+#
+# Home was the last surface still deciding for itself who gets what. It
+# took the current top-ranked BUY and returned it complete to anyone
+# without the opportunity_feed feature - signed-out callers included,
+# since /api/v2/dashboard needs no account. That was a third free pick
+# nobody counted, re-derived on every request, so it changed as the market
+# moved and disagreed with the two picks /api/v2/opportunities had already
+# committed to for the day.
+
+from app.auth.access import (  # noqa: E402
+    preview_dashboard_recommendation,
+    serialise_dashboard_feed,
+    assert_no_premium_fields,
+)
+
+
+def _home_card(card_id: int = 111, name: str = "Kylian Mbappe"):
+    """The shape dashboard.py's _futgg_to_recommendation produces."""
+    return {
+        "cardId": card_id,
+        "player": {"name": name, "rating": 91, "version": "Team of the Week",
+                   "position": "ST", "imageUrl": "https://example.com/a.png"},
+        "status": "BUY", "recommendation": "BUY", "confidence": 78.0,
+        "expectedRoi": 20.0, "netRoi": {"likely": 20.0},
+        "entryPrice": 415000, "recommendedBuyMax": 410000,
+        "recommendedSellTarget": 520000, "buyBelow": 410000,
+        "expectedProfitBasis": 415000, "breakEvenPrice": 436000,
+        "holdingPeriod": "2h", "risk": {"overall": "low", "score": 0.2},
+        "qualifiedStrategies": ["quick_flip"], "failedGateReasons": [],
+        "currentBin": 420431, "fairValue": 505000,
+        "reasoning": "Trading below recent median; strong sales volume",
+        "marketDrivers": ["sbc_demand"], "scores": {"momentum": 0.7},
+        "updatedAt": "2026-08-30T11:50:00+00:00",
+    }
+
+
+class TestHomeFeedGate:
+    def test_elite_home_is_untouched(self):
+        cards = [_home_card(), _home_card(222, "Erling Haaland")]
+        items, locked = serialise_dashboard_feed(cards, ELITE)
+        assert locked == 0
+        assert items == cards
+
+    def test_a_free_member_gets_only_the_days_picks_in_full(self):
+        cards = [_home_card(111), _home_card(222, "Erling Haaland"), _home_card(333, "Jude Bellingham")]
+        items, locked = serialise_dashboard_feed(cards, FREE, unlocked_ids=[111])
+        assert locked == 2
+        assert items[0]["recommendedSellTarget"] == 520000
+        for item in items[1:]:
+            assert item["locked"] is True
+
+    def test_a_signed_out_caller_gets_no_unlocked_card_at_all(self):
+        # /api/v2/dashboard requires no account, so "free member with no
+        # picks resolved" and "anonymous" must land in the same place.
+        cards = [_home_card(), _home_card(222, "Erling Haaland")]
+        items, locked = serialise_dashboard_feed(cards, ANON)
+        assert locked == 2
+        for item in items:
+            assert_no_premium_fields(item)
+
+    def test_a_locked_home_card_carries_no_executable_number(self):
+        preview = preview_dashboard_recommendation(_home_card())
+        assert_no_premium_fields(preview)
+        for banned in ("recommendedBuyMax", "recommendedSellTarget", "buyBelow",
+                       "entryPrice", "expectedRoi", "confidence", "fairValue",
+                       "breakEvenPrice", "currentBin", "reasoning"):
+            assert banned not in preview, f"{banned} survived into a locked Home card"
+
+    def test_a_locked_home_card_is_still_worth_looking_at(self):
+        # The preview has to prove the call is about a real, current card.
+        preview = preview_dashboard_recommendation(_home_card())
+        assert preview["player"]["name"] == "Kylian Mbappe"
+        assert preview["recommendation"] == "BUY"
+        assert preview["risk"] == {"overall": "low"}
+        assert preview["headlineReason"] == "Trading below recent median"
+        # Approximate, and labelled as such: enough to tell a 5k card from
+        # a 500k one, not a price to buy against.
+        assert preview["currentBinApprox"] == 420000
+        assert preview["currentBinApprox"] % 1000 == 0
+
+    def test_the_risk_score_does_not_survive_even_though_the_label_does(self):
+        preview = preview_dashboard_recommendation(_home_card())
+        assert "score" not in preview["risk"]
+
+    def test_a_card_with_no_price_previews_without_inventing_one(self):
+        card = _home_card()
+        card["currentBin"] = None
+        assert preview_dashboard_recommendation(card)["currentBinApprox"] is None
+
+    def test_a_new_premium_field_cannot_leak_by_default(self):
+        # The allow-list is the point: a field added to the Home
+        # recommendation shape tomorrow is absent from a locked card
+        # without anyone remembering to exclude it.
+        card = _home_card()
+        card["someNewProfitField"] = 99999
+        assert "someNewProfitField" not in preview_dashboard_recommendation(card)

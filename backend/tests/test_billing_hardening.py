@@ -6,9 +6,26 @@
 from __future__ import annotations
 
 import inspect
+import os
 import re
 
 import pytest
+
+# These tests read the SOURCE of main.py's checkout handler, so they have
+# to import main - and main validates its required environment at import
+# time. Placeholders satisfy that check without reaching anything: nothing
+# in this file opens a connection or signs a token. Set before the import
+# rather than relying on some earlier test module in the run having
+# happened to export them, which made this file pass or fail depending on
+# collection order.
+os.environ.setdefault("DATABASE_URL", "postgresql://placeholder/placeholder")
+os.environ.setdefault("SECRET_KEY", "test-only-placeholder-not-a-real-key")
+# main.py hard-fails on the default JWT signing key when ENV looks like
+# production, which it does by default. Marking the run as a test
+# environment is the honest way past that guard - the alternative would be
+# supplying a fake production key, which is the exact thing the guard
+# exists to stop anyone getting used to doing.
+os.environ.setdefault("ENV", "test")
 
 
 def _code_of(func) -> str:

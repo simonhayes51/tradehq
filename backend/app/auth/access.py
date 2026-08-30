@@ -35,6 +35,8 @@ __all__ = [
     "get_viewer",
     "anonymous_viewer",
     "preview_opportunity",
+    "preview_dashboard_recommendation",
+    "serialise_dashboard_feed",
     "serialise_opportunities",
     "assert_no_premium_fields",
 ]
@@ -122,6 +124,83 @@ def serialise_opportunities(
     return {"items": out, "locked_count": locked_count, "viewer_tier": viewer.tier}
 
 
+# ---------------------------------------------------------------------------
+# Dashboard (Home) serialisation
+# ---------------------------------------------------------------------------
+#
+# Home returns the same recommendations in a different shape: camelCase,
+# with the card nested under "player" (see dashboard.py's
+# _futgg_to_recommendation). It needs its own allow-list rather than
+# reusing _PREVIEW_FIELDS, because a key-name mismatch between the two
+# shapes would silently produce an empty preview - or, if written
+# subtractively, silently leak the next field somebody adds.
+#
+# `player` is passed through whole: it is card art and identity, and
+# nothing in it is a trade instruction. Everything else is named
+# explicitly.
+_DASHBOARD_PREVIEW_FIELDS = ("cardId", "player", "status", "recommendation", "updatedAt")
+
+# What must never survive into a locked Home card. Kept as an explicit
+# list too, so assert_no_premium_fields can check this shape and the flat
+# one with the same helper.
+_DASHBOARD_PREMIUM_FIELDS = (
+    "confidence", "expectedRoi", "netRoi", "expectedNetRoi", "entryPrice",
+    "recommendedBuyMax", "recommendedSellTarget", "buyBelow", "expectedProfitBasis",
+    "breakEvenPrice", "holdingPeriod", "qualifiedStrategies", "failedGateReasons",
+    "fairValue", "reasoning", "marketDrivers", "historicalSimilarEvents", "scores",
+)
+
+
+def preview_dashboard_recommendation(item: Dict[str, Any]) -> Dict[str, Any]:
+    """A locked Home card: the player, the verdict, an approximate price
+    and one plain-language reason. No executable numbers."""
+    out = {key: item.get(key) for key in _DASHBOARD_PREVIEW_FIELDS}
+    current_bin = item.get("currentBin")
+    out["currentBinApprox"] = (
+        round(float(current_bin) / 1000) * 1000 if current_bin is not None else None
+    )
+    risk = item.get("risk")
+    out["risk"] = {"overall": risk.get("overall")} if isinstance(risk, dict) else risk
+    reasoning = item.get("reasoning")
+    if isinstance(reasoning, str):
+        reasoning = [part.strip() for part in reasoning.split(";") if part.strip()]
+    elif not isinstance(reasoning, (list, tuple)):
+        reasoning = []
+    out["headlineReason"] = str(reasoning[0]) if reasoning else None
+    out["locked"] = True
+    return out
+
+
+def serialise_dashboard_feed(
+    items: Sequence[Dict[str, Any]],
+    viewer: Viewer,
+    *,
+    unlocked_ids: Iterable[int] = (),
+) -> "tuple[List[Dict[str, Any]], int]":
+    """Home's feed for this viewer, plus how many were locked.
+
+    The unlocked set is the SAME persisted daily-pick set /opportunities
+    uses (app/services/free_picks.py). Home used to hand every Free member
+    the current top-ranked BUY in full, re-derived on each request - a
+    third free pick that nobody counted, that changed as the market moved,
+    and that a signed-out visitor got as well.
+    """
+    if viewer.has("opportunity_feed"):
+        return list(items), 0
+
+    unlocked = {int(i) for i in unlocked_ids}
+    out: List[Dict[str, Any]] = []
+    locked_count = 0
+    for item in items:
+        card_id = item.get("cardId")
+        if card_id is not None and int(card_id) in unlocked:
+            out.append(item)
+        else:
+            out.append(preview_dashboard_recommendation(item))
+            locked_count += 1
+    return out, locked_count
+
+
 def assert_no_premium_fields(payload: Any) -> None:
     """Test/debug helper: raise if an executable number is present anywhere
     in a payload that is supposed to be locked.
@@ -130,12 +209,19 @@ def assert_no_premium_fields(payload: Any) -> None:
     that passes review and fails in production - the response still looks
     right on screen.
     """
+    # Both shapes: the flat snake_case one /opportunities and /players use,
+    # and Home's nested camelCase one. Checked together so a payload does
+    # not have to declare which shape it is.
     banned = {
         "recommended_buy_max", "buy_below", "recommended_sell_target",
         "expected_profit_after_tax", "expected_roi", "expected_profit_basis",
         "confidence_score", "signal_reasons", "liquidity_score", "fair_value",
         "current_bin", "current_executable_buy",
+        *_DASHBOARD_PREMIUM_FIELDS,
     }
+    # "risk" survives on a locked Home card as {"overall": "low"} - a label,
+    # not a number - and "player" is card art. Neither is a trade
+    # instruction, so neither is banned above.
 
     def walk(node: Any, path: str = "") -> None:
         if isinstance(node, dict):

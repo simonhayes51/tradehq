@@ -120,3 +120,102 @@ class TestHonestyAboutThinDays:
 def test_never_returns_more_than_the_allowance():
     pool = [card(i, name=f"P{i}", bin_price=1000 * i) for i in range(1, 40)]
     assert len(fp.select_picks(pool, DAY)) == fp.FREE_DAILY_PICKS
+
+
+# ---------------------------------------------------------------------------
+# The pool the picks are chosen from
+# ---------------------------------------------------------------------------
+#
+# "The same two picks for every Free member" is a claim about the POOL as
+# much as the ranking. /opportunities resolved the day's picks from
+# whatever the requester had filtered and paginated to; because the choice
+# is persisted once per content day with ON CONFLICT DO NOTHING, the first
+# Free member of the day to load the page with risk=low set decided
+# everyone else's picks from a pool nobody else was looking at.
+
+import inspect  # noqa: E402
+
+
+class TestPicksDoNotDependOnTheRequester:
+    def test_opportunities_resolves_from_the_shared_unfiltered_pool(self):
+        from app.routers.v2.futgg_market import list_opportunities
+
+        source = inspect.getsource(list_opportunities)
+        assert "resolve_pick_ids(lambda: free_pick_candidates(provider))" in source
+        # The filtered, paginated list must not be what the day is decided
+        # from. `scored` is this request's filtered ranking.
+        assert "resolve_pick_ids(\n            lambda: [_item_with_intelligence(r, c) for r, c in scored]" not in source
+
+    def test_the_pool_builder_takes_no_caller_filters(self):
+        from app.routers.v2.futgg_market import free_pick_candidates
+
+        params = inspect.signature(free_pick_candidates).parameters
+        assert list(params) == ["provider"], (
+            "free_pick_candidates must not accept anything a caller controls - "
+            "a filterable pool is a pool that differs per requester"
+        )
+
+    def test_home_resolves_through_the_same_pool_builder(self):
+        from app.routers.v2.dashboard import get_dashboard
+
+        source = inspect.getsource(get_dashboard)
+        assert "free_pick_candidates" in source
+        assert "resolve_pick_ids" in source
+
+    def test_home_never_hands_an_anonymous_caller_an_unlocked_card(self):
+        from app.routers.v2.dashboard import get_dashboard
+
+        source = inspect.getsource(get_dashboard)
+        # The daily allowance belongs to an account. /api/v2/dashboard
+        # needs none, so the resolution is guarded by is_free (which is
+        # False for an anonymous viewer) rather than by "not elite".
+        assert "if viewer.is_free:" in source
+
+
+class TestTheCandidateBuilderMayBeAsync:
+    def test_an_async_builder_is_awaited_not_stored_as_a_coroutine(self):
+        import asyncio
+
+        from app.services.free_picks import _materialise
+
+        async def builder():
+            return [{"source_card_id": 1}]
+
+        assert asyncio.run(_materialise(builder)) == [{"source_card_id": 1}]
+
+    def test_a_plain_builder_still_works(self):
+        import asyncio
+
+        from app.services.free_picks import _materialise
+
+        assert asyncio.run(_materialise(lambda: [{"source_card_id": 2}])) == [{"source_card_id": 2}]
+
+    def test_the_builder_is_not_called_when_the_day_is_already_decided(self):
+        # The pool is a full market scan. Running it on every request of
+        # the day, only to throw the result away because the picks are
+        # already in the table, is the cost this laziness exists to avoid.
+        import asyncio
+
+        from app.services import free_picks
+
+        calls = []
+
+        async def builder():
+            calls.append(1)
+            return []
+
+        class Pool:
+            pass
+
+        async def stored(_pool, _day):
+            return [111, 222]
+
+        original = free_picks.stored_pick_ids
+        free_picks.stored_pick_ids = stored
+        try:
+            result = asyncio.run(free_picks.resolve_pick_ids(builder, pool=Pool()))
+        finally:
+            free_picks.stored_pick_ids = original
+
+        assert result == [111, 222]
+        assert calls == []

@@ -26,6 +26,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import logging
 from datetime import date, datetime
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
@@ -206,6 +207,19 @@ async def stored_pick_ids(pool, day_key: date) -> List[int]:
     return [int(r["source_card_id"]) for r in rows]
 
 
+async def _materialise(candidates: "Callable[[], Any]") -> Sequence[Dict[str, Any]]:
+    """Call the candidate builder, awaiting it if it is async.
+
+    Callers that already hold a scored list pass a plain lambda; callers
+    that would have to run a market scan pass an async one, so the scan
+    only happens on the one request per content day that actually selects.
+    """
+    rows = candidates()
+    if inspect.isawaitable(rows):
+        rows = await rows
+    return rows
+
+
 async def resolve_pick_ids(
     candidates: "Callable[[], Sequence[Dict[str, Any]]]",
     now: Optional[datetime] = None,
@@ -217,11 +231,12 @@ async def resolve_pick_ids(
     and re-reads so a race resolves to whatever actually landed in the
     table rather than to this caller's own local decision.
 
-    `candidates` is a CALLABLE, not a list. On all but the first request of
-    a content day the answer is already in the table, and building the full
-    scored candidate pool into serialisable dicts just to throw it away
-    would put that cost on every single request of the day. This way the
-    pool is materialised only when a selection actually has to be made.
+    `candidates` is a CALLABLE, not a list, and may be async. On all but the
+    first request of a content day the answer is already in the table, and
+    building the full scored candidate pool into serialisable dicts just to
+    throw it away would put that cost on every single request of the day.
+    This way the pool - which is a full market scan - is materialised only
+    when a selection actually has to be made, at most once per content day.
 
     A database failure must not take the free tier down - it degrades to
     an in-memory selection for this request, which is still deterministic
@@ -238,9 +253,9 @@ async def resolve_pick_ids(
             return existing
     except Exception:
         log.warning("free picks: could not read stored picks; selecting live", exc_info=True)
-        return [int(r["source_card_id"]) for r in select_picks(candidates(), day_key)]
+        return [int(r["source_card_id"]) for r in select_picks(await _materialise(candidates), day_key)]
 
-    rows = candidates()
+    rows = await _materialise(candidates)
 
     chosen = select_picks(rows, day_key)
     if not chosen:
