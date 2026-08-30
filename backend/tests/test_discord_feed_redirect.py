@@ -40,9 +40,27 @@ def test_checkout_and_billing_tokens_are_not_interchangeable(monkeypatch):
 def test_tampered_token_is_rejected(monkeypatch):
     monkeypatch.setenv("SECRET_KEY", "test-secret")
     token = redirect.make_redirect_url("g1", "checkout").rsplit("/", 1)[1]
-    tampered = token[:-1] + ("a" if token[-1] != "a" else "b")
+
+    # Deliberately NOT "flip the last character", which is what this test
+    # used to do and why it failed roughly one run in six: the token ends
+    # in a base64url-encoded HMAC, and the final character carries unused
+    # low-order bits, so some flips decode to the identical signature
+    # bytes and verify perfectly well. Mutating the PAYLOAD (everything
+    # before the first separator) always changes what was signed.
+    payload, _, rest = token.partition(".")
+    for index in (0, len(payload) // 2, len(payload) - 1):
+        swapped = "A" if payload[index] != "A" else "B"
+        tampered = f"{payload[:index]}{swapped}{payload[index + 1:]}.{rest}"
+        assert tampered != token
+        with pytest.raises(Exception):
+            redirect._verify(tampered, "checkout")
+
+    # A token signed for the OTHER link kind must not work here either -
+    # the salts are what keep a billing link from acting as a checkout
+    # link for the same guild.
+    billing_token = redirect.make_redirect_url("g1", "billing").rsplit("/", 1)[1]
     with pytest.raises(Exception):
-        redirect._verify(tampered, "checkout")
+        redirect._verify(billing_token, "checkout")
 
 
 def test_checkout_redirect_follows_through_to_the_real_stripe_url(monkeypatch):
