@@ -131,3 +131,36 @@ describe("NotificationsPanel", () => {
     expect(await screen.findByText(/couldn't be loaded/i)).toBeInTheDocument();
   });
 });
+
+describe("NotificationsPanel keyboard access", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    alertsApi.getAlerts.mockResolvedValue({ items: [ALERT], unreadCount: 1, watchedCount: 4 });
+    alertsApi.markAlertsRead.mockResolvedValue({ ok: true });
+  });
+
+  it("moves focus into the panel when it opens", async () => {
+    // Without this a keyboard user tabbing on from the bell walks into
+    // the page behind the panel instead of into the panel.
+    renderPanel();
+    await screen.findByText(ALERT.title);
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole("heading", { name: /alerts/i })),
+    );
+  });
+
+  it("closes on Escape", async () => {
+    const onClose = vi.fn();
+    renderPanel({ onClose });
+    await screen.findByText(ALERT.title);
+    await userEvent.keyboard("{Escape}");
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it("labels the dismiss control with the alert it removes", async () => {
+    renderPanel();
+    // "Dismiss" alone gives a screen reader no way to tell N identical
+    // buttons apart.
+    expect(await screen.findByRole("button", { name: `Dismiss alert: ${ALERT.title}` })).toBeInTheDocument();
+  });
+});

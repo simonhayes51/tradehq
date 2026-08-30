@@ -31,6 +31,26 @@ def _user_id(request: Request) -> str:
     return str(user_id)
 
 
+def _require_json_request(request: Request) -> None:
+    """Forces a CORS preflight on state-changing POSTs.
+
+    Session cookies are SameSite=None in production (the app and the API
+    are on different origins), so a cross-site POST that qualifies as a
+    CORS "simple request" - no custom headers, a text/plain or
+    form-encoded body - is sent WITH the cookie and takes effect before
+    any CORS check applies; the browser only blocks reading the response.
+    Requiring application/json disqualifies the request from being
+    simple, so the browser must preflight it, and the preflight is
+    checked against the origin allowlist.
+
+    DELETE /alerts/{id} needs no equivalent guard: a non-simple method
+    always preflights.
+    """
+    content_type = (request.headers.get("content-type") or "").split(";")[0].strip().lower()
+    if content_type != "application/json":
+        raise HTTPException(415, "Expected a JSON request")
+
+
 @router.get("/alerts")
 async def list_alerts(
     request: Request,
@@ -77,6 +97,7 @@ async def dismiss_alert(alert_id: int, request: Request) -> Dict[str, Any]:
 
 @router.post("/alerts/dismiss-all")
 async def dismiss_all_alerts(request: Request) -> Dict[str, Any]:
+    _require_json_request(request)
     user_id = _user_id(request)
     pool = await get_watchlist_pool()
     async with pool.acquire() as conn:
@@ -91,6 +112,7 @@ async def dismiss_all_alerts(request: Request) -> Dict[str, Any]:
 async def mark_alerts_read(request: Request) -> Dict[str, Any]:
     """Clears the badge without removing anything from the feed - opening
     the panel means "I've seen these", not "delete these"."""
+    _require_json_request(request)
     user_id = _user_id(request)
     pool = await get_watchlist_pool()
     async with pool.acquire() as conn:

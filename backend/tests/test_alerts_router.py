@@ -61,8 +61,9 @@ class FakePool:
 
 
 class FakeRequest:
-    def __init__(self, user_id="u1"):
+    def __init__(self, user_id="u1", content_type="application/json"):
         self.session = {"user_id": user_id} if user_id else {}
+        self.headers = {"content-type": content_type} if content_type else {}
 
 
 def _row(**overrides):
@@ -186,3 +187,26 @@ def test_feed_labels_a_liquidity_alert_as_sales_activity(monkeypatch):
     item = asyncio.run(alerts_router.list_alerts(FakeRequest(), limit=20))["items"][0]
     assert "sales activity" in item["title"]
     assert "coins" not in item["movement"]
+
+
+def test_state_changing_posts_require_json_so_the_browser_preflights(monkeypatch):
+    # Session cookies are SameSite=None in production, so a cross-site
+    # POST that qualifies as a CORS "simple request" would be sent WITH
+    # the cookie and take effect. Requiring application/json makes the
+    # request non-simple, forcing a preflight that the origin allowlist
+    # actually gets to check.
+    conn = FakeConn([_row()])
+    _install(monkeypatch, conn)
+    for handler in (alerts_router.dismiss_all_alerts, alerts_router.mark_alerts_read):
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(handler(FakeRequest(content_type="text/plain")))
+        assert exc.value.status_code == 415
+        # And the same call with a JSON content type is accepted.
+        assert asyncio.run(handler(FakeRequest()))["ok"] is True
+
+
+def test_charset_suffix_on_the_content_type_is_accepted(monkeypatch):
+    conn = FakeConn([_row()])
+    _install(monkeypatch, conn)
+    request = FakeRequest(content_type="application/json; charset=utf-8")
+    assert asyncio.run(alerts_router.mark_alerts_read(request))["ok"] is True

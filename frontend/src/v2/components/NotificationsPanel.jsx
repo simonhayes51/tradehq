@@ -20,6 +20,7 @@ export default function NotificationsPanel({ open, onClose, onUnreadCount }) {
   const markRead = useMarkAlertsRead();
   const panelRef = useRef(null);
   const markedRef = useRef(false);
+  const headingRef = useRef(null);
 
   const items = data?.items ?? [];
   const unreadCount = data?.unreadCount ?? 0;
@@ -39,6 +40,19 @@ export default function NotificationsPanel({ open, onClose, onUnreadCount }) {
     markedRef.current = true;
     markRead.mutate();
   }, [open, unreadCount, markRead]);
+
+  // Move focus into the panel when it opens and hand it back to the bell
+  // when it closes. Without this a keyboard user tabbing after opening
+  // the menu continues from the bell into the page BEHIND the panel,
+  // which is both confusing and unreachable-feeling.
+  useEffect(() => {
+    if (!open) return undefined;
+    const previouslyFocused = document.activeElement;
+    headingRef.current?.focus();
+    return () => {
+      if (previouslyFocused instanceof HTMLElement) previouslyFocused.focus();
+    };
+  }, [open]);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -61,7 +75,7 @@ export default function NotificationsPanel({ open, onClose, onUnreadCount }) {
   return (
     <div className="v2-notifications" ref={panelRef} role="dialog" aria-label="Alerts">
       <header className="v2-notifications-head">
-        <h2><Bell size={15} /> Alerts</h2>
+        <h2 ref={headingRef} tabIndex={-1}><Bell size={15} /> Alerts</h2>
         <div className="v2-notifications-head-actions">
           {items.length ? (
             <button type="button" onClick={() => dismissAll.mutate()} disabled={dismissAll.isPending}>

@@ -24,12 +24,19 @@ export async function dismissAlert(id) {
   return data;
 }
 
+// The `{}` body is load-bearing, not decoration: it makes axios send
+// Content-Type: application/json, which disqualifies the request from
+// being a CORS "simple request" and so forces a preflight. Session
+// cookies are SameSite=None in production (app and API are separate
+// origins), so without that preflight a cross-site page could fire these
+// state-changing POSTs with the user's cookie attached. The backend
+// rejects anything that isn't application/json for the same reason.
 export async function dismissAllAlerts() {
-  const { data } = await api.post("/api/v2/alerts/dismiss-all", null, REQUEST_OPTS);
+  const { data } = await api.post("/api/v2/alerts/dismiss-all", {}, REQUEST_OPTS);
   return data;
 }
 
 export async function markAlertsRead() {
-  const { data } = await api.post("/api/v2/alerts/read", null, REQUEST_OPTS);
+  const { data } = await api.post("/api/v2/alerts/read", {}, REQUEST_OPTS);
   return data;
 }

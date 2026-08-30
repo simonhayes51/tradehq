@@ -575,7 +575,7 @@
 .v2-notification-body strong { display: block; font-size: 13px; color: #fff; }
 .v2-notification-move { display: block; margin-top: 4px; font-size: 12px; color: #d0d0d0; }
 .v2-notification-why { display: block; margin-top: 4px; font-size: 11px; color: var(--muted, #9e9e9e); line-height: 1.45; }
-.v2-notification-body small { display: block; margin-top: 6px; font-size: 10px; color: #7d7d7d; }
+.v2-notification-body small { display: block; margin-top: 6px; font-size: 11px; color: #9a9a9a; }
 .v2-notification-dismiss {
   display: grid;
   place-items: center;
@@ -634,8 +634,8 @@
 .track-record-strip-grid strong { display: block; margin-top: 8px; font-size: 24px; }
 .track-record-strip-grid strong.positive { color: var(--green, #39ff8a); }
 .track-record-strip-grid strong.negative { color: var(--red, #ff5c5c); }
-.track-record-strip-grid small { display: block; margin-top: 4px; color: #858585; font-size: 11px; }
-.track-record-strip-note { margin: 14px 0 0; color: #8e8e8e; font-size: 11px; line-height: 1.5; }
+.track-record-strip-grid small { display: block; margin-top: 4px; color: #9a9a9a; font-size: 11px; }
+.track-record-strip-note { margin: 14px 0 0; color: #9a9a9a; font-size: 11px; line-height: 1.5; }
 .track-record-strip-link {
   display: inline-flex;
   align-items: center;
