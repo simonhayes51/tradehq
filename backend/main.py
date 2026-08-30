@@ -3245,6 +3245,15 @@ async def delete_account(
             await conn.execute("DELETE FROM trading_goals WHERE user_id=$1", user_id)
             await conn.execute("DELETE FROM portfolio WHERE user_id=$1", user_id)
             await conn.execute("DELETE FROM usersettings WHERE user_id=$1", user_id)
+            # Onboarding answers (migration 074) are the user's own stated
+            # preferences - coin budget, whether they want alerts - so they
+            # go with the account. Tolerated if the table isn't there yet:
+            # a pending migration must not be the reason someone cannot
+            # delete their data.
+            try:
+                await conn.execute("DELETE FROM member_onboarding WHERE user_id=$1", user_id)
+            except Exception:
+                logging.warning("account deletion: member_onboarding cleanup skipped", exc_info=True)
 
             has_billing_history = await conn.fetchval(
                 "SELECT EXISTS(SELECT 1 FROM subscriptions WHERE user_id=$1)", user_id
@@ -3276,6 +3285,10 @@ async def delete_account(
             logging.warning("account deletion: watchlist cleanup failed for %s", user_id, exc_info=True)
 
         request.session.clear()
+        # The tier is cached for up to ENTITLEMENTS_CACHE_TTL. A deleted
+        # account answering "elite" from cache for another minute is a
+        # deleted account that still has access.
+        invalidate_entitlements_cache(user_id)
 
         return {
             "message": "Account deleted" if profile_deleted else "Account deleted; billing history retained as required for accounting",

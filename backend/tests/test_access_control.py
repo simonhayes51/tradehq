@@ -375,3 +375,44 @@ class TestOAuthFailuresLandSomewhereUsable:
         source = inspect.getsource(main.callback)
         assert "is_browser_flow" in source
         assert 'state_meta.get("flow") == "dashboard"' in source
+
+
+class TestAccountDeletionRemovesWhatThisPhaseAdded:
+    def test_onboarding_answers_go_with_the_account(self):
+        import inspect
+
+        import main
+
+        source = inspect.getsource(main.delete_account)
+        assert "member_onboarding" in source, (
+            "migration 074 stores the user's stated coin budget and alert "
+            "preference; deleting an account must delete them too"
+        )
+
+    def test_the_entitlements_cache_is_cleared_on_deletion(self):
+        # The tier is cached for up to ENTITLEMENTS_CACHE_TTL. A deleted
+        # account answering "elite" from cache for another minute is a
+        # deleted account that still has access.
+        import inspect
+
+        import main
+
+        assert "invalidate_entitlements_cache" in inspect.getsource(main.delete_account)
+
+    def test_deletion_revokes_the_discord_role(self):
+        import inspect
+
+        import main
+
+        source = inspect.getsource(main.delete_account)
+        assert "enqueue_role_sync" in source
+        assert "desired=False" in source
+
+    def test_billing_history_is_never_deleted(self):
+        import inspect
+
+        import main
+
+        source = inspect.getsource(main.delete_account)
+        assert "DELETE FROM subscriptions" not in source
+        assert "DELETE FROM payments" not in source
