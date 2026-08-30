@@ -57,7 +57,8 @@ describe("EntitlementsProvider", () => {
     window.dispatchEvent(new Event("focus"));
 
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith(
-      expect.stringContaining("premium subscription has expired"),
+      // One plan name: the product sells Elite, not "premium".
+      expect.stringContaining("Elite subscription has ended"),
       expect.any(Object),
     ));
 

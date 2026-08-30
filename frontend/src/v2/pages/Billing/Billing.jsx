@@ -11,7 +11,7 @@
 // unnecessarily."
 import { useEffect, useState } from "react";
 import { useSearchParams, Link } from "react-router-dom";
-import { Crown, Check, X, CreditCard, Shield, Clock, AlertTriangle, MessageCircle, ExternalLink, Gift } from "lucide-react";
+import { Crown, Check, CreditCard, Shield, Clock, AlertTriangle, MessageCircle, ExternalLink, Gift } from "lucide-react";
 import SectionCard from "../../components/SectionCard";
 import PlanComparison from "../../components/PlanComparison";
 import { DISCORD_INVITE_URL } from "../../../lib/domains";
@@ -52,13 +52,71 @@ const ELITE_FEATURES = [
   { icon: MessageCircle, title: "Members-only Discord", desc: "The Elite channel in the EAFC Live Discord." },
 ];
 
+// ?unlock=<feature> says which limit sent them here, so the page can open
+// with the thing they were actually trying to do.
+//
+// Keyed by the FEATURE keys UpgradePrompt sends (which are the backend's
+// own FEATURE_MIN_TIER keys), not by page names - the old map was keyed
+// "opportunities"/"trade finder"/"alerts", none of which any link in the
+// product produced, so the context sentence never once matched. The
+// legacy spellings are kept as aliases for links already in the wild.
+//
+// "Unlock unlimited Watchlist tracking" is also gone: Elite is 500 cards,
+// and 500 is not unlimited.
 const UNLOCK_COPY = {
-  opportunities: "Unlock the full live Opportunities feed.",
-  "trade finder": "Unlock the full Trade Finder.",
-  "trade-finder": "Unlock the full Trade Finder.",
-  watchlist: "Unlock unlimited Watchlist tracking.",
-  alerts: "Unlock price alerts.",
+  opportunity_feed: "Every opportunity the engine finds, with exact buy and sell prices.",
+  trade_finder: "Search every live-priced card by budget, risk, position and return.",
+  ai_chat: "Ask about any card or budget and get an answer built from live market data.",
+  full_track_record: "Every published call, every time window, and the full win/loss ledger.",
+  realtime_alerts: `Up to ${FREE_LIMITS.eliteAlerts} active price alerts instead of ${FREE_LIMITS.alerts}.`,
+  watchlist: `Track up to ${FREE_LIMITS.eliteWatchlist} cards instead of ${FREE_LIMITS.watchlist}.`,
+  trade_journal: "Unlimited open trades and your complete history, not the last 30 days.",
+  // Aliases for older links.
+  opportunities: "Every opportunity the engine finds, with exact buy and sell prices.",
+  "trade finder": "Search every live-priced card by budget, risk, position and return.",
+  "trade-finder": "Search every live-priced card by budget, risk, position and return.",
+  alerts: `Up to ${FREE_LIMITS.eliteAlerts} active price alerts instead of ${FREE_LIMITS.alerts}.`,
 };
+
+// What a customer is told when a billing call fails.
+//
+// The three handlers below used to render `data.detail` straight onto the
+// page. FastAPI's detail is not customer copy: it is a string on some
+// routes and an object on others (every 402 in this product returns a
+// dict), so a failed call could print "[object Object]" above a payment
+// button. A non-JSON body - a proxy's 502 HTML page - was worse still,
+// because res.json() threw and the customer read "Unexpected token <".
+//
+// Nothing about money should ever be ambiguous, so every message below
+// also says whether they were charged.
+const BILLING_ERRORS = {
+  401: "Your session has expired. Sign in again and you can pick up where you left off — nothing has been charged.",
+  402: "Your card was declined. Nothing has been charged. Try a different payment method.",
+  403: "That action isn't available on your account. Nothing has been charged.",
+  404: "We couldn't find that subscription. Nothing has been charged — please refresh and try again.",
+  409: "There's already a checkout in progress for this account. Finish or close it, then try again.",
+  429: "Too many attempts in a row. Wait a minute and try again — nothing has been charged.",
+};
+
+async function billingError(response, fallback) {
+  if (!response) {
+    return "We couldn't reach the payment service. Check your connection and try again — nothing has been charged.";
+  }
+  let detail;
+  try {
+    const data = await response.json();
+    // Only a plain, short string from the server is worth showing; an
+    // object, or a stack-trace-length body, is for the logs.
+    const candidate = typeof data?.detail === "string" ? data.detail : typeof data?.error === "string" ? data.error : null;
+    if (candidate && candidate.length <= 160) detail = candidate;
+  } catch {
+    // Body wasn't JSON. Fall through to the status-based message.
+  }
+  if (response.status >= 500) {
+    return "The payment service isn't responding. Nothing has been charged — please try again shortly.";
+  }
+  return BILLING_ERRORS[response.status] || detail || fallback;
+}
 
 export default function Billing() {
   const [searchParams] = useSearchParams();
@@ -180,12 +238,15 @@ export default function Billing() {
           paymentMethod: "stripe",
         }),
       });
+      if (!res.ok) {
+        setError(await billingError(res, "We couldn't start checkout. Nothing has been charged — please try again."));
+        return;
+      }
       const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || data.error || "Failed to start checkout");
       if (data.checkoutUrl) window.location.href = data.checkoutUrl;
-      else throw new Error("Invalid checkout response");
-    } catch (e) {
-      setError(e.message || "Failed to start checkout");
+      else setError("Checkout didn't open. Nothing has been charged — please try again.");
+    } catch {
+      setError(await billingError(null));
     } finally {
       setLoading(false);
     }
@@ -196,12 +257,15 @@ export default function Billing() {
     setLoading(true); setError(""); setSuccess("");
     try {
       const res = await fetch(`${API_BASE}/api/billing/cancel-subscription`, { method: "POST", credentials: "include" });
-      if (!res.ok) { const d = await res.json(); throw new Error(d.detail || d.error || "Failed to cancel"); }
+      if (!res.ok) {
+        setError(await billingError(res, "We couldn't cancel your subscription. Nothing has changed — please try again or contact us."));
+        return;
+      }
       await loadSubscriptionStatus();
       await loadUserData();
       setSuccess("Cancelled. Elite stays active until the end of the period you've already paid for.");
-    } catch (e) {
-      setError(e.message || "Failed to cancel subscription");
+    } catch {
+      setError(await billingError(null));
     } finally {
       setLoading(false);
     }
@@ -211,19 +275,35 @@ export default function Billing() {
     setLoading(true); setError("");
     try {
       const res = await fetch(`${API_BASE}/api/billing/update-payment-method`, { method: "POST", credentials: "include" });
+      if (!res.ok) {
+        setError(await billingError(res, "We couldn't open the payment portal. Nothing has been charged — please try again."));
+        return;
+      }
       const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || data.error || "Failed to open payment portal");
       if (data.portalUrl) window.location.href = data.portalUrl;
-    } catch (e) {
-      setError(e.message || "Failed to open payment portal");
+      else setError("The payment portal didn't open. Nothing has been charged — please try again.");
+    } catch {
+      setError(await billingError(null));
     } finally {
       setLoading(false);
     }
   }
 
+  // The middle of the funnel: prompt seen -> pricing page reached ->
+  // checkout started -> checkout completed. Without this step, a drop
+  // between the prompt and checkout is invisible. `feature` is the key
+  // that sent them, never anything about who they are.
+  useEffect(() => {
+    trackOnce(
+      EVENTS.PRICING_VIEWED,
+      unlockContext ? { feature: unlockContext } : { surface: "direct" },
+      unlockContext || "direct",
+    );
+  }, [unlockContext]);
+
   const contextSentence =
     (unlockContext && UNLOCK_COPY[unlockContext.toLowerCase()]) ||
-    (unlockContext ? `Unlock ${unlockContext}.` : "Get the full EAFC Live trading toolkit.");
+    "Get the full EAFC Live trading toolkit.";
 
   if (user === null) {
     return (

@@ -27,6 +27,7 @@ export const EVENTS = {
   FREE_OPPORTUNITY_VIEWED: "free_opportunity_viewed",
   FREE_LIMIT_REACHED: "free_limit_reached",
   UPGRADE_PROMPT_VIEWED: "upgrade_prompt_viewed",
+  PRICING_VIEWED: "pricing_viewed",
   CHECKOUT_STARTED: "checkout_started",
   CHECKOUT_COMPLETED: "checkout_completed",
   CHECKOUT_CANCELLED: "checkout_cancelled",
