@@ -27,7 +27,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import time
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Request
@@ -35,6 +34,7 @@ from pydantic import BaseModel, Field
 
 from app.auth.access import get_viewer
 from app.auth.entitlements import compute_entitlements, require_feature
+from app.services import ai_usage
 from app.routers.v2.futgg_market import (
     get_player_detail as futgg_player_detail,
     get_provider as futgg_provider,
@@ -48,103 +48,16 @@ log = logging.getLogger("ai_chat")
 router = APIRouter(prefix="/ai", tags=["v2-ai-chat"])
 
 OPENAI_MODEL = os.getenv("OPENAI_CHAT_MODEL", "gpt-4o-mini")
-_RATE_LIMIT_PER_MINUTE = int(os.getenv("AI_CHAT_RATE_LIMIT_PER_MINUTE", "6"))
-# The per-minute limit stops a burst; it does not stop sustained use. At 6
-# a minute an account could run over eight thousand model calls a day, and
-# every one of them costs real money and reads the full paid dataset - so
-# the plan's promise of "the trading assistant" needs a documented daily
-# ceiling as well, not just a throttle. Generous on purpose: this is a
-# fair-use backstop against automation, not a per-day allowance anyone
-# using the product as a trading assistant should ever meet.
-_RATE_LIMIT_PER_DAY = int(os.getenv("AI_CHAT_RATE_LIMIT_PER_DAY", "200"))
+# One customer message is at most this many model calls: the model asks
+# for a tool, we answer, it asks again, and the last round produces the
+# reply. Every round resends the whole conversation plus the tool schema,
+# so this number multiplies the cost of a message directly.
+_MAX_TOOL_ROUNDS = 3
 
-_redis = None
-_redis_checked = False
-
-
-async def _get_redis():
-    """Same lazy-optional pattern as app/auth/api_keys.py - Redis is
-    already a dependency, this just reuses it rather than adding a new
-    rate-limit backend for one endpoint."""
-    global _redis, _redis_checked
-    if _redis_checked:
-        return _redis
-    _redis_checked = True
-    url = os.getenv("REDIS_URL")
-    if not url:
-        return None
-    try:
-        import redis.asyncio as aioredis  # type: ignore
-
-        _redis = aioredis.from_url(url, decode_responses=True)
-        await _redis.ping()
-    except Exception as e:
-        log.warning("REDIS_URL set but unusable for ai_chat rate limiting (%s)", e)
-        _redis = None
-    return _redis
-
-
-_in_process_window: Dict[str, tuple[float, int]] = {}
-
-
-_in_process_day: Dict[str, tuple[float, int]] = {}
-
-_MINUTE_MESSAGE = "Too many chat messages - please wait a moment."
-_DAY_MESSAGE = (
-    "You've reached today's fair-use limit for the assistant. It resets in a few hours - "
-    "everything else on your plan is unaffected."
-)
-
-
-async def _check_rate_limit(user_id: str) -> None:
-    """Two windows: a per-minute throttle and a per-day fair-use ceiling.
-
-    Both are enforced here, server-side, on the chat endpoint itself -
-    never in the chat page, which cannot be trusted to count anything.
-    """
-    r = await _get_redis()
-    if r is not None:
-        try:
-            now = time.time()
-            minute = f"rl:ai_chat:{user_id}:{int(now // 60)}"
-            n = await r.incr(minute)
-            if n == 1:
-                await r.expire(minute, 90)
-            if n > _RATE_LIMIT_PER_MINUTE:
-                raise HTTPException(429, _MINUTE_MESSAGE)
-
-            day = f"rl:ai_chat:day:{user_id}:{int(now // 86400)}"
-            d = await r.incr(day)
-            if d == 1:
-                await r.expire(day, 90_000)
-            if d > _RATE_LIMIT_PER_DAY:
-                raise HTTPException(429, _DAY_MESSAGE)
-            return
-        except HTTPException:
-            raise
-        except Exception:
-            pass  # Redis hiccup -> fall through to in-process limiter
-
-    # In-process fallback. Per-worker rather than per-account across the
-    # fleet, so it is a weaker ceiling than the Redis path - which is why
-    # Redis is the configured backend in production and this exists only
-    # so a Redis outage degrades the limit rather than removing it.
-    now = time.time()
-    window_start, count = _in_process_window.get(user_id, (now, 0))
-    if now - window_start >= 60:
-        _in_process_window[user_id] = (now, 1)
-    elif count >= _RATE_LIMIT_PER_MINUTE:
-        raise HTTPException(429, _MINUTE_MESSAGE)
-    else:
-        _in_process_window[user_id] = (window_start, count + 1)
-
-    day_start, day_count = _in_process_day.get(user_id, (now, 0))
-    if now - day_start >= 86_400:
-        _in_process_day[user_id] = (now, 1)
-        return
-    if day_count >= _RATE_LIMIT_PER_DAY:
-        raise HTTPException(429, _DAY_MESSAGE)
-    _in_process_day[user_id] = (day_start, day_count + 1)
+# Rate limiting, cost accounting and the kill switch live in
+# app/services/ai_usage.py - one module, so the limit and the number that
+# justifies it cannot drift apart. See docs/AI_CHAT_COST.md for the
+# measurement the daily default is set from.
 
 
 class ChatMessage(BaseModel):
@@ -153,7 +66,18 @@ class ChatMessage(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    messages: List[ChatMessage] = Field(..., min_length=1)
+    # An upper bound at the parse boundary, before any of this reaches a
+    # model. The client sends the whole conversation on every request, so
+    # history length - the dominant term in the cost of a message - used
+    # to be chosen by the caller: min_length=1 and no maximum. A 1MB body
+    # of history costs roughly £0.08 per message, or £27/hour at the
+    # per-minute limit.
+    #
+    # This cap is deliberately looser than ai_usage.MAX_HISTORY_MESSAGES,
+    # which does the real trimming. Rejecting outright at 10 would break
+    # any client that keeps a longer local transcript; the server simply
+    # declines to PAY for more than the last few turns.
+    messages: List[ChatMessage] = Field(..., min_length=1, max_length=200)
 
 
 TOOLS = [
@@ -432,7 +356,19 @@ async def chat(body: ChatRequest, request: Request) -> Dict[str, Any]:
     user_id = ent.get("user_id")
     if not user_id:
         raise HTTPException(401, "Not authenticated")
-    await _check_rate_limit(str(user_id))
+
+    decision = await ai_usage.acquire(str(user_id))
+    if not decision.allowed:
+        # Recorded, so refusals are visible in the usage summary rather
+        # than being an invisible dead end. A blocked row costs nothing:
+        # no model call happened.
+        await ai_usage.record(
+            str(user_id), ai_usage.UsageTally(model=OPENAI_MODEL), "blocked",
+        )
+        detail = {"error": decision.reason, "message": decision.message}
+        if decision.resets_at_iso:
+            detail["resetsAt"] = decision.resets_at_iso
+        raise HTTPException(503 if decision.reason == "disabled" else 429, detail)
 
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
@@ -442,29 +378,47 @@ async def chat(body: ChatRequest, request: Request) -> Dict[str, Any]:
         # than switched off. The nav entry is hidden via GET /ai/status,
         # so this is the deep-link/stale-tab path. No env var names in
         # customer-facing text.
+        await ai_usage.release(str(user_id))
         raise HTTPException(503, "AI Chat is not available on this deployment yet.")
 
     from openai import AsyncOpenAI  # imported lazily so a missing/unset key never breaks module import
 
     client = AsyncOpenAI(api_key=api_key)
 
+    # The server decides how much history it is willing to pay for. The
+    # client may keep a longer transcript locally; only the last few turns
+    # are sent to the model, and each message is capped on its own so one
+    # enormous message cannot do what a long history no longer can.
     messages: List[Dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
-    messages.extend({"role": m.role, "content": m.content} for m in body.messages)
+    messages.extend(ai_usage.trim_history(body.messages))
 
     tool_results: List[Dict[str, Any]] = []
+    tally = ai_usage.UsageTally(model=OPENAI_MODEL)
+    status = "failed"
 
     try:
-        for _ in range(3):  # bounded tool-call loop - never let a model loop forever
+        for _ in range(_MAX_TOOL_ROUNDS):  # bounded - never let a model loop forever
             response = await client.chat.completions.create(
                 model=OPENAI_MODEL,
                 messages=messages,
                 tools=TOOLS,
                 tool_choice="auto",
+                # Bounds the output side. "Keep replies short and concrete"
+                # is already in the system prompt; this is the same
+                # instruction made enforceable rather than requested.
+                max_tokens=ai_usage.MAX_OUTPUT_TOKENS,
             )
+            # Every call in the loop counts. One CUSTOMER message is up to
+            # _MAX_TOOL_ROUNDS model calls, each resending the whole
+            # conversation - accumulating here rather than reading the
+            # last response is the difference between the real cost and a
+            # third of it.
+            tally.add(response)
             choice = response.choices[0]
             message = choice.message
 
             if not message.tool_calls:
+                status = "ok"
                 return {"reply": message.content or "", "toolResults": tool_results}
 
             messages.append({
@@ -488,6 +442,7 @@ async def chat(body: ChatRequest, request: Request) -> Dict[str, Any]:
 
         # Loop exhausted without a final text reply - surface the last
         # tool results rather than silently returning nothing.
+        status = "ok"
         return {"reply": "Here's what I found:", "toolResults": tool_results}
     except Exception:
         # The exception CLASS NAME used to be interpolated into the reply
@@ -495,3 +450,11 @@ async def chat(body: ChatRequest, request: Request) -> Dict[str, Any]:
         # diagnostic shown to a customer. It is logged instead.
         log.exception("ai_chat: model call failed")
         raise HTTPException(503, "The assistant is temporarily unavailable. Please try again shortly.")
+    finally:
+        # A failed request still spent whatever tokens it spent before
+        # failing, so it is recorded with the tokens it actually used and
+        # a status that says it did not produce an answer. The concurrency
+        # slot is always given back; the rate windows are not, because a
+        # request that reached the provider cost money either way.
+        await ai_usage.record(str(user_id), tally, status)
+        await ai_usage.release(str(user_id))

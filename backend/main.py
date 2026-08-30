@@ -1227,6 +1227,13 @@ app.include_router(v2_router)               # /api/v2/*
 from app.routers.admin import router as admin_router
 app.include_router(admin_router)            # /api/admin/*
 
+# Admin-only reporting added in the launch-readiness phase: the conversion
+# funnel and AI cost. Same /api/admin prefix and the same require_admin
+# dependency - a separate module only so the user-administration router
+# above stays about users.
+from app.routers.admin_reporting import router as admin_reporting_router
+app.include_router(admin_reporting_router)  # /api/admin/ai-usage, /api/admin/funnel/*
+
 # Generated player-card PNGs: admin generate/status + the internal,
 # token-gated render-data route Chromium fetches from (see
 # app/routers/player_cards.py's header comment for the two trust

@@ -56,7 +56,9 @@ export default function Chat() {
         <EmptyState
           icon={<Sparkles />}
           title="The assistant isn't available right now"
-          text="This part of EAFC.Live isn't switched on yet. Everything else - Opportunities, Trade Finder and player pages - works as normal."
+          text={typeof unavailable === "string" && unavailable
+            ? unavailable
+            : "This part of EAFC.Live isn't switched on yet. Everything else - Opportunities, Trade Finder and player pages - works as normal."}
         />
       ) : locked ? (
         // A Free member sees what the assistant can do, with real example
