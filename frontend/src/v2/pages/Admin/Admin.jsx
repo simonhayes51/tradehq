@@ -21,10 +21,13 @@ import MarketEventsTab from "./tabs/MarketEventsTab";
 import NextPromoTab from "./tabs/NextPromoTab";
 import SubscriptionsTab from "./tabs/SubscriptionsTab";
 import ApiUsageTab from "./tabs/ApiUsageTab";
+import ConversionTab from "./tabs/ConversionTab";
 import PlayerCardsTab from "./tabs/PlayerCardsTab";
 import AdminSbcImports from "../AdminSbcImports/AdminSbcImports";
 
 const TABS = [
+  // First: it is the question the launch is actually judged on.
+  { key: "conversion", label: "Conversion", Component: ConversionTab },
   { key: "pipeline", label: "Pipeline Health", Component: PipelineHealthTab },
   { key: "collectors", label: "Collector Status", Component: CollectorStatusTab },
   { key: "sbc-imports", label: "SBC Imports", Component: AdminSbcImports },
@@ -36,7 +39,7 @@ const TABS = [
 ];
 
 export default function Admin() {
-  const [tab, setTab] = useState("pipeline");
+  const [tab, setTab] = useState("conversion");
   const { isLoading, error } = useAdminPipelineHealth();
 
   if (isLoading) {

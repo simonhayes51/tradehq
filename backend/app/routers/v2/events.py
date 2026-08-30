@@ -48,8 +48,15 @@ ALLOWED_EVENTS = frozenset({
     "upgrade_prompt_viewed",
     "pricing_viewed",
     "checkout_started",
+    # Emitted by the BROWSER on the page Stripe redirects back to, so it
+    # means "returned from checkout", not "paid". The authoritative
+    # revenue event is subscription_confirmed below, which only trusted
+    # server-side code writes.
     "checkout_completed",
     "checkout_cancelled",
+    # Server-only. Written by the Stripe webhook handlers, never accepted
+    # from a browser - see reject_client_source below.
+    "subscription_confirmed",
     "first_watchlist_card_added",
     "first_alert_created",
     "first_portfolio_trade_added",
@@ -66,6 +73,12 @@ ALLOWED_PROPS = frozenset({
     "count",     # a small integer
     "reason",    # a short enum-ish string
 })
+
+# Events only trusted server-side code may write. A browser POSTing one
+# of these is claiming a fact it is not in a position to know - anyone can
+# reach the tracking endpoint, and "we were paid" must never be one of the
+# things they can assert.
+SERVER_ONLY_EVENTS = frozenset({"subscription_confirmed"})
 
 _MAX_STRING = 40
 _MAX_NUMBER = 10 ** 9
@@ -109,6 +122,12 @@ async def track_event(body: TrackRequest, request: Request) -> Dict[str, Any]:
     """
     if body.event not in ALLOWED_EVENTS:
         return {"recorded": False, "reason": "unknown_event"}
+    if body.event in SERVER_ONLY_EVENTS:
+        # Dropped, not stored with source='client': a row that exists at
+        # all would still have to be filtered out of every revenue query
+        # forever.
+        log.warning("funnel: client attempted to post server-only event %s", body.event)
+        return {"recorded": False, "reason": "server_only_event"}
 
     user_id: Optional[str] = None
     try:
@@ -125,16 +144,123 @@ async def track_event(body: TrackRequest, request: Request) -> Dict[str, Any]:
         async with pool.acquire() as conn:
             await conn.execute(
                 """
-                INSERT INTO funnel_events (event, user_id, props)
-                VALUES ($1, $2, $3::jsonb)
+                INSERT INTO funnel_events (event, user_id, props, source)
+                VALUES ($1, $2, $3::jsonb, 'client')
                 """,
                 body.event,
                 user_id,
                 __import__("json").dumps(sanitise(body.props)),
             )
-    except Exception:
+        _note_success()
+    except Exception as exc:
         # Includes "table does not exist" before migration 075 is applied.
-        log.debug("funnel event not recorded", exc_info=True)
+        # Counted as well as logged: this endpoint answers 200 either way,
+        # so without a counter the difference between "nobody is using the
+        # product" and "we have recorded nothing for a week" is invisible.
+        _note_failure(exc)
+        log.warning("funnel event not recorded (event=%s)", body.event, exc_info=True)
         return {"recorded": False, "reason": "unavailable"}
 
     return {"recorded": True}
+
+
+# ---------------------------------------------------------------------------
+# Server-side recording, and knowing when recording stops working
+# ---------------------------------------------------------------------------
+#
+# The endpoint above always answers 200 by design: instrumentation must
+# never fail the action that triggered it. The cost of that decision is
+# that total, silent loss of analytics looks exactly like nobody using the
+# product. These counters are how the difference becomes visible.
+
+_failure_counter = {"ok": 0, "failed": 0, "last_error_at": None, "last_error_kind": None}
+
+
+def _note_success() -> None:
+    _failure_counter["ok"] += 1
+
+
+def _note_failure(exc: BaseException) -> None:
+    from datetime import datetime, timezone
+
+    _failure_counter["failed"] += 1
+    _failure_counter["last_error_at"] = datetime.now(timezone.utc).isoformat()
+    # The exception CLASS, never its message: an asyncpg error text can
+    # carry a connection string, and this is read by an admin page.
+    _failure_counter["last_error_kind"] = type(exc).__name__
+
+
+def tracking_health() -> Dict[str, Any]:
+    """Whether funnel recording is actually working, for the admin view
+    and the health check.
+
+    Process-local and reset by a restart. That is honest for what it is -
+    a smoke signal, not a metric store - and it is enough to answer "have
+    the last N attempts been failing", which is the question.
+    """
+    ok = _failure_counter["ok"]
+    failed = _failure_counter["failed"]
+    total = ok + failed
+    return {
+        "attempts": total,
+        "recorded": ok,
+        "failed": failed,
+        "failure_rate": round(failed / total, 4) if total else 0.0,
+        # Deliberately not a bare boolean: "nothing has been tried yet" and
+        # "everything is failing" are different states and an admin needs
+        # to tell them apart.
+        "status": (
+            "unknown" if total == 0
+            else "failing" if failed and ok == 0
+            else "degraded" if failed else "ok"
+        ),
+        "last_error_at": _failure_counter["last_error_at"],
+        "last_error_kind": _failure_counter["last_error_kind"],
+    }
+
+
+def reset_tracking_health() -> None:
+    """Tests only."""
+    _failure_counter.update({"ok": 0, "failed": 0, "last_error_at": None, "last_error_kind": None})
+
+
+async def record_server_event(
+    event: str,
+    user_id: Optional[str],
+    props: Optional[Dict[str, Any]] = None,
+    *,
+    pool=None,
+) -> bool:
+    """Record a funnel event from trusted server-side code.
+
+    The one way a SERVER_ONLY_EVENTS row can be written. Same allow-list
+    on the properties, because "the server wrote it" is not a reason to
+    start storing free text.
+
+    Never raises: a Stripe webhook must not fail because a reporting row
+    could not be written. The failure is counted and logged instead.
+    """
+    if event not in ALLOWED_EVENTS:
+        log.warning("funnel: refusing to record unknown server event %s", event)
+        return False
+    try:
+        if pool is None:
+            from app.db import get_core_pool
+
+            pool = await get_core_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO funnel_events (event, user_id, props, source)
+                VALUES ($1, $2, $3::jsonb, 'server')
+                """,
+                event,
+                str(user_id) if user_id else None,
+                __import__("json").dumps(sanitise(props or {})),
+            )
+        _note_success()
+        return True
+    except Exception as exc:
+        _note_failure(exc)
+        log.warning("funnel: could not record server event %s", event, exc_info=True)
+        return False

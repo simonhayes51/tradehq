@@ -36,6 +36,7 @@ import inspect
 from pydantic import BaseModel, Field
 
 from app.auth.access import get_viewer, limit_reached
+from app.routers.v2.events import record_server_event
 from app.auth.entitlements import (
     ELITE_ALERT_MAX,
     compute_entitlements,
@@ -3878,6 +3879,25 @@ _PLAN_KEYS = {
     "season": ("STRIPE_SEASON_PRICE_ID", "price_season_premium", "Elite (season)"),
 }
 
+def _plan_key_for_price(subscription: Dict[str, Any]) -> str:
+    """Which configured plan a Stripe subscription is on.
+
+    Reported on the confirmed-revenue event so the funnel can split
+    monthly from season without storing anything about the customer. Falls
+    back to "unknown" rather than guessing: a price id that matches no
+    configured plan is a configuration problem worth seeing in the
+    reporting, not something to paper over with a default.
+    """
+    try:
+        price_id = subscription["items"]["data"][0]["price"]["id"]
+    except (KeyError, IndexError, TypeError):
+        return "unknown"
+    for key, (env_name, fallback, _label) in _PLAN_KEYS.items():
+        if price_id == (os.getenv(env_name) or fallback):
+            return key
+    return "unknown"
+
+
 _CURRENCY_SYMBOLS = {"gbp": "£", "usd": "$", "eur": "€"}
 
 _plan_cache: Dict[str, Any] = {"at": 0.0, "value": None}
@@ -4294,6 +4314,16 @@ async def handle_subscription_created(subscription, conn):
     )
     await enqueue_role_sync(conn, user_id)
     invalidate_entitlements_cache(user_id)
+    # The authoritative revenue event. The browser's checkout_completed
+    # fires on the page Stripe redirects back to and means "returned from
+    # checkout" - a customer who pays and closes the tab never fires it,
+    # and anyone who knows the URL can fire it without paying. This one is
+    # written only here, from Stripe's own confirmation.
+    if is_entitled:
+        await record_server_event(
+            "subscription_confirmed", user_id,
+            {"plan": _plan_key_for_price(subscription)},
+        )
 
 async def handle_subscription_updated(subscription, conn):
     """Handle subscription updates"""
@@ -4309,6 +4339,13 @@ async def handle_subscription_updated(subscription, conn):
         "SELECT EXISTS(SELECT 1 FROM subscriptions WHERE stripe_subscription_id=$1)",
         subscription.get('id'),
     )
+    # Read before the UPDATE below overwrites it: "did this subscription
+    # just BECOME entitled" cannot be answered from the new row alone.
+    previous_status = await conn.fetchval(
+        "SELECT status FROM subscriptions WHERE stripe_subscription_id=$1",
+        subscription.get('id'),
+    )
+    was_active = entitlement_is_active(status=previous_status, current_period_end=None)
     if not exists:
         normalized = dict(subscription)
         normalized["metadata"] = {**(subscription.get("metadata") or {}), "user_id": user_id}
@@ -4341,6 +4378,15 @@ async def handle_subscription_updated(subscription, conn):
     )
     await enqueue_role_sync(conn, user_id)
     invalidate_entitlements_cache(user_id)
+    # Only on the transition INTO an entitled state. Stripe sends
+    # subscription.updated for many reasons - a renewal, a card change, a
+    # cancellation flag - and counting each one as a conversion would
+    # inflate revenue by whatever Stripe happens to be chatty about.
+    if is_active and not was_active:
+        await record_server_event(
+            "subscription_confirmed", user_id,
+            {"plan": _plan_key_for_price(subscription)},
+        )
 
 async def handle_subscription_deleted(subscription, conn):
     """Handle subscription cancellation"""
