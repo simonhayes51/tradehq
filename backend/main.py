@@ -4344,6 +4344,13 @@ async def handle_payment_failed(invoice, conn):
                 (invoice.get('currency') or 'gbp').upper(),
                 'failed'
             )
+            # Stripe also sends customer.subscription.updated (-> past_due)
+            # for this, and that handler invalidates too - but the two
+            # events arrive independently and in either order, and a cached
+            # entitlement computed between them would describe a billing
+            # state that no longer exists. Invalidating in both places is
+            # idempotent; relying on the ordering is not.
+            invalidate_entitlements_cache(subscription['user_id'])
 
 # Add endpoint to check Discord connection status
 @app.get("/api/user/discord-status")
