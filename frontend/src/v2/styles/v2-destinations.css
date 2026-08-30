@@ -443,3 +443,68 @@
   .v2-market-row > div > strong { font-size: 14px; }
   .v2-watch-card { min-height: 340px; }
 }
+
+/* ---------------------------------------------------------------------
+   Locked states. One shape everywhere a limit is reached.
+   --------------------------------------------------------------------- */
+.upgrade-prompt {
+  display: grid;
+  justify-items: start;
+  gap: 10px;
+  padding: 26px;
+  border: 1px solid var(--v2-border, #2c2c2c);
+  border-radius: 6px;
+  background: linear-gradient(180deg, #171717, #131313);
+}
+.upgrade-prompt.compact { padding: 18px; }
+.upgrade-prompt-icon {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 8px;
+  background: rgba(57, 255, 138, 0.12);
+  color: #39ff8a;
+}
+.upgrade-prompt h2 { margin: 0; font-size: 20px; line-height: 1.2; }
+.upgrade-prompt-what { margin: 0; color: #cfcfcf; font-size: 14px; line-height: 1.55; max-width: 62ch; }
+.upgrade-prompt-why { margin: 0; color: #9a9a9a; font-size: 13px; line-height: 1.55; max-width: 62ch; }
+.upgrade-prompt-list { margin: 4px 0 0; padding: 0 0 0 2px; list-style: none; display: grid; gap: 6px; }
+.upgrade-prompt-list li { color: #c8c8c8; font-size: 13px; line-height: 1.45; }
+.upgrade-prompt-list li::before { content: "· "; color: #39ff8a; }
+.upgrade-prompt-actions { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-top: 6px; }
+.upgrade-prompt-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 46px;
+  padding: 0 18px;
+  border-radius: 5px;
+  background: #39ff8a;
+  color: #08130c;
+  font-size: 14px;
+  font-weight: 800;
+  text-decoration: none;
+}
+.upgrade-prompt-price { color: #9a9a9a; font-size: 12.5px; }
+
+/* A locked opportunity card: real card, real verdict, no numbers. */
+.locked-opportunity { position: relative; }
+.locked-opportunity .locked-figure {
+  display: inline-block;
+  min-width: 62px;
+  height: 1em;
+  border-radius: 3px;
+  /* A neutral placeholder, NOT a blur of the real value - the real value
+     is never sent to the client, so there is nothing to blur. */
+  background: repeating-linear-gradient(90deg, #2a2a2a 0 6px, #232323 6px 12px);
+  vertical-align: middle;
+}
+.locked-opportunity-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  color: #9a9a9a;
+  font-size: 12px;
+}

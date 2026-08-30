@@ -14,7 +14,8 @@ import { Link } from "react-router-dom";
 import { Send, Sparkles } from "lucide-react";
 import { PageHead } from "../Players/Players";
 import EmptyState from "../../components/EmptyState";
-import PremiumGate from "../../components/PremiumGate";
+import UpgradePrompt from "../../components/UpgradePrompt";
+import { GATED } from "../../lib/gatedFeatures";
 import RecommendationBadge from "../../components/RecommendationBadge";
 import CoinValue from "../../components/CoinValue";
 import { useAiChat } from "../../hooks/useAiChat";
@@ -58,7 +59,12 @@ export default function Chat() {
           text="This part of EAFC.Live isn't switched on yet. Everything else - Opportunities, Trade Finder and player pages - works as normal."
         />
       ) : locked ? (
-        <PremiumGate locked featureName="AI Chat" />
+        // A Free member sees what the assistant can do, with real example
+        // questions, WITHOUT a model request being made on their behalf.
+        // The demo is the copy in GATED.ai_chat, not a fake conversation:
+        // a scripted exchange presented as the product would be lying
+        // about what they'd be buying.
+        <UpgradePrompt {...GATED.ai_chat} />
       ) : (
         <div className="v2-chat-panel">
           <div className="v2-chat-log">
