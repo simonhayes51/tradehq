@@ -10,11 +10,16 @@
 // analytics later means hunting for the twenty places an event should
 // have fired.
 //
-// What it does today: posts to our own backend if the endpoint exists,
-// and no-ops silently otherwise. What it never does: send anything that
-// could identify a person or reveal what they searched for. See
-// `sanitise` below - the payload allow-list is enforced here rather than
-// trusted to each call site.
+// What it does today: posts to our own backend (POST /api/v2/events/track,
+// app/routers/v2/events.py, migration 075) and no-ops silently if that is
+// unavailable. What it never does: send anything that could identify a
+// person or reveal what they searched for.
+//
+// The `sanitise` allow-list below is a convenience, not the control - the
+// server re-applies the same allow-list, because anything can POST to that
+// route and a client-side filter protects nobody. Keep the two lists in
+// step: EVENTS here mirrors ALLOWED_EVENTS there, ALLOWED_PROPS mirrors
+// ALLOWED_PROPS.
 import { api } from "../v2/lib/api";
 
 export const EVENTS = {
@@ -72,7 +77,7 @@ export function track(event, props = {}) {
   try {
     // Fire and forget. An analytics failure must never be visible to a
     // user or block the action that triggered it.
-    api.post("/api/events/track", payload, {
+    api.post("/api/v2/events/track", payload, {
       __skipAuthRedirect: true,
       __noRetry: true,
       timeout: 4000,
@@ -80,7 +85,7 @@ export function track(event, props = {}) {
       if (!warned && import.meta.env?.DEV) {
         warned = true;
         // Dev-only, once: the endpoint is optional by design.
-        console.info("[analytics] no /api/events/track endpoint; events are being discarded");
+        console.info("[analytics] /api/v2/events/track unavailable; events are being discarded");
       }
     });
   } catch {

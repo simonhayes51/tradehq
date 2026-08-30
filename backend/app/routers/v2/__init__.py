@@ -16,6 +16,7 @@ from app.routers.v2.futgg_market import router as futgg_market_router
 from app.routers.v2.companion import router as companion_router
 from app.routers.v2.investments import router as investments_router
 from app.routers.v2.alerts import router as alerts_router
+from app.routers.v2.events import router as events_router
 from app.routers.v2.onboarding import router as onboarding_router
 
 router = APIRouter(prefix="/api/v2")
@@ -53,3 +54,7 @@ router.include_router(alerts_router)
 # member who completes or skips it on desktop is not asked again on their
 # phone.
 router.include_router(onboarding_router)
+# Internal funnel events (migration 075). Mounted here, under /api/v2,
+# rather than at /api/events - main.py already owns that path for the
+# market-events feed, which is a different thing entirely.
+router.include_router(events_router)
