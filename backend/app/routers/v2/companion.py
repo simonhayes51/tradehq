@@ -34,17 +34,24 @@ client-side (see eafc-live-extension/src/eafc-api.js and market-calc.js).
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 from app.routers.v2.futgg_market import ProviderDep
+from app.auth.access import Viewer, get_viewer, serialise_card_detail
+from app.services.free_picks import unlocked_pick_ids
 from app.services.futgg_intelligence import CardIntelligence, evaluate_card
 from app.services.market_data_provider import FutggMarketDataProvider
 
 router = APIRouter(prefix="/companion", tags=["v2-companion"])
 log = logging.getLogger("companion")
+
+
+def _app_base_url() -> str:
+    return (os.getenv("FRONTEND_URL") or "https://app.eafc.live").rstrip("/")
 
 
 def _liquidity_bucket(score: Optional[float]) -> Optional[str]:
@@ -112,7 +119,9 @@ def _build_companion_payload(row: Dict[str, Any], ci: CardIntelligence) -> Dict[
 
 @router.get("/card/{source_card_id}")
 async def get_companion_card(
-    source_card_id: int, provider: FutggMarketDataProvider = ProviderDep,
+    source_card_id: int,
+    provider: FutggMarketDataProvider = ProviderDep,
+    viewer: Viewer = Depends(get_viewer),
 ) -> Dict[str, Any]:
     """One clean intelligence object for the given exact card version.
 
@@ -132,4 +141,23 @@ async def get_companion_card(
         sales = []
 
     ci = evaluate_card(row, sales=sales)
-    return _build_companion_payload(row, ci)
+    payload = _build_companion_payload(row, ci)
+
+    # This endpoint was the widest bypass in the product. It is one card
+    # per request, unauthenticated, and it returned buy_below,
+    # recommended_buy_max, recommended_sell_target, expected_profit and
+    # confidence - so anyone willing to iterate source_card_ids could
+    # rebuild the entire paid feed without an account, and the extension
+    # itself sent `credentials: "omit"` by design.
+    #
+    # It now goes through the same serialiser as everything else. An Elite
+    # session gets the full object; anyone else gets the card, the
+    # reference price and the verdict, with the trade plan withheld.
+    if not viewer.has("opportunity_feed"):
+        unlocked = await unlocked_pick_ids() if viewer.is_free else []
+        payload = serialise_card_detail(payload, viewer, unlocked_ids=unlocked)
+        # The overlay needs to render a locked state, so tell it plainly
+        # rather than leaving it to infer meaning from missing keys.
+        payload["locked"] = "trade_plan_locked" in payload
+        payload["upgrade_url"] = f"{_app_base_url()}/#/billing"
+    return payload

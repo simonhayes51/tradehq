@@ -6,12 +6,18 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, HTTPException, Query, Request
-from app.auth.entitlements import require_feature
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from app.auth.access import Viewer, get_viewer
+from app.auth.entitlements import FREE_TRACK_RECORD_WINDOW_DAYS, require_feature
 from app.db import get_core_pool
 from app.services.player_card_ondemand import ensure_cards_requested
 
 router = APIRouter(tags=["v2-recommendations"])
+
+# Named so tests can override it by identity - require_feature() returns a
+# fresh closure per call, which cannot be addressed through
+# dependency_overrides.
+require_full_track_record = require_feature("full_track_record")
 log = logging.getLogger("v2_recommendations")
 
 _JSONB_COLUMNS = (
@@ -145,7 +151,11 @@ async def _model_validation(window: str, window_days: int) -> Dict[str, Any]:
 
 
 @router.get("/track-record")
-async def track_record(request: Request, window: str = Query("90d")) -> Dict[str, Any]:
+async def track_record(
+    request: Request,
+    window: str = Query("90d"),
+    viewer: Viewer = Depends(get_viewer),
+) -> Dict[str, Any]:
     """Two distinct, clearly separated datasets - never presented as
     interchangeable. See PR description for the full audit this
     restructure was built from.
@@ -177,6 +187,19 @@ async def track_record(request: Request, window: str = Query("90d")) -> Dict[str
     window_days = _TRACK_RECORD_WINDOW_DAYS.get(window, 90)
     resolved_window = window if window in _TRACK_RECORD_WINDOW_DAYS else "90d"
 
+    # The headline summary stays public: a track record only works as a
+    # trust signal if the people deciding whether to trust us can see it.
+    # What is gated is DEPTH - a viewer without the full-history feature
+    # is capped to a recent window, so "recent summary" and "full history"
+    # are genuinely different products rather than the same page with a
+    # different heading.
+    capped_window = False
+    if not viewer.has("full_track_record"):
+        free_days = FREE_TRACK_RECORD_WINDOW_DAYS
+        if window_days > free_days:
+            window_days = free_days
+            capped_window = True
+
     try:
         core_pool = await get_core_pool()
         # Fetched once and shared: published_track_record() (the
@@ -207,6 +230,10 @@ async def track_record(request: Request, window: str = Query("90d")) -> Dict[str
     return {
         "window": resolved_window,
         "window_days": window_days,
+        # Said plainly, so the UI can explain why a 90-day tab is showing
+        # 30 days of data instead of silently mislabelling it.
+        "window_capped": capped_window,
+        "full_history_available": viewer.has("full_track_record"),
         "published": published,
         "model_validation": model_validation,
         # Back-compat top-level alias for ai_chat.py and any other
@@ -223,6 +250,7 @@ async def track_record_recent(
     window: str = Query("90d"),
     filter: str = Query("all", description="all|wins|losses|no_entry"),
     limit: int = Query(20, ge=1, le=100),
+    _ent: Dict[str, Any] = Depends(require_full_track_record),
 ) -> Dict[str, Any]:
     """Individual recent graded outcomes - the "did our calls actually
     work" list, not just the aggregate. Deliberately ungated, same

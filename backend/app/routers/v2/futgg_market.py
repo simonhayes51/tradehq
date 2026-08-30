@@ -46,12 +46,16 @@ import asyncpg
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from app.auth.access import Viewer, get_viewer, serialise_opportunities
+from app.auth.access import (
+    Viewer, get_viewer, serialise_card_detail, serialise_opportunities,
+)
 from app.auth.entitlements import require_feature
 from app.db import get_core_pool
 from app.routers.admin import require_admin
 from app.services.content_day import content_day_key
-from app.services.free_picks import free_pick_meta, resolve_pick_ids
+from app.services.free_picks import (
+    free_pick_meta, resolve_pick_ids, unlocked_pick_ids,
+)
 from app.services.futgg_intelligence import (
     DEFAULT_MAX_ACCEPTABLE_PRICE_AGE_MINUTES,
     MAX_ACCEPTABLE_PRICE_AGE_MINUTES_BY_TIER,
@@ -476,7 +480,9 @@ def _score_and_filter(
 
 @router.get("/players/{card_id}")
 async def get_player_detail(
-    card_id: int, provider: FutggMarketDataProvider = ProviderDep,
+    card_id: int,
+    provider: FutggMarketDataProvider = ProviderDep,
+    viewer: Viewer = Depends(get_viewer),
 ) -> Dict[str, Any]:
     row = await provider.get_player(card_id)
     if row is None:
@@ -507,12 +513,22 @@ async def get_player_detail(
     # Flattened onto the top level (frontend reads e.g. data.current_bin
     # directly) as well as under "player"/"intelligence" for consumers
     # that prefer the grouped shape.
-    return {
+    payload = {
         "source": "futgg",
         **_item_with_intelligence(row, ci),
         "player": _serialize_player(row),
         "intelligence": _serialize_intelligence(ci),
     }
+    # The card page is the free hook: search any player, see the live
+    # price, the fair value, the trend and the sales. What it must not be
+    # is a way around the two-picks-a-day limit - a Free member who can
+    # read the entry and target for any card they can name has a limit
+    # enforced by nothing. So the executable plan is unlocked only for
+    # today's free picks.
+    if not viewer.has("opportunity_feed"):
+        unlocked = await unlocked_pick_ids() if viewer.is_free else []
+        payload = serialise_card_detail(payload, viewer, unlocked_ids=unlocked)
+    return payload
 
 
 @router.get("/players/{card_id}/prices")

@@ -33,6 +33,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from app.auth.access import get_viewer
 from app.auth.entitlements import compute_entitlements, require_feature
 from app.routers.v2.futgg_market import (
     get_player_detail as futgg_player_detail,
@@ -249,7 +250,35 @@ def _chat_safe_card(detail: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+# Defence in depth. The /chat endpoint is already Elite-gated, so in
+# principle no Free caller reaches these tools at all. This check exists
+# anyway because the tool layer is the thing that actually reads premium
+# data, and a future change - a free "demo" mode, a shared handler, a new
+# entry point - would otherwise silently turn the model into an
+# unauthenticated proxy for the paid feed. A model that can be talked into
+# calling a tool is only as safe as the tool.
+_TOOL_FEATURE = {
+    "resolve_and_evaluate_card": "opportunity_feed",
+    "find_trades_for_budget": "trade_finder",
+    "get_track_record": "full_track_record",
+}
+
+
 async def _run_tool(request: Request, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+    viewer = await get_viewer(request)
+    required = _TOOL_FEATURE.get(name)
+    if required and not viewer.has(required):
+        # Returned as a tool RESULT, not raised: the model needs to be
+        # able to tell the user it cannot answer, and an exception here
+        # would abort the whole turn with no explanation.
+        return {
+            "error": "not_available_on_this_plan",
+            "explanation": (
+                "This lookup is part of the Elite plan. Say so plainly and do not "
+                "guess or estimate the answer from anything else."
+            ),
+        }
+
     if name == "resolve_and_evaluate_card":
         query = str(args.get("query") or "").strip()
         if not query:
@@ -302,7 +331,10 @@ async def _run_tool(request: Request, name: str, args: Dict[str, Any]) -> Dict[s
         }
 
     if name == "get_track_record":
-        record = await track_record(request)
+        # Exhaustive call, same rule as the futgg_market handlers: an
+        # omitted argument on a route function keeps its Depends() object
+        # rather than becoming a value.
+        record = await track_record(request, window="90d", viewer=viewer)
         published = record.get("published") or {}
         # Only the PUBLISHED half is exposed. model_validation is internal
         # engine diagnostics on a much larger, never-shown dataset - it is

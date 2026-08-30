@@ -17,7 +17,9 @@
 # add it to a blocklist.
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, List, Sequence
+from typing import Any, Dict, Iterable, List, Optional, Sequence
+
+from fastapi import HTTPException
 
 from app.auth.entitlements import Viewer, anonymous_viewer, get_viewer
 
@@ -29,6 +31,7 @@ from app.auth.entitlements import Viewer, anonymous_viewer, get_viewer
 # re-exported here because call sites naturally reach for this module.
 __all__ = [
     "Viewer",
+    "limit_reached",
     "get_viewer",
     "anonymous_viewer",
     "preview_opportunity",
@@ -145,3 +148,116 @@ def assert_no_premium_fields(payload: Any) -> None:
                 walk(value, f"{path}[{index}]")
 
     walk(payload)
+
+
+# ---------------------------------------------------------------------------
+# Card detail (the player page, and the companion overlay)
+# ---------------------------------------------------------------------------
+
+# The executable trade plan. These are what a Free member's two daily
+# picks actually unlock, so they must be absent everywhere else - a Free
+# member who can look up any card and read its entry and target has a
+# limit of "two", enforced by nothing.
+_TRADE_PLAN_FIELDS = (
+    "recommended_buy_max",
+    "buy_below",
+    "recommended_sell_target",
+    "expected_profit_after_tax",
+    "expected_profit",
+    "expected_profit_basis",
+    "expected_roi",
+    "current_executable_buy",
+    "signal_reasons",
+    "reasons",
+    "reason_codes",
+    "blocking_codes",
+    "failed_gate_reasons",
+    "why_this_fits",
+)
+
+
+def redact_trade_plan(item: Dict[str, Any]) -> Dict[str, Any]:
+    """Strip the executable plan from an otherwise-full card payload.
+
+    Unlike preview_opportunity() this is a subtractive helper, and that is
+    deliberate: the card page's value to a Free member is everything ELSE
+    - the live price, the fair value, the trend, the sales history - which
+    is genuinely useful and is what "full player search and fair-value
+    information" promises. Only the plan is withheld.
+
+    Because it is subtractive, _TRADE_PLAN_FIELDS has to be maintained as
+    the engine grows. assert_no_premium_fields() in the test suite is what
+    keeps that honest.
+    """
+    out = {key: value for key, value in item.items() if key not in _TRADE_PLAN_FIELDS}
+    nested = out.get("intelligence")
+    if isinstance(nested, dict):
+        out["intelligence"] = {k: v for k, v in nested.items() if k not in _TRADE_PLAN_FIELDS}
+    out["trade_plan_locked"] = True
+    return out
+
+
+def serialise_card_detail(
+    item: Dict[str, Any],
+    viewer: Viewer,
+    *,
+    unlocked_ids: Iterable[int] = (),
+) -> Dict[str, Any]:
+    """A single card, serialised for this viewer.
+
+    Elite gets the whole thing. Everyone else gets the card, the market
+    data and the verdict, but the trade plan only if this exact card is
+    one of today's free picks.
+    """
+    if viewer.has("opportunity_feed"):
+        return item
+    card_id = item.get("source_card_id") or item.get("card_id")
+    if card_id is not None and int(card_id) in {int(i) for i in unlocked_ids}:
+        return item
+    return redact_trade_plan(item)
+
+
+# ---------------------------------------------------------------------------
+# Allowance limits
+# ---------------------------------------------------------------------------
+
+
+def limit_reached(
+    *,
+    feature: str,
+    used: int,
+    maximum: int,
+    viewer: Viewer,
+    noun: str,
+    elite_maximum: Optional[int] = None,
+) -> HTTPException:
+    """One shape for every "you've hit your allowance" refusal.
+
+    402 rather than 403: the frontend already routes 402 to the upgrade
+    flow, and this is a payment problem, not a permissions one.
+
+    The message is written from the caller's actual tier. The watchlist
+    endpoint used to say "Free plan allows up to N" unconditionally, which
+    an Elite member hitting the 500-card ceiling would have read as being
+    told they were on the free plan.
+    """
+    if viewer.is_elite:
+        message = f"You've reached the maximum of {maximum:,} {noun} on Elite."
+        upgradeable = False
+    else:
+        message = f"Free members can keep {maximum:,} {noun}."
+        if elite_maximum:
+            message += f" Elite raises this to {elite_maximum:,}."
+        upgradeable = True
+    return HTTPException(
+        status_code=402,
+        detail={
+            "error": "limit_reached",
+            "feature": feature,
+            "used": used,
+            "limit": maximum,
+            "current_tier": viewer.tier,
+            "upgradeable": upgradeable,
+            "message": message,
+        },
+    )

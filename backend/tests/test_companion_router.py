@@ -65,9 +65,18 @@ class FakeProvider:
 
 
 def _make_app(provider: FakeProvider) -> TestClient:
+    """The overlay's payload SHAPE, as an Elite viewer sees it. The access
+    states themselves are covered at the bottom of this file."""
+    from app.auth.access import Viewer as _Viewer, get_viewer as _get_viewer
+    from app.auth.entitlements import features_for_tier as _features
+
     app = FastAPI()
     app.include_router(companion_router, prefix="/api/v2")
     app.dependency_overrides[get_provider] = lambda: provider
+    app.dependency_overrides[_get_viewer] = lambda: _Viewer(
+        user_id="elite", tier="elite", is_admin=False,
+        features=frozenset(_features("elite")),
+    )
     return TestClient(app)
 
 
@@ -111,3 +120,80 @@ def test_companion_card_includes_risk_and_signal_without_second_engine():
         "strong_buy", "buy", "watch", "hold", "sell", "avoid", "insufficient_data",
     )
     assert isinstance(body["confidence"], (float, int, type(None)))
+
+
+# ---------------------------------------------------------------------------
+# Access
+# ---------------------------------------------------------------------------
+#
+# This endpoint was the widest paywall bypass in the product: one card per
+# request, no authentication, and the complete trade plan in the response.
+# Iterating source_card_ids rebuilt the paid feed for free, and the
+# extension shipped with `credentials: "omit"`, so nothing about the
+# design even suggested a session was expected.
+
+from app.auth.access import Viewer, get_viewer  # noqa: E402
+from app.auth.entitlements import features_for_tier  # noqa: E402
+
+TRADE_PLAN_KEYS = {
+    "buy_below", "recommended_buy_max", "recommended_sell_target",
+    "expected_profit", "expected_profit_basis", "expected_roi",
+}
+
+
+def _viewer(tier, user_id="u1"):
+    return Viewer(user_id=user_id, tier=tier, is_admin=False,
+                  features=frozenset(features_for_tier(tier)))
+
+
+def _client_as(viewer):
+    app = FastAPI()
+    app.include_router(companion_router, prefix="/api/v2")
+    app.dependency_overrides[get_provider] = lambda: FakeProvider()
+    app.dependency_overrides[get_viewer] = lambda: viewer
+    return TestClient(app)
+
+
+def test_anonymous_overlay_gets_no_trade_plan():
+    body = _client_as(_viewer("free", user_id=None)).get("/api/v2/companion/card/117672259").json()
+    assert TRADE_PLAN_KEYS.isdisjoint(body.keys())
+    assert body["locked"] is True
+
+
+def test_anonymous_overlay_still_gets_enough_to_be_useful():
+    # The overlay should keep working as an identification aid - it just
+    # stops being a free trade plan.
+    body = _client_as(_viewer("free", user_id=None)).get("/api/v2/companion/card/117672259").json()
+    assert body["name"] == "Kylian Mbappe"
+    assert body["reference_bin"] == 1090000
+    assert body["signal"]
+    assert body["upgrade_url"].endswith("/#/billing")
+
+
+def test_free_member_gets_no_trade_plan_for_a_card_that_is_not_a_daily_pick(monkeypatch):
+    import app.routers.v2.companion as companion
+
+    async def none_unlocked(*_a, **_k):
+        return []
+    monkeypatch.setattr(companion, "unlocked_pick_ids", none_unlocked)
+
+    body = _client_as(_viewer("free")).get("/api/v2/companion/card/117672259").json()
+    assert TRADE_PLAN_KEYS.isdisjoint(body.keys())
+
+
+def test_free_member_gets_the_plan_for_one_of_todays_picks(monkeypatch):
+    import app.routers.v2.companion as companion
+
+    async def unlocked(*_a, **_k):
+        return [117672259]
+    monkeypatch.setattr(companion, "unlocked_pick_ids", unlocked)
+
+    body = _client_as(_viewer("free")).get("/api/v2/companion/card/117672259").json()
+    assert body["recommended_sell_target"] is not None
+    assert not body.get("locked")
+
+
+def test_elite_overlay_is_unchanged():
+    body = _client_as(_viewer("elite")).get("/api/v2/companion/card/117672259").json()
+    assert TRADE_PLAN_KEYS.issubset(body.keys())
+    assert "locked" not in body

@@ -35,7 +35,9 @@ from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 import inspect
 from pydantic import BaseModel, Field
 
+from app.auth.access import get_viewer, limit_reached
 from app.auth.entitlements import (
+    ELITE_ALERT_MAX,
     compute_entitlements,
     require_feature,
     invalidate_entitlements_cache,
@@ -126,6 +128,11 @@ DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET")
 DISCORD_REDIRECT_URI = os.getenv("DISCORD_REDIRECT_URI")
 SECRET_KEY = os.getenv("SECRET_KEY")
 FRONTEND_URL = os.getenv("FRONTEND_URL", "https://app.eafc.live").rstrip("/")
+
+# Trial length, in days. A pricing decision, so it belongs in
+# configuration and not in a request body - see create_checkout_session().
+# 0 disables the trial entirely.
+STRIPE_TRIAL_DAYS = int(os.getenv("STRIPE_TRIAL_DAYS", "7"))
 PORT = int(os.getenv("PORT", 8000))
 
 ENV = os.getenv("ENV", "production").lower()
@@ -2258,8 +2265,34 @@ async def list_watchlist_alerts(user_id: str = Depends(get_current_user)):
 
 @app.post("/api/watchlist-alerts")
 async def create_watchlist_alert(
-    payload: WatchlistAlertCreate, user_id: str = Depends(get_current_user)
+    payload: WatchlistAlertCreate, request: Request, user_id: str = Depends(get_current_user)
 ):
+    # Alert rules had no cap at all. The poll loop evaluates every rule on
+    # every pass, so an unbounded free allowance is both a giveaway and a
+    # load problem - and "up to 3 active alerts" is only a product limit
+    # if something actually counts them.
+    #
+    # Counted BEFORE the upsert, and excluding this exact rule, because
+    # POST is an upsert on (user_id, card_id, platform, metric): editing
+    # an existing rule must not be refused for exceeding a limit it is
+    # already inside.
+    viewer = await get_viewer(request)
+    alert_max = int((await compute_entitlements(request))["limits"]["alerts_max"])
+    plat_for_count = (payload.platform or "ps").lower()
+    metric_for_count = payload.metric if payload.metric in ("price", "liquidity") else "price"
+    async with watchlist_pool.acquire() as w:
+        used = await w.fetchval(
+            """SELECT COUNT(*) FROM watchlist_alerts
+               WHERE user_id=$1
+                 AND NOT (card_id=$2 AND platform=$3 AND metric=$4)""",
+            user_id, int(payload.card_id), plat_for_count, metric_for_count,
+        )
+    if int(used or 0) >= alert_max:
+        raise limit_reached(
+            feature="realtime_alerts", used=int(used or 0), maximum=alert_max,
+            viewer=viewer, noun="price alerts", elite_maximum=ELITE_ALERT_MAX,
+        )
+
     qs = None
     qe = None
     if payload.quiet_start:
@@ -3759,6 +3792,95 @@ async def backtest(payload: Dict[str, Any]):
 
 # -------------- Billing & Account Endpoints --------------
 
+# Plan catalogue. ONE place that answers "what does Elite cost", read from
+# Stripe itself rather than from copy typed into a page.
+#
+# The failure this replaces: the Billing page said "£3/month", this
+# backend's own /api/billing/subscription said "£9.99/month", and the
+# actual charge was whatever the configured Stripe Price object cost. A
+# customer could be quoted one price at checkout and shown a different one
+# on their account page afterwards.
+_PLAN_KEYS = {
+    "monthly": ("STRIPE_MONTHLY_PRICE_ID", "price_monthly_premium", "Elite (monthly)"),
+    "season": ("STRIPE_SEASON_PRICE_ID", "price_season_premium", "Elite (season)"),
+}
+
+_CURRENCY_SYMBOLS = {"gbp": "£", "usd": "$", "eur": "€"}
+
+_plan_cache: Dict[str, Any] = {"at": 0.0, "value": None}
+_PLAN_CACHE_TTL = 600
+
+
+def _format_price(amount_minor: Optional[int], currency: str, interval: Optional[str]) -> Optional[str]:
+    if amount_minor is None:
+        return None
+    symbol = _CURRENCY_SYMBOLS.get((currency or "").lower(), "")
+    amount = amount_minor / 100
+    # Whole amounts read better without trailing zeros ("£3", not "£3.00").
+    rendered = f"{symbol}{amount:.0f}" if amount == int(amount) else f"{symbol}{amount:.2f}"
+    return f"{rendered}/{interval}" if interval else rendered
+
+
+async def _plan_catalogue() -> Dict[str, Any]:
+    """Live plan pricing from Stripe, cached briefly.
+
+    Degrades to `configured: False` with null prices rather than to a
+    guess: showing a made-up price is worse than showing none, and the
+    frontend can render "pricing unavailable" honestly.
+    """
+    now = time.time()
+    if _plan_cache["value"] is not None and now - _plan_cache["at"] < _PLAN_CACHE_TTL:
+        return _plan_cache["value"]
+
+    plans: Dict[str, Any] = {}
+    for key, (env_var, client_price_id, default_name) in _PLAN_KEYS.items():
+        stripe_price_id = os.getenv(env_var)
+        entry = {
+            "key": key,
+            "name": default_name,
+            "price_id": client_price_id,
+            "configured": bool(stripe_price_id),
+            "price_display": None,
+            "amount_minor": None,
+            "currency": None,
+            "interval": None,
+        }
+        if stripe_price_id:
+            try:
+                price = await asyncio.to_thread(stripe.Price.retrieve, stripe_price_id)
+                recurring = price.get("recurring") or {}
+                interval = recurring.get("interval")
+                count = recurring.get("interval_count") or 1
+                label = interval if count == 1 else f"{count} {interval}s"
+                entry.update({
+                    "amount_minor": price.get("unit_amount"),
+                    "currency": price.get("currency"),
+                    "interval": label,
+                    "price_display": _format_price(price.get("unit_amount"), price.get("currency"), label),
+                })
+            except Exception:
+                logger.warning("Could not read Stripe price for %s", key, exc_info=True)
+                entry["configured"] = False
+        plans[key] = entry
+
+    catalogue = {
+        "plans": plans,
+        "trial_days": STRIPE_TRIAL_DAYS,
+        "any_configured": any(p["configured"] for p in plans.values()),
+    }
+    _plan_cache.update({"at": now, "value": catalogue})
+    return catalogue
+
+
+@app.get("/api/billing/plans")
+async def get_billing_plans() -> Dict[str, Any]:
+    """Public: the pricing page and every upgrade prompt read from here, so
+    a price change in Stripe is reflected everywhere without a deploy and
+    without two copies of the number drifting apart."""
+    return await _plan_catalogue()
+
+
+
 @app.get("/api/billing/subscription")
 async def get_subscription_status(user_id: str = Depends(get_current_user), conn=Depends(get_db)):
     """Get current subscription status"""
@@ -3778,12 +3900,21 @@ async def get_subscription_status(user_id: str = Depends(get_current_user), conn
             return {"subscription": None}
 
         plan_id = subscription["plan_id"] or ""
-        is_yearly = "year" in plan_id.lower()
+        is_yearly = "year" in plan_id.lower() or "season" in plan_id.lower()
+        # The price shown here used to be the hardcoded string
+        # "£9.99/month" / "£99.99/year", while the Billing page's own
+        # hardcoded copy said "£3/month" / "£25/season", while Stripe
+        # charged whatever STRIPE_MONTHLY_PRICE_ID/STRIPE_SEASON_PRICE_ID
+        # actually cost. Three numbers, none of them necessarily right.
+        # Stripe is the only one that can be wrong in a way that matters,
+        # so it is now the source: see plan_catalogue().
+        catalogue = await _plan_catalogue()
+        plan = catalogue["plans"].get("season" if is_yearly else "monthly")
         return {
             "subscription": {
-                "plan_name": "Annual Premium" if is_yearly else "Monthly Premium",
+                "plan_name": (plan or {}).get("name") or ("Elite (season)" if is_yearly else "Elite (monthly)"),
                 "next_billing_date": subscription["current_period_end"].isoformat() if subscription["current_period_end"] else None,
-                "amount_display": "£99.99/year" if is_yearly else "£9.99/month",
+                "amount_display": (plan or {}).get("price_display"),
                 "status": subscription["status"],
                 "cancel_at_period_end": subscription["cancel_at_period_end"]
             }
@@ -3832,6 +3963,31 @@ async def create_checkout_session(
         if real_email:
             checkout_kwargs["customer_email"] = real_email
 
+        # Redirect targets and trial length are decided HERE, never by the
+        # request body.
+        #
+        # success_url/cancel_url used to come from `data`, so a caller
+        # could point a real Stripe Checkout session at any URL they
+        # liked - a phishing page carrying our branding and a genuine
+        # Stripe flow behind it.
+        #
+        # trial_period_days came from `data.get('trialDays', 7)` too, so
+        # `{"trialDays": 100000}` bought roughly 273 years of Elite for
+        # nothing. Trials are a pricing decision and now live in one
+        # env-controlled constant.
+        success_url = f"{FRONTEND_URL}/#/billing?payment=success&session_id={{CHECKOUT_SESSION_ID}}"
+        cancel_url = f"{FRONTEND_URL}/#/billing?payment=cancelled"
+
+        subscription_data = {
+            'metadata': {
+                'user_id': user_id,
+                'discord_id': user_id,
+                'referral_code': (await conn.fetchval("SELECT referred_by FROM users WHERE id=$1", user_id)) or ''
+            }
+        }
+        if STRIPE_TRIAL_DAYS > 0:
+            subscription_data['trial_period_days'] = STRIPE_TRIAL_DAYS
+
         session = stripe.checkout.Session.create(
             **checkout_kwargs,
             payment_method_types=['card'],
@@ -3840,21 +3996,14 @@ async def create_checkout_session(
                 'quantity': 1,
             }],
             mode='subscription',
-            success_url=data.get("successUrl", os.getenv("BILLING_SUCCESS_URL")),
-            cancel_url=data.get("cancelUrl", os.getenv("BILLING_CANCEL_URL")),
+            success_url=success_url,
+            cancel_url=cancel_url,
             metadata={
                 'user_id': user_id,
                 'billing_cycle': billing_cycle,
                 'referral_code': (await conn.fetchval("SELECT referred_by FROM users WHERE id=$1", user_id)) or ''
             },
-            subscription_data={
-                'trial_period_days': data.get('trialDays', 7),
-                'metadata': {
-                    'user_id': user_id,
-                    'discord_id': user_id,
-                    'referral_code': (await conn.fetchval("SELECT referred_by FROM users WHERE id=$1", user_id)) or ''
-                }
-            }
+            subscription_data=subscription_data,
         )
         return {"sessionId": session.id, "checkoutUrl": session.url}
     except Exception as e:

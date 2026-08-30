@@ -7,7 +7,8 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
-from app.auth.entitlements import compute_entitlements
+from app.auth.access import get_viewer, limit_reached
+from app.auth.entitlements import ELITE_OPEN_TRADE_MAX, compute_entitlements
 
 router = APIRouter(prefix="/trades", tags=["v2-trades"])
 
@@ -59,6 +60,25 @@ def _pool(request: Request):
 @router.post("/open")
 async def open_trade(request: Request, trade: OpenTrade):
     user_id = await _user_id(request)
+    # Basic portfolio tracking is genuinely free - logging your trades is
+    # how a new member sees the product work on their own results, and
+    # gating it entirely would make the free tier read-only. What is
+    # capped is depth: Free keeps FREE_OPEN_TRADE_MAX positions open at
+    # once. Counted server-side, because a client-side counter is a
+    # suggestion.
+    viewer = await get_viewer(request)
+    ent = await compute_entitlements(request)
+    max_open = int(ent["limits"]["open_trades_max"])
+    async with _pool(request).acquire() as conn:
+        open_count = await conn.fetchval(
+            "SELECT COUNT(*) FROM trades WHERE user_id=$1 AND status='open'", user_id,
+        )
+    if int(open_count or 0) >= max_open:
+        raise limit_reached(
+            feature="trade_journal", used=int(open_count or 0), maximum=max_open,
+            viewer=viewer, noun="open trades at once",
+            elite_maximum=ELITE_OPEN_TRADE_MAX,
+        )
     bought_at = trade.bought_at or datetime.now(timezone.utc)
     trade_id = int(bought_at.timestamp() * 1000)
     snapshot: Optional[Dict[str, Any]] = trade.recommendation.model_dump() if trade.recommendation else None
@@ -145,14 +165,33 @@ async def list_open_trades(request: Request):
 @router.get("/history")
 async def trade_history(request: Request, limit: int = Query(100, ge=1, le=500)):
     user_id = await _user_id(request)
+    # Free sees a recent window of their own history; Elite sees all of
+    # it. Applied in SQL, not by truncating the response, so the rows a
+    # Free member is not entitled to never leave the database.
+    ent = await compute_entitlements(request)
+    history_days = ent["limits"].get("portfolio_history_days")
     async with _pool(request).acquire() as conn:
-        rows = await conn.fetch(
-            """SELECT * FROM trades WHERE user_id=$1 AND status='closed'
-            ORDER BY sold_at DESC NULLS LAST LIMIT $2""",
-            user_id,
-            limit,
-        )
-    return {"trades": [dict(row) for row in rows], "count": len(rows)}
+        if history_days is None:
+            rows = await conn.fetch(
+                """SELECT * FROM trades WHERE user_id=$1 AND status='closed'
+                ORDER BY sold_at DESC NULLS LAST LIMIT $2""",
+                user_id, limit,
+            )
+        else:
+            rows = await conn.fetch(
+                """SELECT * FROM trades WHERE user_id=$1 AND status='closed'
+                  AND (sold_at IS NULL OR sold_at >= NOW() - ($3::int * INTERVAL '1 day'))
+                ORDER BY sold_at DESC NULLS LAST LIMIT $2""",
+                user_id, limit, int(history_days),
+            )
+    return {
+        "trades": [dict(row) for row in rows],
+        "count": len(rows),
+        # Stated, so the UI can say "showing the last 30 days" rather than
+        # letting a Free member believe their older trades are gone.
+        "history_days": history_days,
+        "history_truncated": history_days is not None,
+    }
 
 
 @router.get("/profit-timeline")

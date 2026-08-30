@@ -274,3 +274,24 @@ def free_pick_meta(now: Optional[datetime] = None, unlocked: int = 0) -> Dict[st
         # list means "we're hiding some" or "there weren't any more".
         "fewerThanAllowance": unlocked < FREE_DAILY_PICKS,
     }
+
+
+async def unlocked_pick_ids(now: Optional[datetime] = None, pool=None) -> List[int]:
+    """Today's picks if they have already been decided, otherwise nothing.
+
+    Read-only on purpose. Callers that are merely ASKING whether one card
+    is unlocked (the card page, the companion overlay) must not be the
+    thing that decides the day's picks - a card page cannot select from a
+    candidate pool it never scored, and letting it try would either pick
+    from an empty list or make every card page load run a full market
+    scan. The feed decides the day; everything else reads that decision.
+    """
+    try:
+        if pool is None:
+            from app.db import get_core_pool
+
+            pool = await get_core_pool()
+        return await stored_pick_ids(pool, content_day_key(now))
+    except Exception:
+        log.warning("free picks: could not read stored picks", exc_info=True)
+        return []
