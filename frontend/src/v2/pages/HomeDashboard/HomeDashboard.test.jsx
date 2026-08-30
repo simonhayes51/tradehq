@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, within } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import HomeDashboard from "./HomeDashboard";
 import { useAuth } from "../../../context/AuthContext";
 import { useDashboard } from "../../hooks/useDashboard";
@@ -17,11 +18,11 @@ vi.mock("../../hooks/useFutggMarket", () => ({
 }));
 vi.mock("../../hooks/useRecommendationFeeds", () => ({ useGeneratedCardImages: vi.fn() }));
 vi.mock("../../hooks/useIsMobile", () => ({ useIsMobile: vi.fn() }));
-// TrackRecordPanel has its own substantial hook tree, already covered
-// by its own test file - stubbed here so this file only tests
+// TrackRecordSummary has its own hook tree, already covered by
+// TrackRecordPanel.test.jsx - stubbed here so this file only tests
 // HomeDashboard's own mobile section-grouping behaviour.
-vi.mock("../../components/TrackRecordPanel", () => ({
-  default: () => <section className="track-record-panel" data-testid="track-record-stub">Track record stub</section>,
+vi.mock("../../components/TrackRecordSummary", () => ({
+  default: () => <section className="track-record-strip" data-testid="track-record-stub">Track record stub</section>,
 }));
 
 const EMPTY_DASHBOARD = {
@@ -39,11 +40,20 @@ const ONE_OPPORTUNITY = {
   current_bin_captured_at: new Date().toISOString(), price_age_seconds: 60,
 };
 
+// NotificationsPanel (the bell menu) is a real react-query consumer, so
+// Home now needs a QueryClientProvider the way the app supplies one.
+// A fresh client per render keeps tests independent; retry off so a
+// failing fetch in jsdom doesn't stall the test.
 function renderHome() {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, gcTime: 0 } },
+  });
   return render(
-    <MemoryRouter>
-      <HomeDashboard />
-    </MemoryRouter>,
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter>
+        <HomeDashboard />
+      </MemoryRouter>
+    </QueryClientProvider>,
   );
 }
 
@@ -65,8 +75,10 @@ describe("HomeDashboard mobile section grouping", () => {
     expect(screen.getByText("TOP CARD")).toBeInTheDocument();
     expect(screen.getByTestId("track-record-stub")).toBeInTheDocument();
     expect(screen.getByText("Next best moves")).toBeInTheDocument();
-    expect(screen.getByText("Where coins are moving")).toBeInTheDocument();
     expect(screen.getByText("Find a different angle")).toBeInTheDocument();
+    // Market Map is gone: it re-rendered the same items as "Next best
+    // moves" under a heading promising a segment view it never had.
+    expect(screen.queryByText("Where coins are moving")).not.toBeInTheDocument();
   });
 
   it("on mobile, defaults to Overview: the decision (Top Card) is present, other section groups are not mounted", () => {
@@ -74,27 +86,22 @@ describe("HomeDashboard mobile section grouping", () => {
     renderHome();
 
     const tabs = screen.getAllByRole("tab");
-    expect(tabs.map((t) => t.textContent)).toEqual(["Overview", "Opportunities", "Track record", "Market"]);
+    // Three tabs, not four: the Track Record ledger that justified its own
+    // tab is now a four-number strip that belongs with the decision.
+    expect(tabs.map((t) => t.textContent)).toEqual(["Overview", "Opportunities", "Your feed"]);
     expect(tabs[0]).toHaveAttribute("aria-selected", "true");
 
-    // The essential decision content is present without switching tabs.
+    // The essential decision content is present without switching tabs,
+    // and so is the proof-of-performance strip.
     expect(screen.getByText("TOP CARD")).toBeInTheDocument();
     expect(screen.getAllByText("Test Player").length).toBeGreaterThan(0);
+    expect(screen.getByTestId("track-record-stub")).toBeInTheDocument();
 
     // Everything else is not mounted at all (not merely hidden) until
     // its tab is selected.
-    expect(screen.queryByTestId("track-record-stub")).not.toBeInTheDocument();
     expect(screen.queryByText("Next best moves")).not.toBeInTheDocument();
-    expect(screen.queryByText("Where coins are moving")).not.toBeInTheDocument();
     expect(screen.queryByText("Find a different angle")).not.toBeInTheDocument();
-  });
-
-  it("switching to the Track record tab mounts it and unmounts Overview", () => {
-    useIsMobile.mockReturnValue(true);
-    renderHome();
-    fireEvent.click(screen.getByRole("tab", { name: "Track record" }));
-    expect(screen.getByTestId("track-record-stub")).toBeInTheDocument();
-    expect(screen.queryByText("TOP CARD")).not.toBeInTheDocument();
+    expect(screen.queryByText("Alerts & content")).not.toBeInTheDocument();
   });
 
   it("switching to the Opportunities tab mounts Next Best Moves and Strategy Finder together", () => {
@@ -106,11 +113,11 @@ describe("HomeDashboard mobile section grouping", () => {
     expect(screen.queryByTestId("track-record-stub")).not.toBeInTheDocument();
   });
 
-  it("switching to the Market tab mounts Market Map and the full Alerts feed", () => {
+  it("switching to Your feed mounts the alerts feed and unmounts Overview", () => {
     useIsMobile.mockReturnValue(true);
     renderHome();
-    fireEvent.click(screen.getByRole("tab", { name: "Market" }));
-    expect(screen.getByText("Where coins are moving")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "Your feed" }));
     expect(screen.getByText("Alerts & content")).toBeInTheDocument();
+    expect(screen.queryByText("TOP CARD")).not.toBeInTheDocument();
   });
 });

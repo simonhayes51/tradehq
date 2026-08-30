@@ -14,7 +14,7 @@ import {
   Search,
   Users,
   Eye,
-  Zap,
+  Layers,
   Target,
   User,
   Settings,
@@ -25,8 +25,6 @@ import {
   Activity,
   Trophy,
   Gift,
-  TrendingUp,
-  MessageSquare,
   LogOut,
 } from "lucide-react";
 
@@ -62,6 +60,16 @@ const DesktopSidebar = () => {
   }, []);
   useEffect(() => setUserMenuOpen(false), [location.pathname]);
 
+  // Only tools that still exist. Undervalued, Trending, Smart Buy, Trade
+  // Copilot and Market Sentiment were removed from this list because
+  // their routes now redirect into v2 (see the RETIRED v1 TOOLS block in
+  // App.jsx for what each was backed by and why). Listing a link that
+  // immediately bounces the user somewhere else is worse than not
+  // listing it - it reads as the app losing your click.
+  //
+  // "Dashboard", "Player Search", "Watchlist" and "Trade Finder" are kept
+  // deliberately: they redirect too, but to the v2 page of the SAME name,
+  // which is a rename, not a dead end.
   const navItems = [
     { path: "/dashboard", label: "Dashboard", icon: Home },
     { path: "/add-trade", label: "Add Trade", icon: Plus },
@@ -70,21 +78,16 @@ const DesktopSidebar = () => {
     { path: "/player-search", label: "Player Search", icon: Search },
     { path: "/player-compare", label: "Compare", icon: ArrowLeftRight },
     { path: "/watchlist", label: "Watchlist", icon: Eye },
-    { path: "/undervalued", label: "Undervalued", icon: TrendingUp },
-    { path: "/trending", label: "Trending", icon: Target },
     { path: "/squad", label: "Squad Builder", icon: Users },
     { path: "/leaderboard", label: "Leaderboard", icon: Trophy },
     { path: "/referrals", label: "Referrals", icon: Gift },
   ];
 
   const premiumItems = [
-    { path: "/smart-buy", label: "Smart Buy", icon: Zap, premium: true },
     { path: "/trade-finder", label: "Trade Finder", icon: Target, premium: true },
     { path: "/advanced-analytics", label: "Advanced Analytics", icon: BarChart3, premium: true },
     { path: "/portfolio-optimizer", label: "Portfolio Optimizer", icon: Activity, premium: true },
-    { path: "/trade-copilot", label: "Trade Copilot", icon: MessageSquare, premium: true },
-    { path: "/market-sentiment", label: "Market Sentiment", icon: TrendingUp, premium: true },
-    { path: "/market-maker", label: "Market Maker", icon: Target, premium: true },
+    { path: "/market-maker", label: "Bulk Trade Entry", icon: Layers, premium: true },
   ];
 
   const isActive = (p) => location.pathname === p;

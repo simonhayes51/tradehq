@@ -94,7 +94,15 @@ export default function Watchlist() {
       {alertsOpen && (
         <section className="v2-alerts-panel">
           <h2>Your alert rules</h2>
-          <p className="muted v2-alerts-panel-sub">What we'll watch for. Fired notifications show up on Home.</p>
+          {/* Says where the resulting notifications actually appear.
+              "show up on Home" was only half true and gave no way to act
+              on them - they now live in the bell menu, where they can be
+              read and dismissed. */}
+          <p className="muted v2-alerts-panel-sub">
+            The conditions we watch for. When one triggers, the notification appears in the bell
+            menu at the top of Home, where you can read and dismiss it. Deleting a rule here stops
+            future notifications; it doesn't remove ones you've already had.
+          </p>
           {alerts.length === 0 ? (
             <p className="muted">No alert rules yet. Click "Alert" on a watched card to get notified on a price move.</p>
           ) : (

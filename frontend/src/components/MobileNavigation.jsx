@@ -12,21 +12,21 @@ import {
   Trophy,
   ArrowLeftRight,
   Gift,
-  Zap,
   Bot,
   Sparkles,
   BarChart3,
   Activity,
-  MessageSquare,
-  TrendingUp,
+  Layers,
 } from "lucide-react";
 
 const NAV_H = 72;
 const LIME = "#91db32";
 
+// Undervalued, Trending, Trade Copilot, Market Sentiment and Smart Buy
+// are gone from this menu: their routes now redirect into v2 (see the
+// RETIRED v1 TOOLS block in App.jsx). A menu entry that bounces the user
+// to a different page than the one it names is worse than no entry.
 const MORE_LINKS = [
-  { to: "/undervalued", label: "Undervalued", icon: TrendingUp },
-  { to: "/trending", label: "Trending", icon: Target },
   { to: "/squad", label: "Squad Builder", icon: Users },
   { to: "/player-compare", label: "Compare Players", icon: ArrowLeftRight },
   { to: "/leaderboard", label: "Leaderboard", icon: Trophy },
@@ -37,9 +37,7 @@ const MORE_PREMIUM_LINKS = [
   { to: "/trade-finder", label: "Trade Finder", icon: Target },
   { to: "/advanced-analytics", label: "Advanced Analytics", icon: BarChart3 },
   { to: "/portfolio-optimizer", label: "Portfolio Optimizer", icon: Activity },
-  { to: "/trade-copilot", label: "Trade Copilot", icon: MessageSquare },
-  { to: "/market-sentiment", label: "Market Sentiment", icon: TrendingUp },
-  { to: "/market-maker", label: "Market Maker", icon: Zap },
+  { to: "/market-maker", label: "Bulk Trade Entry", icon: Layers },
 ];
 
 function LockBadge() {
@@ -143,10 +141,11 @@ export default function MobileNavigation() {
         </svg>
       ),
     },
-    // Premium tab (replaces Analytics)
+    // Was "/smart-buy", which now redirects to /v2/opportunities - point
+    // the tab straight at the destination rather than through a bounce.
     {
-      to: "/smart-buy",
-      label: "Smart Buy",
+      to: "/v2/opportunities",
+      label: "Opportunities",
       premium: true,
       icon: (
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">

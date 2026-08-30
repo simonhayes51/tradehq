@@ -292,6 +292,32 @@ def features_for_tier(tier: Tier) -> Set[Feature]:
     return {f for f, t in FEATURE_MIN_TIER.items() if _TIER_ORDER[t] <= rank}
 
 
+async def resolve_user_tier(conn_or_pool, user_id: str, *, discord_id: Optional[str] = None) -> Tier:
+    """The same tier decision compute_entitlements() makes, for callers
+    that have a database handle and a user id but no Request.
+
+    Exists because the Discord integration was making a SECOND, subtly
+    different paid/free decision of its own (discord_integration.
+    entitlement_is_active): it ignored ADMIN_DISCORD_IDS, ignored
+    user_profiles.is_premium, and returned "not paid" outright for any
+    user with no linked Discord id. That is how the Account page could
+    show "Current plan: ELITE" directly above "Membership access: Free" -
+    two answers to one question, from two code paths, on one screen.
+
+    Accepts either a pool or a connection - it only ever calls
+    .fetchrow(), which both provide.
+    """
+    state = await _load_billing_state(conn_or_pool, str(user_id))
+    if _is_admin(state, str(user_id), str(discord_id) if discord_id else None):
+        return "elite"
+    return _resolve_tier(state)
+
+
+async def user_is_entitled(conn_or_pool, user_id: str, *, discord_id: Optional[str] = None) -> bool:
+    """Paid-or-better, by the same rules the app's own paywall uses."""
+    return await resolve_user_tier(conn_or_pool, user_id, discord_id=discord_id) in ("pro", "elite")
+
+
 async def compute_entitlements(req: Request) -> Dict[str, Any]:
     sess = req.session or {}
     user_id = sess.get("user_id") or (sess.get("user") or {}).get("id")

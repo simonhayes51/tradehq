@@ -122,3 +122,20 @@
   opacity: 0.4;
   cursor: default;
 }
+
+/* Capability list on the empty state: says up front what the assistant
+   can answer, so a user doesn't discover its limits by being declined. */
+.v2-chat-capabilities {
+  margin: 10px 0 14px;
+  padding: 0;
+  list-style: none;
+  text-align: left;
+  color: #a8a8a8;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.v2-chat-capabilities li::before { content: "· "; color: var(--green, #39ff8a); }
+.v2-chat-tool-card { display: block; color: inherit; text-decoration: none; }
+.v2-chat-tool-card.compact { margin-top: 6px; }
+.v2-chat-tool-numbers { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 6px; font-size: 12px; }
+.v2-chat-tool-age { display: block; margin-top: 6px; color: #7d7d7d; font-size: 10px; }

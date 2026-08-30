@@ -15,6 +15,7 @@ from app.routers.v2.ai_chat import router as ai_chat_router
 from app.routers.v2.futgg_market import router as futgg_market_router
 from app.routers.v2.companion import router as companion_router
 from app.routers.v2.investments import router as investments_router
+from app.routers.v2.alerts import router as alerts_router
 
 router = APIRouter(prefix="/api/v2")
 router.include_router(health_router)
@@ -43,3 +44,7 @@ router.include_router(companion_router)
 # surface above; see that package's __init__.py docstring for the
 # Trade-vs-Investment distinction. Also purely additive/last.
 router.include_router(investments_router)
+# Fired-alert feed + dismissal (alerts_log, migration 072). Separate from
+# main.py's /api/watchlist-alerts rule CRUD - see this router's docstring
+# for why conflating the two is what made alerts undeletable.
+router.include_router(alerts_router)

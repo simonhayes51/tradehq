@@ -29,15 +29,12 @@ const Profile       = lazy(() => import("./pages/Profile"));
 const Settings      = lazy(() => import("./pages/Settings"));
 const ProfitGraph   = lazy(() => import("./pages/ProfitGraph"));
 const PriceCheck    = lazy(() => import("./pages/PriceCheck"));
-const Trending      = lazy(() => import("./pages/Trending"));
-const SmartBuy      = lazy(() => import("./pages/SmartBuy"));
 const Login         = lazy(() => import("./pages/Login"));
 const AccessDenied  = lazy(() => import("./pages/AccessDenied"));
 const NotFound      = lazy(() => import("./pages/NotFound"));
 const PlayerCompare = lazy(() => import("./pages/PlayerCompare"));
 
 // NEW pages
-const UndervaluedBoard = lazy(() => import("./pages/UndervaluedBoard"));
 const AdminUsers = lazy(() => import("./pages/AdminUsers"));
 const Demo = lazy(() => import("./pages/Demo"));
 
@@ -67,10 +64,8 @@ const V2App = lazy(() => import("./v2/App.v2"));
 // ENHANCED features
 const PortfolioOptimizer = lazy(() => import("./pages/PortfolioOptimizer"));
 const ProfitCalculator = lazy(() => import("./pages/ProfitCalculator"));
-const TradeCopilot = lazy(() => import("./pages/TradeCopilot"));
 const Leaderboard = lazy(() => import("./pages/Leaderboard"));
 const ReferralProgram = lazy(() => import("./pages/ReferralProgram"));
-const MarketSentiment = lazy(() => import("./pages/MarketSentiment"));
 const MarketMaker = lazy(() => import("./pages/MarketMaker"));
 
 function App() {
@@ -132,13 +127,15 @@ function App() {
                       per-panel entitlement gating rather than the
                       all-or-nothing PrivateRoute login redirect below,
                       which must never fire for a first-time visitor
-                      landing on "/". Everything v2 doesn't have a
-                      replacement for yet (Smart Buy AI, Portfolio
-                      Optimizer, Trade Copilot, Market Sentiment, Market
-                      Maker, Leaderboard, Referrals, Squad Builder, trade
-                      logging) stays reachable at its existing v1 URL
-                      below so paying users don't lose access to anything
-                      at launch. */}
+                      landing on "/". The v1 tools that still run on live
+                      data and aren't duplicated by a v2 screen (trade
+                      logging, Profit Calculator, bulk trade entry, Squad
+                      Builder, Leaderboard, Referrals, Portfolio
+                      Optimizer) stay reachable at their existing v1 URLs
+                      below and are linked individually from the v2
+                      Account page. The ones backed by dead or divergent
+                      data are retired - see the RETIRED v1 TOOLS block
+                      further down. */}
                   <Route path="/" element={<Navigate to="/v2" replace />} />
                   <Route path="/watchlist" element={<Navigate to="/v2/watchlist" replace />} />
                   <Route path="/player-search" element={<Navigate to="/v2/players" replace />} />
@@ -186,37 +183,52 @@ function App() {
                     <Route path="leaderboard" element={<Leaderboard />} />
                     <Route path="referrals" element={<ReferralProgram />} />
 
-                    {/* Basic trending (free tier gets limited access) */}
-                    <Route path="trending" element={<Trending />} />
-
-                    {/* Undervalued board - the page renders its own free
-                        teaser vs Pro full-board split, so no PremiumRoute */}
-                    <Route path="undervalued" element={<UndervaluedBoard />} />
-
                     {/* Admin (server enforces require_admin; page hides itself
                         for non-admins as UX) */}
                     <Route path="admin/users" element={<AdminUsers />} />
 
-                    {/* Premium-only routes */}
-                    <Route
-                      path="smart-buy"
-                      element={
-                        <PremiumRoute feature="smart_buy" featureName="Smart Buy AI">
-                          <SmartBuy />
-                        </PremiumRoute>
-                      }
-                    />
+                    {/* RETIRED v1 TOOLS.
+                        smart-buyer-ai and best-buys were already
+                        redirected here for one reason: they price off
+                        live FUTBIN scrapes on every request
+                        (app/services/price_history.py -> app.futbin_client),
+                        a separate and less reliable source than the
+                        FUT.GG pipeline every current screen uses, so the
+                        same paying user could see two different prices
+                        for one card.
 
-                    {/* smart-buyer-ai and best-buys priced off live futbin
-                        scrapes on every request (app/services/price_history.py
-                        -> app.futbin_client), a separate and less reliable
-                        pricing source than the FUT.GG pipeline the rest of
-                        the app (incl. /v2/opportunities) now uses - showing
-                        both to the same paying user risks two different
-                        prices for the same card. Point both at the v2
-                        equivalent until they're rebuilt on FUT.GG data. */}
+                        That reasoning applies unchanged to the rest of
+                        this group, which the audit traced to the same
+                        dead or divergent sources, so they now redirect
+                        too rather than sitting in the paid product
+                        showing numbers nothing refreshes:
+                          smart-buy       -> /api/smart-buy, FUTBIN scrape pricing
+                          trending        -> FUTBIN + fut_players
+                          undervalued     -> fair_value_mv, which does not
+                                             exist in a FUT.GG-only
+                                             database at all (migration 011
+                                             requires FUTBIN-only columns)
+                          market-sentiment-> sales_history, the frozen
+                                             legacy FUTBIN table, and a
+                                             second market read competing
+                                             with Home's Market Pulse
+                          trade-copilot   -> the v1 keyword matcher,
+                                             superseded by /v2/chat
+
+                        Each goes to the v2 screen that answers the same
+                        question, so an old bookmark lands somewhere
+                        useful instead of on a broken page or a 404. The
+                        page components themselves are deleted (git
+                        history keeps them) - leaving unrouted JSX in the
+                        tree is how a codebase accumulates screens nobody
+                        can reach and nobody dares remove. */}
+                    <Route path="smart-buy" element={<Navigate to="/v2/opportunities" replace />} />
                     <Route path="smart-buyer-ai" element={<Navigate to="/v2/opportunities" replace />} />
                     <Route path="best-buys" element={<Navigate to="/v2/opportunities" replace />} />
+                    <Route path="trending" element={<Navigate to="/v2/players" replace />} />
+                    <Route path="undervalued" element={<Navigate to="/v2/opportunities" replace />} />
+                    <Route path="market-sentiment" element={<Navigate to="/v2" replace />} />
+                    <Route path="trade-copilot" element={<Navigate to="/v2/chat" replace />} />
 
                     {/* Optional premium analytics alias */}
                     <Route
@@ -234,24 +246,6 @@ function App() {
                       element={
                         <PremiumRoute feature="portfolio_optimizer" featureName="Portfolio Optimizer">
                           <PortfolioOptimizer />
-                        </PremiumRoute>
-                      }
-                    />
-
-                    <Route
-                      path="trade-copilot"
-                      element={
-                        <PremiumRoute feature="ai_copilot" featureName="AI Trade Copilot">
-                          <TradeCopilot />
-                        </PremiumRoute>
-                      }
-                    />
-
-                    <Route
-                      path="market-sentiment"
-                      element={
-                        <PremiumRoute feature="market_sentiment" featureName="Market Sentiment">
-                          <MarketSentiment />
                         </PremiumRoute>
                       }
                     />

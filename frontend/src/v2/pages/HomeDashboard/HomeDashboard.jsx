@@ -16,7 +16,8 @@ import ModalPriceChart from "./ModalPriceChart";
 import CoinValue from "../../components/CoinValue";
 import EmptyState from "../../components/EmptyState";
 import MarketFreshness from "../../components/MarketFreshness";
-import TrackRecordPanel from "../../components/TrackRecordPanel";
+import TrackRecordSummary from "../../components/TrackRecordSummary";
+import NotificationsPanel from "../../components/NotificationsPanel";
 import "../../styles/terminal.css";
 import "../../styles/dashboard-v2.css";
 import "../../styles/dashboard-analysis-modal.css";
@@ -93,11 +94,14 @@ const DEFAULT_STRATEGY_EMPTY_TEXT="No opportunities currently meet this strategy
 // Strategy Finder), Track Record is its own large, distinct concern,
 // and Market groups broader context that doesn't bear on today's
 // single top pick (Market Map + the full Alerts & Content feed).
+// Three, not four. "Track record" was its own full tab because the panel
+// it held was enormous; it is now a four-number strip that belongs with
+// the rest of the decision context on Overview, and "Market" no longer
+// has to carry a Market Map that duplicated Opportunities.
 const MOBILE_SECTIONS=[
   ["overview","Overview"],
   ["opportunities","Opportunities"],
-  ["track-record","Track record"],
-  ["market","Market"],
+  ["market","Your feed"],
 ];
 
 export default function HomeDashboard(){
@@ -131,6 +135,10 @@ export default function HomeDashboard(){
   const isMobile=useIsMobile();
   const [mobileSection,setMobileSection]=useState("overview");
   const [watchStates,setWatchStates]=useState({});
+  const [alertsOpen,setAlertsOpen]=useState(false);
+  // Once the alerts panel has fetched, its count is authoritative -
+  // /api/v2/dashboard's copy can be up to a cache-window stale.
+  const [panelUnread,setPanelUnread]=useState(null);
   const [selected,setSelected]=useState(null);
   const strategyQuery=useStrategyFinder(strategy);
   // FUT.GG migration: /api/v2/dashboard itself is still legacy FUTBIN-
@@ -200,6 +208,10 @@ export default function HomeDashboard(){
   const visibleWatchItems=isMobile?watchItems.slice(0,3):watchItems;
   const buyCount=futggItems.filter(x=>x.recommendation==="BUY").length;
   const score=Math.round(Number(dashboard.marketRegime?.confidence||0));
+  // "Unknown" is the backend's explicit "we are not calling this market",
+  // not a low score - see the Market Pulse comment below.
+  const hasMarketVerdict=Boolean(dashboard.marketRegime?.label)&&dashboard.marketRegime.label!=="Unknown";
+  const valuedCards=dashboard.marketRegime?.metrics?.valuedCards??null;
   // Prefer the backend's own expected_profit_after_tax (correct EA price-
   // increment rounding) over the generic profit() recompute, same reason
   // AnalysisModal's `gain`/`target` do below.
@@ -222,25 +234,103 @@ export default function HomeDashboard(){
   // just to show the Top Card decision.
   const showOverview=!isMobile||mobileSection==="overview";
   const showOpportunities=!isMobile||mobileSection==="opportunities";
-  const showTrackRecord=!isMobile||mobileSection==="track-record";
+  const showTrackRecord=!isMobile||mobileSection==="overview";
   const showMarket=!isMobile||mobileSection==="market";
   const topAlerts=(dashboard.watchlistAlerts||[]).slice(0,2);
+  const unreadAlerts=panelUnread==null?Number(dashboard.unreadAlertCount||0):panelUnread;
+  // One shape for the feed, built from two sources, each row carrying its
+  // own destination. Previously these were rendered from whichever of
+  // `title`/`message`/`estimatedMarketImpact` happened to exist, with a
+  // final fallback of the literal string "Market update" / "New market
+  // activity" - a row that told the reader nothing at all, and nothing to
+  // click through to.
+  const feedRows=[
+    ...(dashboard.watchlistAlerts||[]).slice(0,3).map(alert=>({
+      key:`alert-${alert.id}`,
+      title:alert.title,
+      detail:[alert.movement,alert.age].filter(Boolean).join(" · "),
+      href:alert.href||`/v2/players/${alert.cardId}`,
+    })),
+    ...(dashboard.latestSbcImpact||[]).slice(0,3).filter(x=>x.title).map(x=>({
+      key:`sbc-${x.eventId}`,
+      title:`${x.title} is moving the cards it uses`,
+      detail:`${percent(x.estimatedMarketImpact)} average price change across the cards this SBC draws on`,
+      href:"/v2/opportunities",
+    })),
+  ].slice(0,5);
 
   return <div className="fut-dashboard-shell">
     <main className="fut-main home-in-shell">
-      <header className="fut-topbar"><button className="fut-search" onClick={()=>navigate("/v2/players")}><Search size={19}/><span>Search player, card or price</span><kbd>/</kbd></button><div className="feed-live"><i/> LIVE</div><button className="bell-btn" onClick={()=>navigate("/v2/watchlist")} aria-label={dashboard.watchlistAlerts?.length?`${dashboard.watchlistAlerts.length} recent price alerts`:"Watchlist"}><Bell size={18}/>{dashboard.watchlistAlerts?.length?<span className="bell-badge">{dashboard.watchlistAlerts.length}</span>:null}</button></header>
+      <header className="fut-topbar">
+        <button className="fut-search" onClick={()=>navigate("/v2/players")}><Search size={19}/><span>Search player, card or price</span><kbd>/</kbd></button>
+        <div className="feed-live"><i/> LIVE</div>
+        {/* The badge is the server's real unread count (undismissed AND
+            unread rows), not the length of the 5-row preview list, which
+            is what it used to be - a number that never decreased and
+            matched nothing on screen. Once the panel has loaded its own
+            count it takes over, so the two can never disagree. */}
+        <div className="bell-wrap">
+          <button
+            className="bell-btn"
+            onClick={()=>setAlertsOpen(open=>!open)}
+            aria-expanded={alertsOpen}
+            aria-haspopup="dialog"
+            aria-label={unreadAlerts?`Alerts, ${unreadAlerts} unread`:"Alerts"}
+          >
+            <Bell size={18}/>{unreadAlerts?<span className="bell-badge">{unreadAlerts>9?"9+":unreadAlerts}</span>:null}
+          </button>
+          <NotificationsPanel open={alertsOpen} onClose={()=>setAlertsOpen(false)} onUnreadCount={setPanelUnread}/>
+        </div>
+      </header>
       <Ticker items={futggItems} events={dashboard.latestMarketEvents}/>
       {isMobile?<nav className="mobile-section-tabs" aria-label="Dashboard sections">{MOBILE_SECTIONS.map(([key,label])=><button key={key} type="button" role="tab" aria-selected={mobileSection===key} className={mobileSection===key?"active":""} onClick={()=>setMobileSection(key)}>{label}</button>)}</nav>:null}
 
       {showOverview?<>
         <section className="decision-stage">
           <div className="lead-trade"><div className="lead-label"><Zap size={15}/> TOP CARD</div>{lead?<div className="lead-layout"><button className="lead-card player-open-button" onClick={()=>setSelected(lead)} aria-label={`Open ${nameOf(lead.player)} analysis`}><CardImage player={lead.player} featured/></button><div className="lead-copy"><div className="lead-head"><div><PlayerMeta player={lead.player} source={lead.source}/><h1>{nameOf(lead.player)}</h1></div><div className="lead-status"><b className={`call ${String(lead.recommendation).toLowerCase()}`}>{lead.recommendation}</b><ConfidenceRing value={lead.confidence}/></div></div>{lead.source==="futgg"?<MarketFreshness priceAgeSeconds={lead.priceAgeSeconds} capturedAt={lead.updatedAt}/>:null}<p>{reason(lead)}</p><div className="lead-numbers"><Metric label="Buy below" value={<CoinValue value={lead.entryPrice??lead.currentBin}/>} sub="Maximum entry" tone="entry"/><Metric label="Expected profit" value={<CoinValue value={expectedProfit(lead)} signed/>} sub="After EA tax" tone="positive"/><Metric label="Risk level" value={lead.risk||"Unknown"} sub={`${sellingSpeedLabel(lead.liquidityScore)} selling speed`}/></div><div className="lead-actions"><button onClick={()=>setSelected(lead)}>View move <ArrowRight size={17}/></button><button className="secondary" onClick={()=>watchItem(lead)} aria-label="Add top card to watchlist"><Star size={16} fill={watchStates[String(lead.cardId)]==="saved"?"currentColor":"none"}/>{watchStates[String(lead.cardId)]==="saved"?"Watching":"Watch"}</button></div></div></div>:<EmptyState compact text="No clean trade has passed the filters yet."/>}</div>
-          <aside className="market-panel"><div className="panel-label"><Activity size={15}/> MARKET PULSE</div><div className="pulse-head"><div><h2>{mood(dashboard.marketRegime?.label,score)}</h2><p>{dashboard.marketRegime?.summary||"Prices and completed sales are being checked now."}</p></div><strong>{score}<small>/100</small></strong></div><div className="pulse-track"><span style={{width:`${Math.max(5,score)}%`}}/></div><div className="pulse-stats"><Metric label="Buy signals" value={buyCount}/><Metric label="Coin potential" value={<CoinValue value={potential} signed/>}/><Metric label="Tracked" value={count(Number(dashboard.marketRegime?.metrics?.liquidCards||0)+Number(freshnessQuery.data?.cards_priced||0))}/></div><PulseFooter nextPromo={dashboard.nextPromo} sbcImpact={dashboard.latestSbcImpact}/></aside>
+          {/* Two states, never blended. When the backend declines to
+              characterise the market (too few cards valued - see
+              _compute_live_market_regime), it returns label "Unknown" and
+              confidence 0. Rendering that as a "0/100" gauge beside a
+              confident BUY recommendation is what made the page look
+              broken: 0 there does not mean "terrible market", it means
+              "no verdict", and a progress bar cannot say that. So when
+              there is no verdict we show the reason instead of a score.
+              The per-card numbers below stay - a market-wide read being
+              withheld does not invalidate an individual card that DID
+              have enough data to evaluate, and the copy now says which
+              is which rather than leaving the reader to reconcile them. */}
+          <aside className="market-panel">
+            <div className="panel-label"><Activity size={15}/> MARKET PULSE</div>
+            {hasMarketVerdict?<>
+              <div className="pulse-head">
+                <div><h2>{mood(dashboard.marketRegime?.label,score)}</h2><p>{dashboard.marketRegime?.summary}</p></div>
+                <strong>{score}<small>/100</small></strong>
+              </div>
+              <div className="pulse-track"><span style={{width:`${Math.max(5,score)}%`}}/></div>
+            </>:<div className="pulse-head no-verdict">
+              <div>
+                <h2>No market-wide read yet</h2>
+                <p>{dashboard.marketRegime?.summary||"Prices and completed sales are being checked now."}</p>
+              </div>
+            </div>}
+            <div className="pulse-stats">
+              <Metric label="Buy signals" value={buyCount} sub="Cards that passed the filters now"/>
+              <Metric label="Coin potential" value={<CoinValue value={potential} signed/>} sub="Combined, after EA tax"/>
+              {/* Two separate facts, shown as two separate facts. This
+                  tile used to ADD the regime's candidate count to the
+                  price-worker's priced-card count and present the sum as
+                  "Tracked" - two different populations, double-counted
+                  into one number that described neither. */}
+              <Metric label="Priced cards" value={count(freshnessQuery.data?.cards_priced)} sub={valuedCards!=null?`${count(valuedCards)} fresh enough to value`:"Live price coverage"}/>
+            </div>
+            <PulseFooter nextPromo={dashboard.nextPromo} sbcImpact={dashboard.latestSbcImpact}/>
+          </aside>
         </section>
-        {isMobile&&topAlerts.length?<div className="mobile-top-alerts"><div className="section-head compact"><div><span>ALERTS</span><h2>Affecting your watchlist</h2></div><Link to="/v2/watchlist">Open</Link></div>{topAlerts.map((x,index)=><div className="feed-row compact" key={x.id||x.eventId||index}><i/><div><strong>{x.title||x.message||"Market update"}</strong><span>{x.message||x.estimatedMarketImpact?`${percent(x.estimatedMarketImpact)} estimated impact`:"New market activity"}</span></div></div>)}</div>:null}
+        {isMobile&&topAlerts.length?<div className="mobile-top-alerts"><div className="section-head compact"><div><span>ALERTS</span><h2>Affecting your watchlist</h2></div><Link to="/v2/watchlist">Open</Link></div>{topAlerts.map((x,index)=><Link className="feed-row compact" key={x.id||index} to={x.href||`/v2/players/${x.cardId}`}><i/><div><strong>{x.title}</strong><span>{[x.movement,x.age].filter(Boolean).join(" · ")}</span></div></Link>)}</div>:null}
       </>:null}
 
-      {showTrackRecord?<TrackRecordPanel/>:null}
+      {showTrackRecord?<TrackRecordSummary/>:null}
 
       {showOpportunities?<>
         <section className="queue-section" id="queue"><div className="section-head"><div><span>LIVE OPPORTUNITIES</span><h2>Next best moves</h2></div><Link to="/v2/players">Find a player <ArrowRight size={15}/></Link></div><div className="queue-grid">{queue.length?queue.map((item,index)=><QueueCard key={item.cardId} item={item} rank={index+2} onOpen={setSelected} onWatch={watchItem} watchState={watchStates[String(item.cardId)]}/>):<EmptyState compact text="No additional opportunities right now."/>}{dashboard.locked?.opportunityFeed&&dashboard.locked?.previewCount>0?<LockedPreviewCard count={dashboard.locked.previewCount} navigate={navigate}/>:null}</div></section>
@@ -249,7 +339,21 @@ export default function HomeDashboard(){
         </section>
       </>:null}
 
-      {showMarket?<section className="lower-grid"><div className="market-map"><div className="section-head compact"><div><span>MARKET MAP</span><h2>Where coins are moving</h2></div></div><div className="map-bars">{futggItems.length?futggItems.slice(0,7).map(item=><button key={item.cardId} onClick={()=>setSelected(item)}><span>{nameOf(item.player)}</span><i><b style={{width:`${Math.min(100,Math.max(8,Math.abs(Number(item.expectedRoi||0))*4))}%`}}/></i><strong>{roi(item)}</strong></button>):<EmptyState compact text="Still building live market data - check back as more cards get priced."/>}</div></div><div className="activity-feed"><div className="section-head compact"><div><span>YOUR FEED</span><h2>Alerts & content</h2></div><Link to="/v2/watchlist">Open</Link></div>{[...(dashboard.watchlistAlerts||[]).slice(0,3),...(dashboard.latestSbcImpact||[]).slice(0,3)].slice(0,5).map((x,index)=><div className="feed-row" key={x.id||x.eventId||index}><i/><div><strong>{x.title||x.message||"Market update"}</strong><span>{x.message||x.estimatedMarketImpact?`${percent(x.estimatedMarketImpact)} estimated impact`:"New market activity"}</span></div></div>)}{!dashboard.watchlistAlerts?.length&&!dashboard.latestSbcImpact?.length?<EmptyState compact text={dashboard.watchedCount>0?"No price alerts yet. We'll let you know when a watched card hits one of your alert conditions.":"Nothing on your watchlist yet. Add a card and we'll track its price for you."}/>:null}</div></section>:null}
+      {/* MARKET MAP REMOVED.
+          It rendered the top 7 items of `futggItems` - the same pool
+          Top Card and "Next best moves" are drawn from - as a name, a bar
+          scaled to |expected ROI| and the same ROI figure already printed
+          on those cards. It answered no question the sections above it
+          did not already answer, under a heading ("Where coins are
+          moving") promising a segment-level view of the market that the
+          data behind it never contained: it was seven individual cards,
+          not a map. A real market map - which promo/rating band/price tier
+          is gaining or losing demand, and whether a move is broad or one
+          outlier - needs per-segment aggregates over price history that
+          this deployment does not compute today, so it is removed rather
+          than restyled. See the audit notes for what building it properly
+          would require. */}
+      {showMarket?<section className="activity-section"><div className="activity-feed"><div className="section-head compact"><div><span>YOUR FEED</span><h2>Alerts & content</h2></div><Link to="/v2/watchlist">Manage alerts</Link></div>{feedRows.map((row,index)=><Link className="feed-row" key={row.key||index} to={row.href}><i/><div><strong>{row.title}</strong><span>{row.detail}</span></div></Link>)}{!feedRows.length?<EmptyState compact text={dashboard.watchedCount>0?"No price alerts yet. We'll let you know when a watched card hits one of your alert conditions.":"Nothing on your watchlist yet. Add a card and we'll track its price for you."}/>:null}</div></section>:null}
 
       <p className="fut-disclaimer">Recent sales and live listings are used to estimate opportunities. Profit is never guaranteed and EA charges 5% on sales.</p>
     </main>
@@ -413,7 +517,60 @@ function WatchCard({item,onOpen,onWatch,watchState}){
 }
 function TradeSignal({label,value,tone,signed=false,sub}){return <div className={`trade-signal ${tone}`}><span>{label}</span><strong><CoinValue value={value} signed={signed}/></strong>{sub?<small>{sub}</small>:null}</div>}
 function PlayerMeta({player={}}){return <div className="player-meta-pills"><span>{player.rating||"—"} OVR</span><span>{player.position||"—"}</span><span>{player.version||"Card"}</span></div>}
-function Ticker({items,events}){const rows=[...items.slice(0,7).map(x=>({label:nameOf(x.player),value:roi(x),tone:Number(x.expectedRoi)>=0?"up":"down"})),...(events||[]).slice(0,2).map(x=>({label:x.title,value:"EVENT",tone:"event"}))];return <div className="fut-ticker"><div>{[...rows,...rows].map((x,index)=><span key={`${x.label}-${index}`} className={x.tone}>{x.label} — <b>{x.value}</b></span>)}</div></div>}
+// Plain-language names for the market_events.kind discriminator. The
+// ticker previously rendered every event as `${title} — EVENT`, which is
+// where "Lionel Messi — EVENT" came from: `EVENT` is not a description,
+// it is the absence of one, and `kind` (the field that actually says what
+// happened) was never read. An unmapped kind is skipped entirely rather
+// than falling back to printing the raw enum at a customer.
+const EVENT_KIND_NOUN={sbc:"SBC",promo:"Promo",objective:"Objective",evolution:"Evolution",pack:"Store pack"};
+const NEW_EVENT_WINDOW_MS=48*60*60*1000;
+
+export function eventTickerRow(event){
+  const noun=EVENT_KIND_NOUN[String(event?.kind||"").toLowerCase()];
+  if(!noun||!event?.title)return null;
+  const now=Date.now();
+  const ends=event.endsAt?new Date(event.endsAt).getTime():null;
+  const starts=event.startsAt?new Date(event.startsAt).getTime():null;
+  const firstSeen=event.firstSeenAt?new Date(event.firstSeenAt).getTime():null;
+  // Expiring soonest is the most actionable thing a ticker can say, so it
+  // wins over "new" when both are true.
+  if(ends&&ends>now&&ends-now<=NEW_EVENT_WINDOW_MS)
+    return{label:`${noun} ends in ${formatCountdown(event.endsAt)}`,value:event.title,tone:"event"};
+  if(ends&&ends<=now)return null;                       // finished: not news
+  if(firstSeen&&now-firstSeen<=NEW_EVENT_WINDOW_MS)
+    return{label:`New ${noun.toLowerCase()}`,value:event.title,tone:"event"};
+  if(starts&&starts>now)
+    return{label:`${noun} starts in ${formatCountdown(event.startsAt)}`,value:event.title,tone:"event"};
+  return{label:`${noun} live now`,value:event.title,tone:"event"};
+}
+
+function Ticker({items,events}){
+  // Every row now says what happened and to which card, rather than a
+  // bare name next to an unexplained number. Card rows are labelled as
+  // an expected return so they cannot be misread as a price change,
+  // which is a different measurement entirely.
+  const cardRows=items.slice(0,6)
+    .filter(x=>Number.isFinite(Number(x.expectedRoi)))
+    .map(x=>({
+      label:`${nameOf(x.player)}${x.player?.rating?` (${x.player.rating})`:""}`,
+      value:`${roi(x)} expected return`,
+      tone:Number(x.expectedRoi)>=0?"up":"down",
+    }));
+  const eventRows=(events||[]).map(eventTickerRow).filter(Boolean);
+  // Deduplicated: the same SBC can appear more than once in the feed
+  // (re-ingested under a new external_id), and a scrolling strip repeating
+  // one title reads as broken.
+  const seen=new Set();
+  const rows=[...eventRows,...cardRows].filter(row=>{
+    const key=`${row.label}|${row.value}`;
+    if(seen.has(key))return false;
+    seen.add(key);
+    return true;
+  }).slice(0,10);
+  if(!rows.length)return null;
+  return <div className="fut-ticker"><div>{[...rows,...rows].map((x,index)=><span key={`${x.label}-${x.value}-${index}`} className={x.tone}><b>{x.label}</b> — {x.value}</span>)}</div></div>;
+}
 function CardImage({player={},featured,compact}){if(player.generatedCardUrl)return <img className={`ft-card-img ${featured?"featured":compact?"compact":""}`} src={player.generatedCardUrl} alt={nameOf(player)}/>;return <PlayerCardArt compact={compact} featured={Boolean(featured)} bgImage={player.cardBgImage} cutoutImage={player.cardCutoutImage} cutoutType={player.cardCutoutType||"special"} fallbackImage={player.imageUrl} rating={player.rating} position={player.position} name={nameOf(player)} altText={nameOf(player)} stats={player.stats} nationImage={player.nationImage} leagueImage={player.leagueImage} clubImage={player.clubImage} showStats={Boolean(featured)} widthClass={featured?"w-52":"w-16"}/>}
 // GET /api/v2/opportunities items are already server-side filtered to
 // buy/strong_buy signals only, so recommendation is always "BUY" here -

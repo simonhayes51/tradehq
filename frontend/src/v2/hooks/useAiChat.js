@@ -13,6 +13,11 @@ export function useAiChat() {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
   const [locked, setLocked] = useState(false);
+  // 503 = the assistant isn't configured/reachable on this deployment.
+  // Distinct from `error` (one message failed) and `locked` (not on a
+  // paid plan): there is nothing to retry, so the input is hidden rather
+  // than inviting the user to try again forever.
+  const [unavailable, setUnavailable] = useState(false);
 
   const send = useCallback(async (text) => {
     const trimmed = text.trim();
@@ -32,13 +37,20 @@ export function useAiChat() {
     } catch (err) {
       if (err.status === 401 || err.status === 402) {
         setLocked(true);
+      } else if (err.status === 503) {
+        setUnavailable(true);
+      } else if (err.status === 429) {
+        setError("You're sending messages a bit fast - give it a moment and try again.");
       } else {
-        setError(err.message || "Could not reach the AI chat.");
+        setError(err.message || "Could not reach the assistant. Check your connection and try again.");
       }
+      // The user's own message stays in the thread (it's what they typed),
+      // but nothing is appended as an assistant reply - an error must
+      // never be rendered as though the assistant said it.
     } finally {
       setSending(false);
     }
   }, [messages, sending]);
 
-  return { messages, sending, error, locked, send };
+  return { messages, sending, error, locked, unavailable, send };
 }

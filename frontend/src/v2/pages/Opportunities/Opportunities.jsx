@@ -7,7 +7,7 @@
 // a new page rather than an edit of an existing one.
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { ArrowRight, LineChart, RotateCcw, ShieldAlert, SlidersHorizontal, TrendingUp } from "lucide-react";
+import { ArrowRight, RotateCcw, ShieldAlert, SlidersHorizontal, TrendingUp } from "lucide-react";
 import CoinValue from "../../components/CoinValue";
 import EmptyState from "../../components/EmptyState";
 import MarketFreshness from "../../components/MarketFreshness";
@@ -58,13 +58,6 @@ export default function Opportunities() {
       <div className="opp-crosslinks">
         <Link className="opp-crosslink" to="/v2/trade-finder">
           <SlidersHorizontal size={15} /> Need more control? Open Trade Finder <ArrowRight size={14} />
-        </Link>
-        {/* The Trade-vs-Investment distinction, stated where a user is
-            actually standing rather than only in the docs: this page is
-            "make coins now", Investments is "buy and hold for days".
-            They are different products and must never blur together. */}
-        <Link className="opp-crosslink" to="/v2/investments">
-          <LineChart size={15} /> Looking to buy and hold instead? Open Investments <ArrowRight size={14} />
         </Link>
       </div>
 

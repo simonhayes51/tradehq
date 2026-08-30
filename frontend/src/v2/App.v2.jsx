@@ -11,9 +11,9 @@ import Players from "./pages/Players/Players";
 import Watchlist from "./pages/Watchlist/Watchlist";
 import TradeFinder from "./pages/TradeFinder/TradeFinder";
 import Opportunities from "./pages/Opportunities/Opportunities";
-import Investments from "./pages/Investments/Investments";
 import Account from "./pages/Account/Account";
 import Chat from "./pages/Chat/Chat";
+import TrackRecord from "./pages/TrackRecord/TrackRecord";
 import Billing from "./pages/Billing/Billing";
 import DiscordFeed from "./pages/DiscordFeed/DiscordFeed";
 
@@ -25,10 +25,24 @@ export default function V2App() {
           dedicated opportunities page existed); now a real page wired to
           GET /api/v2/opportunities. */}
       <Route path="opportunities" element={<ShellLayout><Opportunities /></ShellLayout>} />
-      {/* Investment Engine surface - separate from Opportunities/Trade
-          Finder by design (market-cycle plays, not single-listing
-          flips). See app/routers/v2/investments.py's module docstring. */}
-      <Route path="investments" element={<ShellLayout><Investments /></ShellLayout>} />
+      {/* Investments is retired from the product surface.
+          The Investment Engine calculates in SHADOW MODE in every
+          deployment: INVESTMENT_ENGINE_PUBLISH_SIGNALS defaults false and
+          FC27_LAUNCH.md's own recommended production configuration keeps
+          it false, and GET /api/v2/investments/signals returns only
+          non-shadow rows to non-admins. So this page could never show a
+          signal to a customer - a permanently empty item in the primary
+          navigation, promising multi-day investment calls that the
+          deployment is configured never to publish.
+          The backend engine, its migrations (058-062) and its ~10 test
+          modules are deliberately left intact and still running: it is
+          real, tested work that is genuinely mid-validation. What is
+          removed is the claim to users that it is a shipped feature.
+          Old links land on Opportunities rather than a dead route. */}
+      <Route path="investments" element={<Navigate to="/v2/opportunities" replace />} />
+      {/* The full performance record. Was the largest section of the
+          homepage; it is reference material, so it is a page. */}
+      <Route path="track-record" element={<ShellLayout><TrackRecord /></ShellLayout>} />
       <Route path="trade-finder" element={<ShellLayout><TradeFinder /></ShellLayout>} />
       <Route path="players" element={<ShellLayout><Players /></ShellLayout>} />
       <Route path="players/:cardId" element={<ShellLayout><PlayerPage /></ShellLayout>} />
