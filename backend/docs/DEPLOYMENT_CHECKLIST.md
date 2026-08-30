@@ -28,7 +28,7 @@ Nothing here was run against production as part of preparing it.
   | `AI_CHAT_MAX_OUTPUT_TOKENS` | 600 | new |
   | `AI_CHAT_ENABLED` | 1 | kill switch |
   | `AI_CHAT_PRICE_PER_1M_INPUT` / `_OUTPUT` | 0.15 / 0.60 | **unverified list rates** |
-  | `COMPANION_TOKEN_TTL_HOURS` | 24 | new |
+  | `COMPANION_TOKEN_TTL_HOURS` | 168 (7 days) | new |
   | `DISCORD_RECONCILE_INTERVAL_SECONDS` | 21600 | 0 disables |
   | `FUNNEL_RETENTION_DAYS` | 365 | |
   | `FUNNEL_RETENTION_INTERVAL_SECONDS` | 86400 | 0 disables |

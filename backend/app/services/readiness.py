@@ -108,8 +108,25 @@ async def _check_migrations(pool) -> Dict[str, Any]:
     )
 
 
+# One client for the process, created on first use.
+#
+# It used to be built per call. /health/ready is PUBLIC and is exactly the
+# kind of endpoint a load balancer polls every few seconds, so a
+# per-call client meant a new connection pool every few seconds, none of
+# them ever closed - a readiness check that eventually exhausts the thing
+# it is checking.
+#
+# The cached client is still a LIVE check: redis-py reconnects on demand,
+# so pinging it detects an outage and detects recovery.
+_redis_client = None
+_redis_client_url: Optional[str] = None
+
+
 async def _check_redis() -> Dict[str, Any]:
-    if not os.getenv("REDIS_URL"):
+    global _redis_client, _redis_client_url
+
+    url = os.getenv("REDIS_URL")
+    if not url:
         # Optional by design: the AI limiter degrades to per-worker
         # counting without it. Saying "unconfigured" rather than
         # "degraded" keeps a deployment that never wanted Redis from
@@ -118,8 +135,10 @@ async def _check_redis() -> Dict[str, Any]:
     try:
         import redis.asyncio as aioredis  # type: ignore
 
-        client = aioredis.from_url(os.getenv("REDIS_URL"), decode_responses=True)
-        await client.ping()
+        if _redis_client is None or _redis_client_url != url:
+            _redis_client = aioredis.from_url(url, decode_responses=True)
+            _redis_client_url = url
+        await _redis_client.ping()
         return _check("redis", OK)
     except Exception:
         log.warning("readiness: Redis unreachable", exc_info=True)

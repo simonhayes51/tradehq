@@ -51,7 +51,17 @@ log = logging.getLogger("companion_token")
 
 SCOPE = "companion:read"
 ISSUER = os.getenv("JWT_ISSUER", "eafc-live")
-TTL_HOURS = int(os.getenv("COMPANION_TOKEN_TTL_HOURS", "24"))
+# Seven days, not one.
+#
+# 24 hours was the first number chosen and it is the wrong trade. The
+# token is READ-ONLY and scoped to a single endpoint, so the marginal
+# security gain from expiring it daily is small - while the cost is that
+# every companion user reconnects every day, which is how a feature stops
+# being used. A week is still unambiguously short-lived (the thing the
+# design rules out is a PERMANENT key in browser storage), still
+# revocable by rotating the signing key, and still shorter than the
+# existing trade:ingest token's 30 days - which is a WRITE credential.
+TTL_HOURS = int(os.getenv("COMPANION_TOKEN_TTL_HOURS", "168"))
 
 
 def _signing_key() -> str:

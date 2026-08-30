@@ -51,8 +51,12 @@ class TestTheShortLivedToken:
         assert companion_token.verify(issued["token"]) == "u1"
 
     def test_it_is_short_lived_by_default(self):
-        # Not a permanent API key sitting in userscript storage.
+        # Not a permanent API key sitting in userscript storage. A week is
+        # the trade: expiring a READ-ONLY token daily buys little, and
+        # costs a daily reconnect, which is how a feature stops being used.
         assert companion_token.TTL_HOURS <= 24 * 7
+        # And still shorter than the trade:ingest WRITE token's 30 days.
+        assert companion_token.TTL_HOURS < 24 * 30
         issued = companion_token.issue("u1")
         assert issued["expiresAt"] - int(time.time()) <= companion_token.TTL_HOURS * 3600 + 5
 
@@ -156,7 +160,11 @@ class TestTheTokenSaysWhoNotWhat:
         # A token minted while someone was Elite must give them nothing
         # once the subscription lapses.
         source = inspect.getsource(__import__("app.auth.access", fromlist=["x"]).get_companion_viewer)
-        assert "resolve_user_tier" in source
+        # Resolved from stored billing state, through the SAME cached
+        # resolver the cookie path uses - so this cannot become a second
+        # answer to "what may this person do", and a Stripe webhook's
+        # cache invalidation reaches the companion too.
+        assert "entitlements_for_user_id" in source
         # The token payload carries no tier, plan or feature list.
         issued = companion_token.issue("u1")
         import jwt
@@ -165,6 +173,44 @@ class TestTheTokenSaysWhoNotWhat:
                              algorithms=["HS256"], issuer=companion_token.ISSUER)
         for forbidden in ("tier", "plan", "features", "is_admin", "premium"):
             assert forbidden not in payload
+
+    def test_the_token_path_shares_the_cookie_paths_cache(self):
+        # Without this, every companion request ran three billing queries.
+        # The overlay asks about each card a trader hovers, so the one
+        # endpoint most likely to be called in a tight loop was the one
+        # endpoint with no cache.
+        from app.auth import entitlements
+
+        source = inspect.getsource(entitlements.entitlements_for_user_id)
+        assert "_ENT_CACHE" in source
+        assert "ENT_CACHE_TTL" in source
+
+    def test_both_paths_write_the_same_shape_into_that_cache(self):
+        # The cache is keyed by user id alone, so a second path storing a
+        # narrower dict under that key would hand the next caller of
+        # compute_entitlements a payload missing `limits` or `features`.
+        from app.auth import entitlements
+
+        builder = inspect.getsource(entitlements._entitlements_for_user)
+        for key in ("user_id", "plan", "tier", "premium_until", "roles",
+                    "is_premium", "is_admin", "features", "limits"):
+            assert f'"{key}"' in builder, key
+        # And compute_entitlements delegates to it rather than building
+        # its own copy.
+        assert "_entitlements_for_user(" in inspect.getsource(entitlements.compute_entitlements)
+
+    def test_an_admin_resolves_the_same_way_on_both_paths(self):
+        # The cookie path promotes an admin to elite. The token path did
+        # not, which would have made an admin's own overlay show them as
+        # free - a second answer to a question the entitlement system
+        # already owns.
+        from app.auth import entitlements
+
+        source = inspect.getsource(entitlements.entitlements_for_user_id)
+        assert "discord_id=user_id" in source
+        assert 'is_admin=bool(ent.get("is_admin"))' in inspect.getsource(
+            __import__("app.auth.access", fromlist=["x"]).get_companion_viewer
+        )
 
     def test_a_live_cookie_session_wins_over_a_token(self):
         # Someone signed in on this browser is who they are; a stale token
@@ -231,6 +277,29 @@ class TestClientConfiguration:
     def test_the_userscript_asks_for_credentials(self):
         client = (REPO / "eafc-live-userscript" / "src" / "api-client.js").read_text()
         assert "withCredentials: true" in client
+
+    def test_the_extension_stops_sending_an_expired_token(self):
+        # A service worker can outlive a token. Continuing to send a dead
+        # credential is pointless traffic, and clearing it is what lets
+        # the overlay tell "needs to reconnect" from "is a stranger".
+        background = (REPO / "eafc-live-extension" / "src" / "background.js").read_text()
+        assert "cachedExpiry" in background
+        assert "chrome.storage.local.remove" in background
+
+    def test_the_token_is_never_logged_by_either_client(self):
+        import re
+
+        for path in (
+            REPO / "eafc-live-extension" / "src" / "background.js",
+            REPO / "eafc-live-userscript" / "src" / "api-client.js",
+        ):
+            for line in path.read_text().splitlines():
+                stripped = line.strip()
+                if stripped.startswith("//"):
+                    continue
+                if re.search(r"\b(log|console\.\w+)\(", stripped):
+                    assert "token" not in stripped.lower(), f"{path.name}: {stripped}"
+                    assert "authorization" not in stripped.lower(), f"{path.name}: {stripped}"
 
     def test_neither_client_sends_an_ea_credential(self):
         # The overlay reads the EA Web App page; it must never forward

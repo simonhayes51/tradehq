@@ -252,3 +252,85 @@ class TestTheEndpoints:
                 break
         else:
             pytest.fail("no /readiness route")
+
+
+def _fake_redis_module(created=None, pings=None):
+    """A stand-in for `redis.asyncio`.
+
+    The real package is not installed in this environment, and
+    `import redis.asyncio as aioredis` imports the PARENT package first -
+    so both `redis` and `redis.asyncio` have to be present in sys.modules
+    for the patch to take.
+    """
+    import types
+
+    class FakeRedis:
+        def __init__(self):
+            if created is not None:
+                created.append(self)
+
+        async def ping(self):
+            if pings is not None:
+                pings.append(1)
+            return True
+
+    asyncio_module = types.ModuleType("redis.asyncio")
+    asyncio_module.from_url = lambda url, decode_responses=True: FakeRedis()
+    parent = types.ModuleType("redis")
+    parent.asyncio = asyncio_module
+    return parent, asyncio_module
+
+
+def _install_fake_redis(monkeypatch, created=None, pings=None):
+    import sys
+
+    parent, asyncio_module = _fake_redis_module(created, pings)
+    monkeypatch.setitem(sys.modules, "redis", parent)
+    monkeypatch.setitem(sys.modules, "redis.asyncio", asyncio_module)
+    monkeypatch.setattr(rd, "_redis_client", None)
+    monkeypatch.setattr(rd, "_redis_client_url", None)
+
+
+class TestTheCheckDoesNotDamageWhatItChecks:
+    def test_the_redis_client_is_reused_not_rebuilt_per_call(self, monkeypatch):
+        # /health/ready is PUBLIC and is exactly the kind of endpoint a
+        # load balancer polls every few seconds. A per-call client meant a
+        # new connection pool every few seconds, none ever closed - a
+        # readiness check that eventually exhausts the thing it checks.
+        created = []
+        monkeypatch.setenv("REDIS_URL", "redis://example.invalid:6379")
+        _install_fake_redis(monkeypatch, created=created)
+
+        for _ in range(5):
+            assert run(rd._check_redis())["status"] == rd.OK
+        assert len(created) == 1, "a new Redis client was built per readiness call"
+
+    def test_a_changed_url_does_rebuild_the_client(self, monkeypatch):
+        created = []
+        monkeypatch.setenv("REDIS_URL", "redis://one.invalid:6379")
+        _install_fake_redis(monkeypatch, created=created)
+
+        run(rd._check_redis())
+        monkeypatch.setenv("REDIS_URL", "redis://two.invalid:6379")
+        run(rd._check_redis())
+        assert len(created) == 2
+
+    def test_it_is_still_a_live_check_after_caching(self, monkeypatch):
+        # A cached client that is never pinged would report OK forever.
+        pings = []
+        monkeypatch.setenv("REDIS_URL", "redis://example.invalid:6379")
+        _install_fake_redis(monkeypatch, pings=pings)
+
+        run(rd._check_redis())
+        run(rd._check_redis())
+        assert len(pings) == 2
+
+
+class TestCredentialMintingIsBounded:
+    def test_the_companion_session_endpoint_is_rate_limited(self):
+        from app.middleware.rate_limit import RATE_LIMIT_RULES
+
+        prefixes = [rule[0] for rule in RATE_LIMIT_RULES]
+        assert "/api/v2/companion/session" in prefixes, (
+            "an endpoint that hands out signed tokens should not be unbounded"
+        )

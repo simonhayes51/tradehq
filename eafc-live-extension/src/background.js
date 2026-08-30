@@ -51,20 +51,38 @@ importScripts("debug-flag.js", "config.js", "intelligence-cache.js");
   // expires the overlay falls back to the anonymous payload and the
   // reconnect prompt, which is the correct outcome - not an error.
   let cachedToken = null;
+  let cachedExpiry = 0;
 
   async function getToken() {
-    if (cachedToken !== null) return cachedToken;
+    // The expiry is re-checked on every read, not only on the first.
+    // A service worker can outlive a token, and continuing to send an
+    // expired credential is pointless traffic - the server treats it as
+    // anonymous either way, so the only thing it changes is that we stop
+    // noticing the token has lapsed.
+    if (cachedToken) {
+      if (cachedExpiry * 1000 > Date.now()) return cachedToken;
+      // It WAS valid and no longer is. Drop it, so the overlay can tell
+      // "this member needs to reconnect" from "this is a stranger".
+      cachedToken = null;
+      cachedExpiry = 0;
+      try { await chrome.storage.local.remove("companionToken"); } catch { /* already gone */ }
+      return "";
+    }
+    if (cachedToken === "") return "";
     try {
       const stored = await chrome.storage.local.get("companionToken");
       const entry = stored?.companionToken;
       if (entry && entry.token && entry.expiresAt * 1000 > Date.now()) {
         cachedToken = entry.token;
+        cachedExpiry = entry.expiresAt;
       } else {
         cachedToken = "";
+        cachedExpiry = 0;
         if (entry) await chrome.storage.local.remove("companionToken");
       }
     } catch {
       cachedToken = "";
+      cachedExpiry = 0;
     }
     return cachedToken;
   }
@@ -79,6 +97,7 @@ importScripts("debug-flag.js", "config.js", "intelligence-cache.js");
     }
     chrome.storage.local.set({ companionToken: { token, expiresAt } }).then(() => {
       cachedToken = token;
+      cachedExpiry = expiresAt;
       sendResponse({ ok: true });
     });
     return true;

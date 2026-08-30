@@ -333,7 +333,7 @@ already been bitten by that exact class of difference, documented in
 **So, per the objective, an explicit short-lived token flow** rather than
 weakened cookies or CORS. `POST /api/v2/companion/session`, authenticated
 by the session cookie on `app.eafc.live` where it is **first-party**,
-returns a token scoped `companion:read` with a 24-hour default TTL, sent
+returns a token scoped `companion:read` with a 7-day default TTL, sent
 as a bearer header — which nothing can decline to attach.
 
 It is **not a permanent API key**: it expires, and rotating

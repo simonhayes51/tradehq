@@ -494,14 +494,19 @@ async def get_companion_viewer(req: "Request") -> Viewer:
     # token minted while someone was Elite gives them nothing once the
     # subscription lapses.
     try:
-        from app.auth.entitlements import features_for_tier, resolve_user_tier
+        from app.auth.entitlements import entitlements_for_user_id
         from app.db import get_core_pool
 
         pool = await get_core_pool()
-        tier = await resolve_user_tier(pool, user_id)
+        # The SAME cached resolver the cookie path uses, so this cannot
+        # become a second answer to "what may this person do" - and so a
+        # billing webhook's cache invalidation reaches the companion too.
+        ent = await entitlements_for_user_id(pool, user_id)
         return Viewer(
-            user_id=str(user_id), tier=tier, is_admin=False,
-            features=frozenset(features_for_tier(tier)),
+            user_id=str(user_id),
+            tier=ent.get("tier") or "free",
+            is_admin=bool(ent.get("is_admin")),
+            features=frozenset(ent.get("features") or ()),
         )
     except Exception:
         log.warning("companion token: could not resolve entitlements", exc_info=True)

@@ -86,8 +86,14 @@ Design decisions, and why:
 - **Minted where the cookie is first-party.** The member is on
   `app.eafc.live` when they click Connect, so there is no cross-site
   question at the moment of issue.
-- **Short-lived.** `COMPANION_TOKEN_TTL_HOURS`, default 24. Explicitly
-  **not** a permanent API key in browser-accessible storage.
+- **Short-lived.** `COMPANION_TOKEN_TTL_HOURS`, default **168 (7 days)**.
+  Explicitly **not** a permanent API key in browser-accessible storage.
+  Seven days rather than one is a deliberate trade: the token is read-only
+  and scoped to a single endpoint, so expiring it daily buys little, while
+  costing every companion user a daily reconnect — which is how a feature
+  stops being used. It is still revocable by key rotation, and still
+  shorter than the existing `trade:ingest` token's 30 days, which is a
+  *write* credential.
 - **Read-only.** Scope `companion:read` grants exactly the card payload
   the overlay already renders. It cannot write, spend, or reach anything
   else.
@@ -125,7 +131,7 @@ wins, and the reliable path is there when it does not.
 
 | variable | default | purpose |
 |---|---|---|
-| `COMPANION_TOKEN_TTL_HOURS` | 24 | how long a companion token lasts |
+| `COMPANION_TOKEN_TTL_HOURS` | 168 (7 days) | how long a companion token lasts |
 | `JWT_PRIVATE_KEY` | — | signing key; rotating it revokes every outstanding token |
 | `VITE_COMPANION_EXTENSION_IDS` | — | comma-separated extension ids the app may push a token to |
 

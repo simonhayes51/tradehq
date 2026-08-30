@@ -21,7 +21,7 @@ import json
 import os
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional, Set, Literal
+from typing import Any, Dict, Iterable, Optional, Set, Literal
 
 import asyncpg
 from dataclasses import dataclass
@@ -483,9 +483,32 @@ async def compute_entitlements(req: Request) -> Dict[str, Any]:
         return dict(cached["ent"])
 
     pool: asyncpg.Pool = req.app.state.pool
+    ent = await _entitlements_for_user(
+        pool, user_id,
+        session_roles=sess.get("roles") or (),
+        discord_id=sess.get("discord_id") or user_id,
+    )
+    return ent
+
+
+async def _entitlements_for_user(
+    pool,
+    user_id: str,
+    *,
+    session_roles: "Iterable[str]" = (),
+    discord_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Build - and cache - the canonical entitlement payload for one account.
+
+    Extracted so every path that resolves entitlements produces the SAME
+    SHAPE into the SAME cache. That matters more than it looks: the cache
+    is keyed by user id alone, so a second path storing a narrower dict
+    under that key would hand the next caller of compute_entitlements a
+    payload missing `limits` or `features`. One builder, one shape, one
+    invalidation point (invalidate_entitlements_cache).
+    """
     state = await _load_billing_state(pool, str(user_id))
-    roles: Set[str] = set(sess.get("roles") or []) | set(state.get("roles") or set())
-    discord_id = sess.get("discord_id") or user_id
+    roles: Set[str] = set(session_roles or ()) | set(state.get("roles") or set())
 
     is_admin = _is_admin(state, str(user_id), str(discord_id) if discord_id else None)
     tier = "elite" if is_admin else _resolve_tier(state)
@@ -508,6 +531,26 @@ async def compute_entitlements(req: Request) -> Dict[str, Any]:
     }
     _ENT_CACHE[str(user_id)] = {"at": time.time(), "ent": dict(ent)}
     return ent
+
+
+async def entitlements_for_user_id(pool, user_id: str) -> Dict[str, Any]:
+    """Cached entitlements for a caller identified by something other than
+    a session cookie - today, a companion bearer token.
+
+    Shares compute_entitlements' cache deliberately. Without it, every
+    companion request ran three billing queries: the overlay asks about
+    each card a trader hovers, so the one endpoint most likely to be
+    called in a tight loop was the one endpoint with no cache. Sharing it
+    also means a Stripe webhook's invalidate_entitlements_cache() reaches
+    this path too, rather than leaving it to expire on its own.
+    """
+    cached = _ENT_CACHE.get(str(user_id))
+    if cached and (time.time() - cached["at"] < ENT_CACHE_TTL):
+        return dict(cached["ent"])
+    # discord_id defaults to the user id because that is what it is in this
+    # product (see _establish_dashboard_session) - so an admin resolves to
+    # elite here exactly as they do through the cookie path.
+    return await _entitlements_for_user(pool, user_id, discord_id=user_id)
 
 
 def invalidate_entitlements_cache(user_id: str) -> None:
