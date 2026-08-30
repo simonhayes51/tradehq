@@ -1464,26 +1464,71 @@ async def price_history(playerId: int, platform: str = "ps", tf: str = "today"):
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Upstream error: {e}")
 
+# Only these reach the browser's address bar. Discord's own `error` and
+# `error_description` are attacker-influenceable text arriving on a URL we
+# then reflect into our own page, so nothing from the query string is
+# passed through - it is mapped onto one of these codes or dropped.
+# Signup.jsx renders the customer-facing sentence for each.
+_OAUTH_ERROR_CODES = frozenset({"access_denied", "expired_state", "exchange_failed", "server_error"})
+
+
+def _oauth_failure_redirect(code: str, *, return_to: Optional[str] = None) -> RedirectResponse:
+    """Send a failed sign-in back to signup with something it can explain.
+
+    Every failure below used to raise HTTPException. The customer arrives
+    here by top-level navigation from Discord, not by XHR, so that
+    rendered a raw JSON body on a blank page with no way back - and the
+    single most common failure is someone pressing Cancel on the Discord
+    consent dialog, which is not an error at all.
+    """
+    safe = code if code in _OAUTH_ERROR_CODES else "server_error"
+    params = {"error": safe}
+    if return_to and return_to != "/":
+        params["from"] = return_to
+    return RedirectResponse(f"{FRONTEND_URL}/#/signup?{urlencode(params)}")
+
+
 @app.get("/api/callback")
 async def callback(request: Request):
     err = request.query_params.get("error")
     err_desc = request.query_params.get("error_description")
-    if err:
-        raise HTTPException(400, detail=f"OAuth error from Discord: {err}: {err_desc or ''}".strip())
-
     code = request.query_params.get("code")
     state = request.query_params.get("state")
-    if not code:
-        raise HTTPException(status_code=400, detail="Missing code")
 
     # CSRF: the state parameter MUST match one we issued, checked BEFORE we
     # spend the authorization code. Previously the dashboard flow accepted
     # callbacks with a missing/unknown state (fail-open), which allows OAuth
     # login CSRF - review issue C4.
+    #
+    # Read (not popped) first, because whether a failure below should be a
+    # browser redirect or a raw error depends on which flow this is, and
+    # the extension flow has no page to send anyone back to.
     _prune_oauth_state()
-    state_meta = OAUTH_STATE.pop(state, None) if state else None
+    state_meta = OAUTH_STATE.get(state) if state else None
+    is_browser_flow = state_meta is None or state_meta.get("flow") == "dashboard"
+    return_to = (state_meta or {}).get("return_to")
+
+    if err:
+        logging.info("Discord OAuth returned an error: %s (%s)", err, (err_desc or "")[:200])
+        if state:
+            OAUTH_STATE.pop(state, None)
+        if is_browser_flow:
+            return _oauth_failure_redirect(err, return_to=return_to)
+        raise HTTPException(400, detail=f"OAuth error from Discord: {err}")
+
+    if not code:
+        if is_browser_flow:
+            return _oauth_failure_redirect("server_error", return_to=return_to)
+        raise HTTPException(status_code=400, detail="Missing code")
+
     if state_meta is None:
+        # An expired or replayed state. Common and benign for a real
+        # person (a signup tab left open past the state TTL); still
+        # fail-closed, just not onto a JSON page.
+        if is_browser_flow:
+            return _oauth_failure_redirect("expired_state")
         raise HTTPException(400, detail="Invalid or expired OAuth state - please retry login")
+    OAUTH_STATE.pop(state, None)
 
     data = {
         "client_id": DISCORD_CLIENT_ID,
@@ -1500,17 +1545,23 @@ async def callback(request: Request):
                 txt = await resp.text()
                 if resp.status != 200:
                     logging.error("Discord token exchange failed (%s): %s", resp.status, txt[:500])
+                    if is_browser_flow:
+                        return _oauth_failure_redirect("exchange_failed", return_to=return_to)
                     raise HTTPException(400, detail="OAuth token exchange failed - please retry login")
                 token_data = json.loads(txt)
 
         access_token = token_data.get("access_token")
         if not access_token:
             logging.error("No access_token in token_data: %s", token_data)
+            if is_browser_flow:
+                return _oauth_failure_redirect("exchange_failed", return_to=return_to)
             raise HTTPException(400, detail="OAuth failed (no access_token)")
 
         user_data = await get_discord_user_info(access_token)
         if not user_data or "id" not in user_data:
             logging.error("Failed to fetch user data: %s", user_data)
+            if is_browser_flow:
+                return _oauth_failure_redirect("exchange_failed", return_to=return_to)
             raise HTTPException(400, detail="Failed to fetch user data")
         user_id = user_data["id"]
 
@@ -1551,6 +1602,8 @@ async def callback(request: Request):
         raise
     except Exception as e:
         logging.exception("OAuth unexpected error: %s", e)
+        if is_browser_flow:
+            return _oauth_failure_redirect("server_error", return_to=return_to)
         raise HTTPException(500, detail="Authentication failed")
 
 @app.get("/api/logout")

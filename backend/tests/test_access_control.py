@@ -294,3 +294,84 @@ class TestHomeFeedGate:
         card = _home_card()
         card["someNewProfitField"] = 99999
         assert "someNewProfitField" not in preview_dashboard_recommendation(card)
+
+
+# ---------------------------------------------------------------------------
+# Signing in, when it goes wrong
+# ---------------------------------------------------------------------------
+#
+# The OAuth callback is reached by top-level navigation from Discord, not
+# by XHR. Every failure in it used to raise HTTPException, which rendered
+# a raw JSON body on a blank page with no way back - and the single most
+# common one is a person pressing Cancel on the Discord consent dialog,
+# which is not an error at all.
+
+import os as _os  # noqa: E402
+import re  # noqa: E402
+
+_os.environ.setdefault("DATABASE_URL", "postgresql://placeholder/placeholder")
+_os.environ.setdefault("SECRET_KEY", "test-only-placeholder-not-a-real-key")
+_os.environ.setdefault("ENV", "test")
+
+
+class TestOAuthFailuresLandSomewhereUsable:
+    def test_a_cancelled_sign_in_goes_back_to_signup(self):
+        import main
+
+        response = main._oauth_failure_redirect("access_denied")
+        assert response.status_code in (307, 302)
+        assert "/#/signup?error=access_denied" in response.headers["location"]
+
+    def test_the_origin_is_carried_back_so_the_retry_lands_where_they_started(self):
+        import main
+
+        location = main._oauth_failure_redirect("access_denied", return_to="/trade-finder").headers["location"]
+        assert "from=%2Ftrade-finder" in location
+
+    def test_a_bare_root_origin_is_not_carried_as_noise(self):
+        import main
+
+        assert "from=" not in main._oauth_failure_redirect("access_denied", return_to="/").headers["location"]
+
+    def test_nothing_from_discord_is_reflected_into_the_url(self):
+        # `error` and `error_description` arrive on a URL anyone can
+        # construct. Only our own allow-listed codes reach the address bar.
+        import main
+
+        location = main._oauth_failure_redirect("<script>alert(1)</script>").headers["location"]
+        assert "script" not in location
+        assert "error=server_error" in location
+
+    def test_every_code_the_callback_can_emit_is_allow_listed(self):
+        import inspect
+
+        import main
+
+        source = inspect.getsource(main.callback)
+        emitted = set(re.findall(r'_oauth_failure_redirect\(\s*"([a-z_]+)"', source))
+        assert emitted, "the callback no longer redirects on failure"
+        assert emitted <= main._OAUTH_ERROR_CODES, emitted - main._OAUTH_ERROR_CODES
+
+    def test_the_state_check_still_fails_closed(self):
+        # Redirecting instead of raising must not have turned the CSRF
+        # check into a fail-open path: an unknown state still never
+        # reaches the token exchange.
+        import inspect
+
+        import main
+
+        source = inspect.getsource(main.callback)
+        state_check = source.index("if state_meta is None:")
+        exchange = source.index("DISCORD_OAUTH_TOKEN")
+        assert state_check < exchange, "the OAuth state is no longer validated before the code is spent"
+        assert "expired_state" in source[state_check:exchange]
+
+    def test_the_extension_flow_still_gets_an_error_not_a_redirect(self):
+        # There is no page to send an extension's OAuth tab back to.
+        import inspect
+
+        import main
+
+        source = inspect.getsource(main.callback)
+        assert "is_browser_flow" in source
+        assert 'state_meta.get("flow") == "dashboard"' in source

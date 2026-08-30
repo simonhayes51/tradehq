@@ -34,6 +34,21 @@ const FREE_INCLUDES = [
   "Log your trades and see your real profit after EA's 5% tax",
 ];
 
+// The codes main.py's _oauth_failure_redirect can send, and what each
+// one means to the person reading it. Nothing from Discord's own
+// error_description is ever rendered - it arrives on a URL anyone can
+// construct, and this page would be reflecting it.
+const OAUTH_ERRORS = {
+  access_denied:
+    "You cancelled the Discord sign-in. Nothing was created — try again when you're ready.",
+  expired_state:
+    "That sign-in link had expired. This happens if the page sat open for a while — start again and it'll work.",
+  exchange_failed:
+    "Discord didn't finish signing you in. This is usually temporary — please try again.",
+  server_error:
+    "Something went wrong on our side while signing you in. Please try again.",
+};
+
 export default function Signup() {
   const { isAuthenticated, login, checkAuthStatus } = useAuth();
   const [searchParams] = useSearchParams();
@@ -60,13 +75,7 @@ export default function Signup() {
   // a page that looked exactly like a fresh one, so the only signal that
   // anything had gone wrong was that they were still signed out.
   useEffect(() => {
-    if (oauthError) {
-      setError(
-        oauthError === "access_denied"
-          ? "You cancelled the Discord sign-in. Nothing was created — try again when you're ready."
-          : "Discord sign-in didn't complete. This is usually temporary — please try again.",
-      );
-    }
+    if (oauthError) setError(OAUTH_ERRORS[oauthError] || OAUTH_ERRORS.server_error);
   }, [oauthError]);
 
   if (isAuthenticated) {

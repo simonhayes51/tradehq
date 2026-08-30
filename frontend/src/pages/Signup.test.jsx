@@ -82,9 +82,24 @@ describe("Signup failure handling", () => {
     expect(alert.textContent).toMatch(/Nothing was created/i);
   });
 
-  it("explains any other OAuth failure as temporary and retryable", () => {
-    renderSignup("/signup?error=server_error");
-    expect(screen.getByRole("alert").textContent).toMatch(/didn't complete.*try again/i);
+  it("explains an expired sign-in link as a restart, not a fault", () => {
+    renderSignup("/signup?error=expired_state");
+    expect(screen.getByRole("alert").textContent).toMatch(/had expired.*start again/i);
+  });
+
+  it("explains a failed token exchange as temporary and retryable", () => {
+    renderSignup("/signup?error=exchange_failed");
+    expect(screen.getByRole("alert").textContent).toMatch(/didn't finish.*try again/i);
+  });
+
+  it("never renders an error code it does not recognise", () => {
+    // The code arrives on a URL anyone can construct. An unknown one must
+    // fall back to our own sentence, never be echoed onto the page.
+    renderSignup("/signup?error=%3Cimg%20src%3Dx%20onerror%3Dalert(1)%3E");
+    const alert = screen.getByRole("alert");
+    expect(alert.textContent).toBe(
+      "Something went wrong on our side while signing you in. Please try again.",
+    );
   });
 
   it("shows an error rather than a dead button when login throws", async () => {
