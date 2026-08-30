@@ -52,7 +52,7 @@ export default function Players() {
 
   return (
     <main className="v2-destination">
-      <PageHead eyebrow="PLAYER DATABASE" title="Find any card" copy="Search by player name, then open the live v2 market analysis." />
+      <PageHead eyebrow="PLAYER DATABASE" title="Find any card" copy="Search any player by name, then open the card for live prices and what it's actually worth." />
       <label className="v2-search-box">
         <Search size={20} />
         <input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search a player…" />
