@@ -15,6 +15,8 @@ import MarketFreshness from "../../components/MarketFreshness";
 import { useFutggTradeFinder } from "../../hooks/useFutggMarket";
 import { buildWhyText } from "../../lib/tradeNarrative";
 import { PageHead } from "../Players/Players";
+import UpgradePrompt from "../../components/UpgradePrompt";
+import { GATED } from "../../lib/gatedFeatures";
 import { riskLabel, versionLabel } from "../../lib/format";
 import "./trade-finder.css";
 
@@ -60,6 +62,14 @@ export default function TradeFinder() {
   const set = (key) => (event) => setFilters((current) => ({ ...current, [key]: event.target.value }));
   const filtersActive = Object.keys(DEFAULTS).some((key) => filters[key] !== DEFAULTS[key]);
   const notDeployed = query.isError && [404, undefined].includes(query.error?.response?.status);
+  // 402 is the server refusing on plan grounds, and it is the ONLY thing
+  // that decides whether this page is locked. Reading the entitlement
+  // context instead would mean the page and the API could disagree - and
+  // the API is the one that is right.
+  const locked = query.isError && query.error?.response?.status === 402;
+  // 401: signed out. Same treatment - explain and offer the free account,
+  // rather than an error that reads like a fault.
+  const signedOut = query.isError && query.error?.response?.status === 401;
 
   return <main className="v2-destination trade-finder-page">
     <PageHead eyebrow="TRADE FINDER" title="Search every trade, your way" copy="Set your budget, minimum return, risk, position, rarity and sort order — every current live-priced trade is in scope here, not just the pre-filtered buy signals. Just want today's top picks with no setup? Try Opportunities." />
@@ -68,7 +78,7 @@ export default function TradeFinder() {
       <TrendingUp size={15} /> Just want the shortlist? Open Opportunities <ArrowRight size={14} />
     </Link>
 
-    <section className="finder-controls trade-finder-controls" aria-label="Trade filters">
+    {locked || signedOut ? null : <section className="finder-controls trade-finder-controls" aria-label="Trade filters">
       <div className="finder-control">
         <label htmlFor="finder-budget">Budget</label>
         <div className="finder-coin-input"><input id="finder-budget" inputMode="numeric" type="number" min="0" step="100" placeholder="Any budget" value={filters.budget} onChange={set("budget")}/></div>
@@ -131,19 +141,23 @@ export default function TradeFinder() {
         </select>
         <small>How matching trades are ordered</small>
       </div>
-    </section>
+    </section>}
 
-    <div className="finder-result-head">
-      <div><SlidersHorizontal size={16}/><strong>{query.isLoading ? "Scanning for trades…" : `${items.length} matching ${items.length === 1 ? "trade" : "trades"}`}</strong></div>
-      {filtersActive ? <button onClick={() => setFilters(DEFAULTS)}><RotateCcw size={14}/> Reset filters</button> : null}
-    </div>
+    {locked || signedOut ? null : (
+      <div className="finder-result-head">
+        <div><SlidersHorizontal size={16}/><strong>{query.isLoading ? "Scanning for trades…" : `${items.length} matching ${items.length === 1 ? "trade" : "trades"}`}</strong></div>
+        {filtersActive ? <button onClick={() => setFilters(DEFAULTS)}><RotateCcw size={14}/> Reset filters</button> : null}
+      </div>
+    )}
 
-    {query.isLoading ? (
+    {locked || signedOut ? (
+      <UpgradePrompt {...GATED.trade_finder} />
+    ) : query.isLoading ? (
       <EmptyState icon={<SlidersHorizontal size={25}/>} text="Checking the latest trade opportunities…" />
     ) : notDeployed ? (
       <EmptyState icon={<ShieldAlert size={25}/>} error text="Trade Finder isn't available right now. Please check back shortly." action={<button onClick={() => query.refetch()}>Try again</button>} />
     ) : query.isError ? (
-      <EmptyState icon={<ShieldAlert size={25}/>} error text="Trade Finder could not load the opportunity feed." action={<button onClick={() => query.refetch()}>Try again</button>} />
+      <EmptyState icon={<ShieldAlert size={25}/>} error text="Trade Finder could not load results just now. This is a fault on our side, not a limit on your account." action={<button onClick={() => query.refetch()}>Try again</button>} />
     ) : items.length ? (
       <section className="finder-grid">
         {items.map((item) => {

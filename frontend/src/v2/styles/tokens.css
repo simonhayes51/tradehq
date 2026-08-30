@@ -296,3 +296,28 @@
 }
 .v2-root .v2-empty-state a:hover,
 .v2-root .v2-empty-state button:hover { border-color: var(--v2-accent); color: var(--v2-accent); }
+
+/* A lock beside a nav item a Free member can see but not use. Shown
+   rather than hidden: hiding Trade Finder means a Free member never
+   learns it exists, which is the thing they would be upgrading for. */
+.v2-global-nav .nav-locked { color: #8a8a8a; }
+.v2-global-nav .nav-lock { margin-left: auto; flex: 0 0 auto; opacity: 0.8; }
+.v2-global-nav .nav-locked.active { color: #fff; }
+/* Visually hidden but read aloud - the lock icon is decorative, the
+   state belongs in the accessible name. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+@media (max-width: 800px) {
+  /* No room for a lock in a 5-across bottom bar; the page itself
+     explains. */
+  .v2-global-nav .nav-lock { display: none; }
+}

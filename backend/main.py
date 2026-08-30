@@ -35,7 +35,9 @@ from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 import inspect
 from pydantic import BaseModel, Field
 
+from app.auth.access import get_viewer, limit_reached
 from app.auth.entitlements import (
+    ELITE_ALERT_MAX,
     compute_entitlements,
     require_feature,
     invalidate_entitlements_cache,
@@ -126,6 +128,11 @@ DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET")
 DISCORD_REDIRECT_URI = os.getenv("DISCORD_REDIRECT_URI")
 SECRET_KEY = os.getenv("SECRET_KEY")
 FRONTEND_URL = os.getenv("FRONTEND_URL", "https://app.eafc.live").rstrip("/")
+
+# Trial length, in days. A pricing decision, so it belongs in
+# configuration and not in a request body - see create_checkout_session().
+# 0 disables the trial entirely.
+STRIPE_TRIAL_DAYS = int(os.getenv("STRIPE_TRIAL_DAYS", "7"))
 PORT = int(os.getenv("PORT", 8000))
 
 ENV = os.getenv("ENV", "production").lower()
@@ -1457,26 +1464,71 @@ async def price_history(playerId: int, platform: str = "ps", tf: str = "today"):
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Upstream error: {e}")
 
+# Only these reach the browser's address bar. Discord's own `error` and
+# `error_description` are attacker-influenceable text arriving on a URL we
+# then reflect into our own page, so nothing from the query string is
+# passed through - it is mapped onto one of these codes or dropped.
+# Signup.jsx renders the customer-facing sentence for each.
+_OAUTH_ERROR_CODES = frozenset({"access_denied", "expired_state", "exchange_failed", "server_error"})
+
+
+def _oauth_failure_redirect(code: str, *, return_to: Optional[str] = None) -> RedirectResponse:
+    """Send a failed sign-in back to signup with something it can explain.
+
+    Every failure below used to raise HTTPException. The customer arrives
+    here by top-level navigation from Discord, not by XHR, so that
+    rendered a raw JSON body on a blank page with no way back - and the
+    single most common failure is someone pressing Cancel on the Discord
+    consent dialog, which is not an error at all.
+    """
+    safe = code if code in _OAUTH_ERROR_CODES else "server_error"
+    params = {"error": safe}
+    if return_to and return_to != "/":
+        params["from"] = return_to
+    return RedirectResponse(f"{FRONTEND_URL}/#/signup?{urlencode(params)}")
+
+
 @app.get("/api/callback")
 async def callback(request: Request):
     err = request.query_params.get("error")
     err_desc = request.query_params.get("error_description")
-    if err:
-        raise HTTPException(400, detail=f"OAuth error from Discord: {err}: {err_desc or ''}".strip())
-
     code = request.query_params.get("code")
     state = request.query_params.get("state")
-    if not code:
-        raise HTTPException(status_code=400, detail="Missing code")
 
     # CSRF: the state parameter MUST match one we issued, checked BEFORE we
     # spend the authorization code. Previously the dashboard flow accepted
     # callbacks with a missing/unknown state (fail-open), which allows OAuth
     # login CSRF - review issue C4.
+    #
+    # Read (not popped) first, because whether a failure below should be a
+    # browser redirect or a raw error depends on which flow this is, and
+    # the extension flow has no page to send anyone back to.
     _prune_oauth_state()
-    state_meta = OAUTH_STATE.pop(state, None) if state else None
+    state_meta = OAUTH_STATE.get(state) if state else None
+    is_browser_flow = state_meta is None or state_meta.get("flow") == "dashboard"
+    return_to = (state_meta or {}).get("return_to")
+
+    if err:
+        logging.info("Discord OAuth returned an error: %s (%s)", err, (err_desc or "")[:200])
+        if state:
+            OAUTH_STATE.pop(state, None)
+        if is_browser_flow:
+            return _oauth_failure_redirect(err, return_to=return_to)
+        raise HTTPException(400, detail=f"OAuth error from Discord: {err}")
+
+    if not code:
+        if is_browser_flow:
+            return _oauth_failure_redirect("server_error", return_to=return_to)
+        raise HTTPException(status_code=400, detail="Missing code")
+
     if state_meta is None:
+        # An expired or replayed state. Common and benign for a real
+        # person (a signup tab left open past the state TTL); still
+        # fail-closed, just not onto a JSON page.
+        if is_browser_flow:
+            return _oauth_failure_redirect("expired_state")
         raise HTTPException(400, detail="Invalid or expired OAuth state - please retry login")
+    OAUTH_STATE.pop(state, None)
 
     data = {
         "client_id": DISCORD_CLIENT_ID,
@@ -1493,17 +1545,23 @@ async def callback(request: Request):
                 txt = await resp.text()
                 if resp.status != 200:
                     logging.error("Discord token exchange failed (%s): %s", resp.status, txt[:500])
+                    if is_browser_flow:
+                        return _oauth_failure_redirect("exchange_failed", return_to=return_to)
                     raise HTTPException(400, detail="OAuth token exchange failed - please retry login")
                 token_data = json.loads(txt)
 
         access_token = token_data.get("access_token")
         if not access_token:
             logging.error("No access_token in token_data: %s", token_data)
+            if is_browser_flow:
+                return _oauth_failure_redirect("exchange_failed", return_to=return_to)
             raise HTTPException(400, detail="OAuth failed (no access_token)")
 
         user_data = await get_discord_user_info(access_token)
         if not user_data or "id" not in user_data:
             logging.error("Failed to fetch user data: %s", user_data)
+            if is_browser_flow:
+                return _oauth_failure_redirect("exchange_failed", return_to=return_to)
             raise HTTPException(400, detail="Failed to fetch user data")
         user_id = user_data["id"]
 
@@ -1544,6 +1602,8 @@ async def callback(request: Request):
         raise
     except Exception as e:
         logging.exception("OAuth unexpected error: %s", e)
+        if is_browser_flow:
+            return _oauth_failure_redirect("server_error", return_to=return_to)
         raise HTTPException(500, detail="Authentication failed")
 
 @app.get("/api/logout")
@@ -2258,8 +2318,34 @@ async def list_watchlist_alerts(user_id: str = Depends(get_current_user)):
 
 @app.post("/api/watchlist-alerts")
 async def create_watchlist_alert(
-    payload: WatchlistAlertCreate, user_id: str = Depends(get_current_user)
+    payload: WatchlistAlertCreate, request: Request, user_id: str = Depends(get_current_user)
 ):
+    # Alert rules had no cap at all. The poll loop evaluates every rule on
+    # every pass, so an unbounded free allowance is both a giveaway and a
+    # load problem - and "up to 3 active alerts" is only a product limit
+    # if something actually counts them.
+    #
+    # Counted BEFORE the upsert, and excluding this exact rule, because
+    # POST is an upsert on (user_id, card_id, platform, metric): editing
+    # an existing rule must not be refused for exceeding a limit it is
+    # already inside.
+    viewer = await get_viewer(request)
+    alert_max = int((await compute_entitlements(request))["limits"]["alerts_max"])
+    plat_for_count = (payload.platform or "ps").lower()
+    metric_for_count = payload.metric if payload.metric in ("price", "liquidity") else "price"
+    async with watchlist_pool.acquire() as w:
+        used = await w.fetchval(
+            """SELECT COUNT(*) FROM watchlist_alerts
+               WHERE user_id=$1
+                 AND NOT (card_id=$2 AND platform=$3 AND metric=$4)""",
+            user_id, int(payload.card_id), plat_for_count, metric_for_count,
+        )
+    if int(used or 0) >= alert_max:
+        raise limit_reached(
+            feature="realtime_alerts", used=int(used or 0), maximum=alert_max,
+            viewer=viewer, noun="price alerts", elite_maximum=ELITE_ALERT_MAX,
+        )
+
     qs = None
     qe = None
     if payload.quiet_start:
@@ -3159,6 +3245,15 @@ async def delete_account(
             await conn.execute("DELETE FROM trading_goals WHERE user_id=$1", user_id)
             await conn.execute("DELETE FROM portfolio WHERE user_id=$1", user_id)
             await conn.execute("DELETE FROM usersettings WHERE user_id=$1", user_id)
+            # Onboarding answers (migration 074) are the user's own stated
+            # preferences - coin budget, whether they want alerts - so they
+            # go with the account. Tolerated if the table isn't there yet:
+            # a pending migration must not be the reason someone cannot
+            # delete their data.
+            try:
+                await conn.execute("DELETE FROM member_onboarding WHERE user_id=$1", user_id)
+            except Exception:
+                logging.warning("account deletion: member_onboarding cleanup skipped", exc_info=True)
 
             has_billing_history = await conn.fetchval(
                 "SELECT EXISTS(SELECT 1 FROM subscriptions WHERE user_id=$1)", user_id
@@ -3190,6 +3285,10 @@ async def delete_account(
             logging.warning("account deletion: watchlist cleanup failed for %s", user_id, exc_info=True)
 
         request.session.clear()
+        # The tier is cached for up to ENTITLEMENTS_CACHE_TTL. A deleted
+        # account answering "elite" from cache for another minute is a
+        # deleted account that still has access.
+        invalidate_entitlements_cache(user_id)
 
         return {
             "message": "Account deleted" if profile_deleted else "Account deleted; billing history retained as required for accounting",
@@ -3759,6 +3858,95 @@ async def backtest(payload: Dict[str, Any]):
 
 # -------------- Billing & Account Endpoints --------------
 
+# Plan catalogue. ONE place that answers "what does Elite cost", read from
+# Stripe itself rather than from copy typed into a page.
+#
+# The failure this replaces: the Billing page said "£3/month", this
+# backend's own /api/billing/subscription said "£9.99/month", and the
+# actual charge was whatever the configured Stripe Price object cost. A
+# customer could be quoted one price at checkout and shown a different one
+# on their account page afterwards.
+_PLAN_KEYS = {
+    "monthly": ("STRIPE_MONTHLY_PRICE_ID", "price_monthly_premium", "Elite (monthly)"),
+    "season": ("STRIPE_SEASON_PRICE_ID", "price_season_premium", "Elite (season)"),
+}
+
+_CURRENCY_SYMBOLS = {"gbp": "£", "usd": "$", "eur": "€"}
+
+_plan_cache: Dict[str, Any] = {"at": 0.0, "value": None}
+_PLAN_CACHE_TTL = 600
+
+
+def _format_price(amount_minor: Optional[int], currency: str, interval: Optional[str]) -> Optional[str]:
+    if amount_minor is None:
+        return None
+    symbol = _CURRENCY_SYMBOLS.get((currency or "").lower(), "")
+    amount = amount_minor / 100
+    # Whole amounts read better without trailing zeros ("£3", not "£3.00").
+    rendered = f"{symbol}{amount:.0f}" if amount == int(amount) else f"{symbol}{amount:.2f}"
+    return f"{rendered}/{interval}" if interval else rendered
+
+
+async def _plan_catalogue() -> Dict[str, Any]:
+    """Live plan pricing from Stripe, cached briefly.
+
+    Degrades to `configured: False` with null prices rather than to a
+    guess: showing a made-up price is worse than showing none, and the
+    frontend can render "pricing unavailable" honestly.
+    """
+    now = time.time()
+    if _plan_cache["value"] is not None and now - _plan_cache["at"] < _PLAN_CACHE_TTL:
+        return _plan_cache["value"]
+
+    plans: Dict[str, Any] = {}
+    for key, (env_var, client_price_id, default_name) in _PLAN_KEYS.items():
+        stripe_price_id = os.getenv(env_var)
+        entry = {
+            "key": key,
+            "name": default_name,
+            "price_id": client_price_id,
+            "configured": bool(stripe_price_id),
+            "price_display": None,
+            "amount_minor": None,
+            "currency": None,
+            "interval": None,
+        }
+        if stripe_price_id:
+            try:
+                price = await asyncio.to_thread(stripe.Price.retrieve, stripe_price_id)
+                recurring = price.get("recurring") or {}
+                interval = recurring.get("interval")
+                count = recurring.get("interval_count") or 1
+                label = interval if count == 1 else f"{count} {interval}s"
+                entry.update({
+                    "amount_minor": price.get("unit_amount"),
+                    "currency": price.get("currency"),
+                    "interval": label,
+                    "price_display": _format_price(price.get("unit_amount"), price.get("currency"), label),
+                })
+            except Exception:
+                logger.warning("Could not read Stripe price for %s", key, exc_info=True)
+                entry["configured"] = False
+        plans[key] = entry
+
+    catalogue = {
+        "plans": plans,
+        "trial_days": STRIPE_TRIAL_DAYS,
+        "any_configured": any(p["configured"] for p in plans.values()),
+    }
+    _plan_cache.update({"at": now, "value": catalogue})
+    return catalogue
+
+
+@app.get("/api/billing/plans")
+async def get_billing_plans() -> Dict[str, Any]:
+    """Public: the pricing page and every upgrade prompt read from here, so
+    a price change in Stripe is reflected everywhere without a deploy and
+    without two copies of the number drifting apart."""
+    return await _plan_catalogue()
+
+
+
 @app.get("/api/billing/subscription")
 async def get_subscription_status(user_id: str = Depends(get_current_user), conn=Depends(get_db)):
     """Get current subscription status"""
@@ -3778,12 +3966,21 @@ async def get_subscription_status(user_id: str = Depends(get_current_user), conn
             return {"subscription": None}
 
         plan_id = subscription["plan_id"] or ""
-        is_yearly = "year" in plan_id.lower()
+        is_yearly = "year" in plan_id.lower() or "season" in plan_id.lower()
+        # The price shown here used to be the hardcoded string
+        # "£9.99/month" / "£99.99/year", while the Billing page's own
+        # hardcoded copy said "£3/month" / "£25/season", while Stripe
+        # charged whatever STRIPE_MONTHLY_PRICE_ID/STRIPE_SEASON_PRICE_ID
+        # actually cost. Three numbers, none of them necessarily right.
+        # Stripe is the only one that can be wrong in a way that matters,
+        # so it is now the source: see plan_catalogue().
+        catalogue = await _plan_catalogue()
+        plan = catalogue["plans"].get("season" if is_yearly else "monthly")
         return {
             "subscription": {
-                "plan_name": "Annual Premium" if is_yearly else "Monthly Premium",
+                "plan_name": (plan or {}).get("name") or ("Elite (season)" if is_yearly else "Elite (monthly)"),
                 "next_billing_date": subscription["current_period_end"].isoformat() if subscription["current_period_end"] else None,
-                "amount_display": "£99.99/year" if is_yearly else "£9.99/month",
+                "amount_display": (plan or {}).get("price_display"),
                 "status": subscription["status"],
                 "cancel_at_period_end": subscription["cancel_at_period_end"]
             }
@@ -3832,6 +4029,31 @@ async def create_checkout_session(
         if real_email:
             checkout_kwargs["customer_email"] = real_email
 
+        # Redirect targets and trial length are decided HERE, never by the
+        # request body.
+        #
+        # success_url/cancel_url used to come from `data`, so a caller
+        # could point a real Stripe Checkout session at any URL they
+        # liked - a phishing page carrying our branding and a genuine
+        # Stripe flow behind it.
+        #
+        # trial_period_days came from `data.get('trialDays', 7)` too, so
+        # `{"trialDays": 100000}` bought roughly 273 years of Elite for
+        # nothing. Trials are a pricing decision and now live in one
+        # env-controlled constant.
+        success_url = f"{FRONTEND_URL}/#/billing?payment=success&session_id={{CHECKOUT_SESSION_ID}}"
+        cancel_url = f"{FRONTEND_URL}/#/billing?payment=cancelled"
+
+        subscription_data = {
+            'metadata': {
+                'user_id': user_id,
+                'discord_id': user_id,
+                'referral_code': (await conn.fetchval("SELECT referred_by FROM users WHERE id=$1", user_id)) or ''
+            }
+        }
+        if STRIPE_TRIAL_DAYS > 0:
+            subscription_data['trial_period_days'] = STRIPE_TRIAL_DAYS
+
         session = stripe.checkout.Session.create(
             **checkout_kwargs,
             payment_method_types=['card'],
@@ -3840,21 +4062,14 @@ async def create_checkout_session(
                 'quantity': 1,
             }],
             mode='subscription',
-            success_url=data.get("successUrl", os.getenv("BILLING_SUCCESS_URL")),
-            cancel_url=data.get("cancelUrl", os.getenv("BILLING_CANCEL_URL")),
+            success_url=success_url,
+            cancel_url=cancel_url,
             metadata={
                 'user_id': user_id,
                 'billing_cycle': billing_cycle,
                 'referral_code': (await conn.fetchval("SELECT referred_by FROM users WHERE id=$1", user_id)) or ''
             },
-            subscription_data={
-                'trial_period_days': data.get('trialDays', 7),
-                'metadata': {
-                    'user_id': user_id,
-                    'discord_id': user_id,
-                    'referral_code': (await conn.fetchval("SELECT referred_by FROM users WHERE id=$1", user_id)) or ''
-                }
-            }
+            subscription_data=subscription_data,
         )
         return {"sessionId": session.id, "checkoutUrl": session.url}
     except Exception as e:
@@ -4195,6 +4410,13 @@ async def handle_payment_failed(invoice, conn):
                 (invoice.get('currency') or 'gbp').upper(),
                 'failed'
             )
+            # Stripe also sends customer.subscription.updated (-> past_due)
+            # for this, and that handler invalidates too - but the two
+            # events arrive independently and in either order, and a cached
+            # entitlement computed between them would describe a billing
+            # state that no longer exists. Invalidating in both places is
+            # idempotent; relying on the ordering is not.
+            invalidate_entitlements_cache(subscription['user_id'])
 
 # Add endpoint to check Discord connection status
 @app.get("/api/user/discord-status")

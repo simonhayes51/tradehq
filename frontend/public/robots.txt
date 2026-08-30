@@ -1,0 +1,12 @@
+# One build serves two hosts (see src/lib/domains.js): eafc.live, the
+# public marketing site, and app.eafc.live, the signed-in application.
+# A static robots.txt cannot differ per host, so app.eafc.live is kept out
+# of search results by the noindex meta tag index.html adds for any
+# hostname that is not eafc.live - not by this file.
+#
+# What IS host-independent, and belongs here: the API is not content.
+User-agent: *
+Disallow: /api/
+Allow: /
+
+Sitemap: https://eafc.live/sitemap.xml

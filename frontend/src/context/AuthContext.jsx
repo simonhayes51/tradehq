@@ -1,5 +1,6 @@
 import { createContext, useContext, useReducer, useEffect } from 'react';
 import api from '../axios';
+import { queryClient } from '../lib/queryClient';
 
 const AuthContext = createContext();
 
@@ -84,9 +85,20 @@ export const AuthProvider = ({ children }) => {
   const logout = async () => {
     try {
       await api.get('/api/logout');
-      dispatch({ type: 'SET_UNAUTHENTICATED' });
     } catch (error) {
       console.error('Logout error:', error);
+    } finally {
+      // Clear the cache BEFORE flipping to unauthenticated, and do it
+      // whether or not the server call succeeded.
+      //
+      // Without this the previous user's watchlist, portfolio, alerts and
+      // unredacted Elite opportunities stayed in the react-query cache in
+      // memory. On a shared machine the next person to sign in would be
+      // shown them - react-query keys are not scoped by user, so a cache
+      // hit is a cache hit. `clear()` rather than `invalidateQueries()`
+      // because invalidation keeps the stale data and merely refetches:
+      // it would still be rendered in the meantime.
+      queryClient.clear();
       dispatch({ type: 'SET_UNAUTHENTICATED' });
     }
   };

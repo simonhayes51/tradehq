@@ -25,7 +25,8 @@ from typing import Any, Dict, Optional, AsyncGenerator
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from app.auth.entitlements import compute_entitlements
+from app.auth.access import get_viewer, limit_reached
+from app.auth.entitlements import ELITE_WATCHLIST_MAX, compute_entitlements
 from app.db import get_core_pool, get_watchlist_db, get_player_db, get_player_pool
 from app.futbin_client import fetch_price_by_card_id
 from app.services.market_data_provider import FutggMarketDataProvider
@@ -308,14 +309,14 @@ async def add_watch_item(payload: WatchlistCreate, request: Request, wdb = Depen
     )
     max_allowed = int(ent["limits"]["watchlist_max"])
     if int(used or 0) >= max_allowed:
-        raise HTTPException(
-            402,
-            detail={
-                "error": "limit_reached",
-                "feature": "watchlist",
-                "message": f"Free plan allows up to {max_allowed} watchlist players.",
-                "upgrade_url": "/billing",
-            },
+        # Shared refusal shape, and phrased from the caller's real tier.
+        # This used to say "Free plan allows up to N" unconditionally, so
+        # an Elite member hitting the 500-card ceiling was told they were
+        # on the free plan.
+        raise limit_reached(
+            feature="watchlist", used=int(used or 0), maximum=max_allowed,
+            viewer=await get_viewer(request), noun="cards on your watchlist",
+            elite_maximum=ELITE_WATCHLIST_MAX,
         )
 
     source = payload.source if payload.source in VALID_SOURCES else "futbin"

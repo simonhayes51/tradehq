@@ -64,3 +64,20 @@
   .opp-crosslinks { flex-direction: column; }
   .opp-crosslinks .opp-crosslink { width: 100%; }
 }
+
+/* The Free allowance, stated above the feed. Not a promotional banner -
+   it exists to answer "why are only two of these readable" before the
+   reader has to work it out from the locked cards. */
+.free-pick-banner {
+  display: grid;
+  gap: 5px;
+  margin-bottom: 14px;
+  padding: 13px 15px;
+  border: 1px solid var(--v2-border, #2c2c2c);
+  border-left: 3px solid #39ff8a;
+  border-radius: 5px;
+  background: #141414;
+}
+.free-pick-banner strong { font-size: 14px; }
+.free-pick-banner span { color: #b0b0b0; font-size: 12.5px; line-height: 1.5; }
+.free-pick-banner b { color: #fff; }

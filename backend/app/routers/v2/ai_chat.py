@@ -33,6 +33,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from app.auth.access import get_viewer
 from app.auth.entitlements import compute_entitlements, require_feature
 from app.routers.v2.futgg_market import (
     get_player_detail as futgg_player_detail,
@@ -48,6 +49,14 @@ router = APIRouter(prefix="/ai", tags=["v2-ai-chat"])
 
 OPENAI_MODEL = os.getenv("OPENAI_CHAT_MODEL", "gpt-4o-mini")
 _RATE_LIMIT_PER_MINUTE = int(os.getenv("AI_CHAT_RATE_LIMIT_PER_MINUTE", "6"))
+# The per-minute limit stops a burst; it does not stop sustained use. At 6
+# a minute an account could run over eight thousand model calls a day, and
+# every one of them costs real money and reads the full paid dataset - so
+# the plan's promise of "the trading assistant" needs a documented daily
+# ceiling as well, not just a throttle. Generous on purpose: this is a
+# fair-use backstop against automation, not a per-day allowance anyone
+# using the product as a trading assistant should ever meet.
+_RATE_LIMIT_PER_DAY = int(os.getenv("AI_CHAT_RATE_LIMIT_PER_DAY", "200"))
 
 _redis = None
 _redis_checked = False
@@ -78,30 +87,64 @@ async def _get_redis():
 _in_process_window: Dict[str, tuple[float, int]] = {}
 
 
+_in_process_day: Dict[str, tuple[float, int]] = {}
+
+_MINUTE_MESSAGE = "Too many chat messages - please wait a moment."
+_DAY_MESSAGE = (
+    "You've reached today's fair-use limit for the assistant. It resets in a few hours - "
+    "everything else on your plan is unaffected."
+)
+
+
 async def _check_rate_limit(user_id: str) -> None:
+    """Two windows: a per-minute throttle and a per-day fair-use ceiling.
+
+    Both are enforced here, server-side, on the chat endpoint itself -
+    never in the chat page, which cannot be trusted to count anything.
+    """
     r = await _get_redis()
     if r is not None:
         try:
-            bucket = f"rl:ai_chat:{user_id}:{int(time.time() // 60)}"
-            n = await r.incr(bucket)
+            now = time.time()
+            minute = f"rl:ai_chat:{user_id}:{int(now // 60)}"
+            n = await r.incr(minute)
             if n == 1:
-                await r.expire(bucket, 90)
+                await r.expire(minute, 90)
             if n > _RATE_LIMIT_PER_MINUTE:
-                raise HTTPException(429, "Too many chat messages - please wait a moment.")
+                raise HTTPException(429, _MINUTE_MESSAGE)
+
+            day = f"rl:ai_chat:day:{user_id}:{int(now // 86400)}"
+            d = await r.incr(day)
+            if d == 1:
+                await r.expire(day, 90_000)
+            if d > _RATE_LIMIT_PER_DAY:
+                raise HTTPException(429, _DAY_MESSAGE)
             return
         except HTTPException:
             raise
         except Exception:
             pass  # Redis hiccup -> fall through to in-process limiter
 
+    # In-process fallback. Per-worker rather than per-account across the
+    # fleet, so it is a weaker ceiling than the Redis path - which is why
+    # Redis is the configured backend in production and this exists only
+    # so a Redis outage degrades the limit rather than removing it.
     now = time.time()
     window_start, count = _in_process_window.get(user_id, (now, 0))
     if now - window_start >= 60:
         _in_process_window[user_id] = (now, 1)
+    elif count >= _RATE_LIMIT_PER_MINUTE:
+        raise HTTPException(429, _MINUTE_MESSAGE)
+    else:
+        _in_process_window[user_id] = (window_start, count + 1)
+
+    day_start, day_count = _in_process_day.get(user_id, (now, 0))
+    if now - day_start >= 86_400:
+        _in_process_day[user_id] = (now, 1)
         return
-    if count >= _RATE_LIMIT_PER_MINUTE:
-        raise HTTPException(429, "Too many chat messages - please wait a moment.")
-    _in_process_window[user_id] = (window_start, count + 1)
+    if day_count >= _RATE_LIMIT_PER_DAY:
+        raise HTTPException(429, _DAY_MESSAGE)
+    _in_process_day[user_id] = (day_start, day_count + 1)
 
 
 class ChatMessage(BaseModel):
@@ -249,7 +292,35 @@ def _chat_safe_card(detail: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+# Defence in depth. The /chat endpoint is already Elite-gated, so in
+# principle no Free caller reaches these tools at all. This check exists
+# anyway because the tool layer is the thing that actually reads premium
+# data, and a future change - a free "demo" mode, a shared handler, a new
+# entry point - would otherwise silently turn the model into an
+# unauthenticated proxy for the paid feed. A model that can be talked into
+# calling a tool is only as safe as the tool.
+_TOOL_FEATURE = {
+    "resolve_and_evaluate_card": "opportunity_feed",
+    "find_trades_for_budget": "trade_finder",
+    "get_track_record": "full_track_record",
+}
+
+
 async def _run_tool(request: Request, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+    viewer = await get_viewer(request)
+    required = _TOOL_FEATURE.get(name)
+    if required and not viewer.has(required):
+        # Returned as a tool RESULT, not raised: the model needs to be
+        # able to tell the user it cannot answer, and an exception here
+        # would abort the whole turn with no explanation.
+        return {
+            "error": "not_available_on_this_plan",
+            "explanation": (
+                "This lookup is part of the Elite plan. Say so plainly and do not "
+                "guess or estimate the answer from anything else."
+            ),
+        }
+
     if name == "resolve_and_evaluate_card":
         query = str(args.get("query") or "").strip()
         if not query:
@@ -302,7 +373,10 @@ async def _run_tool(request: Request, name: str, args: Dict[str, Any]) -> Dict[s
         }
 
     if name == "get_track_record":
-        record = await track_record(request)
+        # Exhaustive call, same rule as the futgg_market handlers: an
+        # omitted argument on a route function keeps its Depends() object
+        # rather than becoming a value.
+        record = await track_record(request, window="90d", viewer=viewer)
         published = record.get("published") or {}
         # Only the PUBLISHED half is exposed. model_validation is internal
         # engine diagnostics on a much larger, never-shown dataset - it is

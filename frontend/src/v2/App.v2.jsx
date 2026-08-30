@@ -14,6 +14,7 @@ import Opportunities from "./pages/Opportunities/Opportunities";
 import Account from "./pages/Account/Account";
 import Chat from "./pages/Chat/Chat";
 import TrackRecord from "./pages/TrackRecord/TrackRecord";
+import Onboarding from "./pages/Onboarding/Onboarding";
 import Billing from "./pages/Billing/Billing";
 import DiscordFeed from "./pages/DiscordFeed/DiscordFeed";
 
@@ -40,6 +41,11 @@ export default function V2App() {
           removed is the claim to users that it is a shipped feature.
           Old links land on Opportunities rather than a dead route. */}
       <Route path="investments" element={<Navigate to="/opportunities" replace />} />
+      {/* Where signup lands a new member. Deliberately outside
+          ShellLayout: a welcome flow with the full app navigation around
+          it invites the member to wander off mid-flow, and the nav is
+          exactly what onboarding is meant to explain. */}
+      <Route path="welcome" element={<Onboarding />} />
       {/* The full performance record. Was the largest section of the
           homepage; it is reference material, so it is a page. */}
       <Route path="track-record" element={<ShellLayout><TrackRecord /></ShellLayout>} />

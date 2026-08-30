@@ -50,10 +50,19 @@ importScripts("debug-flag.js", "config.js", "intelligence-cache.js");
       const res = await fetch(url, {
         method: "GET",
         signal: controller.signal,
-        // Explicitly no credentials: this is a plain public GET against
-        // our own backend, never the EA session (which this worker has
-        // no access to regardless).
-        credentials: "omit",
+        // Sends the EAFC Live session cookie (never the EA session, which
+        // this worker has no access to regardless). It used to be
+        // `credentials: "omit"`, which meant the overlay asked for the
+        // trade plan anonymously - and got it, because the endpoint was
+        // ungated. Now that the endpoint enforces access, an Elite
+        // member's overlay only shows their trade plan if their session
+        // travels with the request.
+        //
+        // Requires api.eafc.live to allow this extension's origin with
+        // credentials - see DEPLOY notes. Without that the request still
+        // succeeds, just anonymously, and the overlay renders its locked
+        // state rather than breaking.
+        credentials: "include",
         headers: { Accept: "application/json" },
       });
 

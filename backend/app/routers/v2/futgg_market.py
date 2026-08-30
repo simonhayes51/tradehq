@@ -15,12 +15,25 @@ themselves reading only futgg_players/futgg_bin_history/
 futgg_sales_history/futgg_market_snapshot (migrations/038) - never the
 legacy fut_players/sales_history/bin_history tables.
 
-Ungated (no entitlement check): this is new provider-neutral surface,
-not a replacement for any existing gated feature - mirrors the precedent
-already set by GET /api/v2/market/regime (see app/routers/v2/market.py's
-own comment on why that route is free). If/when product wants a teaser/
-paid split here, follow app/routers/fair_value.py's _teaser() convention
-on top of this router rather than inside the provider/intelligence layers.
+ACCESS. This router used to be entirely ungated, which meant an
+anonymous `curl /api/v2/opportunities` returned the complete paid feed -
+every recommended entry, sell target, expected profit and confidence
+score - to anyone who asked. The engine and the scoring are unchanged;
+what changed is that every response now passes through
+app/auth/access.py's serialiser, which builds a narrow preview shape for
+callers who have not paid rather than sending the full payload and
+trusting the client to hide it.
+
+  /opportunities        all three states; Free sees the day's free picks
+                        in full and previews of the rest
+  /trade-finder         Elite only (402 otherwise)
+  /trade-finder/strategy Elite only (402 otherwise)
+  /players              search and identity are free; per-card
+                        intelligence is unlocked per viewer
+  /players/{id}         as above - the card page is the free hook
+
+See app/services/free_picks.py for how the daily free picks are chosen
+and why they are persisted.
 """
 from __future__ import annotations
 
@@ -33,8 +46,16 @@ import asyncpg
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
+from app.auth.access import (
+    Viewer, get_viewer, serialise_card_detail, serialise_opportunities,
+)
+from app.auth.entitlements import require_feature
 from app.db import get_core_pool
 from app.routers.admin import require_admin
+from app.services.content_day import content_day_key
+from app.services.free_picks import (
+    free_pick_meta, resolve_pick_ids, unlocked_pick_ids,
+)
 from app.services.futgg_intelligence import (
     DEFAULT_MAX_ACCEPTABLE_PRICE_AGE_MINUTES,
     MAX_ACCEPTABLE_PRICE_AGE_MINUTES_BY_TIER,
@@ -62,6 +83,13 @@ from app.services.strategy_definitions import (
 )
 
 router = APIRouter(tags=["v2-futgg-market"])
+
+# Named so it is overridable in tests via app.dependency_overrides.
+# require_feature() builds a new closure per call, and an anonymous
+# closure buried in a Depends() cannot be addressed by identity - which
+# would leave the only way to test these handlers being to weaken the
+# gate itself.
+require_trade_finder = require_feature("trade_finder")
 log = logging.getLogger("futgg_market")
 
 DEFAULT_PAGE_SIZE = 25
@@ -452,7 +480,9 @@ def _score_and_filter(
 
 @router.get("/players/{card_id}")
 async def get_player_detail(
-    card_id: int, provider: FutggMarketDataProvider = ProviderDep,
+    card_id: int,
+    provider: FutggMarketDataProvider = ProviderDep,
+    viewer: Viewer = Depends(get_viewer),
 ) -> Dict[str, Any]:
     row = await provider.get_player(card_id)
     if row is None:
@@ -483,12 +513,22 @@ async def get_player_detail(
     # Flattened onto the top level (frontend reads e.g. data.current_bin
     # directly) as well as under "player"/"intelligence" for consumers
     # that prefer the grouped shape.
-    return {
+    payload = {
         "source": "futgg",
         **_item_with_intelligence(row, ci),
         "player": _serialize_player(row),
         "intelligence": _serialize_intelligence(ci),
     }
+    # The card page is the free hook: search any player, see the live
+    # price, the fair value, the trend and the sales. What it must not be
+    # is a way around the two-picks-a-day limit - a Free member who can
+    # read the entry and target for any card they can name has a limit
+    # enforced by nothing. So the executable plan is unlocked only for
+    # today's free picks.
+    if not viewer.has("opportunity_feed"):
+        unlocked = await unlocked_pick_ids() if viewer.is_free else []
+        payload = serialise_card_detail(payload, viewer, unlocked_ids=unlocked)
+    return payload
 
 
 @router.get("/players/{card_id}/prices")
@@ -576,6 +616,53 @@ async def get_player_sales(
     }
 
 
+# The candidate pool the day's free picks are chosen from.
+#
+# Deliberately takes NO caller filters. /opportunities used to resolve the
+# picks from whatever the requester had filtered to, and because the
+# selection is persisted once per content day with ON CONFLICT DO NOTHING,
+# the first Free member of the day to load the page with (say) risk=low
+# decided everyone else's picks from a pool nobody else was looking at.
+# "The same two picks for every Free member" cannot be true if the pool
+# depends on the requester.
+#
+# Home (dashboard.py) resolves through this same function rather than its
+# own scan, so whichever page a Free member opens first lands on the
+# identical answer - both the ranking and the pool are the same, and the
+# selection itself is a pure function of (pool, content day).
+async def free_pick_candidates(provider: "FutggMarketDataProvider") -> List[Dict[str, Any]]:
+    rows = _apply_filters_in_python(
+        await _segmented_candidates(provider),
+        _filters_from_query(None, None, None, None, None, None, None, None, None, None, None),
+    )
+    scored = _score_and_filter(
+        rows, signals={"buy", "strong_buy"},
+        sales_by_card=await _sales_for_rows(provider, rows),
+    )
+    scored.sort(key=_opportunity_sort_key)
+    return [_item_with_intelligence(row, ci) for row, ci in scored]
+
+
+# The one opportunity ranking, named once so /opportunities and the free
+# pick pool cannot drift apart. strong_buy first, then expected ROI, then
+# expected profit and confidence, then card_id as a final deterministic
+# tiebreak. Every sort in this file ends in card_id for the same reason:
+# two candidates that score identically on every real field used to fall
+# back to whatever order Postgres happened to return them in for ties on
+# the live "ORDER BY sales_count DESC" scan - not a stable order across
+# requests - which is why the same page could show a different #1 on
+# every refresh with no underlying data change at all.
+def _opportunity_sort_key(pair):
+    row, ci = pair
+    return (
+        0 if ci.signal == "strong_buy" else 1,
+        -(float(ci.expected_roi) if ci.expected_roi is not None else 0.0),
+        -(float(ci.expected_profit_after_tax) if ci.expected_profit_after_tax is not None else 0.0),
+        -(ci.confidence_score or 0.0),
+        int(row["source_card_id"]),
+    )
+
+
 @router.get("/opportunities")
 async def list_opportunities(
     rating: Optional[int] = Query(None, ge=0, le=99),
@@ -598,6 +685,7 @@ async def list_opportunities(
     page: int = Query(1, ge=1),
     page_size: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
     provider: FutggMarketDataProvider = ProviderDep,
+    viewer: Viewer = Depends(get_viewer),
 ) -> Dict[str, Any]:
     rating_min, rating_max = _resolve_rating_bounds(rating, rating_min, rating_max)
     max_price_age_minutes = max_price_age_minutes if max_price_age_minutes is not None else max_price_age
@@ -612,28 +700,31 @@ async def list_opportunities(
         signals={"buy", "strong_buy"},
         sales_by_card=await _sales_for_rows(provider, rows),
     )
-    # Sort by opportunity strength: strong_buy first, then by expected ROI,
-    # then expected profit and confidence as further tiebreakers, then
-    # card_id as a final deterministic tiebreak. Every sort in this file
-    # ends in card_id for the same reason: two candidates that score
-    # identically on every real field used to fall back to whatever order
-    # Postgres happened to return them in for ties on the live "ORDER BY
-    # sales_count DESC" scan - not a stable order across requests - which
-    # is why the same page could show a different #1 on every refresh
-    # with no underlying data change at all.
-    scored.sort(
-        key=lambda pair: (
-            0 if pair[1].signal == "strong_buy" else 1,
-            -(float(pair[1].expected_roi) if pair[1].expected_roi is not None else 0.0),
-            -(float(pair[1].expected_profit_after_tax) if pair[1].expected_profit_after_tax is not None else 0.0),
-            -(pair[1].confidence_score or 0.0),
-            int(pair[0]["source_card_id"]),
-        )
-    )
+    scored.sort(key=_opportunity_sort_key)  # see _opportunity_sort_key
     total = len(scored)
     window = scored[(page - 1) * page_size: page * page_size]
     items = [_item_with_intelligence(row, ci) for row, ci in window]
-    return {"items": items, "page": page, "page_size": page_size, "total": total}
+
+    # The gate. Elite gets `items` as-is; everyone else gets the same list
+    # re-serialised through the preview allow-list, with the current
+    # content day's free picks left whole for signed-in Free members.
+    #
+    # The free picks are resolved from the day's own unfiltered candidate
+    # pool (free_pick_candidates), never from this request's filtered,
+    # paginated list - otherwise a Free member's two picks would depend on
+    # which page they asked for and which filters they happened to have
+    # set, which is exactly the "whichever two the query returns first"
+    # behaviour this replaces.
+    unlocked: List[int] = []
+    if viewer.is_free:
+        unlocked = await resolve_pick_ids(lambda: free_pick_candidates(provider))
+    payload = serialise_opportunities(items, viewer, unlocked_ids=unlocked)
+    payload.update({"page": page, "page_size": page_size, "total": total})
+    if not viewer.has("opportunity_feed"):
+        payload["free_picks"] = free_pick_meta(
+            unlocked=len([i for i in items if not i.get("locked")]) if viewer.is_free else 0,
+        )
+    return payload
 
 
 # The public homepage (eafc.live, no account) may show a card exists and
@@ -779,6 +870,11 @@ async def trade_finder(
     page: int = Query(1, ge=1),
     page_size: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
     provider: FutggMarketDataProvider = ProviderDep,
+    # Elite only, enforced here rather than by hiding the nav item.
+    # Trade Finder is the power-search over the WHOLE eligible universe -
+    # it is the paid feature, and a 402 is the honest answer to an
+    # unauthorised call, not an empty list that looks like a bad market.
+    _ent: Dict[str, Any] = Depends(require_trade_finder),
 ) -> Dict[str, Any]:
     if sort is not None:
         sort_by = _SORT_ALIASES.get(sort, sort)
@@ -1250,6 +1346,10 @@ async def strategy_finder(
     page: int = Query(1, ge=1),
     page_size: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
     provider: FutggMarketDataProvider = ProviderDep,
+    # Same gate as /trade-finder: the strategy tabs are the same paid
+    # search with a preset applied, so leaving them open would have made
+    # the Trade Finder gate decorative.
+    _ent: Dict[str, Any] = Depends(require_trade_finder),
 ) -> Dict[str, Any]:
     definition = get_strategy(strategy)
     if definition is None:

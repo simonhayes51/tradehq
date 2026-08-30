@@ -1,5 +1,5 @@
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { Briefcase, Home, SlidersHorizontal, Sparkles, Star, TrendingUp, User, Users } from "lucide-react";
+import { Briefcase, Home, Lock, SlidersHorizontal, Sparkles, Star, TrendingUp, User, Users } from "lucide-react";
 import { useEntitlements } from "../../context/EntitlementsContext";
 import { useAuth } from "../../context/AuthContext";
 import { useAiChatAvailability } from "../hooks/useAiChatAvailability";
@@ -9,7 +9,12 @@ const ITEMS = [
   // FUT.GG migration: Opportunities now has its own page/route (GET
   // /api/v2/opportunities) instead of redirecting into Trade Finder.
   { to: "/opportunities", label: "Opportunities", short: "Opps", icon: TrendingUp, match: (p) => p.startsWith("/opportunities") },
-  { to: "/trade-finder", label: "Trade Finder", short: "Finder", icon: SlidersHorizontal, match: (p) => p.startsWith("/trade-finder") },
+  // Shown to Free members with a lock rather than hidden. Hiding it means
+  // a Free member never learns Trade Finder exists, which is the thing
+  // they would be upgrading FOR; the lock is the advert. It is hidden
+  // from signed-out visitors, who should be deciding whether to make an
+  // account, not comparing plans.
+  { to: "/trade-finder", label: "Trade Finder", short: "Finder", icon: SlidersHorizontal, match: (p) => p.startsWith("/trade-finder"), eliteFeature: "trade_finder", authOnly: true },
   { to: "/players", label: "Players", short: "Players", icon: Users, match: (p) => p.startsWith("/players") },
   // Everything below needs a signed-in account - a signed-out visitor
   // sees only the genuinely public part of the app (Home/Opportunities/
@@ -18,7 +23,7 @@ const ITEMS = [
   // Also requires the assistant to actually be configured on this
   // deployment (GET /api/v2/ai/status) - a nav entry whose only possible
   // reply is "this isn't set up" is worse than no nav entry.
-  { to: "/chat", label: "AI Chat", short: "Chat", icon: Sparkles, match: (p) => p.startsWith("/chat"), authOnly: true, requiresAiChat: true },
+  { to: "/chat", label: "AI Chat", short: "Chat", icon: Sparkles, match: (p) => p.startsWith("/chat"), authOnly: true, requiresAiChat: true, eliteFeature: "ai_chat" },
   { to: "/watchlist", label: "Watchlist", short: "Watch", icon: Star, match: (p) => p.startsWith("/watchlist"), authOnly: true },
   { to: "/portfolio", label: "Portfolio", short: "Portfolio", icon: Briefcase, match: (p) => p.startsWith("/portfolio") || p.startsWith("/club"), authOnly: true },
   // Desktop reaches Account via the tier chip pinned to the bottom of the
@@ -30,15 +35,22 @@ const ITEMS = [
 export default function Sidebar() {
   const { pathname } = useLocation();
   const navigate = useNavigate();
-  const { isPremium, isAdmin, features } = useEntitlements();
+  const { isAdmin, features, tier: plan } = useEntitlements();
   const { isAuthenticated } = useAuth();
-  const tier = isAdmin || features.includes("opportunity_feed") ? "ELITE" : isPremium ? "PREMIUM" : "FREE";
+  // Two states, one name for each. This used to render "PREMIUM" for a
+  // paying customer and "ELITE" for an admin, which is the same
+  // vocabulary split the billing page had.
+  const tierLabel = plan === "elite" || isAdmin ? "ELITE" : "FREE";
   const aiChat = useAiChatAvailability();
   const items = ITEMS.filter(
     (item) =>
       (isAuthenticated || !item.authOnly) &&
       (!item.requiresAiChat || aiChat.data?.configured === true),
   );
+  // Whether to draw a lock beside an item. Derived from the entitlement
+  // features, which come from the server - the lock is a label, and the
+  // API is what actually refuses.
+  const isLocked = (item) => Boolean(item.eliteFeature) && !features.includes(item.eliteFeature);
 
   return <aside className="fut-side v2-global-nav">
     <Link className="fut-brand" to="/"><span className="brand-mark">EL</span><strong>EAFC <b>Live</b></strong></Link>
@@ -46,13 +58,26 @@ export default function Sidebar() {
       {items.map((item) => {
         const active = item.match(pathname);
         const Icon = item.icon;
-        return <Link key={item.to} to={item.to} aria-current={active ? "page" : undefined} className={`${active ? "active" : ""}${item.desktopOnly ? " desktop-only-nav" : ""}${item.mobileOnly ? " mobile-only-nav" : ""}`}>
-          <Icon/><span className="nav-full-label">{item.label}</span><span className="nav-short-label">{item.short}</span>
+        const locked = isLocked(item);
+        return <Link
+          key={item.to}
+          to={item.to}
+          aria-current={active ? "page" : undefined}
+          className={`${active ? "active" : ""}${item.desktopOnly ? " desktop-only-nav" : ""}${item.mobileOnly ? " mobile-only-nav" : ""}${locked ? " nav-locked" : ""}`}
+        >
+          <Icon/>
+          <span className="nav-full-label">{item.label}</span>
+          <span className="nav-short-label">{item.short}</span>
+          {/* aria-hidden on the icon, with the state in the link's own
+              accessible name, so a screen reader hears "Trade Finder,
+              Elite feature" once rather than an unlabelled icon. */}
+          {locked ? <Lock size={12} className="nav-lock" aria-hidden="true"/> : null}
+          {locked ? <span className="sr-only">Elite feature</span> : null}
         </Link>;
       })}
     </nav>
     {isAuthenticated
-      ? <button className={`account-chip ${pathname.startsWith("/account") ? "active" : ""}`} onClick={() => navigate("/account")}><User size={16}/><b>{tier}</b><span>Account</span></button>
+      ? <button className={`account-chip ${pathname.startsWith("/account") ? "active" : ""}`} onClick={() => navigate("/account")}><User size={16}/><b>{tierLabel}</b><span>Account</span></button>
       : <div className="account-chip auth-chip-pair">
           <button onClick={() => navigate("/login")}>Log in</button>
           <button className="primary" onClick={() => navigate("/signup")}>Start free</button>

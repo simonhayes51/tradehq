@@ -166,6 +166,14 @@ async function getJson(url, label) {
       url,
       timeout: CONFIG.REQUEST_TIMEOUT_MS,
       headers: { Accept: "application/json" },
+      // Sends the EAFC Live session cookie so an Elite member's overlay
+      // shows their trade plan. The companion endpoint used to be
+      // ungated, so this request being anonymous still returned the full
+      // plan; now an anonymous request gets the locked payload instead,
+      // which the overlay renders as a prompt rather than as an error.
+      // Never the EA session - this is a cross-origin request to
+      // api.eafc.live, not to EA.
+      withCredentials: true,
     });
   } catch (err) {
     const detail = (err && err.detail) || "unknown request failure";

@@ -1,0 +1,106 @@
+/* Mobile-first: this layout starts as a single column at 360px and only
+   gains width at the breakpoint. Signup is disproportionately mobile
+   traffic and the previous page was centred on a fixed max-width card
+   that left the comparison table overflowing on a phone. */
+.signup-page {
+  min-height: 100vh;
+  background: #0c0c0c;
+  color: #f8f8f8;
+  display: flex;
+  justify-content: center;
+  padding: 24px 16px calc(40px + env(safe-area-inset-bottom));
+  font-family: Inter, system-ui, sans-serif;
+}
+.signup-card { width: 100%; max-width: 460px; }
+.signup-brand {
+  display: inline-block;
+  margin-bottom: 28px;
+  color: #39ff8a;
+  font-weight: 800;
+  font-size: 15px;
+  letter-spacing: 0.02em;
+  text-decoration: none;
+}
+.signup-brand b { color: #fff; }
+.signup-card h1 { margin: 0 0 10px; font-size: 30px; line-height: 1.1; letter-spacing: -0.02em; }
+.signup-lede { margin: 0 0 24px; color: #b4b4b4; font-size: 15px; line-height: 1.55; }
+.signup-includes { margin: 0 0 26px; padding: 0; list-style: none; display: grid; gap: 12px; }
+.signup-includes li { display: flex; gap: 10px; align-items: flex-start; font-size: 14px; line-height: 1.45; color: #dcdcdc; }
+.signup-includes svg { flex: 0 0 auto; margin-top: 2px; color: #39ff8a; }
+.signup-cta {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  width: 100%;
+  min-height: 52px;               /* comfortably above the 44px touch target floor */
+  border: 0;
+  border-radius: 6px;
+  background: #39ff8a;
+  color: #08130c;
+  font-size: 16px;
+  font-weight: 800;
+  cursor: pointer;
+}
+.signup-cta:disabled { opacity: 0.7; cursor: default; }
+.signup-cta .spin { animation: signup-spin 0.9s linear infinite; }
+@keyframes signup-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .signup-cta .spin { animation: none; } }
+.signup-reassure { margin: 14px 0 0; color: #9a9a9a; font-size: 12.5px; line-height: 1.5; text-align: center; }
+.signup-error {
+  margin: 0 0 14px;
+  padding: 11px 13px;
+  border: 1px solid rgba(255, 92, 92, 0.4);
+  border-radius: 5px;
+  background: rgba(255, 92, 92, 0.1);
+  color: #ffb4b4;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.signup-signin { margin: 22px 0 0; text-align: center; color: #9a9a9a; font-size: 14px; }
+.signup-signin a { color: #39ff8a; font-weight: 700; }
+.signup-compare { margin-top: 30px; border-top: 1px solid #2a2a2a; padding-top: 18px; }
+.signup-compare summary { cursor: pointer; color: #cfcfcf; font-size: 14px; font-weight: 600; }
+.signup-compare-note { margin: 14px 0 0; color: #9a9a9a; font-size: 12.5px; line-height: 1.5; }
+.signup-legal { margin: 26px 0 0; color: #7f7f7f; font-size: 11.5px; text-align: center; line-height: 1.6; }
+.signup-legal a { color: #a8a8a8; text-decoration: underline; }
+
+/* ---- Plan comparison (shared with the pricing page) ------------------ */
+.plan-comparison { margin-top: 16px; border: 1px solid #2c2c2c; border-radius: 6px; overflow: hidden; }
+.plan-comparison-head,
+.plan-comparison-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+  padding: 11px 12px;
+  align-items: start;
+}
+.plan-comparison-head {
+  background: #161616;
+  border-bottom: 1px solid #2c2c2c;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #a0a0a0;
+}
+.plan-comparison-head .plan-col-elite { color: #39ff8a; }
+.plan-comparison-head small { display: block; margin-top: 3px; color: #cfcfcf; font-weight: 700; letter-spacing: 0; text-transform: none; }
+.plan-comparison-row { border-bottom: 1px solid #202020; font-size: 12.5px; line-height: 1.45; }
+.plan-comparison-row:last-child { border-bottom: 0; }
+.plan-row-label { color: #e4e4e4; font-weight: 600; }
+.plan-yes { display: inline-flex; align-items: flex-start; gap: 5px; color: #39ff8a; }
+.plan-no { display: inline-flex; align-items: flex-start; gap: 5px; color: #7f7f7f; }
+.plan-detail { color: #c2c2c2; }
+.plan-yes svg, .plan-no svg { flex: 0 0 auto; margin-top: 1px; }
+
+@media (max-width: 420px) {
+  .signup-card h1 { font-size: 26px; }
+  /* The three-column table is unreadable below ~400px; stack it. */
+  .plan-comparison-head { display: none; }
+  .plan-comparison-row { grid-template-columns: 1fr; gap: 4px; padding: 12px; }
+  .plan-row-label { font-size: 13px; }
+  .plan-yes::after, .plan-no::after, .plan-detail::before { font-size: 11px; color: #8e8e8e; }
+  .plan-comparison-row > :nth-child(2)::before { content: "Free: "; color: #8e8e8e; }
+  .plan-comparison-row > :nth-child(3)::before { content: "Elite: "; color: #39ff8a; }
+}

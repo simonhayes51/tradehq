@@ -161,6 +161,10 @@ function App() {
                       "/trade-finder" no longer need one - those ARE the
                       current URLs now. */}
                   <Route path="/player-search" element={<Navigate to="/players" replace />} />
+                  {/* Signup sends new members here. It lives inside the
+                      app's own route table (see App.v2.jsx) - this entry
+                      exists only so the path is documented alongside the
+                      other top-level destinations. */}
 
                   {/* Protected shell.
                       Deliberately PATHLESS (no `path` prop). It used to be

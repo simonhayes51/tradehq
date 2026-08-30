@@ -23,15 +23,17 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 
-from app.auth.entitlements import compute_entitlements
+from app.auth.access import Viewer, get_viewer, serialise_dashboard_feed
 from app.db import get_core_pool, get_player_pool, get_watchlist_pool
 from app.routers.v2.futgg_market import (
     _score_and_filter,
     _sales_for_rows,
     _segmented_candidates,
+    free_pick_candidates,
 )
+from app.services.free_picks import free_pick_meta, resolve_pick_ids
 from app.services.alerts_feed import fetch_alert_feed
 from app.services.futgg_intelligence import CardIntelligence
 from app.services.futgg_trend import DOWNTREND, FALLING_KNIFE, INSUFFICIENT_TREND_DATA
@@ -585,20 +587,24 @@ async def _scores_by_card(conn, card_ids: List[int]) -> Dict[int, Dict[str, floa
 
 
 @router.get("/dashboard")
-async def get_dashboard(request: Request) -> Dict[str, Any]:
+async def get_dashboard(
+    request: Request,
+    viewer: Viewer = Depends(get_viewer),
+) -> Dict[str, Any]:
     player_pool = await get_player_pool()
     core_pool = await get_core_pool()
-    ent = await compute_entitlements(request)
-    opportunities_unlocked = "opportunity_feed" in ent["features"]
+    opportunities_unlocked = viewer.has("opportunity_feed")
 
-    # --- Recommendation feeds (gated, with a free preview) ---
-    # Free/Pro users used to get an all-empty feed with nothing to show
-    # the AI actually works - the one thing a free tier needs to prove
-    # before anyone upgrades. FREE_PREVIEW_COUNT real BUY calls are now
-    # always included (never a fabricated example); PREVIEW_LOCKED_COUNT
-    # exists purely so the frontend can render "N more, upgrade to see
-    # them" instead of the feed just looking short.
-    FREE_PREVIEW_COUNT = 1
+    # --- Recommendation feeds (gated) ---
+    # Home shows a Free member the SAME cards, unlocked or locked, that
+    # /api/v2/opportunities shows them: the persisted daily picks in full,
+    # everything else as a preview with no executable number in it.
+    #
+    # It previously took the current top-ranked BUY and returned it whole
+    # to anyone without the feature - including signed-out callers, who
+    # need no account at all to request this endpoint. That was a third
+    # free pick nobody counted, it changed every time the ranking moved,
+    # and it made "two complete picks a day" untrue in both directions.
     todays_opportunities: List[Dict[str, Any]] = []
     high_confidence: List[Dict[str, Any]] = []
     cards_to_avoid: List[Dict[str, Any]] = []
@@ -688,18 +694,42 @@ async def get_dashboard(request: Request) -> Dict[str, Any]:
     all_opportunities = [_futgg_to_recommendation(row, ci, sbc_demand) for row, ci in buy_scored[:8]]
     all_high_confidence = [d for d in all_opportunities if (d.get("confidence") or 0) >= 70]
 
+    free_picks_meta: Optional[Dict[str, Any]] = None
     if opportunities_unlocked:
         todays_opportunities = all_opportunities
         high_confidence = all_high_confidence
         cards_to_avoid = [_futgg_to_recommendation(row, ci, sbc_demand) for row, ci in avoid_scored[:6]]
         recent_predictions = [_futgg_to_recommendation(row, ci, sbc_demand) for row, ci in recent_scored[:8]]
     else:
-        # Free/Pro preview: a real BUY call, not a fabricated example, so
-        # the free tier can actually see the product work before paying
-        # for the full feed - see `locked.previewCount` below for what's
-        # still behind the paywall.
-        todays_opportunities = all_opportunities[:FREE_PREVIEW_COUNT]
-        preview_locked_count = max(0, len(all_opportunities) - FREE_PREVIEW_COUNT)
+        # The day's picks come from the shared, unfiltered pool in
+        # futgg_market.free_pick_candidates and are persisted once per
+        # content day, so Home and Opportunities cannot disagree about
+        # what a Free member has already been given - whichever page they
+        # open first resolves the identical set. A signed-out visitor gets
+        # no unlocked pick: there is no account for a daily allowance to
+        # belong to.
+        unlocked_ids: List[int] = []
+        if viewer.is_free:
+            try:
+                unlocked_ids = await resolve_pick_ids(
+                    lambda: free_pick_candidates(FutggMarketDataProvider(core_pool)),
+                    pool=core_pool,
+                )
+            except Exception:
+                # The free tier degrades to fully locked rather than to
+                # fully open. Home is not the place to fail open.
+                log.warning("dashboard: could not resolve free picks", exc_info=True)
+                unlocked_ids = []
+        todays_opportunities, preview_locked_count = serialise_dashboard_feed(
+            all_opportunities, viewer, unlocked_ids=unlocked_ids,
+        )
+        high_confidence, _ = serialise_dashboard_feed(
+            all_high_confidence, viewer, unlocked_ids=unlocked_ids,
+        )
+        free_picks_meta = free_pick_meta(
+            unlocked=len([item for item in todays_opportunities if not item.get("locked")])
+            if viewer.is_free else 0,
+        )
 
     # No generated-card-art step needed for FUT.GG cards (unlike the
     # legacy FUTBIN pipeline's async ensure_cards_requested()) -
@@ -851,6 +881,10 @@ async def get_dashboard(request: Request) -> Dict[str, Any]:
         "nextPromo": next_promo,
         "latestMarketEvents": latest_market_events,
         "latestSbcImpact": latest_sbc_impact,
+        # What the UI needs to explain the allowance honestly: when the
+        # next picks land (18:00 Europe/London, DST-correct) and whether
+        # today produced fewer than the allowance. Absent for Elite.
+        "freePicks": free_picks_meta,
         "locked": {
             "opportunityFeed": not opportunities_unlocked,
             "previewCount": preview_locked_count,

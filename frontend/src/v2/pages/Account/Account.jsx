@@ -7,6 +7,7 @@ import { useAuth } from "../../../context/AuthContext";
 import { useEntitlements } from "../../../context/EntitlementsContext";
 import { deleteAccount } from "../../../api/account";
 import { PageHead } from "../Players/Players";
+import { FREE_LIMITS, PAID_PLAN_NAME } from "../../lib/limits";
 import "./account.css";
 
 // The v1 tools that still work on live data and aren't duplicated by a
@@ -23,9 +24,14 @@ const TOOLS = [
 
 export default function Account() {
   const { user, isAuthenticated, logout } = useAuth();
-  const { isPremium, isAdmin, features, limits } = useEntitlements();
+  const { isAdmin, tier: serverTier, limits } = useEntitlements();
   const navigate = useNavigate();
-  const tier = isAdmin || features.includes("opportunity_feed") ? "ELITE" : isPremium ? "PREMIUM" : "FREE";
+  // The server's own answer, not a third opinion assembled here. This
+  // line used to be able to produce "PREMIUM" - a plan name the product
+  // does not have and does not sell - for anyone whose is_premium flag
+  // was set but whose feature list hadn't been read yet.
+  const isElite = serverTier === "elite" || isAdmin;
+  const tier = isElite ? PAID_PLAN_NAME.toUpperCase() : "FREE";
   const name = user?.global_name || user?.username || "EAFC Live member";
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -36,7 +42,7 @@ export default function Account() {
   // string "Free" when /api/discord/status is unreachable - guessing
   // "Free" for a paying customer is the worse of the two failure modes.
   const discordRole = discord?.membership_access
-    || (discord?.connected === false ? "Not linked to Discord" : (isPremium || isAdmin ? "EAFC.Live Member" : "Free"));
+    || (discord?.connected === false ? "Not linked to Discord" : (isElite ? "EAFC.Live Member" : "Free"));
 
   // useCallback + a correct dependency array: this was declared inline
   // and then omitted from the effect's deps, so the effect closed over
@@ -95,11 +101,16 @@ export default function Account() {
     <section className="v2-account-grid">
       <article className="v2-account-hero">
         <div className="v2-account-avatar">{user?.avatar_url ? <img src={user.avatar_url} alt=""/> : <User/>}</div>
-        <div><span>CURRENT PLAN</span><h2>{tier}</h2><p>{isPremium || isAdmin ? "Full access to EAFC Live’s calculated trading tools." : "Core tools with a smaller watchlist allowance."}</p></div>
+        {/* The plan line says what the plan actually is, in numbers.
+            "Core tools with a smaller watchlist allowance" told a free
+            member neither what they have nor what they are missing. */}
+        <div><span>CURRENT PLAN</span><h2>{tier}</h2><p>{isElite
+          ? "The full opportunities feed, Trade Finder, the trading assistant and the complete track record."
+          : `${FREE_LIMITS.dailyOpportunities} complete picks a day, ${FREE_LIMITS.watchlist} watchlist cards, ${FREE_LIMITS.alerts} price alerts. Free permanently.`}</p></div>
       </article>
       <article className="v2-account-panel">
         <span>ACCOUNT DETAILS</span>
-        <dl><div><dt>Username</dt><dd>{name}</dd></div><div><dt>Watchlist allowance</dt><dd>{limits?.watchlist_max ?? 3} cards</dd></div><div><dt>Status</dt><dd>{isAuthenticated ? "Signed in" : "Guest"}</dd></div></dl>
+        <dl><div><dt>Username</dt><dd>{name}</dd></div><div><dt>Watchlist allowance</dt><dd>{limits?.watchlist_max ?? FREE_LIMITS.watchlist} cards</dd></div><div><dt>Active price alerts</dt><dd>{limits?.alerts_max ?? FREE_LIMITS.alerts}</dd></div><div><dt>Status</dt><dd>{isAuthenticated ? "Signed in" : "Guest"}</dd></div></dl>
       </article>
     </section>
     <section className="v2-account-links">
@@ -138,7 +149,7 @@ export default function Account() {
           <div><dt>EAFC Live server</dt><dd>{discord?.guild_membership === "joined" ? "Joined" : discord?.guild_membership === "not_joined" ? "Not joined" : "Status unavailable"}</dd></div>
           <div><dt>Discord role</dt><dd>{discordRole}</dd></div>
         </dl>
-        {discord?.connected === false && (isPremium || isAdmin) ? (
+        {discord?.connected === false && isElite ? (
           <p className="v2-discord-note">
             Your {tier.toLowerCase()} plan is active on the website. Link Discord to get the member
             role in the server as well.
