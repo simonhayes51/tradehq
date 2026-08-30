@@ -23,7 +23,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.db import get_core_pool
 from app.routers.admin import require_admin
-from app.services import ai_usage, funnel
+from app.services import ai_usage, discord_reconcile, funnel, funnel_retention
 
 router = APIRouter(prefix="/api/admin", tags=["admin-reporting"])
 log = logging.getLogger("admin_reporting")
@@ -96,3 +96,48 @@ async def conversion_funnel(
 
     report["tracking"] = tracking_health()
     return report
+
+
+@router.get("/discord-reconciliation")
+async def discord_reconciliation_status(admin=Depends(require_admin)) -> Dict[str, Any]:
+    """Is the Discord sweep running, and is it working.
+
+    Both the most recent pass and the most recent SUCCESSFUL one, because
+    "it ran an hour ago" and "it last worked a week ago" are different
+    facts and the second is the one that matters.
+    """
+    pool = await get_core_pool()
+    history = await discord_reconcile.last_run(pool)
+    if history is None:
+        raise HTTPException(
+            503,
+            {
+                "error": "reconciliation_unavailable",
+                "message": "Reconciliation history is not available. Check migration 078 has been applied.",
+            },
+        )
+    return {
+        **history,
+        "config": {
+            "batch_size": discord_reconcile.BATCH_SIZE,
+            "per_account_delay_seconds": discord_reconcile.PER_ACCOUNT_DELAY_SECONDS,
+            "max_consecutive_failures": discord_reconcile.MAX_CONSECUTIVE_FAILURES,
+        },
+    }
+
+
+@router.get("/funnel-retention")
+async def funnel_retention_status(admin=Depends(require_admin)) -> Dict[str, Any]:
+    """How much of the funnel table is past its retention horizon."""
+    pool = await get_core_pool()
+    try:
+        return await funnel_retention.count_expired(pool)
+    except Exception:
+        log.warning("funnel retention status failed", exc_info=True)
+        raise HTTPException(
+            503,
+            {
+                "error": "retention_unavailable",
+                "message": "Retention reporting is not available. Check migration 075 has been applied.",
+            },
+        )

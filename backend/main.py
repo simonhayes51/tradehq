@@ -656,6 +656,33 @@ async def lifespan(app: FastAPI):
         )
         logging.info("✅ FUT.GG outcome grader started (poll every %ss)", futgg_grader_poll)
 
+        # Discord role reconciliation. The queue (migration 056) handles
+        # every ordinary billing change; this sweep exists for the jobs the
+        # queue LOSES - a Discord outage long enough to exhaust the
+        # retries leaves an account wrong forever, because nothing will
+        # look at it again. Guarded by an advisory lock, so every worker
+        # can start it and only one does the work. Off by default in the
+        # sense that it no-ops when Discord is not configured.
+        reconcile_interval = int(os.getenv("DISCORD_RECONCILE_INTERVAL_SECONDS", str(6 * 3600)))
+        if reconcile_interval > 0:
+            from app.services.discord_reconcile import reconcile_loop
+
+            app.state.discord_reconcile_task = asyncio.create_task(
+                reconcile_loop(pool, reconcile_interval)
+            )
+            logging.info("✅ Discord role reconciliation started (every %ss)", reconcile_interval)
+
+        # Funnel-event retention. Monthly, in bounded batches, through the
+        # same worker pattern - see app/services/funnel_retention.py.
+        retention_interval = int(os.getenv("FUNNEL_RETENTION_INTERVAL_SECONDS", str(24 * 3600)))
+        if retention_interval > 0:
+            from app.services.funnel_retention import retention_loop
+
+            app.state.funnel_retention_task = asyncio.create_task(
+                retention_loop(pool, retention_interval)
+            )
+            logging.info("✅ Funnel-event retention started (check every %ss)", retention_interval)
+
         # Investment Engine (separate concept from the trade/opportunity
         # engines above - see app/services/investment_engine/__init__.py).
         # Entirely inert (INVESTMENT_ENGINE_ENABLED defaults False) until
@@ -789,6 +816,7 @@ async def lifespan(app: FastAPI):
             "event_impact_task", "analytics_engine_task", "recommendation_engine_task",
             "ml_feature_pipeline_task", "ml_label_filler_task",
             "futgg_scanner_task", "futgg_outcome_grader_task",
+            "discord_reconcile_task", "funnel_retention_task",
             "held_position_refresher_task", "futgg_market_snapshot_task",
             "priority_recompute_task", "futgg_card_image_mirror_task",
             "discord_integration_task", "investment_engine_task",
