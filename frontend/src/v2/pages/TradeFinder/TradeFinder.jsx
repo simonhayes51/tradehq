@@ -15,6 +15,7 @@ import MarketFreshness from "../../components/MarketFreshness";
 import { useFutggTradeFinder } from "../../hooks/useFutggMarket";
 import { buildWhyText } from "../../lib/tradeNarrative";
 import { PageHead } from "../Players/Players";
+import { riskLabel, versionLabel } from "../../lib/format";
 import "./trade-finder.css";
 
 const DEFAULTS = {
@@ -152,7 +153,7 @@ export default function TradeFinder() {
           return <Link className="finder-card" key={cardId} to={`/players/${cardId}`} state={{ from: "trade-finder" }}>
             <div className="finder-card-top">
               <img src={item.composited_image_url || item.image_url || "/img/card-placeholder.png"} alt="" />
-              <div><h2>{item.name || "Unknown player"}</h2><div className="v2-meta-pills"><span className={`finder-signal-pill signal-${item.signal || "unknown"}`}>{item.signal === "watch" ? "WATCH" : "BUY"}</span><span>{item.rating ?? "—"} OVR</span><span>{item.position || "—"}</span><span>{item.rarity || "Card"}</span></div><p>{buildWhyText(item)}</p></div>
+              <div><h2>{item.name || "Unknown player"}</h2><div className="v2-meta-pills"><span className={`finder-signal-pill signal-${item.signal || "unknown"}`}>{item.signal === "watch" ? "WATCH" : "BUY"}</span><span>{item.rating ?? "—"} OVR</span><span>{item.position || "—"}</span><span>{versionLabel(item.rarity)}</span></div><p>{buildWhyText(item)}</p></div>
               <span className="finder-confidence">{confidence == null ? "—" : `${confidence}%`}<small>CONFIDENCE</small></span>
             </div>
             <div className="finder-signals">
@@ -181,7 +182,7 @@ export default function TradeFinder() {
               <div className="profit"><span>EXPECTED PROFIT</span><CoinValue value={item.expected_profit_after_tax} signed/><small>{roi == null ? "—" : `${roi > 0 ? "+" : ""}${roi.toFixed(1)}%`} after tax</small></div>
             </div>
             <div className="finder-card-foot">
-              <span className={`risk-${String(item.risk_level || "unknown").toLowerCase()}`}>{item.risk_level || "unknown"} risk</span>
+              <span className={`risk-${String(item.risk_level || "unknown").toLowerCase()}`}>{riskLabel(item.risk_level)}</span>
               <MarketFreshness priceAgeSeconds={item.price_age_seconds} capturedAt={item.current_bin_captured_at} compact />
             </div>
           </Link>;

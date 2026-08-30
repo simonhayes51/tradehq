@@ -320,10 +320,29 @@ router.
   format (player, "Buy ≤ X", "Target: Y", expected after-tax ROI,
   expected hold in days, Confidence High/Medium/Low, Supply
   High/Medium/Low, "Why now" bullets, "Risk" bullets).
-- **Route**: `/v2/investments` in `App.v2.jsx`.
-- **Nav**: new "Investments" item in `Sidebar.jsx`'s `ITEMS`, separate
-  from "Opportunities"/"Trade Finder" so the distinction is visible in
-  the UI, not just internal.
+> **The frontend surface described in this section has been removed.**
+>
+> The engine defaults to shadow mode (`INVESTMENT_ENGINE_PUBLISH_SIGNALS`
+> is `false`, and FC27_LAUNCH.md's own recommended production
+> configuration keeps it false), and `GET /investments/signals` returns
+> only non-shadow rows to non-admins. So the page could never show a
+> customer a signal: it was a permanently empty item in the primary
+> navigation, promising multi-day investment calls the deployment is
+> configured never to publish.
+>
+> `/investments` now redirects to `/opportunities`, the nav item is gone,
+> and `Investments.jsx` / `useInvestments.js` are deleted. **Everything
+> below the API section, and the engine itself, is untouched and still
+> running** — the calculations, migrations 058-062, the shadow-mode
+> ledger and the ~10 test modules are all intact, because the engine is
+> real work that is genuinely mid-validation. What was removed is the
+> claim to users that it is a shipped feature.
+>
+> To ship it: set `INVESTMENT_ENGINE_PUBLISH_SIGNALS=true`, confirm real
+> signals are being published (`GET /api/v2/investments/signals` returns
+> rows for a non-admin), then restore the page, its hooks and the nav
+> entry from git history and replace the redirect in `App.v2.jsx`.
+
 - The existing Opportunities page is untouched and unbroken — it
   remains the "Trades" surface; nothing here removes or reroutes it.
 
@@ -421,10 +440,10 @@ in a real deployment environment before relying on it.
    already be populated for FC27 by the existing sync jobs).
 4. Deploy backend — the refresher loop starts automatically 30s after
    boot, then every `INVESTMENT_ENGINE_INTERVAL_SECONDS`.
-5. Deploy frontend — `/v2/investments` and the "Investments" nav item
-   ship automatically; with the engine in shadow mode the page renders
-   its calm "no investment-cycle signal available" empty state until
-   signals are published.
+5. Deploy frontend — note that there is no longer an Investments page or
+   nav item to ship (see the note above); until the page is restored,
+   `GET /api/v2/investments/*` and the admin surfaces are the only way to
+   see engine output.
 6. Watch `investment_engine_runs` and application logs (format:
    `investment_engine strategy=... cohort=... STATE -> STATE (reason)
    drawdown=...% severity=... decel=... eligible=N candidates=N

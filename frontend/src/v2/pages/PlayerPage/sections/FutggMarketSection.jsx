@@ -37,6 +37,7 @@ import SectionCard from "../../../components/SectionCard";
 import CoinValue from "../../../components/CoinValue";
 import MarketFreshness, { formatAge } from "../../../components/MarketFreshness";
 import { addWatch } from "../../../../api/watchlist";
+import { riskLabel, versionLabel } from "../../../lib/format";
 import {
   useFutggPlayer,
   useFutggPlayerPrices,
@@ -91,7 +92,7 @@ export default function FutggMarketSection({ cardId }) {
       await addWatch({
         player_name: card.name,
         card_id: String(card.source_card_id ?? card.card_id ?? cardId),
-        version: card.rarity || null,
+        version: card.rarity ? versionLabel(card.rarity) : null,
         platform: "ps",
         source: "futgg",
       });
@@ -149,7 +150,7 @@ export default function FutggMarketSection({ cardId }) {
 
         <div className="flex items-center gap-3 flex-wrap mb-4">
           <span className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-bold border ${riskBadgeClasses(card.risk_level)}`}>
-            <ShieldCheck size={13} /> {card.risk_level || "unknown"} risk
+            <ShieldCheck size={13} /> {riskLabel(card.risk_level)}
           </span>
           {card.signal ? (
             <span className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-bold uppercase border ${signalBadgeClasses(card.signal)}`}>

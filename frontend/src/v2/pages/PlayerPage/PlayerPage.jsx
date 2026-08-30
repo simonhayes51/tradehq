@@ -5,6 +5,7 @@ import { addWatch } from "../../../api/watchlist";
 import { useFutggPlayer } from "../../hooks/useFutggMarket";
 import { AnalysisModal } from "../HomeDashboard/HomeDashboard";
 import FutggMarketSection from "./sections/FutggMarketSection";
+import { versionLabel } from "../../lib/format";
 
 export default function PlayerPage() {
   const { cardId } = useParams();
@@ -147,7 +148,7 @@ function toFutggAnalysisItem(raw, cardId) {
       nickname: null,
       rating: raw.rating,
       position: raw.position || raw.primary_position,
-      version: raw.rarity || "Card",
+      version: versionLabel(raw.rarity),
       imageUrl: raw.image_url,
       // composited_image_url (FUT.GG's own pre-composited full-card
       // image, mirrored to R2) always wins when present - shown as a

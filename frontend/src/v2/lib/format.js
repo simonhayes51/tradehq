@@ -108,3 +108,15 @@ export function versionLabel(version) {
     .map((word) => (word ? word[0].toUpperCase() + word.slice(1).toLowerCase() : word))
     .join(" ");
 }
+
+// The engine's risk_level is a lowercase enum ("low"/"medium"/"high"/
+// "avoid"). It was rendered straight into card footers as "low risk" -
+// readable, but visibly a raw value, and "unknown risk" for a card the
+// engine simply had no risk read on reads as a warning rather than as
+// missing data.
+export function riskLabel(riskLevel) {
+  const value = String(riskLevel ?? "").trim().toLowerCase();
+  if (!value || value === "unknown") return "Risk not rated";
+  if (value === "avoid") return "Avoid";
+  return `${value.charAt(0).toUpperCase()}${value.slice(1)} risk`;
+}

@@ -14,6 +14,7 @@ import MarketFreshness from "../../components/MarketFreshness";
 import { useFutggOpportunities } from "../../hooks/useFutggMarket";
 import { buildWhyText, sellingSpeedLabel } from "../../lib/tradeNarrative";
 import { PageHead } from "../Players/Players";
+import { riskLabel, versionLabel } from "../../lib/format";
 import "../TradeFinder/trade-finder.css";
 import "./opportunities.css";
 
@@ -126,9 +127,9 @@ function OpportunityCard({ item }) {
           <div className="v2-meta-pills">
             <span>{item.rating ?? "—"} OVR</span>
             <span>{item.position || "—"}</span>
-            <span>{item.rarity || "Card"}</span>
+            <span>{versionLabel(item.rarity)}</span>
           </div>
-          <p>{item.club || "—"} · {item.league || "—"}</p>
+          <p>{[item.club, item.league].filter(Boolean).join(" · ") || "Club and league unavailable"}</p>
         </div>
         <span className="finder-confidence">{confidence == null ? "—" : `${confidence}%`}<small>CONFIDENCE</small></span>
       </div>
@@ -148,7 +149,7 @@ function OpportunityCard({ item }) {
       {why ? <p className="opp-why">{why}</p> : null}
 
       <div className="finder-card-foot">
-        <span className={`risk-${String(item.risk_level || "unknown").toLowerCase()}`}>{item.risk_level || "unknown"} risk</span>
+        <span className={`risk-${String(item.risk_level || "unknown").toLowerCase()}`}>{riskLabel(item.risk_level)}</span>
         <MarketFreshness priceAgeSeconds={item.price_age_seconds} capturedAt={item.current_bin_captured_at} compact />
       </div>
     </Link>
