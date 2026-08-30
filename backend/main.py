@@ -1338,12 +1338,45 @@ async def image_proxy(url: str):
 
 @app.get("/health")
 async def health_check(request: Request):
+    """Liveness. Public, so it says as little as possible.
+
+    This used to return `str(e)` on a database failure. An asyncpg
+    connection error message contains the DSN it failed to reach, so the
+    one moment the database was down was the one moment this endpoint
+    published the connection string. The exception is logged instead.
+    """
     try:
         async with request.app.state.pool.acquire() as conn:
             await conn.fetchval("SELECT 1")
         return {"status": "healthy", "database": "connected"}
-    except Exception as e:
-        return {"status": "unhealthy", "database": "disconnected", "error": str(e)}
+    except Exception:
+        logging.warning("health check: core database unreachable", exc_info=True)
+        return JSONResponse(
+            status_code=503,
+            content={"status": "unhealthy", "database": "disconnected"},
+        )
+
+
+@app.get("/health/ready")
+async def readiness_check(request: Request):
+    """Readiness. Public, and deliberately terse.
+
+    Names and statuses only - no reason codes, no counts, no
+    configuration. Enough for a load balancer or an uptime probe, and
+    useless to anyone fingerprinting the deployment. The detailed version
+    is admin-only, at /api/admin/readiness.
+    """
+    from app.services.readiness import public_summary, readiness
+
+    report = await readiness(
+        getattr(request.app.state, "pool", None),
+        getattr(request.app.state, "watchlist_pool", None),
+    )
+    summary = public_summary(report)
+    # A degraded optional feature is not a reason to pull the instance out
+    # of the load balancer; an unavailable required one is.
+    return JSONResponse(status_code=503 if report["status"] == "unavailable" else 200,
+                        content=summary)
 
 async def _establish_dashboard_session(
     request: Request, discord_id: int, username: str, avatar_url: str, global_name: str
@@ -3928,8 +3961,34 @@ def _plan_key_for_price(subscription: Dict[str, Any]) -> str:
 
 _CURRENCY_SYMBOLS = {"gbp": "£", "usd": "$", "eur": "€"}
 
-_plan_cache: Dict[str, Any] = {"at": 0.0, "value": None}
-_PLAN_CACHE_TTL = 600
+# Pricing is read by the public pricing page, the signup page and every
+# upgrade prompt in the product, so this is one of the hottest paths there
+# is - and each miss is a synchronous call to Stripe.
+#
+# Three things this cache has to get right:
+#
+#   * NOT CALL STRIPE PER PAGE VIEW. A TTL does that.
+#   * NOT LOSE THE PRICE DURING A STRIPE OUTAGE. `last_good` holds the
+#     last successful answer indefinitely and is served, marked stale,
+#     when a refresh fails. Before this, a transient Stripe error wrote
+#     `configured: False` into the cache and every pricing surface in the
+#     product said "pricing unavailable" for the next ten minutes, having
+#     known the real price a moment earlier.
+#   * NOT STAMPEDE. Without the lock, the first request after expiry is
+#     joined by every other in-flight request, and all of them call
+#     Stripe. One refreshes; the rest wait for it.
+#
+# Nothing customer-specific is ever cached here: the catalogue is a
+# function of Stripe configuration alone, with no user, session or
+# subscription in it. A shared cache holding per-customer pricing would be
+# a data leak, so there is deliberately nothing to key by.
+_plan_cache: Dict[str, Any] = {"at": 0.0, "value": None, "last_good": None, "last_good_at": 0.0}
+_PLAN_CACHE_TTL = int(os.getenv("BILLING_PLANS_CACHE_TTL", "600"))
+# A failed refresh is retried sooner than a good one is refreshed: there
+# is no point serving a stale price for ten minutes if Stripe came back
+# thirty seconds later.
+_PLAN_CACHE_ERROR_TTL = int(os.getenv("BILLING_PLANS_ERROR_TTL", "30"))
+_plan_cache_lock = asyncio.Lock()
 
 
 def _format_price(amount_minor: Optional[int], currency: str, interval: Optional[str]) -> Optional[str]:
@@ -3950,10 +4009,28 @@ async def _plan_catalogue() -> Dict[str, Any]:
     frontend can render "pricing unavailable" honestly.
     """
     now = time.time()
-    if _plan_cache["value"] is not None and now - _plan_cache["at"] < _PLAN_CACHE_TTL:
+    if _plan_cache["value"] is not None and now - _plan_cache["at"] < _plan_cache_ttl():
         return _plan_cache["value"]
 
+    async with _plan_cache_lock:
+        # Re-checked under the lock: while this request was waiting,
+        # another may already have refreshed, and calling Stripe again
+        # would be exactly the stampede the lock exists to prevent.
+        now = time.time()
+        if _plan_cache["value"] is not None and now - _plan_cache["at"] < _plan_cache_ttl():
+            return _plan_cache["value"]
+        return await _refresh_plan_catalogue(now)
+
+
+def _plan_cache_ttl() -> int:
+    """Short after a failure, normal after a success."""
+    value = _plan_cache.get("value") or {}
+    return _PLAN_CACHE_ERROR_TTL if value.get("stale") else _PLAN_CACHE_TTL
+
+
+async def _refresh_plan_catalogue(now: float) -> Dict[str, Any]:
     plans: Dict[str, Any] = {}
+    stripe_failed = False
     for key, (env_var, client_price_id, default_name) in _PLAN_KEYS.items():
         stripe_price_id = os.getenv(env_var)
         entry = {
@@ -3981,6 +4058,10 @@ async def _plan_catalogue() -> Dict[str, Any]:
                 })
             except Exception:
                 logger.warning("Could not read Stripe price for %s", key, exc_info=True)
+                # Configured in this deployment, unreadable right now.
+                # Those are different facts, and conflating them is what
+                # made an outage look like "we do not sell this plan".
+                stripe_failed = True
                 entry["configured"] = False
         plans[key] = entry
 
@@ -3988,8 +4069,25 @@ async def _plan_catalogue() -> Dict[str, Any]:
         "plans": plans,
         "trial_days": STRIPE_TRIAL_DAYS,
         "any_configured": any(p["configured"] for p in plans.values()),
+        "stale": False,
     }
+
+    if stripe_failed and _plan_cache.get("last_good") is not None:
+        # Serve the last price we actually read. A price we knew a minute
+        # ago is far better than no price at all, and the alternative is
+        # every upgrade prompt in the product going blank because Stripe
+        # had a bad thirty seconds.
+        stale = dict(_plan_cache["last_good"])
+        stale["stale"] = True
+        stale["stale_since"] = _plan_cache.get("last_good_at")
+        _plan_cache.update({"at": now, "value": stale})
+        return stale
+
     _plan_cache.update({"at": now, "value": catalogue})
+    if not stripe_failed and catalogue["any_configured"]:
+        # Only a clean read becomes the fallback. Caching a failure as the
+        # thing to fall back to would make the outage permanent.
+        _plan_cache.update({"last_good": catalogue, "last_good_at": now})
     return catalogue
 
 

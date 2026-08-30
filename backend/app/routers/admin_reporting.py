@@ -141,3 +141,27 @@ async def funnel_retention_status(admin=Depends(require_admin)) -> Dict[str, Any
                 "message": "Retention reporting is not available. Check migration 075 has been applied.",
             },
         )
+
+
+@router.get("/readiness")
+async def readiness_report(admin=Depends(require_admin)) -> Dict[str, Any]:
+    """The full readiness picture, with reason codes.
+
+    Admin-only because the detail is a description of the deployment -
+    which integrations exist, which migrations are pending, what the AI
+    limits are. None of it is a secret on its own, and all of it is a map
+    for someone deciding where to push.
+
+    Still no exception text, no connection strings and no host names: the
+    reason codes come from a fixed set in app/services/readiness.py.
+    """
+    from app.db import get_watchlist_pool
+    from app.services.readiness import readiness
+
+    core = await get_core_pool()
+    try:
+        watchlist = await get_watchlist_pool()
+    except Exception:
+        log.warning("readiness: watchlist pool unavailable", exc_info=True)
+        watchlist = None
+    return await readiness(core, watchlist)
