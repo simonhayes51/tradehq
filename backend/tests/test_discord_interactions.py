@@ -350,7 +350,7 @@ def test_account_button_uses_the_real_v2_account_route(monkeypatch):
     }))
     reply = run(_build_reply("account", [], "712239212749127740", "corr123"))
     url = reply["components"][0]["components"][0]["url"]
-    assert url.endswith("/#/v2/account")
+    assert url.endswith("/#/account")
 
 
 def test_results_button_uses_the_real_trades_route_not_a_nonexistent_journal(monkeypatch):

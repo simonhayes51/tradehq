@@ -2151,8 +2151,8 @@ async def _eval_alerts_for_pair(card_id: int, platform: str, price_now: float, m
                     """
                     INSERT INTO alerts_log (
                         user_id, user_discord_id, card_id, platform, direction,
-                        pct, price, ref_mode, ref_price
-                    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+                        pct, price, ref_mode, ref_price, source, metric
+                    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
                     """,
                     row["user_id"],
                     row["user_discord_id"],
@@ -2163,6 +2163,17 @@ async def _eval_alerts_for_pair(card_id: int, platform: str, price_now: float, m
                     price_now,
                     row["ref_mode"],
                     refp,
+                    # Recorded on the alert itself (migration 072) rather
+                    # than re-derived later from the user's watchlist,
+                    # which they can empty at any time - that is what made
+                    # a FUT.GG alert resolve against the FUTBIN catalogue
+                    # and print a raw "Card 117493814" instead of a name.
+                    (row["source"] if "source" in row.keys() else "futbin") or "futbin",
+                    # Same reasoning as `source`: a card can have both a
+                    # price rule and a liquidity rule, so which one fired
+                    # cannot be recovered later by joining back to
+                    # watchlist_alerts without duplicating the row.
+                    metric,
                 )
                 await w.execute(
                     "UPDATE watchlist_alerts SET last_alert_at=$1 WHERE id=$2",
@@ -3888,7 +3899,7 @@ async def update_payment_method(user_id: str = Depends(get_current_user), conn=D
             raise HTTPException(status_code=404, detail="No active subscription found")
         portal_session = stripe.billing_portal.Session.create(
             customer=subscription["stripe_customer_id"],
-            return_url=f"{FRONTEND_URL}/#/v2/billing"
+            return_url=f"{FRONTEND_URL}/#/billing"
         )
         return {"portalUrl": portal_session.url}
     except Exception as e:

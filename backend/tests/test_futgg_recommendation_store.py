@@ -449,3 +449,26 @@ def test_recent_outcomes_excludes_sub_minimum_entry_price_rows(dsn):
     names = {r["player_name"] for r in rows}
     assert "Sane Card" in names
     assert "Poisoned Card" not in names
+
+
+class TestLedgerFilterConsistency:
+    """A result filter must never return rows the UI then labels as
+    something else - the Losses tab showing rows badged "Flat" is a
+    self-contradicting page, not a rounding detail."""
+
+    def test_losses_filter_excludes_break_even(self):
+        from app.services.futgg_recommendation_store import _RECENT_OUTCOME_FILTERS
+
+        assert "o.realised_roi < 0" in _RECENT_OUTCOME_FILTERS["losses"]
+        assert "<=" not in _RECENT_OUTCOME_FILTERS["losses"]
+
+    def test_every_filter_agrees_with_the_label_function(self):
+        from app.services.futgg_recommendation_store import _outcome_result
+
+        def row(entry, roi):
+            return {"entry_achieved": entry, "realised_roi": roi}
+
+        assert _outcome_result(row(True, 0.05)) == "win"
+        assert _outcome_result(row(True, -0.05)) == "loss"
+        assert _outcome_result(row(True, 0)) == "flat"
+        assert _outcome_result(row(False, None)) == "no_entry"

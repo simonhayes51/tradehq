@@ -15,6 +15,7 @@ import MarketFreshness from "../../components/MarketFreshness";
 import { useFutggTradeFinder } from "../../hooks/useFutggMarket";
 import { buildWhyText } from "../../lib/tradeNarrative";
 import { PageHead } from "../Players/Players";
+import { riskLabel, versionLabel } from "../../lib/format";
 import "./trade-finder.css";
 
 const DEFAULTS = {
@@ -63,7 +64,7 @@ export default function TradeFinder() {
   return <main className="v2-destination trade-finder-page">
     <PageHead eyebrow="TRADE FINDER" title="Search every trade, your way" copy="Set your budget, minimum return, risk, position, rarity and sort order — every current live-priced trade is in scope here, not just the pre-filtered buy signals. Just want today's top picks with no setup? Try Opportunities." />
 
-    <Link className="opp-crosslink" to="/v2/opportunities">
+    <Link className="opp-crosslink" to="/opportunities">
       <TrendingUp size={15} /> Just want the shortlist? Open Opportunities <ArrowRight size={14} />
     </Link>
 
@@ -149,10 +150,10 @@ export default function TradeFinder() {
           const cardId = item.card_id ?? item.source_card_id;
           const confidence = item.confidence_score != null ? Math.round(Number(item.confidence_score) * 100) : null;
           const roi = item.expected_roi != null ? Number(item.expected_roi) * 100 : null;
-          return <Link className="finder-card" key={cardId} to={`/v2/players/${cardId}`} state={{ from: "trade-finder" }}>
+          return <Link className="finder-card" key={cardId} to={`/players/${cardId}`} state={{ from: "trade-finder" }}>
             <div className="finder-card-top">
               <img src={item.composited_image_url || item.image_url || "/img/card-placeholder.png"} alt="" />
-              <div><h2>{item.name || "Unknown player"}</h2><div className="v2-meta-pills"><span className={`finder-signal-pill signal-${item.signal || "unknown"}`}>{item.signal === "watch" ? "WATCH" : "BUY"}</span><span>{item.rating ?? "—"} OVR</span><span>{item.position || "—"}</span><span>{item.rarity || "Card"}</span></div><p>{buildWhyText(item)}</p></div>
+              <div><h2>{item.name || "Unknown player"}</h2><div className="v2-meta-pills"><span className={`finder-signal-pill signal-${item.signal || "unknown"}`}>{item.signal === "watch" ? "WATCH" : "BUY"}</span><span>{item.rating ?? "—"} OVR</span><span>{item.position || "—"}</span><span>{versionLabel(item.rarity)}</span></div><p>{buildWhyText(item)}</p></div>
               <span className="finder-confidence">{confidence == null ? "—" : `${confidence}%`}<small>CONFIDENCE</small></span>
             </div>
             <div className="finder-signals">
@@ -181,7 +182,7 @@ export default function TradeFinder() {
               <div className="profit"><span>EXPECTED PROFIT</span><CoinValue value={item.expected_profit_after_tax} signed/><small>{roi == null ? "—" : `${roi > 0 ? "+" : ""}${roi.toFixed(1)}%`} after tax</small></div>
             </div>
             <div className="finder-card-foot">
-              <span className={`risk-${String(item.risk_level || "unknown").toLowerCase()}`}>{item.risk_level || "unknown"} risk</span>
+              <span className={`risk-${String(item.risk_level || "unknown").toLowerCase()}`}>{riskLabel(item.risk_level)}</span>
               <MarketFreshness priceAgeSeconds={item.price_age_seconds} capturedAt={item.current_bin_captured_at} compact />
             </div>
           </Link>;

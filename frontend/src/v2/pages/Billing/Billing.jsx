@@ -111,8 +111,8 @@ export default function Billing() {
           billingCycle,
           paymentMethod: "stripe",
           trialDays: PLANS[billingCycle].trialDays,
-          successUrl: `${window.location.origin}/#/v2/billing?payment=success`,
-          cancelUrl: `${window.location.origin}/#/v2/billing?payment=cancelled`,
+          successUrl: `${window.location.origin}/#/billing?payment=success`,
+          cancelUrl: `${window.location.origin}/#/billing?payment=cancelled`,
         }),
       });
       const data = await res.json();
@@ -169,7 +169,7 @@ export default function Billing() {
   }
 
   if (user === false) {
-    const returnTo = `/v2/billing${window.location.hash.includes("?") ? window.location.hash.slice(window.location.hash.indexOf("?")) : ""}`;
+    const returnTo = `/billing${window.location.hash.includes("?") ? window.location.hash.slice(window.location.hash.indexOf("?")) : ""}`;
     return (
       <main className="v2-destination billing-v2">
         <div className="billing-v2-inner">

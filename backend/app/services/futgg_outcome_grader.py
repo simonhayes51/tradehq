@@ -73,6 +73,12 @@ INSUFFICIENT_OBSERVATIONS = "insufficient_observations"
 # tells a user to sell at a loss - purely a measurement of how bad the
 # drawdown got, so MAE can be summarised as a rate rather than only as a
 # distribution.
+#
+# This flag NEVER decides win vs loss on its own: a position that dipped
+# past this threshold and then recovered above entry is a profitable
+# position that had a deep drawdown, not a loss. See the classification
+# block at the end of grade_recommendation() for why that distinction is
+# load-bearing.
 DOWNSIDE_THRESHOLD = 0.10
 
 # Below this many post-recommendation observations there is not enough
@@ -243,12 +249,26 @@ def grade_recommendation(
     grade.net_profit_after_tax = tm.net_profit(final_price, entry_price)
     grade.realised_roi = tm.net_roi(final_price, entry_price)
 
-    if grade.downside_hit:
-        grade.outcome_status = DOWNSIDE_HIT
-    elif grade.realised_roi is not None and grade.realised_roi > Decimal("0.005"):
+    # Classification is decided by WHERE THE POSITION ACTUALLY ENDED, not
+    # by how bad it got on the way. `downside_hit` stays a true, separately
+    # reported drawdown flag (it is still set above, and is still what
+    # distinguishes a bad loss from a shallow one), but it must not be the
+    # outcome LABEL on its own.
+    #
+    # It used to be, and that produced the one thing a track record can
+    # never survive: a row counted as a LOSS (downside_hit is in
+    # discord_daily_proof.LOSS_STATUSES) while displaying a positive
+    # after-tax profit and a positive ROI, because the price dipped 10%+
+    # mid-window and then recovered above entry by the final observation.
+    # A reader sees "Loss ... +9.2% ROI" and correctly concludes the
+    # numbers are not trustworthy.
+    #
+    # So: profit decides win/loss/flat, and downside_hit only chooses
+    # WHICH loss label applies once the position is genuinely down.
+    if grade.realised_roi is not None and grade.realised_roi > Decimal("0.005"):
         grade.outcome_status = PROFITABLE_UNREALISED
     elif grade.realised_roi is not None and grade.realised_roi < Decimal("-0.005"):
-        grade.outcome_status = LOSS_UNREALISED
+        grade.outcome_status = DOWNSIDE_HIT if grade.downside_hit else LOSS_UNREALISED
     else:
         grade.outcome_status = FLAT
     return grade

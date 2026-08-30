@@ -7,13 +7,14 @@
 // a new page rather than an edit of an existing one.
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { ArrowRight, LineChart, RotateCcw, ShieldAlert, SlidersHorizontal, TrendingUp } from "lucide-react";
+import { ArrowRight, RotateCcw, ShieldAlert, SlidersHorizontal, TrendingUp } from "lucide-react";
 import CoinValue from "../../components/CoinValue";
 import EmptyState from "../../components/EmptyState";
 import MarketFreshness from "../../components/MarketFreshness";
 import { useFutggOpportunities } from "../../hooks/useFutggMarket";
 import { buildWhyText, sellingSpeedLabel } from "../../lib/tradeNarrative";
 import { PageHead } from "../Players/Players";
+import { riskLabel, versionLabel } from "../../lib/format";
 import "../TradeFinder/trade-finder.css";
 import "./opportunities.css";
 
@@ -56,15 +57,8 @@ export default function Opportunities() {
       />
 
       <div className="opp-crosslinks">
-        <Link className="opp-crosslink" to="/v2/trade-finder">
+        <Link className="opp-crosslink" to="/trade-finder">
           <SlidersHorizontal size={15} /> Need more control? Open Trade Finder <ArrowRight size={14} />
-        </Link>
-        {/* The Trade-vs-Investment distinction, stated where a user is
-            actually standing rather than only in the docs: this page is
-            "make coins now", Investments is "buy and hold for days".
-            They are different products and must never blur together. */}
-        <Link className="opp-crosslink" to="/v2/investments">
-          <LineChart size={15} /> Looking to buy and hold instead? Open Investments <ArrowRight size={14} />
         </Link>
       </div>
 
@@ -125,7 +119,7 @@ function OpportunityCard({ item }) {
   const why = buildWhyText(item);
 
   return (
-    <Link className="finder-card opp-card" to={`/v2/players/${cardId}`} state={{ from: "opportunities" }}>
+    <Link className="finder-card opp-card" to={`/players/${cardId}`} state={{ from: "opportunities" }}>
       <div className="finder-card-top">
         <img src={item.composited_image_url || item.image_url || "/img/card-placeholder.png"} alt="" />
         <div>
@@ -133,9 +127,9 @@ function OpportunityCard({ item }) {
           <div className="v2-meta-pills">
             <span>{item.rating ?? "—"} OVR</span>
             <span>{item.position || "—"}</span>
-            <span>{item.rarity || "Card"}</span>
+            <span>{versionLabel(item.rarity)}</span>
           </div>
-          <p>{item.club || "—"} · {item.league || "—"}</p>
+          <p>{[item.club, item.league].filter(Boolean).join(" · ") || "Club and league unavailable"}</p>
         </div>
         <span className="finder-confidence">{confidence == null ? "—" : `${confidence}%`}<small>CONFIDENCE</small></span>
       </div>
@@ -155,7 +149,7 @@ function OpportunityCard({ item }) {
       {why ? <p className="opp-why">{why}</p> : null}
 
       <div className="finder-card-foot">
-        <span className={`risk-${String(item.risk_level || "unknown").toLowerCase()}`}>{item.risk_level || "unknown"} risk</span>
+        <span className={`risk-${String(item.risk_level || "unknown").toLowerCase()}`}>{riskLabel(item.risk_level)}</span>
         <MarketFreshness priceAgeSeconds={item.price_age_seconds} capturedAt={item.current_bin_captured_at} compact />
       </div>
     </Link>

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Check, Target, X } from "lucide-react";
 import { openTrade } from "../api/trades";
+import { versionLabel } from "../lib/format";
 
 const fmt = (value) => new Intl.NumberFormat("en-GB").format(Number(value) || 0);
 
@@ -83,7 +84,7 @@ export default function LogTradeModal({ item, onClose, onSaved }) {
           </div>
         ) : (
           <form onSubmit={submit}>
-            <div className="club-modal-title"><Target size={18} /><div><span>LOG PURCHASE</span><h2>{name}</h2><p>{player.rating} {player.position} · {player.version || "Card"}</p></div></div>
+            <div className="club-modal-title"><Target size={18} /><div><span>LOG PURCHASE</span><h2>{name}</h2><p>{player.rating} {player.position} · {versionLabel(player.version)}</p></div></div>
             <div className="club-form-grid">
               <label><span>Buy price</span><input type="number" min="1" required value={form.buy} onChange={(e) => setForm({ ...form, buy: e.target.value })} /></label>
               <label><span>Quantity</span><input type="number" min="1" max="100" required value={form.quantity} onChange={(e) => setForm({ ...form, quantity: e.target.value })} /></label>

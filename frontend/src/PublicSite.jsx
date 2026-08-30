@@ -50,7 +50,7 @@ function PublicNav() {
       <Link to="/" className="pub-brand">EAFC <b>Live</b></Link>
       <nav>
         <button type="button" className="pub-nav-extra" onClick={() => scrollToPublicSection("how")}>How it works</button>
-        <a href={`${APP_ORIGIN}/#/v2/billing`} className="pub-nav-pricing">Pricing</a>
+        <a href={`${APP_ORIGIN}/#/billing`} className="pub-nav-pricing">Pricing</a>
         <a href={DISCORD_INVITE_URL} className="pub-nav-discord" target="_blank" rel="noreferrer">Discord</a>
         <a href={`${APP_ORIGIN}/#/login`} className="pub-nav-login">Log in</a>
         <a href={`${APP_ORIGIN}/#/signup`} className="pub-cta">Start free</a>
@@ -259,7 +259,7 @@ function PublicHome() {
 function ForwardToApp() {
   // Any path on the public host other than "/", "/privacy" or "/terms" -
   // most commonly a shared app deep link someone retyped onto the apex
-  // domain (eafc.live/#/v2/players/123) - forwards to the identical
+  // domain (eafc.live/#/players/123) - forwards to the identical
   // path/hash on the real app domain rather than 404ing. Preserves the
   // full hash so query params (e.g. a signup ?from=) survive too.
   useEffect(() => {
@@ -292,7 +292,7 @@ export default function PublicSite() {
         <footer className="pub-footer">
           <span>© {new Date().getFullYear()} EAFC Live</span>
           <nav>
-            <a href={`${APP_ORIGIN}/#/v2/billing`}>Pricing</a>
+            <a href={`${APP_ORIGIN}/#/billing`}>Pricing</a>
             <a href={`${APP_ORIGIN}/#/login`}>Log in</a>
             <a href={DISCORD_INVITE_URL} target="_blank" rel="noreferrer">Discord</a>
             <Link to="/privacy">Privacy</Link>

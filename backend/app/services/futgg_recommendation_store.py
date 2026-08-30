@@ -414,10 +414,15 @@ async def track_record(
 # exposed per-row (see `target_hit` in the returned dict) but not used as
 # the primary win/loss split, so a card that was sold for a real profit
 # without technically touching the target price isn't shown as a "loss".
+# These must agree exactly with _outcome_result() below, which is what
+# labels each row in the UI. "losses" used to be `realised_roi <= 0`
+# while _outcome_result() calls roi == 0 "flat" - so filtering the ledger
+# to Losses returned rows badged "Flat", a filter contradicting its own
+# results. Break-even is its own outcome and belongs in neither tab.
 _RECENT_OUTCOME_FILTERS: Dict[str, str] = {
     "all": "TRUE",
     "wins": "o.entry_achieved AND o.realised_roi > 0",
-    "losses": "o.entry_achieved AND o.realised_roi <= 0",
+    "losses": "o.entry_achieved AND o.realised_roi < 0",
     "no_entry": "NOT o.entry_achieved",
 }
 

@@ -19,24 +19,27 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Request
 
 from app.auth.entitlements import compute_entitlements
-from app.db import get_core_pool, get_player_pool, get_watchlist_db
+from app.db import get_core_pool, get_player_pool, get_watchlist_pool
 from app.routers.v2.futgg_market import (
     _score_and_filter,
     _sales_for_rows,
     _segmented_candidates,
 )
+from app.services.alerts_feed import fetch_alert_feed
 from app.services.futgg_intelligence import CardIntelligence
 from app.services.futgg_trend import DOWNTREND, FALLING_KNIFE, INSUFFICIENT_TREND_DATA
 from app.services.market_data_provider import FutggMarketDataProvider
 from app.services.sbc_demand import compute_sbc_demand
 
 router = APIRouter(tags=["v2-dashboard"])
+log = logging.getLogger("v2_dashboard")
 
 # CardIntelligence.signal (see futgg_intelligence.py's SIGNALS tuple:
 # strong_buy/buy/watch/hold/sell/avoid/insufficient_data) mapped onto the
@@ -204,7 +207,7 @@ def _compute_live_market_regime(scored_pairs: List[Any]) -> Dict[str, Any]:
             "label": "Unknown", "confidence": 0,
             "summary": "Not enough live market data has been scored yet.",
             "dataQuality": "LIMITED",
-            "metrics": {"liquidCards": 0, "avgVolatility": 0, "avgValueGap": 0},
+            "metrics": {"liquidCards": 0, "valuedCards": 0, "avgVolatility": 0, "avgValueGap": 0},
         }
 
     # How many of those cards the engine could actually VALUE, as opposed
@@ -230,7 +233,11 @@ def _compute_live_market_regime(scored_pairs: List[Any]) -> Dict[str, Any]:
                 "about the market yet."
             ),
             "dataQuality": "LIMITED",
-            "metrics": {"liquidCards": total, "avgVolatility": 0, "avgValueGap": 0},
+            # valuedCards is the honest denominator behind every other
+            # number here: how many of the tracked cards had fresh enough
+            # price AND sales data to actually value. Exposed so the UI can
+            # state the eligibility rule rather than implying full coverage.
+            "metrics": {"liquidCards": total, "valuedCards": len(valued), "avgVolatility": 0, "avgValueGap": 0},
         }
 
     trend_known = [ci for _, ci in scored_pairs if ci.trend_state != INSUFFICIENT_TREND_DATA]
@@ -299,6 +306,7 @@ def _compute_live_market_regime(scored_pairs: List[Any]) -> Dict[str, Any]:
         "dataQuality": "GOOD" if evidence_pct >= 40 else "LIMITED",
         "metrics": {
             "liquidCards": total,
+            "valuedCards": len(valued),
             "avgVolatility": avg_liquidity,
             "avgValueGap": avg_discount,
         },
@@ -729,69 +737,36 @@ async def get_dashboard(request: Request) -> Dict[str, Any]:
     # the recommendation lists above (player_image_url is already present
     # synchronously on every futgg_market_snapshot row).
 
-    # --- Watchlist alerts: real query against alerts_log, populated by
-    # main.py's own live alert loop (_alerts_poll_loop/_eval_alerts_for_pair
-    # against the watchlist_alerts table) - NOT app/services/
-    # watchlist_engine.py, which is separate, unrelated dead code against
-    # a differently-named watchlist_items table that nothing ever writes
-    # to (see that module's own header comment). ---
+    # --- Watchlist alerts -------------------------------------------
+    # Delegated wholesale to app/services/alerts_feed.py so Home's bell
+    # badge, Home's feed and the Alerts panel are literally the same
+    # computation. This block used to build its own copy inline, which is
+    # how Home ended up showing raw card ids while the Watchlist page
+    # showed resolved names, and how the badge came to count "the 5 most
+    # recent rows" rather than anything the user had not seen.
+    #
+    # `watchedCount` distinguishes "you have nothing watched yet" from
+    # "you're watching something but nothing has triggered" - two
+    # different empty states the frontend cannot tell apart from an empty
+    # array alone.
     watchlist_alerts: List[Dict[str, Any]] = []
-    # Distinguishes "you have nothing watched yet" from "you're watching
-    # something but nothing has triggered yet" - two different empty
-    # states the frontend can't tell apart from an empty alerts array
-    # alone (see section 19 of the alerts investigation: showing the same
-    # "No alerts yet" copy for both reads as a bug when alert rules
-    # visibly exist on the Watchlist page).
     watched_count = 0
+    unread_alert_count = 0
     uid = request.session.get("user_id")
     if uid:
         try:
-            async for wdb in get_watchlist_db():
-                rows = await wdb.fetch(
-                    """
-                    SELECT al.direction, al.pct, al.price, al.sent_at, al.card_id, al.ref_price,
-                           w.source
-                    FROM alerts_log al
-                    LEFT JOIN watchlist w ON w.user_id = al.user_id AND w.card_id = al.card_id
-                    WHERE al.user_id = $1
-                    ORDER BY al.sent_at DESC LIMIT 5
-                    """,
-                    str(uid),
-                )
-                for r in rows:
-                    # Never a raw card_id in user-facing text - resolve the
-                    # real name the same way main.py's alert evaluator does,
-                    # source-aware (see migration 054's comment on why a
-                    # FUT.GG card_id must not be looked up in fut_players).
-                    name = f"Card {r['card_id']}"
-                    try:
-                        if r["source"] == "futgg":
-                            async with core_pool.acquire() as c:
-                                nr = await c.fetchrow(
-                                    "SELECT name FROM futgg_market_snapshot WHERE source_card_id = $1", r["card_id"]
-                                )
-                        else:
-                            async with player_pool.acquire() as c:
-                                nr = await c.fetchrow(
-                                    "SELECT name FROM fut_players WHERE card_id = $1::text", str(r["card_id"])
-                                )
-                        if nr and nr["name"]:
-                            name = nr["name"]
-                    except Exception:
-                        pass
-                    direction_word = "up" if r["direction"] == "rise" else "down"
-                    watchlist_alerts.append({
-                        "severity": "high" if abs(float(r["pct"])) >= 15 else "medium",
-                        "title": f"{name} is {direction_word} {abs(float(r['pct'])):.0f}%",
-                        "message": f"{int(r['ref_price']):,} when you added it → {int(r['price']):,} now" if r["ref_price"] else f"Now {int(r['price']):,} coins",
-                        "cardId": r["card_id"],
-                    })
-                watched_count = await wdb.fetchval(
-                    "SELECT COUNT(*) FROM watchlist WHERE user_id = $1", str(uid)
-                ) or 0
-                break
+            feed = await fetch_alert_feed(
+                watchlist_pool=await get_watchlist_pool(),
+                core_pool=core_pool,
+                player_pool=player_pool,
+                user_id=str(uid),
+                limit=5,
+            )
+            watchlist_alerts = feed["items"]
+            watched_count = feed["watchedCount"]
+            unread_alert_count = feed["unreadCount"]
         except Exception:
-            watchlist_alerts = []
+            log.warning("dashboard: alert feed unavailable", exc_info=True)
 
     # --- Latest market events + SBC impact ---
     async with player_pool.acquire() as conn:
@@ -840,6 +815,12 @@ async def get_dashboard(request: Request) -> Dict[str, Any]:
             "id": r["id"], "kind": r["kind"], "source": r["source"], "title": r["title"],
             "startsAt": r["starts_at"].isoformat() if r["starts_at"] else None,
             "endsAt": r["ends_at"].isoformat() if r["ends_at"] else None,
+            # Needed to say "new" honestly. Without it the ticker could
+            # only render the bare title and a placeholder word, which is
+            # how it came to display "Lionel Messi - EVENT": the event's
+            # own kind and timing were never sent, so there was nothing to
+            # build a sentence out of.
+            "firstSeenAt": r["first_seen_at"].isoformat() if r["first_seen_at"] else None,
         }
         for r in event_rows
     ]
@@ -866,6 +847,7 @@ async def get_dashboard(request: Request) -> Dict[str, Any]:
         "recentAiPredictions": recent_predictions,
         "watchlistAlerts": watchlist_alerts,
         "watchedCount": watched_count,
+        "unreadAlertCount": unread_alert_count,
         "nextPromo": next_promo,
         "latestMarketEvents": latest_market_events,
         "latestSbcImpact": latest_sbc_impact,

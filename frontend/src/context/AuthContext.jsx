@@ -71,7 +71,7 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
-  // returnTo: a same-app hash-route path ("/v2/players/34567") to send the
+  // returnTo: a same-app hash-route path ("/players/34567") to send the
   // user back to once Discord OAuth completes, so clicking "Watch" on a
   // shared card while signed out doesn't strand them on Home afterwards.
   // Defaults to wherever they currently are. Backend re-validates this

@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
 
+from app.auth.entitlements import resolve_user_tier
 from app.db import get_db
 from app.services.discord_integration import (
     DiscordClient,
@@ -39,11 +40,26 @@ async def discord_status(request: Request, db=Depends(get_db)):
         has_member_role = member.state == "joined" and str(config.member_role_id) in member.roles
     elif not config.role_sync_ready:
         guild_membership = "unconfigured"
+    # `membership_access` describes the Discord ROLE this account should
+    # carry, and it is now derived from the same entitlement resolver the
+    # rest of the app uses (see desired_member_access). `plan` is sent
+    # alongside so the Account page can show the plan and the Discord role
+    # as the two different facts they are, instead of rendering "Free"
+    # under a paid plan whenever the two computations disagreed.
+    tier = await resolve_user_tier(db, user_id, discord_id=discord_user_id)
+    if not discord_user_id:
+        access = "Not linked to Discord"
+    elif desired:
+        access = "EAFC.Live Member"
+    else:
+        access = "Free"
     return {
         "connected": bool(discord_user_id),
         "display_name": (profile["global_name"] or profile["username"]) if profile else None,
         "guild_membership": guild_membership,
-        "membership_access": "EAFC.Live Member" if desired else "Free",
+        "membership_access": access,
+        "plan": tier,
+        "entitled": desired,
         "has_member_role": has_member_role,
         "role_sync": queue["status"] if queue else "not_queued",
         "invite_url": config.invite_url,

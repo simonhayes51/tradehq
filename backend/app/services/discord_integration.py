@@ -11,6 +11,7 @@ from typing import Any, Iterable, Optional
 
 import aiohttp
 
+from app.auth.entitlements import user_is_entitled
 from app.services.discord_daily_proof import publish_daily_proof_review
 
 log = logging.getLogger("discord_integration")
@@ -239,30 +240,28 @@ class DiscordClient:
 
 
 async def desired_member_access(conn, user_id: str) -> tuple[Optional[str], bool]:
-    user = await conn.fetchrow(
-        "SELECT discord_id, plan, tier, account_type, premium_until FROM users WHERE id = $1", user_id
-    )
-    if not user or not user["discord_id"]:
+    """(discord_user_id, should_have_the_paid-member role).
+
+    The entitlement half is delegated to app/auth/entitlements.py so
+    Discord cannot disagree with the rest of the product about whether
+    someone is paid. It used to compute its own answer here, which
+    diverged in three ways - no ADMIN_DISCORD_IDS, no
+    user_profiles.is_premium, and an unconditional "not paid" for anyone
+    without a linked Discord id - and produced the "Current plan: ELITE /
+    Membership access: Free" contradiction on the Account page.
+
+    The discord_id half is unchanged and still returns None when there is
+    no linked identity: without one there is no member to grant a role
+    to, whatever the user is entitled to. The two are now independent,
+    which is the point: "you are entitled" and "we can act on it in
+    Discord" are different facts and the UI can say so.
+    """
+    user = await conn.fetchrow("SELECT discord_id FROM users WHERE id = $1", user_id)
+    if not user:
         return None, False
-    subscription = await conn.fetchrow(
-        """
-        SELECT status, current_period_end
-        FROM subscriptions
-        WHERE user_id = $1
-        ORDER BY created_at DESC
-        LIMIT 1
-        """,
-        user_id,
-    )
-    desired = entitlement_is_active(
-        status=subscription["status"] if subscription else None,
-        current_period_end=subscription["current_period_end"] if subscription else None,
-        plan=user["plan"],
-        tier=user["tier"],
-        account_type=user["account_type"],
-        premium_until=user["premium_until"],
-    )
-    return str(user["discord_id"]), desired
+    discord_user_id = str(user["discord_id"]) if user["discord_id"] else None
+    desired = await user_is_entitled(conn, user_id, discord_id=discord_user_id)
+    return discord_user_id, desired
 
 
 async def enqueue_role_sync(
@@ -464,7 +463,7 @@ def build_opportunity_digest(
         if confidences
         else "Average confidence: unavailable"
     )
-    opportunity_url = app_url.rstrip("/") + "/#/v2/opportunities"
+    opportunity_url = app_url.rstrip("/") + "/#/opportunities"
     return {
         "title": "EAFC LIVE - OPPORTUNITY UPDATE",
         "url": opportunity_url,

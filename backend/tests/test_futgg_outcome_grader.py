@@ -230,6 +230,40 @@ class TestOutcomeStatuses:
         assert grade.outcome_status == DOWNSIDE_HIT
         assert grade.max_adverse_excursion <= -0.10
 
+    def test_recovered_drawdown_is_not_labelled_a_loss(self):
+        # The regression this exists for: a position that dipped past the
+        # 10% downside threshold and then recovered to finish comfortably
+        # ABOVE entry used to be stamped downside_hit, which
+        # discord_daily_proof counts as a LOSS - so the track record
+        # rendered "Loss" next to a positive after-tax profit and a
+        # positive ROI. A published record that contradicts itself on the
+        # same row is worse than no record at all.
+        observations = _obs((1, 100_000), (3, 88_000), (5, 115_000))
+        grade = grade_recommendation(
+            horizon="24h", evaluated_at=T0,
+            buy_price=100_000, sell_target=140_000,
+            observations=observations,
+        )
+        # The drawdown genuinely happened and is still reported as such.
+        assert grade.downside_hit is True
+        assert grade.max_adverse_excursion <= -0.10
+        # But the OUTCOME is where the position ended, which is up.
+        assert grade.realised_roi > 0
+        assert grade.net_profit_after_tax > 0
+        assert grade.outcome_status == PROFITABLE_UNREALISED
+
+    def test_flat_after_a_deep_drawdown_is_flat_not_a_loss(self):
+        # Same rule at the boundary: recovering back to (post-tax)
+        # break-even is not a loss either, however deep the dip was.
+        observations = _obs((1, 90_000), (3, 70_000), (5, 94_737))
+        grade = grade_recommendation(
+            horizon="24h", evaluated_at=T0,
+            buy_price=90_000, sell_target=200_000,
+            observations=observations,
+        )
+        assert grade.downside_hit is True
+        assert grade.outcome_status == FLAT
+
     def test_flat_outcome_requires_clearing_tax_not_merely_a_flat_price(self):
         # Worth being explicit about, because it is counter-intuitive and
         # it is where naive P&L reporting goes wrong: EA's 5% cut means a

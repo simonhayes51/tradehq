@@ -5,13 +5,14 @@ import { addWatch } from "../../../api/watchlist";
 import { useFutggPlayer } from "../../hooks/useFutggMarket";
 import { AnalysisModal } from "../HomeDashboard/HomeDashboard";
 import FutggMarketSection from "./sections/FutggMarketSection";
+import { versionLabel } from "../../lib/format";
 
 export default function PlayerPage() {
   const { cardId } = useParams();
   const location = useLocation();
   const navigate = useNavigate();
   // Single source: the FUT.GG-backed GET /api/v2/players/{cardId}.
-  // Every /v2/players/:cardId link (Watchlist, Trade Finder,
+  // Every /players/:cardId link (Watchlist, Trade Finder,
   // Opportunities, Market, SBC impact) passes a source_card_id, which is
   // exactly what this endpoint keys on.
   const futggQuery = useFutggPlayer(cardId);
@@ -30,7 +31,7 @@ export default function PlayerPage() {
   );
   const settled = !futggQuery.isLoading;
   const origin = location.state?.from;
-  const returnPath = origin === "trade-finder" ? "/v2/trade-finder" : "/v2/players";
+  const returnPath = origin === "trade-finder" ? "/trade-finder" : "/players";
   const backLabel = origin === "trade-finder" ? "Back to Trade Finder" : "Back to player search";
 
   function goBack() {
@@ -54,7 +55,7 @@ export default function PlayerPage() {
       // A shared player-page link is the acquisition loop: a friend
       // clicks Watch while signed out, signs up, and should land back on
       // this exact card, not Home - see AuthContext.login's returnTo.
-      else if (requestError?.response?.status === 401) navigate(`/signup?from=${encodeURIComponent(`/v2/players/${cardId}`)}`);
+      else if (requestError?.response?.status === 401) navigate(`/signup?from=${encodeURIComponent(`/players/${cardId}`)}`);
       else setWatchState("error");
     }
   }
@@ -147,7 +148,7 @@ function toFutggAnalysisItem(raw, cardId) {
       nickname: null,
       rating: raw.rating,
       position: raw.position || raw.primary_position,
-      version: raw.rarity || "Card",
+      version: versionLabel(raw.rarity),
       imageUrl: raw.image_url,
       // composited_image_url (FUT.GG's own pre-composited full-card
       // image, mirrored to R2) always wins when present - shown as a

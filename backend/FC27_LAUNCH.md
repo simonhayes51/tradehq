@@ -309,14 +309,16 @@ FUTGG_UNVERIFIABLE_DISCOUNT_GUARD=true
 
 ### Manual checks after deploy
 
-- `/v2/investments` renders the "Gathering market data" state — **not** an
-  error or a blank screen.
-- `/v2/opportunities` still lists trades normally.
+- There is no longer an Investments page to check — it was removed from
+  the product surface precisely because shadow mode means it can never
+  show a customer a signal (see INVESTMENT_ENGINE.md). `/investments`
+  redirects to `/opportunities`.
+- `/opportunities` still lists trades normally.
 - A signed-out visitor cannot see any card-level investment call.
 - A non-admin hitting `/api/v2/investments/signals?include_shadow=true`
   gets 401/403, not data.
 - Discord role sync still reconciles.
-- Mobile: Investments, Opportunities, Player detail.
+- Mobile: Opportunities, Player detail.
 
 ---
 

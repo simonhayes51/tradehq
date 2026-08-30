@@ -91,3 +91,32 @@ export function reasoningFromV1_2(rec) {
   if (status === "WAIT") return "Doesn't clear any strategy's threshold yet.";
   return "";
 }
+
+
+// FUT.GG's `rarity` is an internal snake_case key ("team_of_the_week",
+// "trailblazers_plus"). It was being rendered straight into card meta
+// pills, so the most prominent card on the homepage carried a literal
+// "team_of_the_week" chip. Nothing else in the product exposes an
+// internal identifier to a customer; this stops rarity doing it.
+export function versionLabel(version) {
+  const raw = String(version ?? "").trim();
+  if (!raw) return "Card";
+  return raw
+    .replace(/_/g, " ")
+    .replace(/\s+/g, " ")
+    .split(" ")
+    .map((word) => (word ? word[0].toUpperCase() + word.slice(1).toLowerCase() : word))
+    .join(" ");
+}
+
+// The engine's risk_level is a lowercase enum ("low"/"medium"/"high"/
+// "avoid"). It was rendered straight into card footers as "low risk" -
+// readable, but visibly a raw value, and "unknown risk" for a card the
+// engine simply had no risk read on reads as a warning rather than as
+// missing data.
+export function riskLabel(riskLevel) {
+  const value = String(riskLevel ?? "").trim().toLowerCase();
+  if (!value || value === "unknown") return "Risk not rated";
+  if (value === "avoid") return "Avoid";
+  return `${value.charAt(0).toUpperCase()}${value.slice(1)} risk`;
+}

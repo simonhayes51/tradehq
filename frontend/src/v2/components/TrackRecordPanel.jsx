@@ -25,6 +25,7 @@ import { useState } from "react";
 import { useTrackRecord, useRecentOutcomes } from "../hooks/useTrackRecord";
 import EmptyState from "./EmptyState";
 import CoinValue from "./CoinValue";
+import { versionLabel } from "../lib/format";
 
 const WINDOWS = [
   ["7d", "7 days"],
@@ -49,10 +50,15 @@ function daysSince(iso) {
   return Math.max(0, Math.floor((Date.now() - then) / 86_400_000));
 }
 
+// "Never entered" is offered explicitly. It is the single most flattering
+// thing a track record can quietly omit - a call whose buy price was
+// never available is not a win, and hiding the category makes the win/
+// loss split look better than the record actually is.
 const RESULT_FILTERS = [
   ["all", "All"],
   ["wins", "Wins"],
   ["losses", "Losses"],
+  ["no_entry", "Never entered"],
 ];
 
 const RESULT_COPY = {
@@ -90,25 +96,40 @@ function StatTile({ label, value, sub, tone }) {
 
 function LedgerRow({ item, result }) {
   const copy = RESULT_COPY[result] || { text: result, tone: "" };
+  // A recommendation whose buy price was never reached has no entry, no
+  // profit and no ROI - printing "Entered —" and a 0 next to it states
+  // three things that did not happen. Say what actually happened instead.
+  const noEntry = result === "no_entry" || item.entry_price == null;
+  // The badge and the number must never disagree. Colour is driven by the
+  // same value the badge is, not by an independent >= 0 test on profit -
+  // that independence is how a row could read "Loss" in red beside a
+  // green positive figure.
+  const profitTone = noEntry ? "" : result === "win" ? "positive" : result === "loss" ? "negative" : "";
   return (
     <div className="track-record-outcome-row">
       <div className="track-record-outcome-copy">
         <div className="track-record-outcome-title">
-          <strong>{item.player_name}</strong>
+          <strong>{item.player_name || "Unnamed card"}</strong>
           <span className={`outcome-badge ${copy.tone}`}>{copy.text}</span>
         </div>
         <small>
           {item.card_rating ? `${item.card_rating} OVR · ` : ""}
-          {item.rarity || "Card"} · detected {fmtDate(item.detected_at)}
+          {versionLabel(item.rarity)} · called {fmtDate(item.detected_at)}
         </small>
       </div>
       <div className="track-record-outcome-numbers">
-        <span>
-          Entered <CoinValue value={item.entry_price} />
-        </span>
-        <span className={item.net_profit_after_tax >= 0 ? "positive" : "negative"}>
-          <CoinValue value={item.net_profit_after_tax} signed /> ({fmtPct(item.realised_roi_pct)})
-        </span>
+        {noEntry ? (
+          <span className="muted">Never reached the buy price</span>
+        ) : (
+          <>
+            <span>
+              Entered <CoinValue value={item.entry_price} />
+            </span>
+            <span className={profitTone}>
+              <CoinValue value={item.net_profit_after_tax} signed /> ({fmtPct(item.realised_roi_pct)})
+            </span>
+          </>
+        )}
       </div>
     </div>
   );
@@ -188,8 +209,12 @@ export default function TrackRecordPanel() {
     <section className="track-record-panel">
       <div className="section-head compact">
         <div>
-          <span>TRACK RECORD</span>
-          <h2>Did our published calls actually work?</h2>
+          {/* No eyebrow/title here any more: this panel now only renders
+              inside /track-record, whose PageHead already says what
+              the page is. Repeating it produced two headings for one
+              thing. The homepage's summary is TrackRecordSummary. */}
+          <span>PUBLISHED RESULTS</span>
+          <h2>Choose a period</h2>
         </div>
         <div className="track-record-window-tabs">
           {WINDOWS.map(([key, label]) => (
@@ -223,16 +248,22 @@ export default function TrackRecordPanel() {
           <div className="track-record-grid compact-grid">
             <StatTile label="Wins" value={published.wins.toLocaleString()} tone="positive" />
             <StatTile label="Losses" value={published.losses.toLocaleString()} tone="negative" />
+            {/* Break-even was never shown, so wins + losses did not add up
+                to the "published opportunities" figure printed directly
+                below - a reader who checks the arithmetic finds calls
+                unaccounted for and reasonably assumes something is being
+                left out. */}
+            <StatTile label="Break-even" value={Number(published.flats ?? 0).toLocaleString()} sub="Neither a win nor a loss after tax" />
             <StatTile label="Win rate" value={fmtPct(published.win_rate_pct)} tone={published.win_rate_pct >= 50 ? "positive" : ""} />
             <StatTile label="Total profit" value={<CoinValue value={published.total_profit_after_tax} signed />} sub="After tax, one card per call" />
             <StatTile label="Median ROI" value={fmtPct(published.median_roi_pct)} sub="After tax" />
             <StatTile label="Median time to target" value={fmtMinutes(published.median_time_to_target_minutes)} />
           </div>
           <p className="track-record-disclosure small">
-            Published opportunities: {published.published_opportunities.toLocaleString()} · entry
-            reached: {published.entry_reached.toLocaleString()} (this pipeline only tracks
-            recommendations that were actually entered - it does not yet track ones that never
-            reached their buy price).
+            {published.published_opportunities.toLocaleString()} recommendations graded, all of which
+            reached their buy price. Recommendations whose buy price was never available are not yet
+            counted here, so this is not a complete hit rate - it is the result of the calls you
+            could actually have taken.
           </p>
 
           <div className="track-record-recent-split">
@@ -270,7 +301,7 @@ export default function TrackRecordPanel() {
         onToggle={(e) => setLedgerOpen(e.target.open)}
       >
         <summary>
-          <h3>Full chronological ledger</h3>
+          <h3>Full chronological ledger (all graded signals)</h3>
         </summary>
         <div className="track-record-recent-head">
           <div className="track-record-result-tabs">
@@ -282,8 +313,9 @@ export default function TrackRecordPanel() {
           </div>
         </div>
         <p className="track-record-disclosure small">
-          Every graded model signal in this window (see Model signal validation below for what that
-          means), not limited to published recommendations. Initially limited to {ledgerLimit} rows.
+          A different, much larger dataset from the published figures above: every buy signal the
+          engine graded in this window, including ones that were never sent to anyone. Useful for
+          seeing individual calls; not the number to judge us on. Shows {ledgerLimit} rows at a time.
         </p>
         {recentQuery.isLoading ? (
           <EmptyState compact text="Loading…" />

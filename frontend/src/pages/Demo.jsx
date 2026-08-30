@@ -102,6 +102,17 @@ export default function Demo() {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         const data = await r.json();
         if (cancelled) return;
+        // Shape check, not just a status check. The KPI list below reads
+        // stats.totals.*, stats.last_24h.*, stats.sync_status.* and
+        // stats.database.* unguarded, so ANY 200 with a different shape
+        // (a degraded response, a proxy error page serialised as JSON, a
+        // future API change) threw a TypeError during render and took the
+        // whole page to the error boundary. This is the investor-facing
+        // public demo; it must degrade to "couldn't load" rather than to
+        // a crash screen.
+        if (!data || typeof data !== "object" || !data.totals || !data.last_24h) {
+          throw new Error("Unexpected response from the pipeline API");
+        }
         setStats(data);
         setApiMs(elapsed);
         setLoadError("");
@@ -180,15 +191,15 @@ export default function Demo() {
 
   const kpis = stats
     ? [
-        { label: "Total Players in Database", value: fmtNum(stats.totals.total_players), icon: Users },
-        { label: "Total Historical Sales Stored", value: fmtNum(stats.totals.total_sales), icon: BarChart3 },
-        { label: "Total BIN Price Snapshots Stored", value: fmtNum(stats.totals.total_bin_snapshots), icon: Database },
-        { label: "Sales Recorded (24h)", value: fmtNum(stats.last_24h.sales), icon: TrendingUp },
-        { label: "BIN Prices Updated (24h)", value: fmtNum(stats.last_24h.bin_updates), icon: Zap },
-        { label: "Avg Sales / Hour (24h)", value: fmtNum(stats.last_24h.avg_sales_per_hour), icon: Gauge },
-        { label: "Last Successful Auto Sync", value: timeAgo(stats.sync_status.last_successful_auto_sync), sub: fmtDateTime(stats.sync_status.last_successful_auto_sync), icon: CheckCircle2 },
-        { label: "Last Successful Sales Sync", value: timeAgo(stats.sync_status.last_successful_sales_sync), sub: fmtDateTime(stats.sync_status.last_successful_sales_sync), icon: CheckCircle2 },
-        { label: "Database Uptime", value: timeAgo(stats.database.started_at), sub: `Tracking data since ${fmtDateTime(stats.totals.first_recorded_sale_at)}`, icon: Server },
+        { label: "Total Players in Database", value: fmtNum(stats.totals?.total_players), icon: Users },
+        { label: "Total Historical Sales Stored", value: fmtNum(stats.totals?.total_sales), icon: BarChart3 },
+        { label: "Total BIN Price Snapshots Stored", value: fmtNum(stats.totals?.total_bin_snapshots), icon: Database },
+        { label: "Sales Recorded (24h)", value: fmtNum(stats.last_24h?.sales), icon: TrendingUp },
+        { label: "BIN Prices Updated (24h)", value: fmtNum(stats.last_24h?.bin_updates), icon: Zap },
+        { label: "Avg Sales / Hour (24h)", value: fmtNum(stats.last_24h?.avg_sales_per_hour), icon: Gauge },
+        { label: "Last Successful Auto Sync", value: timeAgo(stats.sync_status?.last_successful_auto_sync), sub: fmtDateTime(stats.sync_status?.last_successful_auto_sync), icon: CheckCircle2 },
+        { label: "Last Successful Sales Sync", value: timeAgo(stats.sync_status?.last_successful_sales_sync), sub: fmtDateTime(stats.sync_status?.last_successful_sales_sync), icon: CheckCircle2 },
+        { label: "Database Uptime", value: timeAgo(stats.database?.started_at), sub: `Tracking data since ${fmtDateTime(stats.totals?.first_recorded_sale_at)}`, icon: Server },
         { label: "Cards Tracked Today", value: fmtNum(stats.cards_tracked_today), icon: Activity },
       ]
     : [];

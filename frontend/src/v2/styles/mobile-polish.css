@@ -816,7 +816,8 @@
        overhead competing with the digits for the same ~67px. */
     font-size: 14px;
   }
-  .queue-signals .trade-signal .coin-value img {
+  .queue-signals .trade-signal .coin-value img,
+  .queue-signals .trade-signal .coin-value .coin-icon {
     display: none;
   }
   .queue-signals .trade-signal.profit {
@@ -916,7 +917,8 @@
     display: block;
     font-size: 14px;
   }
-  .strategy-trade .trade-signal .coin-value img {
+  .strategy-trade .trade-signal .coin-value img,
+  .strategy-trade .trade-signal .coin-value .coin-icon {
     display: none;
   }
   .strategy-arrow {

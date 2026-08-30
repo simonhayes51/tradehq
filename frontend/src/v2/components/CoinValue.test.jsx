@@ -34,3 +34,21 @@ describe("CoinValue", () => {
     expect(screen.getByText("0")).toBeInTheDocument();
   });
 });
+
+describe("coin icon", () => {
+  it("is inlined, not fetched from a third-party CDN", () => {
+    // It used to be an <img src="https://cdn2.futbin.com/...">: one
+    // request per coin figure, to the CDN of the data source this
+    // product migrated off, on every screen.
+    const { container } = render(<CoinValue value={1000} />);
+    expect(container.querySelector("img")).toBeNull();
+    expect(container.querySelector("svg.coin-icon")).not.toBeNull();
+    expect(container.innerHTML).not.toContain("futbin");
+  });
+
+  it("hides the icon from assistive tech and labels the value instead", () => {
+    const { container } = render(<CoinValue value={1000} />);
+    expect(container.querySelector("svg").getAttribute("aria-hidden")).toBe("true");
+    expect(container.querySelector(".coin-value").getAttribute("aria-label")).toBe("1,000 coins");
+  });
+});

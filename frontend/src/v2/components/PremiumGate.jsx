@@ -27,7 +27,7 @@ export default function PremiumGate({ locked, featureName, children, fallback })
         // Opportunities feed"), not a generic "Welcome to Premium" -
         // the upgrade page should feel connected to the action that
         // brought them there, not like a separate marketing destination.
-        to={`/v2/billing${featureName ? `?unlock=${encodeURIComponent(featureName)}` : ""}`}
+        to={`/billing${featureName ? `?unlock=${encodeURIComponent(featureName)}` : ""}`}
         className="inline-flex items-center px-3 py-1.5 rounded-lg bg-[var(--v2-accent)] text-black text-xs font-semibold hover:opacity-90"
       >
         Upgrade
