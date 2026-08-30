@@ -315,7 +315,7 @@ function PublicHome() {
           </div>
           <button type="button" className="pub-demo-advanced" disabled aria-disabled="true">
             <span><ChevronRight size={14} /> Advanced rationale</span>
-            <span className="pub-demo-advanced-hint">Fair value, recent sales, confidence, risk and more — for signed-in traders</span>
+            <span className="pub-demo-advanced-hint">Exact price, what it&apos;s worth, recent sales, confidence and risk — on the free account</span>
           </button>
         </div>
       </section>

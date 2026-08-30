@@ -508,3 +508,21 @@
   color: #9a9a9a;
   font-size: 12px;
 }
+
+/* Signed-out search: the price shown is approximate, and says so. */
+.v2-result-price.approx small { color: #86868c; }
+.v2-search-account-note {
+  margin-top: 18px; border: 1px solid #26383060; border-radius: 8px; padding: 18px;
+  background: linear-gradient(160deg, #0f1f16, #111214 70%);
+}
+.v2-search-account-note p {
+  display: flex; align-items: flex-start; gap: 8px; margin: 0 0 14px;
+  font-size: 13px; color: #c6c6ca; line-height: 1.5;
+}
+.v2-search-account-note p svg { flex: none; margin-top: 2px; }
+.v2-search-account-note a {
+  display: inline-flex; align-items: center; gap: 7px; min-height: 42px; padding: 0 16px;
+  border-radius: 4px; background: #39ff8a; color: #06120a; font-weight: 900;
+  font-size: 12.5px; text-decoration: none;
+}
+.v2-search-account-note small { display: block; margin-top: 10px; font-size: 11.5px; color: #9a9aa0; }

@@ -41,7 +41,9 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.routers.v2.futgg_market import ProviderDep
-from app.auth.access import Viewer, get_viewer, serialise_card_detail
+from app.auth.access import (
+    Viewer, get_viewer, public_companion_preview, serialise_card_detail,
+)
 from app.services.free_picks import unlocked_pick_ids
 from app.services.futgg_intelligence import CardIntelligence, evaluate_card
 from app.services.market_data_provider import FutggMarketDataProvider
@@ -153,6 +155,14 @@ async def get_companion_card(
     # It now goes through the same serialiser as everything else. An Elite
     # session gets the full object; anyone else gets the card, the
     # reference price and the verdict, with the trade plan withheld.
+    if not viewer.is_authenticated:
+        # No account: identity and an approximate price. The overlay stays
+        # useful as a "yes, this is the card, and we track it" aid without
+        # being a free valuation service for anyone who installs it.
+        payload = public_companion_preview(payload)
+        payload["signup_url"] = f"{_app_base_url()}/#/signup"
+        return payload
+
     if not viewer.has("opportunity_feed"):
         unlocked = await unlocked_pick_ids() if viewer.is_free else []
         payload = serialise_card_detail(payload, viewer, unlocked_ids=unlocked)

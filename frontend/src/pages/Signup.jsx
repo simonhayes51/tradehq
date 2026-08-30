@@ -29,7 +29,8 @@ import "./signup.css";
 // teaser for something that turns out to be locked.
 const FREE_INCLUDES = [
   `${FREE_LIMITS.dailyOpportunities} complete trade ideas every day — entry price, sell target and expected profit`,
-  "Search any player and see live prices and fair value",
+  "The exact live price on any card, and what it's actually worth",
+  "Recent completed sales and the full price history",
   `Track up to ${FREE_LIMITS.watchlist} cards and set ${FREE_LIMITS.alerts} price alerts`,
   "Log your trades and see your real profit after EA's 5% tax",
 ];

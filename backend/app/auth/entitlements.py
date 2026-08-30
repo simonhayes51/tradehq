@@ -381,9 +381,45 @@ def _limits_for(tier: Tier) -> Dict[str, Any]:
     }
 
 
-def features_for_tier(tier: Tier) -> Set[Feature]:
+# Free features that nonetheless require an ACCOUNT.
+#
+# Tier and identity are two different questions, and FEATURE_MIN_TIER only
+# answered the first. A signed-out visitor resolves to tier "free", so
+# before this set existed they received every free feature - including the
+# complete fair-value analysis, which is one of the things a Free account
+# is supposed to be FOR. The free tier cannot be worth creating if its
+# headline benefit is already available without creating it.
+#
+# What stays public is discovery: searching, seeing that a card exists,
+# its identity and rating, and roughly what it costs. What needs an
+# account is the analysis - the exact fair value, the discount, the
+# verdict and anything resembling a trade plan.
+#
+# The write-scoped features are here for honesty rather than protection:
+# a watchlist or a portfolio trade has always needed a user id to attach
+# to, so an anonymous caller was never going to succeed. Saying so in the
+# feature set means the UI can offer an account instead of rendering a
+# control that will fail.
+ACCOUNT_ONLY_FEATURES: Set[Feature] = {
+    "fair_value",
+    "watchlist",
+    "trade_journal",
+    "portfolio_performance",
+}
+
+
+def features_for_tier(tier: Tier, *, authenticated: bool = True) -> Set[Feature]:
+    """The features this tier grants.
+
+    `authenticated` defaults to True because every caller that has a tier
+    in hand has a real user. Only the signed-out paths pass False, and
+    they are the reason this parameter exists.
+    """
     rank = _TIER_ORDER[tier]
-    return {f for f, t in FEATURE_MIN_TIER.items() if _TIER_ORDER[t] <= rank}
+    features = {f for f, t in FEATURE_MIN_TIER.items() if _TIER_ORDER[t] <= rank}
+    if not authenticated:
+        features -= ACCOUNT_ONLY_FEATURES
+    return features
 
 
 async def resolve_user_tier(conn_or_pool, user_id: str, *, discord_id: Optional[str] = None) -> Tier:
@@ -438,7 +474,7 @@ async def compute_entitlements(req: Request) -> Dict[str, Any]:
             "roles": [],
             "is_premium": False,
             "is_admin": False,
-            "features": sorted(features_for_tier(tier)),
+            "features": sorted(features_for_tier(tier, authenticated=False)),
             "limits": _limits_for(tier),
         }
 
@@ -547,7 +583,7 @@ class Viewer:
 
 def anonymous_viewer() -> "Viewer":
     return Viewer(user_id=None, tier="free", is_admin=False,
-                  features=frozenset(features_for_tier("free")))
+                  features=frozenset(features_for_tier("free", authenticated=False)))
 
 
 async def get_viewer(req: Request) -> "Viewer":

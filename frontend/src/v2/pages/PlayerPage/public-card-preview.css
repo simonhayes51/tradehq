@@ -1,0 +1,52 @@
+/* The signed-out card page. Deliberately not a greyed-out copy of the
+   real page: the analysis was never sent, so there is nothing here that
+   is being visually hidden. */
+.public-card-page { max-width: 900px; margin: 0 auto; padding: 20px 16px 48px; }
+.public-card-back {
+  background: none; border: 1px solid #26272b; color: #c6c6ca; border-radius: 4px;
+  padding: 7px 12px; font-size: 12.5px; cursor: pointer; min-height: 36px;
+}
+.public-card-back:hover { border-color: #3a3b40; color: #fff; }
+
+.public-card-hero { display: grid; grid-template-columns: 220px 1fr; gap: 26px; margin-top: 20px; align-items: start; }
+.public-card-art { width: 100%; }
+.public-card-copy h1 { margin: 0 0 8px; font-size: 26px; line-height: 1.15; }
+.public-card-meta { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 18px; }
+.public-card-meta span {
+  font-size: 11px; letter-spacing: .04em; text-transform: uppercase;
+  border: 1px solid #26272b; border-radius: 3px; padding: 3px 7px; color: #9a9aa0;
+}
+
+.public-card-price { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 0; }
+.public-card-price > div { border: 1px solid #222327; border-radius: 6px; padding: 12px; background: #111214; }
+.public-card-price dt {
+  font-size: 10px; letter-spacing: .06em; text-transform: uppercase;
+  color: #86868c; margin: 0 0 6px;
+}
+.public-card-price dd { margin: 0; font-size: 16px; font-weight: 800; color: #fff; font-variant-numeric: tabular-nums; }
+.public-card-price .locked dd {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 12px; font-weight: 700; color: #9a9aa0;
+}
+.public-card-approx-note { font-size: 11.5px; color: #86868c; margin: 9px 0 0; }
+
+.public-card-cta {
+  margin-top: 30px; border: 1px solid #26383060; border-radius: 8px; padding: 22px;
+  background: linear-gradient(160deg, #0f1f16, #111214 70%);
+}
+.public-card-cta h2 { margin: 0 0 14px; font-size: 18px; }
+.public-card-cta ul { list-style: none; margin: 0 0 18px; padding: 0; display: grid; gap: 8px; }
+.public-card-cta li { font-size: 13px; color: #c6c6ca; padding-left: 20px; position: relative; }
+.public-card-cta li::before { content: "✓"; position: absolute; left: 0; color: #39ff8a; }
+.public-card-signup {
+  display: inline-flex; align-items: center; gap: 7px; min-height: 44px; padding: 0 18px;
+  border-radius: 4px; background: #39ff8a; color: #06120a; font-weight: 900;
+  font-size: 13px; text-decoration: none;
+}
+.public-card-reassure { font-size: 12px; color: #9a9aa0; margin: 12px 0 0; }
+
+@media (max-width: 720px) {
+  .public-card-hero { grid-template-columns: 1fr; gap: 18px; }
+  .public-card-art { max-width: 200px; margin: 0 auto; }
+  .public-card-price { grid-template-columns: 1fr; }
+}

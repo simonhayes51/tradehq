@@ -5,6 +5,7 @@ import { addWatch } from "../../../api/watchlist";
 import { useFutggPlayer } from "../../hooks/useFutggMarket";
 import { AnalysisModal } from "../HomeDashboard/HomeDashboard";
 import FutggMarketSection from "./sections/FutggMarketSection";
+import PublicCardPreview from "./PublicCardPreview";
 import { versionLabel } from "../../lib/format";
 
 export default function PlayerPage() {
@@ -58,6 +59,26 @@ export default function PlayerPage() {
       else if (requestError?.response?.status === 401) navigate(`/signup?from=${encodeURIComponent(`/players/${cardId}`)}`);
       else setWatchState("error");
     }
+  }
+
+  // `requires_account` is the server's own answer (app/auth/access.py's
+  // public_card_preview), not something inferred from the auth context:
+  // the payload and the page must agree about what was actually sent, and
+  // the payload is the one that is right. A 401 from the detail endpoint
+  // means the same thing.
+  const needsAccount =
+    futggQuery.data?.requires_account === true
+    || futggQuery.error?.response?.status === 401;
+
+  if (needsAccount) {
+    return (
+      <PublicCardPreview
+        card={futggQuery.data || {}}
+        cardId={cardId}
+        onBack={goBack}
+        backLabel={backLabel}
+      />
+    );
   }
 
   if (!item && settled) {
