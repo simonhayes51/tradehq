@@ -1,0 +1,123 @@
+/* Mobile-first. Onboarding is the first thing a new member sees and a
+   large share of signups arrive on a phone, so this is a single column
+   that only widens at the breakpoint. */
+.onboarding {
+  min-height: 100vh;
+  background: #0c0c0c;
+  color: #f8f8f8;
+  padding: 20px 16px calc(48px + env(safe-area-inset-bottom));
+  font-family: Inter, system-ui, sans-serif;
+}
+.onboarding-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  max-width: 720px;
+  margin: 0 auto 28px;
+}
+.onboarding-brand { color: #39ff8a; font-weight: 800; font-size: 15px; }
+.onboarding-brand b { color: #fff; }
+.onboarding-skip {
+  min-height: 44px;
+  padding: 0 14px;
+  border: 1px solid #2f2f2f;
+  border-radius: 5px;
+  background: transparent;
+  color: #a8a8a8;
+  font-size: 13px;
+  cursor: pointer;
+}
+.onboarding-skip:hover { color: #fff; border-color: #4a4a4a; }
+.onboarding-step { max-width: 720px; margin: 0 auto; }
+.onboarding-step h1 { margin: 0 0 10px; font-size: 28px; line-height: 1.15; letter-spacing: -0.02em; }
+.onboarding-lede { margin: 0 0 28px; color: #b4b4b4; font-size: 15px; line-height: 1.55; }
+.onboarding-field { margin: 0 0 26px; padding: 0; border: 0; }
+.onboarding-field legend {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  font-size: 15px;
+  font-weight: 700;
+}
+.onboarding-field legend svg { color: #39ff8a; }
+.onboarding-hint { margin: 6px 0 12px; color: #909090; font-size: 12.5px; }
+.onboarding-options { display: flex; flex-wrap: wrap; gap: 8px; }
+.onboarding-options button {
+  min-height: 46px;
+  padding: 0 16px;
+  border: 1px solid #333;
+  border-radius: 99px;
+  background: #161616;
+  color: #d4d4d4;
+  font-size: 14px;
+  font-weight: 650;
+  cursor: pointer;
+}
+.onboarding-options button.selected { border-color: #39ff8a; background: #122b1f; color: #fff; }
+.onboarding-next {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  min-height: 52px;
+  padding: 0 22px;
+  border: 0;
+  border-radius: 6px;
+  background: #39ff8a;
+  color: #08130c;
+  font-size: 16px;
+  font-weight: 800;
+  cursor: pointer;
+}
+.onboarding-next:disabled { opacity: 0.7; cursor: default; }
+.onboarding-next .spin { animation: onboarding-spin 0.9s linear infinite; }
+@keyframes onboarding-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .onboarding-next .spin { animation: none; } }
+.onboarding-picks { display: grid; gap: 14px; margin-bottom: 22px; }
+.onboarding-pick { padding: 16px; border: 1px solid #2c2c2c; border-radius: 6px; background: #141414; }
+.onboarding-pick-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.onboarding-pick-head strong { font-size: 17px; }
+.onboarding-pick-head span { color: #9a9a9a; font-size: 12px; text-transform: capitalize; }
+.onboarding-pick-numbers {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 14px;
+  margin: 16px 0 0;
+}
+.onboarding-pick-numbers dt {
+  color: #909090;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.onboarding-pick-numbers dd { margin: 5px 0 0; font-size: 20px; font-weight: 700; }
+.onboarding-pick-numbers dd.positive { color: #39ff8a; }
+.onboarding-pick-numbers small { display: block; margin-top: 4px; color: #9a9a9a; font-size: 11.5px; line-height: 1.45; }
+.onboarding-watch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 46px;
+  margin-top: 16px;
+  padding: 0 15px;
+  border: 1px solid #333;
+  border-radius: 5px;
+  background: #1a1a1a;
+  color: #fff;
+  font-size: 14px;
+  font-weight: 650;
+  cursor: pointer;
+}
+.onboarding-watch:hover:not(:disabled) { border-color: #39ff8a; }
+.onboarding-refresh { margin: 0 0 26px; color: #b4b4b4; font-size: 13.5px; }
+.onboarding-refresh b { color: #fff; }
+.onboarding-finish { display: flex; flex-direction: column; gap: 14px; align-items: flex-start; }
+.onboarding-upgrade { color: #a8a8a8; font-size: 13px; text-decoration: underline; }
+.onboarding-upgrade:hover { color: #39ff8a; }
+
+@media (min-width: 560px) {
+  .onboarding-pick-numbers { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .onboarding-finish { flex-direction: row; align-items: center; gap: 20px; }
+}

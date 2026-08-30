@@ -16,6 +16,7 @@ from app.routers.v2.futgg_market import router as futgg_market_router
 from app.routers.v2.companion import router as companion_router
 from app.routers.v2.investments import router as investments_router
 from app.routers.v2.alerts import router as alerts_router
+from app.routers.v2.onboarding import router as onboarding_router
 
 router = APIRouter(prefix="/api/v2")
 router.include_router(health_router)
@@ -48,3 +49,7 @@ router.include_router(investments_router)
 # main.py's /api/watchlist-alerts rule CRUD - see this router's docstring
 # for why conflating the two is what made alerts undeletable.
 router.include_router(alerts_router)
+# New-member onboarding state (migration 074). Persisted server-side so a
+# member who completes or skips it on desktop is not asked again on their
+# phone.
+router.include_router(onboarding_router)
