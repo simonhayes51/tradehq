@@ -49,7 +49,7 @@ const ELITE_FEATURES = [
   { icon: Check, title: `${FREE_LIMITS.eliteAlerts} price alerts`, desc: `Up to ${FREE_LIMITS.eliteAlerts} active alerts, against ${FREE_LIMITS.alerts} on Free.` },
   { icon: Check, title: "Full portfolio and history", desc: "Unlimited open trades and your complete history, not the last 30 days." },
   { icon: Check, title: "Complete track record", desc: "Every published call and every window, not just the recent summary." },
-  { icon: MessageCircle, title: "Premium Discord access", desc: "The premium channel in the EAFC Live Discord." },
+  { icon: MessageCircle, title: "Members-only Discord", desc: "The Elite channel in the EAFC Live Discord." },
 ];
 
 const UNLOCK_COPY = {
@@ -298,7 +298,7 @@ export default function Billing() {
             <div className="billing-v2-discord">
               <MessageCircle size={18} />
               <div>
-                <strong>Premium Discord access is live on your account</strong>
+                <strong>Your Elite Discord access is live</strong>
                 <p>Join the server to reach the premium channel.</p>
               </div>
               <a href={DISCORD_INVITE_URL} target="_blank" rel="noreferrer" className="billing-v2-btn secondary">

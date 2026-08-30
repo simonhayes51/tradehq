@@ -96,6 +96,10 @@ button.pub-secondary:hover { border-color: #4a4b52; }
 .pub-pricing-tagline { color: #8d8f95; font-size: 12px; margin: 0 0 4px; }
 .pub-pricing-card ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 7px; }
 .pub-pricing-card li { font-size: 12.5px; color: #c6c6ca; padding-left: 18px; position: relative; }
+/* Each row states the plan difference concretely ("Watchlist - 10 cards"),
+   so the label reads as the heading and the allowance as the detail. */
+.pub-pricing-card li b { color: #f2f2f4; font-weight: 700; }
+.pub-pricing-card li span { color: #9a9aa0; }
 .pub-pricing-card li::before { content: "✓"; position: absolute; left: 0; color: #39ff8a; }
 .pub-pricing-card a { margin-top: 10px; display: block; text-align: center; min-height: 42px; line-height: 42px; border-radius: 4px; border: 1px solid #39ff8a; background: #39ff8a; color: #06120a; font-weight: 900; font-size: 12.5px; text-decoration: none; }
 .pub-pricing-card:not(.pub-featured) a { background: transparent; color: #fff; }
@@ -132,4 +136,16 @@ button.pub-secondary:hover { border-color: #4a4b52; }
   .pub-section { margin-top: 40px; }
   .pub-midcta { padding: 28px 20px; }
   .pub-footer { flex-direction: column; align-items: flex-start; gap: 10px; padding: 18px 16px; }
+}
+
+/* Public track record - headline numbers only; the full ledger is in
+   the app. Rendered as a <dl> because that is what it is. */
+.pub-record-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 18px 0 0; max-width: 680px; }
+.pub-record-grid > div { border: 1px solid #222327; border-radius: 6px; padding: 14px; background: #111214; }
+.pub-record-grid dt { font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; color: #86868c; margin: 0 0 6px; }
+.pub-record-grid dd { margin: 0; font-size: 21px; font-weight: 900; color: #fff; font-variant-numeric: tabular-nums; }
+.pub-record-note { font-size: 12px; color: #9a9aa0; margin: 14px 0 0; max-width: 560px; }
+
+@media (max-width: 720px) {
+  .pub-record-grid { grid-template-columns: repeat(2, 1fr); }
 }

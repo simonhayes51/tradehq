@@ -44,7 +44,7 @@ export const PLAN_ROWS = [
     elite: "Every published call, every window, full ledger",
   },
   { label: "AI trading assistant", free: false, elite: "Ask about any card or budget" },
-  { label: "Premium Discord", free: false, elite: true },
+  { label: "Members-only Discord", free: false, elite: "The Elite channel in the EAFC Live Discord" },
 ];
 
 function Cell({ value }) {

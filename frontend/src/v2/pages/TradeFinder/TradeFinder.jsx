@@ -157,7 +157,7 @@ export default function TradeFinder() {
     ) : notDeployed ? (
       <EmptyState icon={<ShieldAlert size={25}/>} error text="Trade Finder isn't available right now. Please check back shortly." action={<button onClick={() => query.refetch()}>Try again</button>} />
     ) : query.isError ? (
-      <EmptyState icon={<ShieldAlert size={25}/>} error text="Trade Finder could not load the opportunity feed." action={<button onClick={() => query.refetch()}>Try again</button>} />
+      <EmptyState icon={<ShieldAlert size={25}/>} error text="Trade Finder could not load results just now. This is a fault on our side, not a limit on your account." action={<button onClick={() => query.refetch()}>Try again</button>} />
     ) : items.length ? (
       <section className="finder-grid">
         {items.map((item) => {

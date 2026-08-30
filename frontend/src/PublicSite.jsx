@@ -20,6 +20,10 @@ import { useEffect, useRef } from "react";
 import { HashRouter, Routes, Route, Link } from "react-router-dom";
 import { ArrowRight, Lock, TrendingUp, ShieldCheck, Zap, ChevronRight } from "lucide-react";
 import { useFutggOpportunityPreview, useFutggMarketFreshness } from "./v2/hooks/useFutggMarket";
+import { useTrackRecord } from "./v2/hooks/useTrackRecord";
+import { useBillingPlans, headlinePrice } from "./v2/hooks/useBillingPlans";
+import { PLAN_ROWS } from "./v2/components/PlanComparison";
+import { PAID_PLAN_NAME } from "./v2/lib/limits";
 import api from "./axios";
 import { APP_ORIGIN, DISCORD_INVITE_URL } from "./lib/domains";
 import Privacy from "./pages/Privacy";
@@ -53,7 +57,7 @@ function PublicNav() {
         <a href={`${APP_ORIGIN}/#/billing`} className="pub-nav-pricing">Pricing</a>
         <a href={DISCORD_INVITE_URL} className="pub-nav-discord" target="_blank" rel="noreferrer">Discord</a>
         <a href={`${APP_ORIGIN}/#/login`} className="pub-nav-login">Log in</a>
-        <a href={`${APP_ORIGIN}/#/signup`} className="pub-cta">Start free</a>
+        <a href={`${APP_ORIGIN}/#/signup`} className="pub-cta">Create free account</a>
       </nav>
     </header>
   );
@@ -124,6 +128,106 @@ function LockedOpportunityCard({ item, loading }) {
   );
 }
 
+// The public pricing table. Rows come from PLAN_ROWS - the same list the
+// signup page, the billing page and every locked state in the app read -
+// so a difference stated here is a difference the product actually
+// enforces. The price comes from GET /api/billing/plans (Stripe's own
+// configuration), never a number typed into this file: the marketing site
+// claiming £3 while Stripe charges something else is a chargeback, not a
+// typo.
+function PublicPlanTable() {
+  const plansQuery = useBillingPlans();
+  const monthly = headlinePrice(plansQuery.data, "monthly");
+  const season = headlinePrice(plansQuery.data, "season");
+  const priceLine = [monthly, season].filter(Boolean).join(" or ");
+
+  return (
+    <div className="pub-pricing-grid">
+      <div className="pub-pricing-card">
+        <h3>Free <span>£0 — permanently</span></h3>
+        <p className="pub-pricing-tagline">Enough to judge whether the calls are any good.</p>
+        <ul>
+          {PLAN_ROWS.filter((row) => row.free !== false).map((row) => (
+            <li key={row.label}>
+              <b>{row.label}</b>
+              {row.free === true ? null : <span> — {row.free}</span>}
+            </li>
+          ))}
+        </ul>
+        <a href={`${APP_ORIGIN}/#/signup`}>Create free account</a>
+      </div>
+      <div className="pub-pricing-card pub-featured">
+        <h3>
+          {PAID_PLAN_NAME}
+          {priceLine ? <span>{priceLine}</span> : null}
+        </h3>
+        <p className="pub-pricing-tagline">For traders who want EAFC Live to find the opportunities for them.</p>
+        <ul>
+          {PLAN_ROWS.map((row) => (
+            <li key={row.label}>
+              <b>{row.label}</b>
+              {row.elite === true ? null : <span> — {row.elite}</span>}
+            </li>
+          ))}
+        </ul>
+        <a href={`${APP_ORIGIN}/#/billing`}>See {PAID_PLAN_NAME} pricing</a>
+      </div>
+    </div>
+  );
+}
+
+// The public track record. Deliberately the SHORT version - headline
+// numbers over the window the API gives an anonymous caller, with the
+// full ledger behind an account - and it renders nothing at all rather
+// than a zero or a placeholder when there is no published data yet.
+// An invented win rate on a marketing page is the one number that would
+// make everything else here worthless.
+function PublicTrackRecord() {
+  const query = useTrackRecord("30d");
+  const published = query.data?.published;
+  // has_enough_data is the backend's own "this sample is too small to
+  // quote a rate from" flag (PROOF_MIN_SAMPLE). Below it, no percentage
+  // is shown - a win rate computed from four calls is not a track record.
+  if (!published?.has_published_data || !published?.has_enough_data) return null;
+
+  const stats = [
+    { label: "Calls published", value: published.published_opportunities },
+    { label: "Hit their target", value: published.wins },
+    { label: "Did not", value: published.losses },
+    {
+      label: "Win rate",
+      value: published.win_rate_pct == null ? null : `${published.win_rate_pct}%`,
+    },
+  ].filter((stat) => stat.value !== null && stat.value !== undefined);
+
+  if (!stats.length) return null;
+
+  return (
+    <section className="pub-section">
+      <div className="pub-section-head"><span>TRACK RECORD</span><h2>How the calls have actually done</h2></div>
+      <p className="pub-section-lead">
+        The last {query.data?.window_days ?? 30} days of recommendations that were genuinely published
+        to members — not backtests, and not a selection of the good ones. EA's 5% sale tax is already
+        taken off every profit figure.
+      </p>
+      <dl className="pub-record-grid">
+        {stats.map((stat) => (
+          <div key={stat.label}>
+            <dt>{stat.label}</dt>
+            <dd>{stat.value}</dd>
+          </div>
+        ))}
+      </dl>
+      <p className="pub-record-note">
+        Every individual call, every time window and the full win/loss ledger are in the app.
+      </p>
+      <a className="pub-see-all" href={`${APP_ORIGIN}/#/signup`}>
+        Create free account to see the record <ArrowRight size={15} />
+      </a>
+    </section>
+  );
+}
+
 function PublicHome() {
   const previewQuery = useFutggOpportunityPreview();
   const freshnessQuery = useFutggMarketFreshness();
@@ -146,7 +250,7 @@ function PublicHome() {
           <p>EAFC Live compares live prices against real completed sales to show which cards may be worth buying — and why.</p>
           {cardsTracked ? <p className="pub-proof">{count(cardsTracked)} cards tracked right now</p> : null}
           <div className="pub-hero-actions">
-            <a className="pub-cta" href={`${APP_ORIGIN}/#/signup`}>Start free <ArrowRight size={16} /></a>
+            <a className="pub-cta" href={`${APP_ORIGIN}/#/signup`}>Create free account <ArrowRight size={16} /></a>
             <button type="button" className="pub-secondary" onClick={scrollToPreview}>See live opportunities</button>
           </div>
         </div>
@@ -166,6 +270,8 @@ function PublicHome() {
         </div>
         <a className="pub-see-all" href={`${APP_ORIGIN}/#/signup`}>Create free account to see today's opportunities <ArrowRight size={15} /></a>
       </section>
+
+      <PublicTrackRecord />
 
       <section className="pub-section">
         <div className="pub-section-head"><span>WHY TRUST IT</span><h2>No guessing, no hype</h2></div>
@@ -214,41 +320,21 @@ function PublicHome() {
         </div>
       </section>
 
-      <section className="pub-section">
-        <div className="pub-section-head"><span>FREE VS PREMIUM</span><h2>Start free — upgrade if EAFC Live is worth it to you</h2></div>
-        <div className="pub-pricing-grid">
-          <div className="pub-pricing-card">
-            <h3>Free</h3>
-            <p className="pub-pricing-tagline">Great if you want to check cards yourself.</p>
-            <ul>
-              <li>Player search</li>
-              <li>Individual card values</li>
-              <li>Limited Opportunities</li>
-              <li>Limited Watchlist</li>
-              <li>Basic trade tracking</li>
-            </ul>
-            <a href={`${APP_ORIGIN}/#/signup`}>Start free</a>
-          </div>
-          <div className="pub-pricing-card pub-featured">
-            <h3>Premium <span>£3/mo or £25/season</span></h3>
-            <p className="pub-pricing-tagline">For traders who want EAFC Live to find the opportunities for them.</p>
-            <ul>
-              <li>Full Opportunities feed</li>
-              <li>Full Trade Finder</li>
-              <li>Unlimited Watchlist</li>
-              <li>Price alerts</li>
-              <li>Full trade/performance tracking</li>
-              <li>Premium Discord access</li>
-            </ul>
-            <a href={`${APP_ORIGIN}/#/signup`}>Try Premium — 7 days free</a>
-          </div>
+      <section id="pricing" className="pub-section">
+        <div className="pub-section-head">
+          <span>FREE VS {PAID_PLAN_NAME.toUpperCase()}</span>
+          <h2>Start free — upgrade if EAFC Live is worth it to you</h2>
         </div>
+        <p className="pub-section-lead">
+          The free account is free permanently, not a trial. No card needed to create one.
+        </p>
+        <PublicPlanTable />
       </section>
 
       <section className="pub-midcta">
         <h2>Ready to find your own opportunities?</h2>
-        <a className="pub-cta" href={`${APP_ORIGIN}/#/signup`}>Start free <ArrowRight size={16} /></a>
-        <p>No credit card required to create a free account.</p>
+        <a className="pub-cta" href={`${APP_ORIGIN}/#/signup`}>Create free account <ArrowRight size={16} /></a>
+        <p>Free permanently, no card required. Two complete picks every day.</p>
       </section>
 
       <p className="pub-disclaimer">Recent sales and live listings are used to estimate opportunities. Profit is never guaranteed and EA charges 5% on sales.</p>

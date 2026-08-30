@@ -5,15 +5,19 @@
 // FUTBIN -> FUT.GG migration plan). Was previously just a redirect to
 // /v2/trade-finder (no dedicated opportunities page existed), so this is
 // a new page rather than an edit of an existing one.
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { ArrowRight, RotateCcw, ShieldAlert, SlidersHorizontal, TrendingUp } from "lucide-react";
+import { ArrowRight, Lock, RotateCcw, ShieldAlert, SlidersHorizontal, TrendingUp } from "lucide-react";
 import CoinValue from "../../components/CoinValue";
 import EmptyState from "../../components/EmptyState";
 import MarketFreshness from "../../components/MarketFreshness";
 import { useFutggOpportunities } from "../../hooks/useFutggMarket";
 import { buildWhyText, sellingSpeedLabel } from "../../lib/tradeNarrative";
 import { PageHead } from "../Players/Players";
+import UpgradePrompt from "../../components/UpgradePrompt";
+import { GATED } from "../../lib/gatedFeatures";
+import { formatCountdown } from "../../lib/format";
+import { EVENTS, track, trackOnce } from "../../../lib/analytics";
 import { riskLabel, versionLabel } from "../../lib/format";
 import "../TradeFinder/trade-finder.css";
 import "./opportunities.css";
@@ -39,6 +43,10 @@ export default function Opportunities() {
     page_size: 40,
   });
 
+  // Both come straight from the server's own serialisation. The client
+  // never decides how many of these it is allowed to see.
+  const freePicks = query.data?.free_picks ?? null;
+  const lockedCount = Number(query.data?.locked_count) || 0;
   const items = Array.isArray(query.data?.items) ? query.data.items
     : Array.isArray(query.data?.results) ? query.data.results
     : Array.isArray(query.data) ? query.data
@@ -97,9 +105,17 @@ export default function Opportunities() {
       ) : query.isError ? (
         <EmptyState icon={<ShieldAlert size={25} />} error text="Opportunities could not be loaded." action={<button onClick={() => query.refetch()}>Try again</button>} />
       ) : items.length ? (
-        <section className="finder-grid opp-grid">
-          {items.map((item) => <OpportunityCard key={item.card_id ?? item.source_card_id} item={item} />)}
-        </section>
+        <>
+          {freePicks ? <FreePickBanner meta={freePicks} lockedCount={lockedCount} /> : null}
+          <section className="finder-grid opp-grid">
+            {items.map((item) => <OpportunityCard key={item.card_id ?? item.source_card_id} item={item} />)}
+          </section>
+          {/* The upgrade prompt sits BELOW the feed, after the reader has
+              seen their free picks and the locked ones - which is the
+              moment the limit is actually felt, and the only moment the
+              prompt is information rather than an interruption. */}
+          {lockedCount > 0 ? <UpgradePrompt {...GATED.opportunity_feed} /> : null}
+        </>
       ) : (
         <EmptyState icon={<TrendingUp size={25} />} text="No current opportunities match those filters." action={filtersActive ? <button onClick={() => setFilters(DEFAULTS)}>Clear filters</button> : null} />
       )}
@@ -107,7 +123,96 @@ export default function Opportunities() {
   );
 }
 
+/**
+ * A locked opportunity.
+ *
+ * The premium fields are not hidden here - they were never sent. The
+ * server serialises a narrower object for viewers who have not paid (see
+ * app/auth/access.py), so there is nothing in this component's props to
+ * blur, and no devtools trick that recovers them.
+ *
+ * It still shows a real card, a real verdict and a real reason, because
+ * the point of the preview is to prove the calls are about actual cards
+ * you could look up - not to tease an empty box.
+ */
+function LockedOpportunityCard({ item }) {
+  const cardId = item.source_card_id;
+  return (
+    <Link className="finder-card opp-card locked-opportunity" to={`/players/${cardId}`} state={{ from: "opportunities" }}>
+      <div className="finder-card-top">
+        <img src={item.composited_image_url || item.player_image_url || "/img/card-placeholder.png"} alt="" />
+        <div>
+          <h2>{item.display_name || item.name || "Unknown player"}</h2>
+          <div className="v2-meta-pills">
+            <span>{item.rating ?? "—"} OVR</span>
+            <span>{item.primary_position || item.position || "—"}</span>
+            <span>{versionLabel(item.rarity)}</span>
+          </div>
+          <p>
+            {item.current_bin_approx != null
+              ? `Around ${Number(item.current_bin_approx).toLocaleString()} coins`
+              : "Price unavailable"}
+          </p>
+        </div>
+        <span className={`finder-signal-pill signal-${item.signal || "unknown"}`}>
+          {item.signal === "strong_buy" ? "STRONG BUY" : "BUY"}
+        </span>
+      </div>
+
+      <div className="finder-signals">
+        <div className="entry"><span>BUY MAX</span><i className="locked-figure" aria-hidden="true" /></div>
+        <ArrowRight size={18} />
+        <div className="profit"><span>EXPECTED PROFIT</span><i className="locked-figure" aria-hidden="true" /></div>
+      </div>
+
+      {item.headline_reason ? <p className="opp-why">{item.headline_reason}</p> : null}
+
+      <div className="finder-card-foot">
+        <span className={`risk-${String(item.risk_level || "unknown").toLowerCase()}`}>{riskLabel(item.risk_level)}</span>
+        <span className="locked-opportunity-note"><Lock size={12} /> Exact prices on Elite</span>
+      </div>
+    </Link>
+  );
+}
+
+/**
+ * What a Free member is told about their allowance, above the feed.
+ *
+ * Says the real refresh time from the server (18:00 UK, DST-correct) and
+ * is honest when the day produced fewer than the allowance rather than
+ * letting a short list look like a bug.
+ */
+function FreePickBanner({ meta, lockedCount }) {
+  const unlocked = Number(meta.unlocked) || 0;
+  useEffect(() => {
+    if (unlocked > 0) track(EVENTS.FREE_OPPORTUNITY_VIEWED, { count: unlocked, surface: "opportunities" });
+    if (lockedCount > 0) trackOnce(EVENTS.FREE_LIMIT_REACHED, { surface: "opportunities" }, "opportunities");
+  }, [unlocked, lockedCount]);
+
+  return (
+    <div className="free-pick-banner">
+      <strong>
+        {unlocked > 0
+          ? `Your ${unlocked} free ${unlocked === 1 ? "pick" : "picks"} for today`
+          : "No free pick has cleared our bar yet today"}
+      </strong>
+      <span>
+        {meta.fewerThanAllowance && unlocked > 0
+          ? `Only ${unlocked} of ${meta.allowance} today — we'd rather show you nothing than a call we don't believe in. `
+          : ""}
+        {meta.nextRefreshAt
+          ? <>Next picks in <b>{formatCountdown(meta.nextRefreshAt)}</b>, at 6pm UK time.</>
+          : null}
+      </span>
+    </div>
+  );
+}
+
 function OpportunityCard({ item }) {
+  // `locked` is the server's own answer, on the row. Never re-derived
+  // from the entitlement context, which can be a few minutes stale and
+  // would then disagree with the payload it is describing.
+  if (item.locked) return <LockedOpportunityCard item={item} />;
   const cardId = item.card_id ?? item.source_card_id;
   const confidence = item.confidence_score != null ? Math.round(Number(item.confidence_score) * 100) : null;
   const liquidityPct = item.liquidity_score != null ? Math.round(Number(item.liquidity_score) * 100) : null;
