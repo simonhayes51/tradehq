@@ -126,7 +126,8 @@
   gap: 0.34em;
   white-space: nowrap;
 }
-.coin-value img {
+.coin-value img,
+.coin-value .coin-icon {
   width: 0.72em !important;
   height: 0.72em !important;
   min-width: 12px;
@@ -421,7 +422,12 @@
 
 @media (max-width: 1100px) { .v2-watch-grid { grid-template-columns: repeat(2,minmax(0,1fr)); } }
 @media (max-width: 700px) {
-  .v2-destination { padding: 24px 14px 90px; }
+  /* Bottom clearance must include the safe-area inset, not just 90px:
+     the fixed mobile nav is `68px + env(safe-area-inset-bottom)` tall
+     (tokens.css), so on a device with a home indicator (~34px) the nav
+     is ~102px and a fixed 90px left the last ~12px of every page sitting
+     underneath it. */
+  .v2-destination { padding: 24px 14px calc(90px + env(safe-area-inset-bottom)); }
   .v2-page-head h1 { font-size: 36px; }
   .v2-page-head { gap: 16px; }
   .v2-player-start { grid-template-columns: 1fr; }

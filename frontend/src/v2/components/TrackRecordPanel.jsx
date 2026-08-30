@@ -25,6 +25,7 @@ import { useState } from "react";
 import { useTrackRecord, useRecentOutcomes } from "../hooks/useTrackRecord";
 import EmptyState from "./EmptyState";
 import CoinValue from "./CoinValue";
+import { versionLabel } from "../lib/format";
 
 const WINDOWS = [
   ["7d", "7 days"],
@@ -113,7 +114,7 @@ function LedgerRow({ item, result }) {
         </div>
         <small>
           {item.card_rating ? `${item.card_rating} OVR · ` : ""}
-          {(item.rarity || "Card").replace(/_/g, " ")} · called {fmtDate(item.detected_at)}
+          {versionLabel(item.rarity)} · called {fmtDate(item.detected_at)}
         </small>
       </div>
       <div className="track-record-outcome-numbers">
@@ -247,16 +248,22 @@ export default function TrackRecordPanel() {
           <div className="track-record-grid compact-grid">
             <StatTile label="Wins" value={published.wins.toLocaleString()} tone="positive" />
             <StatTile label="Losses" value={published.losses.toLocaleString()} tone="negative" />
+            {/* Break-even was never shown, so wins + losses did not add up
+                to the "published opportunities" figure printed directly
+                below - a reader who checks the arithmetic finds calls
+                unaccounted for and reasonably assumes something is being
+                left out. */}
+            <StatTile label="Break-even" value={Number(published.flats ?? 0).toLocaleString()} sub="Neither a win nor a loss after tax" />
             <StatTile label="Win rate" value={fmtPct(published.win_rate_pct)} tone={published.win_rate_pct >= 50 ? "positive" : ""} />
             <StatTile label="Total profit" value={<CoinValue value={published.total_profit_after_tax} signed />} sub="After tax, one card per call" />
             <StatTile label="Median ROI" value={fmtPct(published.median_roi_pct)} sub="After tax" />
             <StatTile label="Median time to target" value={fmtMinutes(published.median_time_to_target_minutes)} />
           </div>
           <p className="track-record-disclosure small">
-            Published opportunities: {published.published_opportunities.toLocaleString()} · entry
-            reached: {published.entry_reached.toLocaleString()} (this pipeline only tracks
-            recommendations that were actually entered - it does not yet track ones that never
-            reached their buy price).
+            {published.published_opportunities.toLocaleString()} recommendations graded, all of which
+            reached their buy price. Recommendations whose buy price was never available are not yet
+            counted here, so this is not a complete hit rate - it is the result of the calls you
+            could actually have taken.
           </p>
 
           <div className="track-record-recent-split">

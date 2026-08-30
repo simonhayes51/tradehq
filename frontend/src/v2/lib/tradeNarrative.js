@@ -55,7 +55,12 @@ export function buildWhyText(item) {
       // trend leading, that boilerplate sentence alone is what showed -
       // identically - on nearly every card, with the actual reason
       // clipped off before it ever rendered.
-      return `${topReason} ${trend}`;
+      // Punctuation-aware join. The engine's reason strings are not
+      // guaranteed to end in a full stop (several are noun phrases), and
+      // a bare space produced run-on copy like "Trading below recent
+      // median Steady" on the most prominent card on the homepage.
+      const separator = /[.!?]$/.test(topReason.trim()) ? " " : ". ";
+      return `${topReason.trim()}${separator}${trend}`;
     }
     return trend;
   }

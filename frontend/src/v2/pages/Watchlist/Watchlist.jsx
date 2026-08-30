@@ -2,11 +2,13 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { ArrowRight, Bell, RefreshCw, Star, Trash2 } from "lucide-react";
 import { useQueryClient, useQuery } from "@tanstack/react-query";
+import toast from "react-hot-toast";
 import { deleteWatch, refreshWatch, getAlerts, createAlert, deleteAlert } from "../../../api/watchlist";
 import CoinValue from "../../components/CoinValue";
 import EmptyState from "../../components/EmptyState";
 import { useWatchlist } from "../../hooks/useWatchlist";
 import { PageHead } from "../Players/Players";
+import { versionLabel } from "../../lib/format";
 import "../../styles/v2-destinations.css";
 
 export default function Watchlist() {
@@ -14,8 +16,34 @@ export default function Watchlist() {
   const query = useWatchlist();
   const items = Array.isArray(query.data) ? query.data : query.data?.items || [];
   const refresh = () => queryClient.invalidateQueries({ queryKey: ["v2", "watchlist"] });
-  async function remove(id) { await deleteWatch(id); refresh(); }
-  async function update(id) { await refreshWatch(id); refresh(); }
+  // Every one of these used to be a bare `await x(); refresh();`. A
+  // failure left the row on screen with no explanation, so a removal that
+  // did not happen looked identical to one that did - the same class of
+  // silent failure that made alerts feel broken. Each now reports.
+  const [busyItem, setBusyItem] = useState(null);
+  async function remove(id, name) {
+    setBusyItem(id);
+    try {
+      await deleteWatch(id);
+      refresh();
+      toast.success(`${name || "Card"} removed from your watchlist`);
+    } catch {
+      toast.error("Couldn't remove that card. Try again.");
+    } finally {
+      setBusyItem(null);
+    }
+  }
+  async function update(id) {
+    setBusyItem(id);
+    try {
+      await refreshWatch(id);
+      refresh();
+    } catch {
+      toast.error("Couldn't refresh that price right now.");
+    } finally {
+      setBusyItem(null);
+    }
+  }
 
   // Price/liquidity threshold alerts - separate from the watch list
   // itself (backend: /api/watchlist-alerts, a live poll loop already
@@ -58,6 +86,9 @@ export default function Watchlist() {
       setAlertTarget(null);
       refreshAlerts();
       setAlertsOpen(true);
+      toast.success("Alert saved. We'll notify you when it triggers.");
+    } catch {
+      toast.error("Couldn't save that alert. Check the values and try again.");
     } finally {
       setBusyAlert(false);
     }
@@ -68,6 +99,9 @@ export default function Watchlist() {
     try {
       await deleteAlert(id);
       refreshAlerts();
+      toast.success("Alert rule deleted");
+    } catch {
+      toast.error("Couldn't delete that alert rule. Try again.");
     } finally {
       setBusyAlert(false);
     }
@@ -110,11 +144,14 @@ export default function Watchlist() {
               {alerts.map((a) => (
                 <li key={a.id}>
                   <div>
-                    <strong>{a.player_name || `Card ${a.card_id}`}</strong>
+                    {/* Never the raw id. The backend resolves the name;
+                        if it can't (a card that has left the catalogue),
+                        say so in words - an id here is developer UI. */}
+                    <strong>{a.player_name || "Card no longer in our catalogue"}</strong>
                     <span className="muted"> ({String(a.platform || "ps").toUpperCase()})</span>
                     <div className="v2-alert-detail">
                       Notify on a {a.metric === "liquidity" ? "sales activity" : "price"} move of {Number(a.rise_pct).toFixed(0)}% up or {Number(a.fall_pct).toFixed(0)}% down
-                      {a.last_alert_at && ` • last notified ${new Date(a.last_alert_at).toLocaleString()}`}
+                      {a.last_alert_at ? ` • last notified ${new Date(a.last_alert_at).toLocaleString()}` : " • not triggered yet"}
                     </div>
                   </div>
                   <button type="button" className="danger" disabled={busyAlert} onClick={() => handleDeleteAlert(a.id)}>
@@ -134,7 +171,7 @@ export default function Watchlist() {
               <div className="v2-watch-top"><Star size={17} fill="currentColor"/><span>WATCHING</span><small>{String(item.platform || "ps").toUpperCase()}</small></div>
               <Link className="v2-watch-identity" to={`/v2/players/${item.card_id}`}>
                 <img src={item.generated_card_url || item.composited_image_url || item.image_url || "/img/card-placeholder.png"} alt="" />
-                <div><h2>{item.player_name}</h2><div className="v2-meta-pills"><span>{item.rating || "—"} OVR</span><span>{item.version || "Card"}</span></div></div>
+                <div><h2>{item.player_name}</h2><div className="v2-meta-pills"><span>{item.rating || "—"} OVR</span><span>{versionLabel(item.version)}</span></div></div>
                 <ArrowRight size={18}/>
               </Link>
               <div className="v2-watch-values">
@@ -144,8 +181,8 @@ export default function Watchlist() {
               <div className="v2-watch-change"><span>Movement since added</span><b className={item.change_pct == null ? "" : Number(item.change_pct) >= 0 ? "positive" : "negative"}>{item.change_pct == null ? "—" : `${Number(item.change_pct) > 0 ? "+" : ""}${Number(item.change_pct).toFixed(1)}%`}</b></div>
               <div className="v2-watch-actions">
                 <button onClick={() => openAlertModal(item)} title="Set price/liquidity alert"><Bell size={15} /> Alert</button>
-                <button onClick={() => update(item.id)}><RefreshCw size={15} /> Refresh</button>
-                <button className="danger" onClick={() => remove(item.id)}><Trash2 size={15} /> Remove</button>
+                <button onClick={() => update(item.id)} disabled={busyItem === item.id}><RefreshCw size={15} /> Refresh</button>
+                <button className="danger" onClick={() => remove(item.id, item.player_name)} disabled={busyItem === item.id}><Trash2 size={15} /> Remove</button>
               </div>
             </article>
           ))}

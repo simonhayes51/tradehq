@@ -31,11 +31,19 @@ describe("eventTickerRow", () => {
     expect(`${row.label} ${row.value}`).not.toContain("EVENT");
   });
 
+  it("keeps acronyms upper-case mid-sentence", () => {
+    // A generic .toLowerCase() on the noun rendered "New sbc".
+    const row = withFrozenClock(() =>
+      eventTickerRow({ kind: "promo", title: "Winter Wildcards", firstSeenAt: at(-2) }),
+    );
+    expect(row.label).toBe("New promo");
+  });
+
   it("says what happened, not just the title", () => {
     const row = withFrozenClock(() =>
       eventTickerRow({ kind: "sbc", title: "Lionel Messi", firstSeenAt: at(-2) }),
     );
-    expect(row.label).toBe("New sbc");
+    expect(row.label).toBe("New SBC");
     expect(row.value).toBe("Lionel Messi");
   });
 

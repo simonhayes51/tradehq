@@ -6,7 +6,7 @@ import { isPublicHost, PUBLIC_HOSTNAME } from "../../../lib/domains";
 import { useDashboard } from "../../hooks/useDashboard";
 import { useIsMobile } from "../../hooks/useIsMobile";
 import { buildWhyText, sellingSpeedLabel } from "../../lib/tradeNarrative";
-import { formatCountdown } from "../../lib/format";
+import { formatCountdown, versionLabel } from "../../lib/format";
 import AdvancedRationale from "../../components/AdvancedRationale";
 import { useFutggMarketFreshness, useFutggOpportunities, useStrategyFinder } from "../../hooks/useFutggMarket";
 import { useGeneratedCardImages } from "../../hooks/useRecommendationFeeds";
@@ -516,7 +516,7 @@ function WatchCard({item,onOpen,onWatch,watchState}){
   </div>;
 }
 function TradeSignal({label,value,tone,signed=false,sub}){return <div className={`trade-signal ${tone}`}><span>{label}</span><strong><CoinValue value={value} signed={signed}/></strong>{sub?<small>{sub}</small>:null}</div>}
-function PlayerMeta({player={}}){return <div className="player-meta-pills"><span>{player.rating||"—"} OVR</span><span>{player.position||"—"}</span><span>{player.version||"Card"}</span></div>}
+function PlayerMeta({player={}}){return <div className="player-meta-pills"><span>{player.rating||"—"} OVR</span><span>{player.position||"—"}</span><span>{versionLabel(player.version)}</span></div>}
 // Plain-language names for the market_events.kind discriminator. The
 // ticker previously rendered every event as `${title} — EVENT`, which is
 // where "Lionel Messi — EVENT" came from: `EVENT` is not a description,
@@ -524,6 +524,9 @@ function PlayerMeta({player={}}){return <div className="player-meta-pills"><span
 // happened) was never read. An unmapped kind is skipped entirely rather
 // than falling back to printing the raw enum at a customer.
 const EVENT_KIND_NOUN={sbc:"SBC",promo:"Promo",objective:"Objective",evolution:"Evolution",pack:"Store pack"};
+// Separate mid-sentence forms: "SBC" is an acronym and must stay
+// upper-case, so a generic .toLowerCase() produced "New sbc".
+const EVENT_KIND_NOUN_MID={sbc:"SBC",promo:"promo",objective:"objective",evolution:"Evolution",pack:"store pack"};
 const NEW_EVENT_WINDOW_MS=48*60*60*1000;
 
 export function eventTickerRow(event){
@@ -539,7 +542,7 @@ export function eventTickerRow(event){
     return{label:`${noun} ends in ${formatCountdown(event.endsAt)}`,value:event.title,tone:"event"};
   if(ends&&ends<=now)return null;                       // finished: not news
   if(firstSeen&&now-firstSeen<=NEW_EVENT_WINDOW_MS)
-    return{label:`New ${noun.toLowerCase()}`,value:event.title,tone:"event"};
+    return{label:`New ${EVENT_KIND_NOUN_MID[String(event.kind).toLowerCase()]||noun}`,value:event.title,tone:"event"};
   if(starts&&starts>now)
     return{label:`${noun} starts in ${formatCountdown(event.startsAt)}`,value:event.title,tone:"event"};
   return{label:`${noun} live now`,value:event.title,tone:"event"};

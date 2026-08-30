@@ -1,4 +1,19 @@
-export const COIN_ICON_URL = "https://cdn2.futbin.com/https%3A%2F%2Fcdn.futbin.com%2Fdesign%2Fimg%2Fcoins_big.png?fm=png&ixlib=java-2.1.0&w=20&s=723885ca3b3ab1cf3cb11c53f9408968";
+// The coin icon used to be an <img> pointing at cdn2.futbin.com - a
+// third-party CDN belonging to the data source this product has migrated
+// off. Every coin figure on every screen (there are hundreds) issued a
+// request to it, so a block, a signed-URL expiry or a CDN change would
+// have broken the icon site-wide, and every page view leaked traffic to
+// a competitor's infrastructure. Inlined as an SVG: no request, no
+// external dependency, and it renders identically offline.
+function CoinIcon() {
+  return (
+    <svg className="coin-icon" viewBox="0 0 16 16" width="13" height="13" aria-hidden="true" focusable="false">
+      <circle cx="8" cy="8" r="7" fill="#f2c94c" />
+      <circle cx="8" cy="8" r="5" fill="none" stroke="#a97c1b" strokeWidth="1.2" />
+      <path d="M8 4.6v6.8M6.2 6.2h3.6M6.2 9.8h3.6" stroke="#a97c1b" strokeWidth="1.2" strokeLinecap="round" />
+    </svg>
+  );
+}
 
 export function coinText(value, { signed = false, compact = false } = {}) {
   // `value == null` catches null AND undefined - deliberate loose equality.
@@ -21,7 +36,7 @@ export default function CoinValue({ value, signed = false, compact = false, clas
   if (text === "—") return <span className={`coin-value coin-value-empty ${className}`.trim()}>—</span>;
   return (
     <span className={`coin-value ${className}`.trim()} aria-label={`${text} coins`}>
-      <img src={COIN_ICON_URL} alt="" aria-hidden="true" />
+      <CoinIcon />
       <span>{text}</span>
     </span>
   );
