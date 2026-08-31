@@ -1709,6 +1709,35 @@ SIGNED_THROTTLE_CYCLES_BEFORE_FALLBACK = env_int(
     "FUTGG_SALES_SIGNED_THROTTLE_CYCLES_BEFORE_FALLBACK", 3, minimum=1
 )
 
+#: Whether a persistent THROTTLE (429/5xx) is allowed to fall back to
+#: page_capture at all. Default OFF.
+#:
+#: The reasoning above this constant assumed page_capture was merely
+#: expensive but working - "expensive and working" beats "cheap and
+#: blank". Production evidence (31 August) showed that assumption was
+#: wrong: once switched, page_capture managed cards_ok=2 failed=18 in
+#: 2311.5s (0 cards/min), with per-card fetches up to 21 minutes and
+#: repeated Playwright page crashes. signed_fetch, meanwhile, was
+#: collecting 150-185 cards per cycle before the wall hit. Falling back
+#: on throttle was not a tradeoff of cost for reliability - it was a
+#: straight downgrade, from "slow but working" to "not working", exactly
+#: at the moment the worker most needed to keep flowing.
+#:
+#: So by default a throttle-shaped trip never switches transport - it
+#: just keeps backing off signed_fetch, cycle after cycle, which is still
+#: strictly better than the fallback as currently observed. Blocking-
+#: shaped failures (403/challenge, see _mostly_challenge_failures) are
+#: unaffected by this flag and still switch immediately, since page_capture
+#: exists specifically because organic navigation can get past a
+#: Cloudflare challenge that an injected fetch() cannot - that is a real
+#: capability difference, not a cost tradeoff, and no amount of backing
+#: off fixes a wall. Flip this back on once page_capture's own throughput
+#: and crash rate have actually been fixed.
+PAGE_CAPTURE_FALLBACK_ON_THROTTLE = (
+    os.environ.get("FUTGG_SALES_PAGE_CAPTURE_FALLBACK_ON_THROTTLE", "").strip().lower()
+    in ("1", "true", "yes")
+)
+
 #: Consecutive breaker trips on signed_fetch caused by throttling rather
 #: than blocking. Reset by any successful cycle.
 _consecutive_signed_throttle_trips = 0
@@ -2057,6 +2086,19 @@ def should_fall_back_to_page_capture(
         return True, (
             f"circuit breaker tripped on signed_fetch ({failed}/{total} failed, "
             "predominantly blocking-shaped: 403/challenge)"
+        )
+
+    if not PAGE_CAPTURE_FALLBACK_ON_THROTTLE:
+        # See PAGE_CAPTURE_FALLBACK_ON_THROTTLE's own comment: page_capture
+        # is disabled as a throttle response until its throughput and
+        # crash rate are fixed, so a 429/5xx wall just keeps backing off
+        # signed_fetch, cycle after cycle, rather than downgrading to a
+        # transport that currently manages ~0 cards/min.
+        _consecutive_signed_throttle_trips += 1
+        return False, (
+            "signed_fetch throttled (not blocked) - backing off, not switching "
+            "transport (PAGE_CAPTURE_FALLBACK_ON_THROTTLE is off: page_capture's "
+            "last known throughput does not justify the downgrade)"
         )
 
     if (
