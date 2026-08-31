@@ -144,7 +144,8 @@ class FakeProvider:
         return {
             "heartbeats": [
                 {"worker": "futgg_player_sync", "last_run_at": AS_OF, "ok": True, "detail": None},
-                {"worker": "futgg_price_sync", "last_run_at": AS_OF, "ok": True, "detail": None},
+                {"worker": "futgg_bulk_price_sync", "last_run_at": AS_OF, "ok": True, "detail": None},
+                {"worker": "futgg_sales_sync", "last_run_at": AS_OF, "ok": True, "detail": None},
             ],
             "cards_discovered": 10, "cards_priced": 8, "cards_no_market": 1,
             "cards_untradeable": 1, "cards_stale": 0, "stale_by_price_tier": {},
@@ -318,7 +319,7 @@ def test_market_freshness_shape():
     assert resp.status_code == 200
     body = resp.json()
     assert body["cards_discovered"] == 10
-    assert len(body["heartbeats"]) == 2
+    assert len(body["heartbeats"]) == 3
 
 
 def test_opportunities_only_returns_buy_signals():

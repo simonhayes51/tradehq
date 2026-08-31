@@ -340,15 +340,23 @@ class TestCredentialMintingIsBounded:
 # The collectors
 # ---------------------------------------------------------------------------
 #
-# This check exists because of a real three-week outage. futgg_price_sync
-# - the SALES collector - stopped on 10 August and was noticed on 31
-# August, because its heartbeat kept reporting ok:true the whole time.
-# `ok` records the outcome of the LAST run and says nothing about whether
-# another one ever happened.
+# This check exists because of a real outage, and the first version of it
+# encoded the wrong story. The heartbeat row that showed three weeks old
+# was 'futgg_price_sync' - the RETIRED per-card Playwright scraper, whose
+# row is a tombstone frozen at its final run. The collector that was
+# actually struggling, futgg_sales_sync, wrote no heartbeat at all.
 #
-# Meanwhile the price collector was at 100% coverage and had run minutes
-# ago, so anything that looked at "the newest heartbeat" saw a healthy
-# pipeline. Every market surface was empty and nothing anywhere said why.
+# So the pipeline presented as: two fresh workers, one long-dead worker
+# under a sales-shaped name, and no row anywhere for the live sales
+# collector. Every market surface was empty and nothing anywhere said
+# why - not because a row went stale, but because the row that mattered
+# did not exist, and iterating over whatever rows happened to be present
+# could never notice an absent one.
+#
+# Hence two rules below: check collectors BY NAME so absence is a
+# failure, and treat a punctual `ok: false` as a failure too - a
+# collector rate-limited down to near-zero throughput checks in exactly
+# on schedule while the data behind it drains.
 
 from datetime import datetime, timedelta, timezone  # noqa: E402
 
@@ -385,45 +393,93 @@ def _beat(worker, hours_ago, ok=True):
     }
 
 
+def _all_healthy(**overrides):
+    """Every expected collector, fresh and ok. The baseline to deviate from."""
+    beats = {w: _beat(w, 0.5) for w in rd.EXPECTED_COLLECTORS}
+    beats.update(overrides)
+    return [b for b in beats.values() if b is not None]
+
+
 class TestTheCollectorCheck:
     def test_a_healthy_pipeline_is_ok(self, monkeypatch):
-        _install_freshness(monkeypatch, _freshness([_beat("bulk_price", 0.5)]))
+        _install_freshness(monkeypatch, _freshness(_all_healthy()))
         assert run(rd._check_market_data(FakePool()))["status"] == rd.OK
 
-    def test_the_real_outage_is_caught(self, monkeypatch):
-        # The exact production payload: three collectors, two healthy, one
-        # dead for three weeks, all reporting ok:true.
+    def test_a_collector_that_never_reported_is_the_outage(self, monkeypatch):
+        # The actual production shape: the live sales collector wrote no
+        # heartbeat row at all, so there was nothing to find stale. An
+        # absent collector is the same outage as a stopped one.
         _install_freshness(monkeypatch, _freshness(
-            [
-                _beat("futgg_bulk_price_sync", 0.5),
-                _beat("futgg_player_sync", 22),
-                _beat("futgg_price_sync", 21 * 24),
-            ],
+            _all_healthy(futgg_sales_sync=None),
             stale_sales={"CRITICAL": 1718, "HIGH": 3924, "NORMAL": 1884, "LOW": 44, "DORMANT": 2950},
         ))
         result = run(rd._check_market_data(FakePool()))
         assert result["status"] == rd.DEGRADED
         assert result["reason"] == "collector_silent"
-        # It names WHICH one, with its age - the two healthy workers must
-        # not hide the dead one.
         silent = " ".join(result["detail"]["silent_collectors"])
-        assert "futgg_price_sync" in silent
+        assert "futgg_sales_sync" in silent
+        assert "never reported" in silent
+
+    def test_a_retired_workers_tombstone_row_is_not_a_collector(self, monkeypatch):
+        # futgg_price_sync is decommissioned. Its frozen row must not be
+        # able to hold readiness at degraded forever, and must not stand
+        # in for the sales collector that replaced it.
+        _install_freshness(monkeypatch, _freshness(
+            _all_healthy() + [_beat("futgg_price_sync", 21 * 24)]
+        ))
+        assert run(rd._check_market_data(FakePool()))["status"] == rd.OK
+
+    def test_a_stopped_collector_is_named_with_its_age(self, monkeypatch):
+        _install_freshness(monkeypatch, _freshness(
+            _all_healthy(futgg_sales_sync=_beat("futgg_sales_sync", 21 * 24))
+        ))
+        result = run(rd._check_market_data(FakePool()))
+        assert result["reason"] == "collector_silent"
+        silent = " ".join(result["detail"]["silent_collectors"])
+        # The two healthy workers must not hide the dead one.
+        assert "futgg_sales_sync" in silent
         assert "504h" in silent
 
     def test_ok_true_does_not_rescue_a_dead_worker(self, monkeypatch):
-        _install_freshness(monkeypatch, _freshness([_beat("futgg_price_sync", 21 * 24, ok=True)]))
+        _install_freshness(monkeypatch, _freshness(
+            _all_healthy(futgg_sales_sync=_beat("futgg_sales_sync", 21 * 24, ok=True))
+        ))
         assert run(rd._check_market_data(FakePool()))["status"] == rd.DEGRADED
 
     def test_a_worker_that_has_never_run_counts_as_silent(self, monkeypatch):
-        _install_freshness(monkeypatch, _freshness([{"worker": "futgg_price_sync", "last_run_at": None, "ok": True}]))
+        _install_freshness(monkeypatch, _freshness(_all_healthy(
+            futgg_sales_sync={"worker": "futgg_sales_sync", "last_run_at": None, "ok": True},
+        )))
         result = run(rd._check_market_data(FakePool()))
         assert result["status"] == rd.DEGRADED
-        assert "futgg_price_sync" in " ".join(result["detail"]["silent_collectors"])
+        assert "futgg_sales_sync" in " ".join(result["detail"]["silent_collectors"])
+
+    def test_a_punctual_collector_that_is_not_keeping_up_is_caught(self, monkeypatch):
+        # The live failure: the sales worker runs every two hours exactly
+        # as scheduled, but FUT.GG rate-limits its fast transport, the
+        # circuit breaker falls back to page capture, and it manages
+        # single-digit cards per cycle. Nothing is silent. Nothing has
+        # crashed. The feed drains anyway.
+        _install_freshness(monkeypatch, _freshness(
+            _all_healthy(futgg_sales_sync=_beat("futgg_sales_sync", 1, ok=False))
+        ))
+        result = run(rd._check_market_data(FakePool()))
+        assert result["status"] == rd.DEGRADED
+        assert result["reason"] == "collector_failing"
+        assert "futgg_sales_sync" in result["detail"]["failing_collectors"]
+
+    def test_a_silent_collector_outranks_a_failing_one(self, monkeypatch):
+        # Stopped is worse than slow, and is the first thing to say.
+        _install_freshness(monkeypatch, _freshness(_all_healthy(
+            futgg_sales_sync=_beat("futgg_sales_sync", 1, ok=False),
+            futgg_player_sync=_beat("futgg_player_sync", 500),
+        )))
+        assert run(rd._check_market_data(FakePool()))["reason"] == "collector_silent"
 
     def test_stale_sales_are_reported_even_with_live_collectors(self, monkeypatch):
-        # A collector can be running and still be behind.
+        # A collector can be running, reporting ok, and still be behind.
         _install_freshness(monkeypatch, _freshness(
-            [_beat("bulk_price", 0.5)], priced=1000,
+            _all_healthy(), priced=1000,
             stale_sales={"CRITICAL": 900},
         ))
         result = run(rd._check_market_data(FakePool()))
@@ -433,11 +489,11 @@ class TestTheCollectorCheck:
     def test_stale_prices_and_stale_sales_are_told_apart(self, monkeypatch):
         # They are separate workers and fail independently. Reporting the
         # wrong one sends someone to the wrong service.
-        _install_freshness(monkeypatch, _freshness([_beat("bulk_price", 0.5)], priced=1000, stale=900))
+        _install_freshness(monkeypatch, _freshness(_all_healthy(), priced=1000, stale=900))
         assert run(rd._check_market_data(FakePool()))["reason"] == "price_data_stale"
 
     def test_no_priced_cards_is_unavailable_not_degraded(self, monkeypatch):
-        _install_freshness(monkeypatch, _freshness([_beat("bulk_price", 0.5)], priced=0))
+        _install_freshness(monkeypatch, _freshness(_all_healthy(), priced=0))
         result = run(rd._check_market_data(FakePool()))
         assert result["status"] == rd.UNAVAILABLE
         assert result["reason"] == "no_priced_cards"
@@ -450,10 +506,43 @@ class TestTheCollectorCheck:
         # The heartbeat `detail` string carries render failures, retry
         # counts and script versions. That is not an operator's first
         # question and it is not this check's job to publish it.
-        _install_freshness(monkeypatch, _freshness([
-            {**_beat("futgg_price_sync", 21 * 24), "detail": "render_failures=28 script_version=v4"},
-        ]))
+        _install_freshness(monkeypatch, _freshness(_all_healthy(
+            futgg_sales_sync={
+                **_beat("futgg_sales_sync", 21 * 24),
+                "detail": "render_failures=28 script_version=v4",
+            },
+        )))
         assert "render_failures" not in json.dumps(run(rd._check_market_data(FakePool())))
+
+    def test_the_freshness_query_reads_the_collectors_this_check_expects(self):
+        # These two lists have to agree. If the provider stops returning
+        # a worker this check expects, the check reports it silent
+        # forever; if it returns one this check does not know about,
+        # nothing watches it. That mismatch is the entire bug: the
+        # provider selected the retired 'futgg_price_sync' and never
+        # selected 'futgg_sales_sync', so the collector that mattered was
+        # neither reported nor missed.
+        import inspect
+        import app.services.market_data_provider as mdp
+
+        sql = inspect.getsource(mdp.FutggMarketDataProvider.get_freshness_summary)
+        sql = sql.split("pipeline_heartbeats")[1].split('"""')[0]
+        # Strip SQL comments: they discuss the retired worker by name.
+        sql = "\n".join(
+            line for line in sql.splitlines() if not line.strip().startswith("--")
+        )
+        for worker in rd.EXPECTED_COLLECTORS:
+            assert f"'{worker}'" in sql, f"{worker} is checked but never selected"
+        assert "'futgg_price_sync'" not in sql, (
+            "futgg_price_sync is retired; its frozen row must not be served "
+            "as a live collector"
+        )
+
+    def test_the_sales_collector_is_one_of_the_expected_ones(self):
+        # The whole point. Sales are 70% of fair value and the gate on
+        # every signal the engine emits; the collector that supplies them
+        # was the one nothing watched.
+        assert "futgg_sales_sync" in rd.EXPECTED_COLLECTORS
 
     def test_it_is_part_of_the_readiness_report(self):
         # The gap this fills: the single most important worker in the

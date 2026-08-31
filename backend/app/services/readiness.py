@@ -235,12 +235,21 @@ async def _check_funnel_events(pool) -> Dict[str, Any]:
 # How long a collector may be silent before it is treated as stopped.
 #
 # Deliberately generous: this is a "has it died" check, not a latency
-# target. The case it exists for is real - futgg_price_sync, the SALES
-# collector, stopped for three weeks while its heartbeat kept reporting
-# ok:true, because `ok` records the outcome of the LAST run and says
-# nothing about whether another one ever happened. Every market surface
-# went empty and nothing anywhere said why.
+# target. `ok` records the outcome of the LAST run and says nothing about
+# whether another one ever happened, so a worker that stopped keeps
+# reporting ok:true forever - which is how a sales outage emptied every
+# market surface with nothing anywhere saying why.
 COLLECTOR_SILENT_HOURS = float(os.getenv("READINESS_COLLECTOR_SILENT_HOURS", "6"))
+
+# Collectors that must be reporting for the market surfaces to work.
+#
+# Checked by name rather than by iterating whatever rows happen to exist,
+# because the failure that motivated this check was an ABSENT row, not a
+# stale one: the live sales collector wrote no heartbeat at all, so a
+# loop over the returned rows had nothing to find and reported nothing
+# wrong. A collector that never checks in is the same outage as one that
+# stopped, and has to read as one.
+EXPECTED_COLLECTORS = ("futgg_player_sync", "futgg_bulk_price_sync", "futgg_sales_sync")
 
 # Sales older than this are rejected by the engine outright
 # (futgg_config.reject_sales_older_than_minutes, 72h). A collector silent
@@ -269,18 +278,29 @@ async def _check_market_data(pool) -> Dict[str, Any]:
         return _check("market_data", DEGRADED, reason="freshness_unreadable")
 
     now = datetime.now(timezone.utc)
+    beats = {str(b.get("worker")): b for b in (summary.get("heartbeats") or [])}
     silent: List[str] = []
-    for beat in summary.get("heartbeats") or []:
+    failing: List[str] = []
+    for worker in EXPECTED_COLLECTORS:
+        beat = beats.get(worker)
+        if beat is None:
+            silent.append(f"{worker} (never reported)")
+            continue
         last = beat.get("last_run_at")
         if last is None:
-            silent.append(str(beat.get("worker")))
+            silent.append(worker)
             continue
         hours = (now - last).total_seconds() / 3600
         if hours > COLLECTOR_SILENT_HOURS:
             # The worker name and its age. Not the detail string - that
             # carries scrape internals and is not an operator's first
             # question.
-            silent.append(f"{beat.get('worker')} ({hours:.0f}h)")
+            silent.append(f"{worker} ({hours:.0f}h)")
+        elif not beat.get("ok", True):
+            # Running, on schedule, and not keeping up. A collector
+            # throttled down to near-zero throughput never goes silent -
+            # it checks in punctually while the data behind it drains.
+            failing.append(worker)
 
     priced = int(summary.get("cards_priced") or 0)
     stale = int(summary.get("cards_stale") or 0)
@@ -293,6 +313,8 @@ async def _check_market_data(pool) -> Dict[str, Any]:
     }
     if silent:
         detail["silent_collectors"] = silent
+    if failing:
+        detail["failing_collectors"] = failing
 
     if priced == 0:
         return _check("market_data", UNAVAILABLE, reason="no_priced_cards", detail=detail)
@@ -301,6 +323,8 @@ async def _check_market_data(pool) -> Dict[str, Any]:
     # will go on to cause.
     if silent:
         return _check("market_data", DEGRADED, reason="collector_silent", detail=detail)
+    if failing:
+        return _check("market_data", DEGRADED, reason="collector_failing", detail=detail)
     if stale_sales > priced * 0.5:
         return _check("market_data", DEGRADED, reason="sales_data_stale", detail=detail)
     if stale > priced * 0.5:

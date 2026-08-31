@@ -499,6 +499,33 @@ production operation was run.**
    production run should be `--dry-run --limit 50`; **a large
    `roles_revoked` on the first pass is a red flag**, and may indicate an
    entitlement resolution problem rather than Discord drift.
+8. **The sales collector cannot keep up with FUT.GG's rate limiting.**
+   This is live, and it is why every market surface is empty. The worker
+   is not down — `futgg-sales-sync-v1` runs on its ~2-hourly schedule and
+   ran most recently at 14:04 on 31 August. What happens inside each run:
+
+   - `signed_fetch` collects 150–185 cards, then FUT.GG starts returning
+     `data_429` and the circuit breaker trips at the 80% threshold.
+   - The `page_capture` fallback takes over and effectively stops
+     collecting: `cards_ok=2 failed=18 sales=200 in 2311.5s (0
+     cards/min)`, with `page_capture_fetch avg=230s max=1292s` — up to 21
+     minutes for a single card — plus repeated Playwright crashes
+     (`Response.body: Page crashed`) at `futgg_sales_sync.py:972`.
+   - Coverage therefore drains rather than stopping: across four cycles,
+     sales coverage went 46.2% → 46.0% and signal-capable cards 39.4% →
+     38.9%. Cards age past the 72h freshness gate faster than the worker
+     refreshes them, the geometric confidence blend zeroes them, and Home
+     reports "32 of 1182 tracked cards have enough fresh data".
+
+   Fixing the throughput is scraper work in `auto_sync/`, deliberately not
+   attempted here. **What this phase fixed is that the condition is now
+   visible**: the collector reports a heartbeat, and `ok` means "keeping
+   up", not "still running". Two secondary faults are worth noting for
+   whoever picks up the throughput work: `Fatal server error: (EE) Server
+   is already active for display 99` at container start (a stale Xvfb
+   lock from the previous container, which can sabotage `page_capture`
+   before it begins), and the bounded 45-minute run completing only two
+   cycles.
 
 ---
 

@@ -984,10 +984,11 @@ async def market_freshness(
             "worker": h["worker"],
             "last_run_at": last.isoformat() if last else None,
             # `ok` is the outcome of the LAST run and says nothing about
-            # whether another one ever happened. A worker that stopped
-            # three weeks ago reports ok:true forever, which is exactly
-            # how a dead sales collector went unnoticed while every
-            # market surface sat empty. Liveness is reported separately.
+            # whether another one ever happened, so a worker that stops
+            # reports ok:true forever - which is how a retired collector's
+            # frozen row sat here for three weeks looking healthy while
+            # every market surface was empty. Liveness is reported
+            # separately, in `age_hours`/`stale`.
             "ok": h["ok"],
             "age_hours": age_hours,
             "stale": age_hours is None or age_hours > _HEARTBEAT_STALE_HOURS,

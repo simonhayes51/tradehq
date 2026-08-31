@@ -1179,12 +1179,19 @@ async def select_due(conn: asyncpg.Connection) -> list[asyncpg.Record]:
     )
 
 
-async def report_coverage(conn: asyncpg.Connection) -> None:
+async def report_coverage(conn: asyncpg.Connection) -> dict[str, int] | None:
     """How much of the catalogue actually has sales yet.
 
     The single number that says whether the intelligence layer can work:
     a card with fewer than MIN_SALES_FOR_SIGNAL sales produces no signal
     at all, however good its price data is.
+
+    Returns the raw counts so the caller can put them in the heartbeat.
+    Coverage is the metric that says whether the collector is winning or
+    losing: a run can report cards_ok>0 every cycle and still be falling
+    behind the 72h freshness gate, which is precisely what a throttled
+    transport looks like from the outside. None when the catalogue is
+    empty and there is nothing to measure.
     """
     row = await conn.fetchrow(
         """
@@ -1213,7 +1220,7 @@ async def report_coverage(conn: asyncpg.Connection) -> None:
     )
     total = int(row["total"] or 0)
     if not total:
-        return
+        return None
     log.info(
         "sales coverage: %d/%d have any sales (%.1f%%) | %d/%d have >=5 and can "
         "produce a signal (%.1f%%) | %d never read",
@@ -1231,6 +1238,113 @@ async def report_coverage(conn: asyncpg.Connection) -> None:
             row["never_read_and_failing"], row["chronic_failures"],
             min(FAILURE_BACKOFF_LADDER[-1], FAILURE_BACKOFF_MAX_MINUTES),
         )
+    return {
+        "total": total,
+        "any_sales": int(row["any_sales"] or 0),
+        "enough_sales": int(row["enough_sales"] or 0),
+        "never_read": int(row["never_read"] or 0),
+        "chronic_failures": int(row["chronic_failures"] or 0),
+    }
+
+
+#: Worker name this collector reports under in pipeline_heartbeats.
+#:
+#: SalesSync writes its own row rather than reusing the retired
+#: 'futgg_price_sync' name. That row is a tombstone: futgg_price_sync.py
+#: was the per-card Playwright price scraper this module replaced, it is
+#: no longer deployed (see Procfile and docker-compose.yml, both of which
+#: say so), and its last heartbeat is frozen at whatever it wrote on its
+#: final run - `ok: true`, forever. The backend's freshness panel and
+#: readiness check both read this table, so for as long as the live sales
+#: collector wrote nothing, the only sales-shaped row they could see was
+#: that frozen one. A three-week-old `ok: true` is worse than no row at
+#: all: it answers "are sales being collected?" with a confident yes.
+HEARTBEAT_WORKER = "futgg_sales_sync"
+
+#: Below this, a cycle is not collecting fast enough to matter.
+#:
+#: The failure this exists to catch is not a crash. It is the transport
+#: falling back to page_capture under FUT.GG rate limiting and grinding
+#: out single-digit cards per cycle at minutes per card - a worker that
+#: is up, logging, and losing ground against the 72h freshness gate the
+#: engine applies to sales. cards_ok>0 does not distinguish that from
+#: healthy running; throughput does.
+HEARTBEAT_MIN_CARDS_PER_MIN = env_float(
+    "FUTGG_SALES_HEARTBEAT_MIN_CARDS_PER_MIN", 1.0, minimum=0.0
+)
+
+
+async def write_heartbeat(
+    pool: asyncpg.Pool,
+    *,
+    transport: str,
+    stats: dict[str, Any],
+    elapsed: float,
+    breaker_tripped: bool,
+    coverage: dict[str, int] | None,
+) -> None:
+    """Record this cycle's outcome in pipeline_heartbeats.
+
+    `ok` is deliberately strict. It means "this cycle collected sales at a
+    rate that keeps the catalogue inside the freshness gate", not "the
+    process is alive" - liveness is already carried by last_run_at. A
+    tripped breaker or a throughput collapse both mean the feed is
+    draining even though nothing crashed, and that is the state the
+    backend needs to be able to see.
+
+    Best-effort throughout: monitoring must never take down the worker it
+    watches, and `monitoring` is imported here rather than at module load
+    so a missing optional dependency cannot stop the collector from
+    running.
+    """
+    try:
+        from monitoring import heartbeat
+    except Exception as e:  # pragma: no cover - import environment only
+        log.warning("heartbeat unavailable: %s", e)
+        return
+
+    cards_ok = int(stats.get("ok", 0))
+    failed = int(stats.get("failed", 0))
+    cards_per_min = (cards_ok / elapsed) * 60 if elapsed > 0 else 0.0
+
+    ok = (
+        not breaker_tripped
+        and cards_ok > 0
+        and cards_per_min >= HEARTBEAT_MIN_CARDS_PER_MIN
+    )
+
+    parts = [
+        f"transport={transport}",
+        f"cards_ok={cards_ok}",
+        f"failed={failed}",
+        f"sales={int(stats.get('sales_seen', 0))}",
+        f"cards_per_min={cards_per_min:.1f}",
+    ]
+    if breaker_tripped:
+        parts.append("circuit_breaker=tripped")
+    if coverage and coverage.get("total"):
+        total = coverage["total"]
+        parts.append(
+            f"coverage={coverage['any_sales']}/{total}"
+            f" ({100.0 * coverage['any_sales'] / total:.1f}%)"
+        )
+        # The number that actually gates the engine: fewer than
+        # MIN_SALES_FOR_SIGNAL sales and the card produces nothing,
+        # however fresh its price is.
+        parts.append(
+            f"signal_capable={coverage['enough_sales']}"
+            f" ({100.0 * coverage['enough_sales'] / total:.1f}%)"
+        )
+    errors = stats.get("errors") or {}
+    if errors:
+        top = sorted(errors.items(), key=lambda kv: -kv[1])[:3]
+        parts.append("errors=" + ",".join(f"{k}:{v}" for k, v in top))
+
+    try:
+        async with pool.acquire() as conn:
+            await heartbeat(conn, HEARTBEAT_WORKER, ok=ok, detail=" ".join(parts))
+    except Exception as e:
+        log.warning("heartbeat write failed: %s", e)
 
 
 #: How long a DDL statement in ensure_schema() may wait for its lock
@@ -2179,7 +2293,7 @@ async def run_forever() -> None:
 
                 async with pool.acquire() as conn:
                     due = await select_due(conn)
-                    await report_coverage(conn)
+                    coverage = await report_coverage(conn)
                 if not due:
                     # In a bounded run, an empty queue means the work is
                     # finished - exit now rather than idling. Idling is not
@@ -2302,6 +2416,15 @@ async def run_forever() -> None:
                 )
                 for line in timers.format_lines():
                     log.info(line)
+
+                await write_heartbeat(
+                    pool,
+                    transport=transport,
+                    stats=stats,
+                    elapsed=elapsed,
+                    breaker_tripped=breaker_tripped,
+                    coverage=coverage,
+                )
 
                 # Saved every cycle, not just at shutdown: a bounded run
                 # can be stopped by MAX_RUNTIME_MINUTES/MAX_CYCLES or an

@@ -110,7 +110,8 @@ default `best_opportunity`; 400 on an unrecognized value).
 
 ### `GET /market/freshness`
 Worker heartbeat / freshness summary, reading `pipeline_heartbeats` for
-the `futgg_player_sync` and `futgg_price_sync` workers plus aggregate
+the `futgg_player_sync`, `futgg_bulk_price_sync` and `futgg_sales_sync`
+workers plus aggregate
 counts from `futgg_market_snapshot`:
 `{"heartbeats": [...], "cards_discovered", "cards_priced", "cards_no_market", "cards_untradeable", "cards_stale", "stale_by_price_tier": {...}, "latest_source_errors": [...]}`.
 
