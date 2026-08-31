@@ -87,7 +87,7 @@ describe("when our data is the problem", () => {
         heartbeats: [
           { worker: "futgg_bulk_price_sync", last_run_at: new Date(Date.now() - 0.5 * HOURS).toISOString(), ok: true },
           { worker: "futgg_player_sync", last_run_at: new Date(Date.now() - 22 * HOURS).toISOString(), ok: true },
-          { worker: "futgg_price_sync", last_run_at: new Date(Date.now() - 21 * 24 * HOURS).toISOString(), ok: true },
+          { worker: "futgg_sales_sync", last_run_at: new Date(Date.now() - 21 * 24 * HOURS).toISOString(), ok: true },
         ],
       }),
       refetch: vi.fn(),
@@ -103,7 +103,7 @@ describe("when our data is the problem", () => {
     // weeks ago reports ok:true forever.
     freshness.value = {
       data: healthy({
-        heartbeats: [{ worker: "futgg_price_sync", last_run_at: new Date(Date.now() - 21 * 24 * HOURS).toISOString(), ok: true }],
+        heartbeats: [{ worker: "futgg_sales_sync", last_run_at: new Date(Date.now() - 21 * 24 * HOURS).toISOString(), ok: true }],
       }),
       refetch: vi.fn(),
     };

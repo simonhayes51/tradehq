@@ -79,9 +79,9 @@ export default function EmptyFeedReason({ noun = "opportunities", filtersActive,
   const hasPriced = Number.isFinite(priced) && priced > 0;
   // Sales and prices are collected by SEPARATE workers and fail
   // independently - the outage this component was written during had
-  // 100% price coverage and three-week-old sales. Saying "prices are
-  // behind" when the sales collector is the dead one sends whoever reads
-  // it to the wrong worker.
+  // 100% price coverage while the sales collector was rate-limited down
+  // to near-zero throughput. Saying "prices are behind" when sales are
+  // the problem sends whoever reads it to the wrong worker.
   const salesStale = hasPriced && staleSales != null && staleSales > priced * 0.5;
   const pricesStale = hasPriced && Number.isFinite(stalePrices) && stalePrices / priced > 0.5;
 

@@ -786,18 +786,28 @@ class FutggMarketDataProvider(MarketDataProvider):
                 """
                 SELECT worker, last_run_at, ok, detail
                 FROM pipeline_heartbeats
-                -- 'futgg_price_sync' is the retired per-card Playwright
-                -- scraper (see Procfile's own comment on the switch) -
-                -- kept here only so an old/never-migrated deployment
-                -- still shows something, since that worker's own
-                -- heartbeat() call remains in its source. The live
-                -- price worker is 'futgg_bulk_price_sync' (continuous
-                -- bulk-feed service, see Dockerfile.price) - it did not
-                -- call heartbeat() at all until this fix, which is why
-                -- this panel could show a stale entry under the retired
-                -- worker's name while the real worker's actual state
-                -- (healthy or stalled) stayed invisible here.
-                WHERE worker IN ('futgg_player_sync', 'futgg_price_sync', 'futgg_bulk_price_sync')
+                -- The three collectors that are actually deployed:
+                -- discovery, bulk BIN prices, and sales.
+                --
+                -- 'futgg_price_sync' is deliberately NOT in this list.
+                -- It is the retired per-card Playwright scraper (see
+                -- Procfile and docker-compose.yml, both of which say so),
+                -- but its heartbeat row still exists, frozen at whatever
+                -- its final run wrote - and `ok` records the outcome of
+                -- the last run, so a decommissioned worker reports
+                -- ok:true forever. Including it put a permanently stale
+                -- row in this panel under a name that reads like the
+                -- sales collector, while the real sales collector
+                -- ('futgg_sales_sync') wrote nothing here at all. The
+                -- result: a three-week-old row answering "are sales
+                -- being collected?" with a confident yes, and no way to
+                -- see that the live worker was being rate-limited down
+                -- to near-zero throughput.
+                WHERE worker IN (
+                    'futgg_player_sync',
+                    'futgg_bulk_price_sync',
+                    'futgg_sales_sync'
+                )
                 """
             )
             totals = await conn.fetchrow(
