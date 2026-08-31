@@ -771,6 +771,18 @@ def evaluate_card(
             not level_is_established and discount_ratio >= cfg.unverifiable_discount_ratio
         )
 
+    # A card that can currently be obtained by completing a live SBC has
+    # extra supply flowing in with every completion - a BIN below recent
+    # sales may be that supply pressure, not underpricing. See
+    # app/services/sbc_reward_match.py for how sbc_reward_active is
+    # populated (name-matched, conservative, off by default on any doubt)
+    # and market_data_provider.SBC_REWARD_SNAPSHOT_KEYS for why these
+    # keys are not selected from futgg_market_snapshot like every other
+    # field read here.
+    sbc_reward_active = bool(snapshot.get("sbc_reward_active")) and cfg.sbc_reward_guard_enabled
+    sbc_reward_title = snapshot.get("sbc_reward_title")
+    sbc_reward_ends_at = snapshot.get("sbc_reward_ends_at")
+
     distance_from_threshold: Optional[float] = None
     if recommended_buy_max and recommended_buy_max > 0:
         distance_from_threshold = float((recommended_buy_max - current_bin_dec) / recommended_buy_max)
@@ -793,6 +805,34 @@ def evaluate_card(
             "The discount against recent sales is explained by an unresolved downtrend, "
             "not by underpricing - recent sales are still printing lower.",
         )
+    elif sbc_reward_active:
+        # Deliberately a WATCH, not an "avoid" - the card is not
+        # mispriced by anything intrinsic to it, and once the SBC ends
+        # the extra supply stops. We just cannot trust the current
+        # discount while completions are still adding copies to the
+        # market it is being measured against.
+        signal, status = "watch", STATUS_WATCH
+        title_clause = f' ("{sbc_reward_title}")' if sbc_reward_title else ""
+        reasons.add(
+            rc.SBC_REWARD_ACTIVE,
+            f"This card can currently be obtained by completing a live SBC{title_clause} - "
+            "completions are adding new copies to the market, so this discount may not hold.",
+        )
+        if sbc_reward_ends_at is not None:
+            try:
+                hours_left = max((sbc_reward_ends_at - as_of).total_seconds() / 3600.0, 0.0)
+            except TypeError:
+                # A hand-built snapshot dict (tests, an un-migrated caller)
+                # may carry a naive datetime - degrade to omitting the
+                # ETA rather than raising. evaluate_card() never raises on
+                # a malformed optional field.
+                hours_left = None
+            if hours_left is not None:
+                reasons.add(
+                    rc.INFO_WATCH_THRESHOLD,
+                    f"Reconsider once the SBC ends (about {hours_left:.0f}h from now) and the "
+                    "extra supply stops.",
+                )
     elif unverifiable_discount:
         # Deliberately a WATCH, not an "avoid": the card may well be a
         # genuine bargain. We simply cannot demonstrate that yet, and

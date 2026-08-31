@@ -306,6 +306,14 @@ class EngineConfig:
     unverifiable_discount_min_sales_for_level: int = 20
     unverifiable_discount_max_dispersion_for_level: float = 0.15
 
+    # A card currently obtainable via a live SBC has extra supply flowing
+    # in with every completion - see app/services/sbc_reward_match.py for
+    # the full rationale and why the match feeding this is conservative
+    # but still unproven against live data. This kill switch exists so
+    # the gate can be turned off without a deploy if the match rate turns
+    # out to be poor in practice.
+    sbc_reward_guard_enabled: bool = True
+
     # ---- Expiry -------------------------------------------------------
     # Base shelf-life of a recommendation before market conditions are
     # assumed to have moved on, scaled down by volatility/velocity and up
@@ -425,6 +433,7 @@ def _load_engine_config() -> EngineConfig:
         unverifiable_discount_guard_enabled=_env_bool("FUTGG_UNVERIFIABLE_DISCOUNT_GUARD", True),
         unverifiable_discount_min_sales_for_level=_env_int("FUTGG_UNVERIFIABLE_MIN_SALES_FOR_LEVEL", 20),
         unverifiable_discount_max_dispersion_for_level=_env_float("FUTGG_UNVERIFIABLE_MAX_DISPERSION_FOR_LEVEL", 0.15),
+        sbc_reward_guard_enabled=_env_bool("FUTGG_SBC_REWARD_GUARD", True),
     )
 
 

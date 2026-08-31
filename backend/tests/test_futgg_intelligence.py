@@ -426,6 +426,113 @@ class TestFallingKnifeGate:
         assert ci.status == "active"
 
 
+class TestSbcRewardGate:
+    """Production incident: Lamine Yamal 99 RW was live-flagged as the
+    homepage's Top Card - "23% below median, broadly flat" - while a
+    live SBC ("Summer Stars Tournament Winners", ~1.7m to complete) was
+    producing fresh copies of the exact same card. The trend layer is
+    price-only and has no way to see that; sbc_reward_active is a
+    separate, independent guard fed from app/services/sbc_reward_match.py
+    (see market_data_provider._attach_sbc_reward_watch).
+
+    Base case is TestFallingKnifeGate.test_sideways_liquid_market_
+    still_produces_a_buy's own snapshot - a sideways market that clears
+    every other bar - with only sbc_reward_active added, so these tests
+    isolate exactly what the new guard changes.
+    """
+
+    def _sideways_buy_snapshot(self, **overrides):
+        defaults = dict(
+            current_bin=9000, sales_median=11500, sales_trimmed_mean=11500,
+            sales_count=40,
+        )
+        defaults.update(overrides)
+        return _snapshot(**defaults)
+
+    def test_an_active_reward_downgrades_a_buy_to_a_watch(self):
+        snapshot = self._sideways_buy_snapshot(
+            sbc_reward_active=True, sbc_reward_title="Lamine Yamal",
+            sbc_reward_ends_at=AS_OF + timedelta(hours=30),
+        )
+        ci = evaluate_card(snapshot, as_of=AS_OF, sales=_flat_series(11500, n=20))
+        assert ci.signal == "watch"
+        assert ci.status == "watch"
+        assert rc.SBC_REWARD_ACTIVE in ci.reason_codes
+
+    def test_the_reward_title_and_countdown_are_in_the_explanation(self):
+        snapshot = self._sideways_buy_snapshot(
+            sbc_reward_active=True, sbc_reward_title="Lamine Yamal",
+            sbc_reward_ends_at=AS_OF + timedelta(hours=30),
+        )
+        ci = evaluate_card(snapshot, as_of=AS_OF, sales=_flat_series(11500, n=20))
+        joined = " ".join(ci.signal_reasons)
+        assert "Lamine Yamal" in joined
+        assert "live SBC" in joined
+        assert "30h" in joined
+
+    def test_no_flag_is_the_same_as_before_this_feature(self):
+        # sbc_reward_active absent entirely (not just False) - the shape
+        # a database on an older migration or an un-migrated read path
+        # would produce. Must degrade to normal buy-gating, not crash.
+        snapshot = self._sideways_buy_snapshot()
+        assert "sbc_reward_active" not in snapshot
+        ci = evaluate_card(snapshot, as_of=AS_OF, sales=_flat_series(11500, n=20))
+        assert ci.signal in ("buy", "strong_buy")
+
+    def test_an_explicit_false_flag_does_not_gate(self):
+        snapshot = self._sideways_buy_snapshot(sbc_reward_active=False)
+        ci = evaluate_card(snapshot, as_of=AS_OF, sales=_flat_series(11500, n=20))
+        assert ci.signal in ("buy", "strong_buy")
+
+    def test_missing_ends_at_still_gates_just_without_a_countdown(self):
+        snapshot = self._sideways_buy_snapshot(
+            sbc_reward_active=True, sbc_reward_title="Some Player", sbc_reward_ends_at=None,
+        )
+        ci = evaluate_card(snapshot, as_of=AS_OF, sales=_flat_series(11500, n=20))
+        assert ci.signal == "watch"
+        assert "Reconsider once the SBC ends" not in " ".join(ci.signal_reasons)
+
+    def test_a_naive_datetime_degrades_rather_than_raising(self):
+        # evaluate_card() is documented to never raise on a malformed
+        # optional field - a hand-built snapshot with a naive datetime
+        # (missing tzinfo) must not crash the whole evaluation.
+        snapshot = self._sideways_buy_snapshot(
+            sbc_reward_active=True, sbc_reward_title="Some Player",
+            sbc_reward_ends_at=datetime(2026, 1, 12, 0, 0),  # naive, no tzinfo
+        )
+        ci = evaluate_card(snapshot, as_of=AS_OF, sales=_flat_series(11500, n=20))
+        assert ci.signal == "watch"
+
+    def test_the_kill_switch_disables_the_gate(self):
+        from dataclasses import replace
+
+        cfg = replace(ENGINE_CONFIG, sbc_reward_guard_enabled=False)
+        snapshot = self._sideways_buy_snapshot(
+            sbc_reward_active=True, sbc_reward_title="Lamine Yamal",
+        )
+        ci = evaluate_card(snapshot, as_of=AS_OF, sales=_flat_series(11500, n=20), config=cfg)
+        assert ci.signal in ("buy", "strong_buy")
+        assert rc.SBC_REWARD_ACTIVE not in ci.reason_codes
+
+    def test_a_falling_knife_that_is_also_an_sbc_reward_is_still_avoid(self):
+        # The falling-knife guard is the single most important gate in
+        # the engine (see TestFallingKnifeGate's own docstring) and must
+        # not be softened to a mere watch just because this new guard
+        # also applies - avoid outranks watch.
+        snapshot = _snapshot(
+            current_bin=60000, sales_median=100000, sales_trimmed_mean=100000,
+            sales_low=58000, sales_high=140000, sales_stddev=12000,
+            sales_dispersion_ratio=0.12, sales_count=30,
+            sbc_reward_active=True, sbc_reward_title="Some Player",
+        )
+        ci = evaluate_card(snapshot, as_of=AS_OF, sales=_falling_series(140000, 62000))
+        assert ci.signal == "avoid"
+        assert rc.FALLING_KNIFE in ci.reason_codes or rc.UNRESOLVED_DOWNTREND in ci.reason_codes
+
+    def test_it_is_one_of_the_blocking_codes(self):
+        assert reasons_pkg.SBC_REWARD_ACTIVE in reasons_pkg.BLOCKING_CODES
+
+
 class TestExpiryAndProvenance:
     def test_every_result_is_versioned(self):
         ci = evaluate_card(_snapshot(), as_of=AS_OF)

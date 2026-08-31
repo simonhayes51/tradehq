@@ -243,6 +243,16 @@ class TestTheColumnListActuallyReachesTheEngine:
         reads = set(re.findall(r'snapshot\.get\(\s*["\']([a-z0-9_]+)["\']', engine_src))
         assert reads, "no snapshot.get() calls found - has the engine been restructured?"
 
+        # A documented, deliberate exception: these are never selected
+        # from futgg_market_snapshot at all (and adding them to
+        # _SNAPSHOT_COLUMNS would be actively wrong - resolve_snapshot_
+        # columns() would try to SELECT them from a view that does not
+        # have them). They are attached separately in Python, after the
+        # view query runs, by market_data_provider._attach_sbc_reward_
+        # watch() - see migration 079's comment for why that view stays
+        # untouched. See SBC_REWARD_SNAPSHOT_KEYS's own comment.
+        reads -= mdp.SBC_REWARD_SNAPSHOT_KEYS
+
         selected = set(re.findall(r"[a-z0-9_]+", mdp._SNAPSHOT_COLUMNS))
         missing = sorted(reads - selected)
         assert not missing, (

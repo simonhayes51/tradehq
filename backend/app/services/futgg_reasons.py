@@ -53,6 +53,12 @@ STALE_RECOMMENDATION = "stale_recommendation"
 # cannot describe the same market - see the plausibility gate in
 # futgg_intelligence for the incident that motivated this.
 SALES_BIN_DIVERGENCE = "sales_bin_divergence"
+# This card can currently be obtained by completing a live SBC. Every
+# completion mints another copy into a market that already has one, so a
+# BIN below the recent-sales median may be that supply pressure rather
+# than underpricing - see app/services/sbc_reward_match.py and
+# EngineConfig.sbc_reward_guard_enabled.
+SBC_REWARD_ACTIVE = "sbc_reward_active"
 
 # ---- Downgrading codes (signal allowed but capped) --------------------------
 EXCESSIVE_DISPERSION = "excessive_dispersion"
@@ -79,7 +85,7 @@ BLOCKING_CODES = frozenset({
     UNRESOLVED_DOWNTREND, FALLING_KNIFE, UNVERIFIABLE_DISCOUNT, EXPECTED_PROFIT_TOO_LOW,
     TARGET_BELOW_BREAK_EVEN, NO_REALISTIC_EXIT_EVIDENCE,
     PRICE_ABOVE_MAX_BUY, EVENT_RISK, STALE_RECOMMENDATION,
-    SALES_BIN_DIVERGENCE,
+    SALES_BIN_DIVERGENCE, SBC_REWARD_ACTIVE,
 })
 
 DOWNGRADE_CODES = frozenset({
@@ -174,6 +180,7 @@ CODE_LABELS: Dict[str, str] = {
     PRICE_ABOVE_MAX_BUY: "Costs more than it is worth buying at",
     EVENT_RISK: "Known market event risk",
     SALES_BIN_DIVERGENCE: "Live price far below recent sales",
+    SBC_REWARD_ACTIVE: "Live SBC reward",
     STALE_RECOMMENDATION: "Recommendation out of date",
     EXCESSIVE_DISPERSION: "Sale prices too scattered",
     LOW_LIQUIDITY: "Trades rarely",

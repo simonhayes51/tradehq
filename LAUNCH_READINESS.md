@@ -552,6 +552,27 @@ production operation was run.**
    `coverage=`/`signal_capable=` in the heartbeat detail over the next
    few days now that a throttle no longer forces a switch to a
    transport that was making things worse.
+9. **The SBC-reward guard's match quality is unverified against live
+   data.** A production case (Lamine Yamal 99 RW, live "Summer Stars
+   Tournament Winners" SBC) showed the engine recommending a buy on a
+   card whose price was being pushed down by SBC-completion supply, not
+   underpricing — the trend layer is price-only and had no way to see
+   the SBC. `app/services/sbc_reward_match.py` now name-matches live
+   SBCs (`market_events`, player DB) to FUT.GG cards (core DB), and
+   `futgg_intelligence.py` downgrades a matched card's signal to `watch`
+   while its SBC is live (`SBC_REWARD_ACTIVE`) — which removes it from
+   Opportunities/Trade Finder/Top Card automatically, since those already
+   filter to `signals={"buy", "strong_buy"}`. The match is deliberately
+   conservative — exact name match, unique among candidates,
+   rating-disambiguated when ambiguous, generic pack/coin/token rewards
+   rejected outright — but it has never run against a real EasySBC
+   payload in this environment (see `easysbc_sbc_sync.py`'s own
+   "genuinely open" section for why `reward_card_id` itself is
+   unmapped). **Watch the first live runs after this deploys: check
+   `futgg_sbc_reward_watch` picks up real live SBCs and that
+   `matched`/`unmatched` counts in the refresher's logs look sane.**
+   `FUTGG_SBC_REWARD_GUARD=false` turns the downstream gate off without
+   a deploy if the match rate turns out to be poor.
 
 ---
 

@@ -102,6 +102,7 @@ from app.db import get_core_pool
 from app.services.futgg_scanner import refresher_loop as futgg_scanner_refresher_loop
 from app.services.futgg_outcome_grader import refresher_loop as futgg_outcome_grader_refresher_loop
 from app.services.priority_recompute import refresher_loop as priority_recompute_refresher_loop
+from app.services.sbc_reward_match import refresher_loop as sbc_reward_match_refresher_loop
 from app.services.investment_engine.runner import refresher_loop as investment_engine_refresher_loop
 from app.services.investment_engine.config import INVESTMENT_ENGINE_CONFIG
 from app.services import game_cycle
@@ -647,6 +648,17 @@ async def lifespan(app: FastAPI):
         )
         logging.info("✅ FUT.GG evaluation scanner started (poll every %ss)", futgg_scan_poll)
 
+        # SBC-reward watch (migration 079). Matches live SBCs (player DB)
+        # to the cards they produce (core DB) so the buy-signal engine can
+        # see when a card's discount is really just SBC-completion supply
+        # pressure - see app/services/sbc_reward_match.py's module
+        # docstring for the production incident that motivated this.
+        sbc_reward_poll = int(os.getenv("FUTGG_SBC_REWARD_REFRESH_SECONDS", str(30 * 60)))
+        app.state.sbc_reward_match_task = asyncio.create_task(
+            sbc_reward_match_refresher_loop(pool, player_pool, sbc_reward_poll)
+        )
+        logging.info("✅ SBC-reward watch refresher started (poll every %ss)", sbc_reward_poll)
+
         # Grades those recommendations against what the market actually did,
         # chronologically and without hindsight. Slow cadence: a horizon
         # closes once, so re-scanning open rows more often buys nothing.
@@ -820,7 +832,7 @@ async def lifespan(app: FastAPI):
             "held_position_refresher_task", "futgg_market_snapshot_task",
             "priority_recompute_task", "futgg_card_image_mirror_task",
             "discord_integration_task", "investment_engine_task",
-            "discord_trading_feed_task",
+            "discord_trading_feed_task", "sbc_reward_match_task",
         ):
             task = getattr(app.state, task_attr, None)
             if task:
