@@ -198,13 +198,19 @@ class TestAdaptiveThrottle:
         t.record(8, 8)
         assert t.delay > 0
 
-    def test_recent_429_wall_is_not_hidden_by_earlier_successes(self):
+    def test_recent_429_wall_is_not_hidden_by_earlier_successes(self, monkeypatch):
         t = AdaptiveThrottle(8, 0.5)
         stats = {"ok": 100, "failed": 16}
         t.record(8, 8)
         assert not circuit_breaker_tripped(stats, t)
         t.record(8, 8)
         assert circuit_breaker_tripped(stats, t)
+        # The circuit breaker tripping and the transport switching are
+        # separate decisions - the fallback is gated off by default (see
+        # PAGE_CAPTURE_FALLBACK_ON_THROTTLE), so this pins the trip
+        # detection itself with the gate explicitly on.
+        import futgg_sales_sync as sales
+        monkeypatch.setattr(sales, "PAGE_CAPTURE_FALLBACK_ON_THROTTLE", True)
         switch, reason = should_fall_back_to_page_capture(stats, t)
         assert switch
         assert "fully-throttled batches" in reason

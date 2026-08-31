@@ -33,6 +33,36 @@ set -euo pipefail
 # forever if Xvfb itself is the thing that's broken in this environment.
 DISPLAY_NUM="${DISPLAY#:}"
 SOCKET="/tmp/.X11-unix/X${DISPLAY_NUM}"
+LOCK="/tmp/.X${DISPLAY_NUM}-lock"
+
+# Clear a stale lock/socket before starting Xvfb.
+#
+# Production evidence (31 August): "Fatal server error: (EE) Server is
+# already active for display 99", Xvfb refusing to start at all, on a
+# container that had just been (re)started - meaning the LOCK file
+# survived even though nothing from the previous Xvfb process could
+# still be running in a fresh container. Xvfb writes /tmp/.XNN-lock
+# (containing its own PID) and the socket at $SOCKET, and neither is
+# guaranteed to be cleaned up on a SIGKILL or an unclean container exit -
+# an ephemeral filesystem does not imply the file is gone before this
+# script's next cold start reads it.
+#
+# This entrypoint is the sole owner of this display in this container, so
+# it is always safe to clear both before starting: if a PID the lock
+# names is genuinely still alive (kill -0 succeeds), something unexpected
+# is running and this fails loudly rather than fighting it; otherwise the
+# lock is stale by definition and removing it is exactly what a clean
+# shutdown would have done.
+if [ -e "$LOCK" ]; then
+    stale_pid="$(tr -d '[:space:]' < "$LOCK" 2>/dev/null || true)"
+    if [ -n "$stale_pid" ] && kill -0 "$stale_pid" 2>/dev/null; then
+        echo "FATAL: display ${DISPLAY:-:99} lock ${LOCK} names PID ${stale_pid}, which is still running - refusing to remove a live lock"
+        exit 1
+    fi
+    echo "Removing stale Xvfb lock ${LOCK} (PID ${stale_pid:-unknown} not running)"
+    rm -f "$LOCK"
+fi
+rm -f "$SOCKET"
 
 echo "Starting Xvfb on display ${DISPLAY:-:99}..."
 Xvfb "${DISPLAY:-:99}" -screen 0 1920x1080x24 -nolisten tcp &

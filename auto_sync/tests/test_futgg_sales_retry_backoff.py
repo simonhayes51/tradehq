@@ -317,17 +317,21 @@ class TestRateLimitDoesNotForceTheExpensiveTransport:
 
 
 class TestThrottledTransportFallsBackEventually:
-    """Backing off is the right first answer to a 429. Backing off
-    FOREVER is not.
-
-    Sales are the anchor for every recommendation the engine makes, so a
-    worker that stays cheap by returning no data at all is not a better
-    outcome than one that costs more per card and works. The rule is:
-    back off first, fall back only if backing off did not fix it.
+    """Backing off is the right first answer to a 429. Falling back
+    afterwards is a SEPARATE decision, gated by
+    PAGE_CAPTURE_FALLBACK_ON_THROTTLE (default off - see its own comment:
+    production evidence showed page_capture at ~0 cards/min, which makes
+    the fallback strictly worse than continuing to back off). These tests
+    turn the gate on to pin the escape-hatch behaviour itself; the
+    default-off behaviour has its own class below.
     """
 
     def setup_method(self):
         sales._consecutive_signed_throttle_trips = 0
+
+    @pytest.fixture(autouse=True)
+    def _fallback_enabled(self, monkeypatch):
+        monkeypatch.setattr(sales, "PAGE_CAPTURE_FALLBACK_ON_THROTTLE", True)
 
     def _throttled(self):
         return {"failed": 50, "ok": 0, "errors": {"data_429": 50}}
@@ -378,15 +382,79 @@ class TestThrottledTransportFallsBackEventually:
         assert sales._consecutive_signed_throttle_trips == 0
 
 
+class TestPageCaptureFallbackIsOffByDefault:
+    """31 August production evidence: once the breaker switched
+    signed_fetch's throttling wall to page_capture, the fallback managed
+    cards_ok=2 failed=18 in 2311.5s (0 cards/min), with page fetches up
+    to 21 minutes and repeated Playwright page crashes - while
+    signed_fetch itself had been collecting 150-185 cards per cycle right
+    up to the wall.
+
+    So a throttle-shaped trip must never switch transport unless someone
+    has explicitly turned page_capture's fallback back on having fixed
+    it. Backing off and retrying signed_fetch, indefinitely, is strictly
+    better than the fallback as last observed.
+    """
+
+    def setup_method(self):
+        sales._consecutive_signed_throttle_trips = 0
+
+    def _throttled(self):
+        return {"failed": 50, "ok": 0, "errors": {"data_429": 50}}
+
+    def _blocked(self):
+        return {"failed": 50, "ok": 0, "errors": {"data_403": 50}}
+
+    def test_the_flag_defaults_to_off(self):
+        assert sales.PAGE_CAPTURE_FALLBACK_ON_THROTTLE is False
+
+    def test_persistent_throttling_never_switches(self):
+        results = [
+            sales.should_fall_back_to_page_capture(self._throttled())[0]
+            for _ in range(sales.SIGNED_THROTTLE_CYCLES_BEFORE_FALLBACK * 5)
+        ]
+        assert all(r is False for r in results)
+
+    def test_a_saturated_throttle_still_does_not_switch(self):
+        t = sales.AdaptiveThrottle(8, 0.5)
+        t.batch_size = t.min_batch
+        t.delay = t.max_delay
+        switch, why = sales.should_fall_back_to_page_capture(self._throttled(), t)
+        assert switch is False
+        assert "PAGE_CAPTURE_FALLBACK_ON_THROTTLE is off" in why
+
+    def test_a_wall_of_fully_throttled_batches_still_does_not_switch(self):
+        t = sales.AdaptiveThrottle(8, 0.5)
+        t.consecutive_fully_throttled_batches = sales.CONSECUTIVE_FULL_THROTTLE_BATCHES + 5
+        switch, _ = sales.should_fall_back_to_page_capture(self._throttled(), t)
+        assert switch is False
+
+    def test_a_genuine_block_still_switches_immediately(self):
+        # The gate is specific to throttling. A wall is a capability gap
+        # page_capture may close, not a cost/reliability tradeoff, so it
+        # is unaffected by this flag.
+        switch, why = sales.should_fall_back_to_page_capture(self._blocked())
+        assert switch is True
+        assert "blocking-shaped" in why
+
+
 class TestFallbackSurvivesBoundedRuns:
     """The consecutive-trip counter lives in process memory. Under
     FUTGG_SALES_MAX_RUNTIME_MINUTES the process exits every run, so a
     streak spanning runs can never accumulate - without a within-cycle
     escape hatch the fallback would never fire at all, and a persistently
-    throttled worker would return no sales data indefinitely."""
+    throttled worker would return no sales data indefinitely.
+
+    Exercised with PAGE_CAPTURE_FALLBACK_ON_THROTTLE on - see the class
+    above.
+    """
 
     def setup_method(self):
         sales._consecutive_signed_throttle_trips = 0
+
+    @pytest.fixture(autouse=True)
+    def _fallback_enabled(self, monkeypatch):
+        monkeypatch.setattr(sales, "PAGE_CAPTURE_FALLBACK_ON_THROTTLE", True)
 
     def _throttled(self):
         return {"failed": 50, "ok": 0, "errors": {"data_429": 50}}
