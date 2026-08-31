@@ -323,3 +323,45 @@ class TestRefresherLoopIsBestEffort:
         source = inspect.getsource(srm)
         module_level = source.split("async def refresher_loop")[0]
         assert "refresher_loop(" not in module_level
+
+
+class TestAdvisoryLockKeyDoesNotCollide:
+    """Postgres advisory locks are scoped to the DATABASE, not the
+    process or codebase - a number picked only against backend/'s own
+    REFRESH_LOCK_KEY list is not enough, because auto_sync/ (a separate
+    set of deployed containers, entirely independent of this backend)
+    already claims several numbers in the same "774101X" family against
+    the same core database.
+
+    This is not hypothetical: REFRESH_LOCK_KEY's first value (7741013)
+    collided with futgg_sales_sync.py's own SALES_SYNC_ADVISORY_LOCK_KEY
+    default, confirmed in production by futgg_sales_sync.py logging
+    "another SalesSync owns advisory lock 7741013; exiting cleanly"
+    while this refresher - an entirely unrelated job - held the same
+    numeric lock, at the exact moment nothing else was actually
+    overlapping it.
+    """
+
+    # Every advisory lock key claimed anywhere in this repo, backend and
+    # auto_sync alike, as of this writing. Not derived by scanning source
+    # at test time (a lock key can live behind an env_int() default that
+    # is easy to miss with a regex) - each was confirmed by reading the
+    # defining file directly. If a new one is added anywhere, add it
+    # here too.
+    _KNOWN_LOCK_KEYS = {
+        7741002,  # backend fair_value.py
+        7741004,  # backend analytics_engine.py
+        7741005,  # backend event_impact.py
+        7741006,  # backend recommendation_engine.py
+        7741009,  # backend ml_feature_pipeline.py
+        7741010,  # backend held_position_refresher.py
+        7741011,  # backend market_data_provider.py
+        7741012,  # backend priority_recompute.py
+        7741013,  # auto_sync futgg_sales_sync.py (SALES_SYNC_ADVISORY_LOCK_KEY)
+        7741021,  # auto_sync futgg_player_sync.py (OVERLAP_LOCK_KEY)
+        7741022,  # auto_sync futgg_price_sync.py (OVERLAP_LOCK_KEY)
+        7741042,  # auto_sync easysbc_sbc_sync.py (EASYSBC_LOCK_KEY)
+    }
+
+    def test_it_does_not_collide_with_any_known_lock_key(self):
+        assert srm.REFRESH_LOCK_KEY not in self._KNOWN_LOCK_KEYS

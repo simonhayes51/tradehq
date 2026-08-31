@@ -77,13 +77,27 @@ import asyncpg
 
 log = logging.getLogger("sbc_reward_match")
 
-# Distinct from every other REFRESH_LOCK_KEY in this codebase - see
-# app/services/held_position_refresher.py's own comment for the running
-# list (fair-value 7741002, migration runner 7741003, analytics-engine
-# 7741004, event-impact 7741005, recommendation-engine 7741006,
-# ml-feature-pipeline snapshot 7741009, held-position-refresher 7741010,
-# market_data_provider refresh 7741011, priority_recompute 7741012).
-REFRESH_LOCK_KEY = 7741013
+# Distinct from every other advisory lock key in the "774101X" family -
+# and NOT just the backend's own. Postgres advisory locks are scoped to
+# the DATABASE, not the process or codebase, and auto_sync/ (a separate
+# set of deployed containers, run entirely independently of this
+# backend) already claims several numbers in the same family against the
+# same core database: futgg_sales_sync.py's SALES_SYNC_ADVISORY_LOCK_KEY
+# defaults to 7741013 - which this constant collided with the first time
+# it was written, confirmed in production by futgg_sales_sync.py logging
+# "another SalesSync owns advisory lock 7741013; exiting cleanly" while
+# this refresher (an entirely unrelated job) held the same numeric lock.
+# See app/services/held_position_refresher.py's own comment for the
+# backend-side running list (fair-value 7741002, migration runner
+# 7741003, analytics-engine 7741004, event-impact 7741005,
+# recommendation-engine 7741006, ml-feature-pipeline snapshot 7741009,
+# held-position-refresher 7741010, market_data_provider refresh 7741011,
+# priority_recompute 7741012) - and auto_sync's own claims: sales-sync
+# 7741013, player-sync 7741021 (futgg_player_sync.py's OVERLAP_LOCK_KEY),
+# price-sync 7741022 (futgg_price_sync.py's OVERLAP_LOCK_KEY), easysbc
+# 7741042 (easysbc_sbc_sync.py's EASYSBC_LOCK_KEY). 7741050 sits clear of
+# every one of those.
+REFRESH_LOCK_KEY = 7741050
 
 REFRESH_INTERVAL_SECONDS = int(os.environ.get("FUTGG_SBC_REWARD_REFRESH_SECONDS", str(30 * 60)))
 
