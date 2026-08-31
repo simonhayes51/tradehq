@@ -11,6 +11,7 @@ import { ArrowRight, Lock, RotateCcw, ShieldAlert, SlidersHorizontal, TrendingUp
 import CoinValue from "../../components/CoinValue";
 import EmptyState from "../../components/EmptyState";
 import MarketFreshness from "../../components/MarketFreshness";
+import EmptyFeedReason from "../../components/EmptyFeedReason";
 import { useFutggOpportunities } from "../../hooks/useFutggMarket";
 import { buildWhyText, sellingSpeedLabel } from "../../lib/tradeNarrative";
 import { PageHead } from "../Players/Players";
@@ -117,7 +118,7 @@ export default function Opportunities() {
           {lockedCount > 0 ? <UpgradePrompt {...GATED.opportunity_feed} /> : null}
         </>
       ) : (
-        <EmptyState icon={<TrendingUp size={25} />} text="No current opportunities match those filters." action={filtersActive ? <button onClick={() => setFilters(DEFAULTS)}>Clear filters</button> : null} />
+        <EmptyFeedReason noun="opportunities" filtersActive={filtersActive} onClearFilters={() => setFilters(DEFAULTS)} />
       )}
     </main>
   );
