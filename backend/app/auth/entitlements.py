@@ -653,10 +653,41 @@ async def get_viewer(req: Request) -> "Viewer":
     )
 
 
+async def _as_viewer(value: "Viewer | Request") -> "Viewer":
+    """Accept either a resolved Viewer or a raw Request.
+
+    These gates are used two ways, and both are legitimate:
+
+        @router.get(..., dependencies=[Depends(require_feature("x"))])   # FastAPI resolves it
+        await require_feature("x")(request)                              # called inline, mid-handler
+
+    The inline form exists where a route is only conditionally gated, or
+    where the gate has to run after some other work - see trending.py and
+    recommendations.py. FastAPI is not involved there, so the
+    `Depends(get_viewer)` default is just a default value and the caller's
+    Request arrives in the `viewer` slot.
+
+    That is exactly what broke AI Chat: when these gates were rebuilt on
+    Depends(get_viewer), the route-decorator call sites kept working and
+    the twelve inline ones started raising AttributeError on
+    `viewer.user_id` - a 500 on every request, on every one of those
+    endpoints. Resolving here means there is one supported behaviour for
+    both shapes rather than a rule every future call site has to know.
+    """
+    if isinstance(value, Request):
+        return await get_viewer(value)
+    return value
+
+
 def require_feature(feature: Feature):
-    """FastAPI dependency: 401 if anonymous, 402 if tier doesn't cover it."""
+    """401 if anonymous, 402 if tier doesn't cover it.
+
+    Usable as a FastAPI dependency or called inline with a Request - see
+    _as_viewer.
+    """
 
     async def _dep(viewer: "Viewer" = Depends(get_viewer)) -> Dict[str, Any]:
+        viewer = await _as_viewer(viewer)
         ent = {"user_id": viewer.user_id, "tier": viewer.tier,
                "is_admin": viewer.is_admin, "features": sorted(viewer.features)}
         if not ent["user_id"]:
@@ -682,9 +713,12 @@ def require_tier(min_tier: Tier):
     """FastAPI dependency for tier-gated (rather than feature-gated) routes.
 
     Built on get_viewer for the same reason require_feature is: one
-    resolution path, one place to override, one place for a bug."""
+    resolution path, one place to override, one place for a bug. Accepts
+    a Request when called inline, same as require_feature - see
+    _as_viewer."""
 
     async def _dep(viewer: "Viewer" = Depends(get_viewer)) -> Dict[str, Any]:
+        viewer = await _as_viewer(viewer)
         ent = {"user_id": viewer.user_id, "tier": viewer.tier,
                "is_admin": viewer.is_admin, "features": sorted(viewer.features)}
         if not ent["user_id"]:
