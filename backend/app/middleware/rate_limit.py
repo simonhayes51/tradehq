@@ -22,6 +22,11 @@ RATE_LIMIT_RULES: Tuple[Tuple[str, int, int], ...] = (
     ("/api/auth/email/register", 5, 300),
     ("/api/players/search", 60, 60),
     ("/api/players/autocomplete", 120, 60),
+    # Mints a credential. The token can only ever be issued for the
+    # already-authenticated caller and CORS stops a cross-origin page
+    # reading the response, so this is not an exfiltration route - but an
+    # endpoint that hands out signed tokens should not be unbounded.
+    ("/api/v2/companion/session", 20, 300),
 )
 
 _hits: Dict[Tuple[str, str], Deque[float]] = defaultdict(deque)

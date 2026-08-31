@@ -36,6 +36,7 @@ import inspect
 from pydantic import BaseModel, Field
 
 from app.auth.access import get_viewer, limit_reached
+from app.routers.v2.events import record_server_event
 from app.auth.entitlements import (
     ELITE_ALERT_MAX,
     compute_entitlements,
@@ -655,6 +656,33 @@ async def lifespan(app: FastAPI):
         )
         logging.info("✅ FUT.GG outcome grader started (poll every %ss)", futgg_grader_poll)
 
+        # Discord role reconciliation. The queue (migration 056) handles
+        # every ordinary billing change; this sweep exists for the jobs the
+        # queue LOSES - a Discord outage long enough to exhaust the
+        # retries leaves an account wrong forever, because nothing will
+        # look at it again. Guarded by an advisory lock, so every worker
+        # can start it and only one does the work. Off by default in the
+        # sense that it no-ops when Discord is not configured.
+        reconcile_interval = int(os.getenv("DISCORD_RECONCILE_INTERVAL_SECONDS", str(6 * 3600)))
+        if reconcile_interval > 0:
+            from app.services.discord_reconcile import reconcile_loop
+
+            app.state.discord_reconcile_task = asyncio.create_task(
+                reconcile_loop(pool, reconcile_interval)
+            )
+            logging.info("✅ Discord role reconciliation started (every %ss)", reconcile_interval)
+
+        # Funnel-event retention. Monthly, in bounded batches, through the
+        # same worker pattern - see app/services/funnel_retention.py.
+        retention_interval = int(os.getenv("FUNNEL_RETENTION_INTERVAL_SECONDS", str(24 * 3600)))
+        if retention_interval > 0:
+            from app.services.funnel_retention import retention_loop
+
+            app.state.funnel_retention_task = asyncio.create_task(
+                retention_loop(pool, retention_interval)
+            )
+            logging.info("✅ Funnel-event retention started (check every %ss)", retention_interval)
+
         # Investment Engine (separate concept from the trade/opportunity
         # engines above - see app/services/investment_engine/__init__.py).
         # Entirely inert (INVESTMENT_ENGINE_ENABLED defaults False) until
@@ -788,6 +816,7 @@ async def lifespan(app: FastAPI):
             "event_impact_task", "analytics_engine_task", "recommendation_engine_task",
             "ml_feature_pipeline_task", "ml_label_filler_task",
             "futgg_scanner_task", "futgg_outcome_grader_task",
+            "discord_reconcile_task", "funnel_retention_task",
             "held_position_refresher_task", "futgg_market_snapshot_task",
             "priority_recompute_task", "futgg_card_image_mirror_task",
             "discord_integration_task", "investment_engine_task",
@@ -1227,6 +1256,13 @@ app.include_router(v2_router)               # /api/v2/*
 from app.routers.admin import router as admin_router
 app.include_router(admin_router)            # /api/admin/*
 
+# Admin-only reporting added in the launch-readiness phase: the conversion
+# funnel and AI cost. Same /api/admin prefix and the same require_admin
+# dependency - a separate module only so the user-administration router
+# above stays about users.
+from app.routers.admin_reporting import router as admin_reporting_router
+app.include_router(admin_reporting_router)  # /api/admin/ai-usage, /api/admin/funnel/*
+
 # Generated player-card PNGs: admin generate/status + the internal,
 # token-gated render-data route Chromium fetches from (see
 # app/routers/player_cards.py's header comment for the two trust
@@ -1302,12 +1338,45 @@ async def image_proxy(url: str):
 
 @app.get("/health")
 async def health_check(request: Request):
+    """Liveness. Public, so it says as little as possible.
+
+    This used to return `str(e)` on a database failure. An asyncpg
+    connection error message contains the DSN it failed to reach, so the
+    one moment the database was down was the one moment this endpoint
+    published the connection string. The exception is logged instead.
+    """
     try:
         async with request.app.state.pool.acquire() as conn:
             await conn.fetchval("SELECT 1")
         return {"status": "healthy", "database": "connected"}
-    except Exception as e:
-        return {"status": "unhealthy", "database": "disconnected", "error": str(e)}
+    except Exception:
+        logging.warning("health check: core database unreachable", exc_info=True)
+        return JSONResponse(
+            status_code=503,
+            content={"status": "unhealthy", "database": "disconnected"},
+        )
+
+
+@app.get("/health/ready")
+async def readiness_check(request: Request):
+    """Readiness. Public, and deliberately terse.
+
+    Names and statuses only - no reason codes, no counts, no
+    configuration. Enough for a load balancer or an uptime probe, and
+    useless to anyone fingerprinting the deployment. The detailed version
+    is admin-only, at /api/admin/readiness.
+    """
+    from app.services.readiness import public_summary, readiness
+
+    report = await readiness(
+        getattr(request.app.state, "pool", None),
+        getattr(request.app.state, "watchlist_pool", None),
+    )
+    summary = public_summary(report)
+    # A degraded optional feature is not a reason to pull the instance out
+    # of the load balancer; an unavailable required one is.
+    return JSONResponse(status_code=503 if report["status"] == "unavailable" else 200,
+                        content=summary)
 
 async def _establish_dashboard_session(
     request: Request, discord_id: int, username: str, avatar_url: str, global_name: str
@@ -3871,10 +3940,55 @@ _PLAN_KEYS = {
     "season": ("STRIPE_SEASON_PRICE_ID", "price_season_premium", "Elite (season)"),
 }
 
+def _plan_key_for_price(subscription: Dict[str, Any]) -> str:
+    """Which configured plan a Stripe subscription is on.
+
+    Reported on the confirmed-revenue event so the funnel can split
+    monthly from season without storing anything about the customer. Falls
+    back to "unknown" rather than guessing: a price id that matches no
+    configured plan is a configuration problem worth seeing in the
+    reporting, not something to paper over with a default.
+    """
+    try:
+        price_id = subscription["items"]["data"][0]["price"]["id"]
+    except (KeyError, IndexError, TypeError):
+        return "unknown"
+    for key, (env_name, fallback, _label) in _PLAN_KEYS.items():
+        if price_id == (os.getenv(env_name) or fallback):
+            return key
+    return "unknown"
+
+
 _CURRENCY_SYMBOLS = {"gbp": "£", "usd": "$", "eur": "€"}
 
-_plan_cache: Dict[str, Any] = {"at": 0.0, "value": None}
-_PLAN_CACHE_TTL = 600
+# Pricing is read by the public pricing page, the signup page and every
+# upgrade prompt in the product, so this is one of the hottest paths there
+# is - and each miss is a synchronous call to Stripe.
+#
+# Three things this cache has to get right:
+#
+#   * NOT CALL STRIPE PER PAGE VIEW. A TTL does that.
+#   * NOT LOSE THE PRICE DURING A STRIPE OUTAGE. `last_good` holds the
+#     last successful answer indefinitely and is served, marked stale,
+#     when a refresh fails. Before this, a transient Stripe error wrote
+#     `configured: False` into the cache and every pricing surface in the
+#     product said "pricing unavailable" for the next ten minutes, having
+#     known the real price a moment earlier.
+#   * NOT STAMPEDE. Without the lock, the first request after expiry is
+#     joined by every other in-flight request, and all of them call
+#     Stripe. One refreshes; the rest wait for it.
+#
+# Nothing customer-specific is ever cached here: the catalogue is a
+# function of Stripe configuration alone, with no user, session or
+# subscription in it. A shared cache holding per-customer pricing would be
+# a data leak, so there is deliberately nothing to key by.
+_plan_cache: Dict[str, Any] = {"at": 0.0, "value": None, "last_good": None, "last_good_at": 0.0}
+_PLAN_CACHE_TTL = int(os.getenv("BILLING_PLANS_CACHE_TTL", "600"))
+# A failed refresh is retried sooner than a good one is refreshed: there
+# is no point serving a stale price for ten minutes if Stripe came back
+# thirty seconds later.
+_PLAN_CACHE_ERROR_TTL = int(os.getenv("BILLING_PLANS_ERROR_TTL", "30"))
+_plan_cache_lock = asyncio.Lock()
 
 
 def _format_price(amount_minor: Optional[int], currency: str, interval: Optional[str]) -> Optional[str]:
@@ -3895,10 +4009,28 @@ async def _plan_catalogue() -> Dict[str, Any]:
     frontend can render "pricing unavailable" honestly.
     """
     now = time.time()
-    if _plan_cache["value"] is not None and now - _plan_cache["at"] < _PLAN_CACHE_TTL:
+    if _plan_cache["value"] is not None and now - _plan_cache["at"] < _plan_cache_ttl():
         return _plan_cache["value"]
 
+    async with _plan_cache_lock:
+        # Re-checked under the lock: while this request was waiting,
+        # another may already have refreshed, and calling Stripe again
+        # would be exactly the stampede the lock exists to prevent.
+        now = time.time()
+        if _plan_cache["value"] is not None and now - _plan_cache["at"] < _plan_cache_ttl():
+            return _plan_cache["value"]
+        return await _refresh_plan_catalogue(now)
+
+
+def _plan_cache_ttl() -> int:
+    """Short after a failure, normal after a success."""
+    value = _plan_cache.get("value") or {}
+    return _PLAN_CACHE_ERROR_TTL if value.get("stale") else _PLAN_CACHE_TTL
+
+
+async def _refresh_plan_catalogue(now: float) -> Dict[str, Any]:
     plans: Dict[str, Any] = {}
+    stripe_failed = False
     for key, (env_var, client_price_id, default_name) in _PLAN_KEYS.items():
         stripe_price_id = os.getenv(env_var)
         entry = {
@@ -3926,6 +4058,10 @@ async def _plan_catalogue() -> Dict[str, Any]:
                 })
             except Exception:
                 logger.warning("Could not read Stripe price for %s", key, exc_info=True)
+                # Configured in this deployment, unreadable right now.
+                # Those are different facts, and conflating them is what
+                # made an outage look like "we do not sell this plan".
+                stripe_failed = True
                 entry["configured"] = False
         plans[key] = entry
 
@@ -3933,8 +4069,25 @@ async def _plan_catalogue() -> Dict[str, Any]:
         "plans": plans,
         "trial_days": STRIPE_TRIAL_DAYS,
         "any_configured": any(p["configured"] for p in plans.values()),
+        "stale": False,
     }
+
+    if stripe_failed and _plan_cache.get("last_good") is not None:
+        # Serve the last price we actually read. A price we knew a minute
+        # ago is far better than no price at all, and the alternative is
+        # every upgrade prompt in the product going blank because Stripe
+        # had a bad thirty seconds.
+        stale = dict(_plan_cache["last_good"])
+        stale["stale"] = True
+        stale["stale_since"] = _plan_cache.get("last_good_at")
+        _plan_cache.update({"at": now, "value": stale})
+        return stale
+
     _plan_cache.update({"at": now, "value": catalogue})
+    if not stripe_failed and catalogue["any_configured"]:
+        # Only a clean read becomes the fallback. Caching a failure as the
+        # thing to fall back to would make the outage permanent.
+        _plan_cache.update({"last_good": catalogue, "last_good_at": now})
     return catalogue
 
 
@@ -4287,6 +4440,16 @@ async def handle_subscription_created(subscription, conn):
     )
     await enqueue_role_sync(conn, user_id)
     invalidate_entitlements_cache(user_id)
+    # The authoritative revenue event. The browser's checkout_completed
+    # fires on the page Stripe redirects back to and means "returned from
+    # checkout" - a customer who pays and closes the tab never fires it,
+    # and anyone who knows the URL can fire it without paying. This one is
+    # written only here, from Stripe's own confirmation.
+    if is_entitled:
+        await record_server_event(
+            "subscription_confirmed", user_id,
+            {"plan": _plan_key_for_price(subscription)},
+        )
 
 async def handle_subscription_updated(subscription, conn):
     """Handle subscription updates"""
@@ -4302,6 +4465,13 @@ async def handle_subscription_updated(subscription, conn):
         "SELECT EXISTS(SELECT 1 FROM subscriptions WHERE stripe_subscription_id=$1)",
         subscription.get('id'),
     )
+    # Read before the UPDATE below overwrites it: "did this subscription
+    # just BECOME entitled" cannot be answered from the new row alone.
+    previous_status = await conn.fetchval(
+        "SELECT status FROM subscriptions WHERE stripe_subscription_id=$1",
+        subscription.get('id'),
+    )
+    was_active = entitlement_is_active(status=previous_status, current_period_end=None)
     if not exists:
         normalized = dict(subscription)
         normalized["metadata"] = {**(subscription.get("metadata") or {}), "user_id": user_id}
@@ -4334,6 +4504,15 @@ async def handle_subscription_updated(subscription, conn):
     )
     await enqueue_role_sync(conn, user_id)
     invalidate_entitlements_cache(user_id)
+    # Only on the transition INTO an entitled state. Stripe sends
+    # subscription.updated for many reasons - a renewal, a card change, a
+    # cancellation flag - and counting each one as a conversion would
+    # inflate revenue by whatever Stripe happens to be chatty about.
+    if is_active and not was_active:
+        await record_server_event(
+            "subscription_confirmed", user_id,
+            {"plan": _plan_key_for_price(subscription)},
+        )
 
 async def handle_subscription_deleted(subscription, conn):
     """Handle subscription cancellation"""

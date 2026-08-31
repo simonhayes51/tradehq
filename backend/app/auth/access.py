@@ -17,11 +17,15 @@
 # add it to a blocklist.
 from __future__ import annotations
 
+import logging
+
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 
 from app.auth.entitlements import Viewer, anonymous_viewer, get_viewer
+
+log = logging.getLogger("access")
 
 
 # Viewer and get_viewer live in entitlements.py, not here. There is one
@@ -32,9 +36,14 @@ from app.auth.entitlements import Viewer, anonymous_viewer, get_viewer
 __all__ = [
     "Viewer",
     "limit_reached",
+    "require_account",
     "get_viewer",
+    "get_companion_viewer",
     "anonymous_viewer",
     "preview_opportunity",
+    "public_card_preview",
+    "public_companion_preview",
+    "serialise_player_search",
     "preview_dashboard_recommendation",
     "serialise_dashboard_feed",
     "serialise_opportunities",
@@ -283,6 +292,147 @@ def redact_trade_plan(item: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+# ---------------------------------------------------------------------------
+# Public (signed-out) card serialisation
+# ---------------------------------------------------------------------------
+#
+# What someone with no account may see about a card.
+#
+# Search itself stays public: being able to look a card up is discovery,
+# it is shareable, and it is what makes a link to this product worth
+# sending. What is NOT public is the analysis - the exact live price, the
+# fair value, the discount, the verdict and anything resembling a trade
+# plan - because "complete live price and fair-value analysis" is the
+# headline reason to create a Free account, and a free tier cannot be
+# worth creating if its main benefit is already given away.
+#
+# So a signed-out visitor gets enough to know the card is real, current
+# and roughly what it costs, and a clear reason to sign up for the rest.
+_PUBLIC_CARD_FIELDS = (
+    "source_card_id",
+    "card_id",
+    "name",
+    "display_name",
+    "full_name",
+    "rating",
+    "rarity",
+    "primary_position",
+    "position",
+    "alternate_positions",
+    "club",
+    "league",
+    "nation",
+    "player_image_url",
+    "image_url",
+    "card_design_image_url",
+    "card_image_url",
+    "card_image_stored_url",
+    "composited_image_url",
+    "club_image_url",
+    "league_image_url",
+    "nation_image_url",
+    "is_tradeable",
+    "game_year",
+)
+
+# The rounding applied to a public price. Coarse enough that it cannot be
+# used as a live price feed, fine enough to tell a 5k card from a 500k one
+# - which is the whole point of showing it.
+_PUBLIC_PRICE_BUCKETS = ((10_000, 500), (100_000, 5_000), (1_000_000, 25_000))
+_PUBLIC_PRICE_COARSEST = 100_000
+
+
+def _approximate_price(value: Any) -> Optional[int]:
+    """A deliberately imprecise price.
+
+    Proportional rather than a flat rounding: rounding a 3,200-coin card
+    to the nearest 1,000 loses a third of its value, while rounding a
+    900,000-coin card to the nearest 1,000 is not an approximation at all.
+    """
+    if value is None:
+        return None
+    try:
+        amount = float(value)
+    except (TypeError, ValueError):
+        return None
+    if amount <= 0:
+        return None
+    step = _PUBLIC_PRICE_COARSEST
+    for ceiling, bucket in _PUBLIC_PRICE_BUCKETS:
+        if amount < ceiling:
+            step = bucket
+            break
+    return int(round(amount / step) * step)
+
+
+def public_card_preview(item: Dict[str, Any]) -> Dict[str, Any]:
+    """One card, as a signed-out visitor may see it.
+
+    Allow-listed, like every other preview in this module: a field added
+    to the card payload tomorrow is absent from a public response without
+    anyone remembering to exclude it.
+    """
+    out = {key: item.get(key) for key in _PUBLIC_CARD_FIELDS if key in item}
+    price = item.get("current_bin")
+    out["current_bin_approx"] = _approximate_price(price)
+    # Said explicitly so the UI never has to infer it, and so a client
+    # cannot mistake the approximate figure for a live one.
+    out["price_is_approximate"] = True
+    out["requires_account"] = True
+    # Freshness is safe and useful: it tells someone whether the product
+    # is actually live without telling them what the number is.
+    out["price_age_seconds"] = item.get("price_age_seconds")
+    return out
+
+
+# The companion overlay speaks its own field vocabulary (reference_bin
+# rather than current_bin, a nested risk object, an engine version), so it
+# gets its own allow-list for the same reason Home does: a key-name
+# mismatch between shapes silently produces an empty preview, and written
+# subtractively it silently leaks whatever field is added next.
+_PUBLIC_COMPANION_FIELDS = (
+    "source_card_id",
+    "name",
+    "rating",
+    "rarity",
+    "image_url",
+    "engine_version",
+    "evaluated_at",
+)
+
+
+def public_companion_preview(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """The overlay, as a signed-out visitor sees it.
+
+    Still worth having on screen: it confirms the card, and confirms that
+    something is watching this market. It is no longer a free valuation.
+    """
+    out = {key: payload.get(key) for key in _PUBLIC_COMPANION_FIELDS if key in payload}
+    out["reference_bin_approx"] = _approximate_price(payload.get("reference_bin"))
+    out["price_is_approximate"] = True
+    out["requires_account"] = True
+    out["locked"] = True
+    return out
+
+
+def serialise_player_search(
+    items: Sequence[Dict[str, Any]],
+    viewer: Viewer,
+) -> List[Dict[str, Any]]:
+    """Search results for this viewer.
+
+    Signed out gets identity and an approximate price. A Free member gets
+    the real market data (that is what the account is for) minus the
+    executable plan, which stays with the daily picks. Elite gets
+    everything.
+    """
+    if viewer.has("opportunity_feed"):
+        return list(items)
+    if not viewer.is_authenticated:
+        return [public_card_preview(item) for item in items]
+    return [redact_trade_plan(item) for item in items]
+
+
 def serialise_card_detail(
     item: Dict[str, Any],
     viewer: Viewer,
@@ -291,12 +441,21 @@ def serialise_card_detail(
 ) -> Dict[str, Any]:
     """A single card, serialised for this viewer.
 
-    Elite gets the whole thing. Everyone else gets the card, the market
-    data and the verdict, but the trade plan only if this exact card is
-    one of today's free picks.
+    Elite gets the whole thing.
+
+    A Free member gets the card, the market data and the verdict - which
+    is what the account is for - but the executable plan only if this
+    exact card is one of today's free picks.
+
+    A signed-out visitor gets the public preview: identity and an
+    approximate price, no analysis. Before this, the card page handed
+    anonymous callers the complete live price, fair value and trend, which
+    is the substance of what a Free account is supposed to unlock.
     """
     if viewer.has("opportunity_feed"):
         return item
+    if not viewer.is_authenticated:
+        return public_card_preview(item)
     card_id = item.get("source_card_id") or item.get("card_id")
     if card_id is not None and int(card_id) in {int(i) for i in unlocked_ids}:
         return item
@@ -306,6 +465,72 @@ def serialise_card_detail(
 # ---------------------------------------------------------------------------
 # Allowance limits
 # ---------------------------------------------------------------------------
+
+
+async def get_companion_viewer(req: "Request") -> Viewer:
+    """get_viewer, plus an Authorization: Bearer companion token.
+
+    Only the companion endpoints use this. The rest of the product is
+    cookie-only on purpose - a bearer path is one more way to be
+    authenticated, and it belongs where it is needed rather than
+    everywhere.
+
+    The cookie wins when both are present: someone signed in on this
+    browser is who they are, and a stale token in an extension should not
+    quietly override a live session.
+    """
+    from app.auth.companion_token import bearer_from, verify
+
+    viewer = await get_viewer(req)
+    if viewer.is_authenticated:
+        return viewer
+
+    user_id = verify(bearer_from(req) or "")
+    if not user_id:
+        return viewer
+
+    # Entitlements are resolved from stored state exactly as they are for
+    # a cookie session - the token says WHO, never WHAT they may do. A
+    # token minted while someone was Elite gives them nothing once the
+    # subscription lapses.
+    try:
+        from app.auth.entitlements import entitlements_for_user_id
+        from app.db import get_core_pool
+
+        pool = await get_core_pool()
+        # The SAME cached resolver the cookie path uses, so this cannot
+        # become a second answer to "what may this person do" - and so a
+        # billing webhook's cache invalidation reaches the companion too.
+        ent = await entitlements_for_user_id(pool, user_id)
+        return Viewer(
+            user_id=str(user_id),
+            tier=ent.get("tier") or "free",
+            is_admin=bool(ent.get("is_admin")),
+            features=frozenset(ent.get("features") or ()),
+        )
+    except Exception:
+        log.warning("companion token: could not resolve entitlements", exc_info=True)
+        return viewer
+
+
+def require_account(viewer: Viewer, what: str) -> None:
+    """Refuse a signed-out caller, without refusing a Free member.
+
+    401 rather than 402: this is not a payment problem. What is missing is
+    an account, and one is free - so the frontend routes this to signup,
+    not to checkout. `feature` names fair_value because that is the
+    entitlement these endpoints all sit behind.
+    """
+    if viewer.is_authenticated:
+        return
+    raise HTTPException(
+        status_code=401,
+        detail={
+            "error": "account_required",
+            "feature": "fair_value",
+            "message": f"Create a free account to see {what}. No card needed.",
+        },
+    )
 
 
 def limit_reached(

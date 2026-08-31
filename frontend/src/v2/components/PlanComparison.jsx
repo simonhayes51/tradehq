@@ -16,8 +16,15 @@ export const PLAN_ROWS = [
     free: `${FREE_LIMITS.dailyOpportunities} complete picks a day`,
     elite: "The full live feed, all day",
   },
-  { label: "Player search & live prices", free: true, elite: true },
-  { label: "Fair value on any card", free: true, elite: true },
+  // Search itself is public. What the account adds is the numbers behind
+  // the card, which is why these two rows are worded as the difference
+  // rather than as a bare tick: a row that reads "included" on Free, when
+  // it is also available with no account at all, is not a reason to sign
+  // up for anything.
+  { label: "Search any card", free: "Everyone, no account needed", elite: true },
+  { label: "Exact live price", free: true, elite: true },
+  { label: "What a card is really worth", free: true, elite: true },
+  { label: "Completed sales & price history", free: true, elite: true },
   {
     label: "Trade Finder",
     free: false,

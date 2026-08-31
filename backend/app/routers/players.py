@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from app.services.price_history import get_price_history
 from app.db import get_player_db, get_player_pool
 from app.futbin_client import fetch_price_by_url
+from app.auth.access import Viewer, get_viewer, require_account
 from app.auth.entitlements import require_feature
 from app.services.player_card_ondemand import ensure_cards_requested
 
@@ -321,12 +322,14 @@ async def batch_meta(
 async def batch_market_metrics(
     ids: str = Query(..., description="CSV of card_ids, up to ~150 at once"),
     conn = Depends(get_player_db),
+    viewer: Viewer = Depends(get_viewer),
 ):
     """
     Batch version of /{card_id}/market-metrics for list views (search
     results, watchlist, trade finder) that need liquidity/real-price/snipe
     signals for many cards without one request per card.
     """
+    require_account(viewer, "market metrics")
     raw_ids = [x.strip() for x in ids.split(",") if x.strip()][:150]
     if not raw_ids:
         return {"items": {}}
@@ -516,6 +519,7 @@ async def get_player_price_route(
     card_id: int,
     platform: str = Query("ps", description="ps|xbox|pc|console"),
     conn = Depends(get_player_db),
+    viewer: Viewer = Depends(get_viewer),
 ):
     """
     Return latest price preferring local data:
@@ -523,6 +527,7 @@ async def get_player_price_route(
       2) fut_players.price_num snapshot
       3) FUT.GG currentPrice (fallback)
     """
+    require_account(viewer, "live prices")
     plat = _plat(platform)
 
     # 1) Try fut_candles (latest close) with correct per-platform filter
@@ -614,12 +619,14 @@ async def get_player_history_route(
     platform: str = Query("ps", description="ps|xbox|pc|console"),
     tf: str = Query("today", description="today|24h|7d|30d|all"),
     conn = Depends(get_player_db),
+    viewer: Viewer = Depends(get_viewer),
 ):
     """
     Return OHLC candles for a player.
     Order: futbin-backed service first; if empty, fall back to fut_candles.
     Includes 'ts' (epoch seconds) + 'iso' for robust client parsing.
     """
+    require_account(viewer, "price history")
     plat = _plat(platform)
 
     # 1) Try futbin-backed service (get_price_history returns {"points": [...]})
@@ -750,6 +757,7 @@ async def get_player_bin_history_route(
     platform: Optional[str] = Query(None, description="ps|xbox|pc|console - omit for both markets"),
     limit: int = Query(200, ge=1, le=2000),
     conn = Depends(get_player_db),
+    viewer: Viewer = Depends(get_viewer),
 ):
     """
     Timeline of lowest-BIN snapshots from bin_history (populated by the
@@ -759,6 +767,7 @@ async def get_player_bin_history_route(
     return the same price repeated across many captured_at timestamps if
     the market hasn't moved.
     """
+    require_account(viewer, "BIN history")
     plat = _plat(platform) if platform else None
     try:
         where: List[str] = ["player_id = $1"]
@@ -798,6 +807,7 @@ async def get_player_sales_history_route(
     card_id: int,
     limit: int = Query(50, ge=1, le=500),
     conn = Depends(get_player_db),
+    viewer: Viewer = Depends(get_viewer),
 ):
     """
     Real completed sales from sales_history (populated by the same
@@ -805,6 +815,7 @@ async def get_player_sales_history_route(
     sold_price) at write time - read-only here). PS/Xbox market only, per
     the collector's own scope. Most recent first.
     """
+    require_account(viewer, "completed sales")
     try:
         rows = await conn.fetch(
             """
@@ -838,6 +849,7 @@ async def get_player_sales_candles_route(
     bucket_hours: float = Query(1, gt=0, le=24, description="candle width in hours"),
     days: int = Query(7, ge=1, le=30, description="lookback window in days"),
     conn = Depends(get_player_db),
+    viewer: Viewer = Depends(get_viewer),
 ):
     """
     Real OHLC candles built from actual completed sales (sales_history),
@@ -846,6 +858,7 @@ async def get_player_sales_candles_route(
     sale markers on top of the candles. PS market only, per the collector's
     scope.
     """
+    require_account(viewer, "the sales chart")
     try:
         bucket_seconds = bucket_hours * 3600
         rows = await conn.fetch(
@@ -1014,6 +1027,7 @@ async def get_player_backtest_route(
 async def get_player_lazy_buyer_score_route(
     card_id: int,
     conn = Depends(get_player_db),
+    viewer: Viewer = Depends(get_viewer),
 ):
     """
     "Lazy Buyer Odds" (LBO): how often this card's sales in the last 7
@@ -1037,6 +1051,7 @@ async def get_player_lazy_buyer_score_route(
     computed and cached together (see _lbo_pool_cache) rather than
     per-request, since ranking one card requires ranking all of them.
     """
+    require_account(viewer, "the Lazy Buyer score")
     pool = await _get_lazy_buyer_pool(conn)
     row = pool.get(card_id)
     if not row:
@@ -1147,6 +1162,7 @@ async def _get_lazy_buyer_pool(conn) -> Dict[int, Dict[str, Any]]:
 async def get_player_market_metrics_route(
     card_id: int,
     conn = Depends(get_player_db),
+    viewer: Viewer = Depends(get_viewer),
 ):
     """
     The real numbers a trader needs that plain BIN price doesn't give you,
@@ -1156,6 +1172,7 @@ async def get_player_market_metrics_route(
     tax-aware margin estimate. sales_history only covers the PS market, so
     BIN comparisons here use the ps platform to match.
     """
+    require_account(viewer, "market metrics")
     try:
         bin_rows = await conn.fetch(
             """

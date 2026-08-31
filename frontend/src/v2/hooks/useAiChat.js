@@ -38,9 +38,15 @@ export function useAiChat() {
       if (err.status === 401 || err.status === 402) {
         setLocked(true);
       } else if (err.status === 503) {
-        setUnavailable(true);
+        // Covers both "not configured on this deployment" and the kill
+        // switch. Either way there is nothing for the customer to retry,
+        // so the server's own sentence is shown rather than a generic one.
+        setUnavailable(err.message || true);
       } else if (err.status === 429) {
-        setError("You're sending messages a bit fast - give it a moment and try again.");
+        // The server says WHICH limit and WHEN it lifts. Repeating its
+        // sentence means a customer who has hit the daily allowance is
+        // not told to "give it a moment", which would be false.
+        setError(err.message);
       } else {
         setError(err.message || "Could not reach the assistant. Check your connection and try again.");
       }

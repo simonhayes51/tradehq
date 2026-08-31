@@ -67,12 +67,15 @@ class FakeProvider:
 def _make_app(provider: FakeProvider) -> TestClient:
     """The overlay's payload SHAPE, as an Elite viewer sees it. The access
     states themselves are covered at the bottom of this file."""
-    from app.auth.access import Viewer as _Viewer, get_viewer as _get_viewer
+    from app.auth.access import Viewer as _Viewer, get_companion_viewer as _get_viewer
     from app.auth.entitlements import features_for_tier as _features
 
     app = FastAPI()
     app.include_router(companion_router, prefix="/api/v2")
     app.dependency_overrides[get_provider] = lambda: provider
+    # The companion endpoint resolves its viewer from the cookie OR a
+    # short-lived bearer token (see app/auth/companion_token.py), so the
+    # override targets that resolver rather than get_viewer.
     app.dependency_overrides[_get_viewer] = lambda: _Viewer(
         user_id="elite", tier="elite", is_admin=False,
         features=frozenset(_features("elite")),
@@ -132,7 +135,7 @@ def test_companion_card_includes_risk_and_signal_without_second_engine():
 # extension shipped with `credentials: "omit"`, so nothing about the
 # design even suggested a session was expected.
 
-from app.auth.access import Viewer, get_viewer  # noqa: E402
+from app.auth.access import Viewer, get_companion_viewer  # noqa: E402
 from app.auth.entitlements import features_for_tier  # noqa: E402
 
 TRADE_PLAN_KEYS = {
@@ -150,7 +153,7 @@ def _client_as(viewer):
     app = FastAPI()
     app.include_router(companion_router, prefix="/api/v2")
     app.dependency_overrides[get_provider] = lambda: FakeProvider()
-    app.dependency_overrides[get_viewer] = lambda: viewer
+    app.dependency_overrides[get_companion_viewer] = lambda: viewer
     return TestClient(app)
 
 
@@ -160,11 +163,39 @@ def test_anonymous_overlay_gets_no_trade_plan():
     assert body["locked"] is True
 
 
+def test_anonymous_overlay_gets_no_valuation_either():
+    # Phase 3: the overlay used to hand a signed-out visitor the exact
+    # reference BIN, the verdict, the fair value and the sales median.
+    # Withholding only the trade plan still left a free valuation service
+    # for anyone who installed the extension - and the complete price and
+    # fair-value analysis is the headline reason to create a Free account.
+    body = _client_as(_viewer("free", user_id=None)).get("/api/v2/companion/card/117672259").json()
+    for withheld in ("reference_bin", "fair_value", "sales_median", "signal",
+                     "status", "confidence", "liquidity_score", "trend_state", "risk"):
+        assert withheld not in body, f"{withheld} reached a signed-out overlay"
+
+
 def test_anonymous_overlay_still_gets_enough_to_be_useful():
-    # The overlay should keep working as an identification aid - it just
-    # stops being a free trade plan.
+    # It stays an identification aid: this IS the card, and something is
+    # watching this market. It is just no longer a valuation.
     body = _client_as(_viewer("free", user_id=None)).get("/api/v2/companion/card/117672259").json()
     assert body["name"] == "Kylian Mbappe"
+    assert body["rating"] == 97
+    assert body["rarity"] == "Team of the Year"
+    # Approximate, and labelled as such - enough to tell a 5k card from a
+    # 1M one without being a price to trade against.
+    assert body["price_is_approximate"] is True
+    assert body["reference_bin_approx"] == 1_100_000
+    assert body["reference_bin_approx"] != 1_090_000
+    # And the way out is a free account, not a checkout.
+    assert body["signup_url"].endswith("/#/signup")
+    assert "upgrade_url" not in body
+
+
+def test_a_free_member_gets_the_valuation_the_account_is_for():
+    # The Free account's whole promise: the real price and analysis, just
+    # not the executable plan on every card.
+    body = _client_as(_viewer("free")).get("/api/v2/companion/card/117672259").json()
     assert body["reference_bin"] == 1090000
     assert body["signal"]
     assert body["upgrade_url"].endswith("/#/billing")

@@ -21,7 +21,7 @@ import json
 import os
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional, Set, Literal
+from typing import Any, Dict, Iterable, Optional, Set, Literal
 
 import asyncpg
 from dataclasses import dataclass
@@ -381,9 +381,45 @@ def _limits_for(tier: Tier) -> Dict[str, Any]:
     }
 
 
-def features_for_tier(tier: Tier) -> Set[Feature]:
+# Free features that nonetheless require an ACCOUNT.
+#
+# Tier and identity are two different questions, and FEATURE_MIN_TIER only
+# answered the first. A signed-out visitor resolves to tier "free", so
+# before this set existed they received every free feature - including the
+# complete fair-value analysis, which is one of the things a Free account
+# is supposed to be FOR. The free tier cannot be worth creating if its
+# headline benefit is already available without creating it.
+#
+# What stays public is discovery: searching, seeing that a card exists,
+# its identity and rating, and roughly what it costs. What needs an
+# account is the analysis - the exact fair value, the discount, the
+# verdict and anything resembling a trade plan.
+#
+# The write-scoped features are here for honesty rather than protection:
+# a watchlist or a portfolio trade has always needed a user id to attach
+# to, so an anonymous caller was never going to succeed. Saying so in the
+# feature set means the UI can offer an account instead of rendering a
+# control that will fail.
+ACCOUNT_ONLY_FEATURES: Set[Feature] = {
+    "fair_value",
+    "watchlist",
+    "trade_journal",
+    "portfolio_performance",
+}
+
+
+def features_for_tier(tier: Tier, *, authenticated: bool = True) -> Set[Feature]:
+    """The features this tier grants.
+
+    `authenticated` defaults to True because every caller that has a tier
+    in hand has a real user. Only the signed-out paths pass False, and
+    they are the reason this parameter exists.
+    """
     rank = _TIER_ORDER[tier]
-    return {f for f, t in FEATURE_MIN_TIER.items() if _TIER_ORDER[t] <= rank}
+    features = {f for f, t in FEATURE_MIN_TIER.items() if _TIER_ORDER[t] <= rank}
+    if not authenticated:
+        features -= ACCOUNT_ONLY_FEATURES
+    return features
 
 
 async def resolve_user_tier(conn_or_pool, user_id: str, *, discord_id: Optional[str] = None) -> Tier:
@@ -438,7 +474,7 @@ async def compute_entitlements(req: Request) -> Dict[str, Any]:
             "roles": [],
             "is_premium": False,
             "is_admin": False,
-            "features": sorted(features_for_tier(tier)),
+            "features": sorted(features_for_tier(tier, authenticated=False)),
             "limits": _limits_for(tier),
         }
 
@@ -447,9 +483,32 @@ async def compute_entitlements(req: Request) -> Dict[str, Any]:
         return dict(cached["ent"])
 
     pool: asyncpg.Pool = req.app.state.pool
+    ent = await _entitlements_for_user(
+        pool, user_id,
+        session_roles=sess.get("roles") or (),
+        discord_id=sess.get("discord_id") or user_id,
+    )
+    return ent
+
+
+async def _entitlements_for_user(
+    pool,
+    user_id: str,
+    *,
+    session_roles: "Iterable[str]" = (),
+    discord_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Build - and cache - the canonical entitlement payload for one account.
+
+    Extracted so every path that resolves entitlements produces the SAME
+    SHAPE into the SAME cache. That matters more than it looks: the cache
+    is keyed by user id alone, so a second path storing a narrower dict
+    under that key would hand the next caller of compute_entitlements a
+    payload missing `limits` or `features`. One builder, one shape, one
+    invalidation point (invalidate_entitlements_cache).
+    """
     state = await _load_billing_state(pool, str(user_id))
-    roles: Set[str] = set(sess.get("roles") or []) | set(state.get("roles") or set())
-    discord_id = sess.get("discord_id") or user_id
+    roles: Set[str] = set(session_roles or ()) | set(state.get("roles") or set())
 
     is_admin = _is_admin(state, str(user_id), str(discord_id) if discord_id else None)
     tier = "elite" if is_admin else _resolve_tier(state)
@@ -472,6 +531,26 @@ async def compute_entitlements(req: Request) -> Dict[str, Any]:
     }
     _ENT_CACHE[str(user_id)] = {"at": time.time(), "ent": dict(ent)}
     return ent
+
+
+async def entitlements_for_user_id(pool, user_id: str) -> Dict[str, Any]:
+    """Cached entitlements for a caller identified by something other than
+    a session cookie - today, a companion bearer token.
+
+    Shares compute_entitlements' cache deliberately. Without it, every
+    companion request ran three billing queries: the overlay asks about
+    each card a trader hovers, so the one endpoint most likely to be
+    called in a tight loop was the one endpoint with no cache. Sharing it
+    also means a Stripe webhook's invalidate_entitlements_cache() reaches
+    this path too, rather than leaving it to expire on its own.
+    """
+    cached = _ENT_CACHE.get(str(user_id))
+    if cached and (time.time() - cached["at"] < ENT_CACHE_TTL):
+        return dict(cached["ent"])
+    # discord_id defaults to the user id because that is what it is in this
+    # product (see _establish_dashboard_session) - so an admin resolves to
+    # elite here exactly as they do through the cookie path.
+    return await _entitlements_for_user(pool, user_id, discord_id=user_id)
 
 
 def invalidate_entitlements_cache(user_id: str) -> None:
@@ -547,7 +626,7 @@ class Viewer:
 
 def anonymous_viewer() -> "Viewer":
     return Viewer(user_id=None, tier="free", is_admin=False,
-                  features=frozenset(features_for_tier("free")))
+                  features=frozenset(features_for_tier("free", authenticated=False)))
 
 
 async def get_viewer(req: Request) -> "Viewer":
@@ -574,10 +653,41 @@ async def get_viewer(req: Request) -> "Viewer":
     )
 
 
+async def _as_viewer(value: "Viewer | Request") -> "Viewer":
+    """Accept either a resolved Viewer or a raw Request.
+
+    These gates are used two ways, and both are legitimate:
+
+        @router.get(..., dependencies=[Depends(require_feature("x"))])   # FastAPI resolves it
+        await require_feature("x")(request)                              # called inline, mid-handler
+
+    The inline form exists where a route is only conditionally gated, or
+    where the gate has to run after some other work - see trending.py and
+    recommendations.py. FastAPI is not involved there, so the
+    `Depends(get_viewer)` default is just a default value and the caller's
+    Request arrives in the `viewer` slot.
+
+    That is exactly what broke AI Chat: when these gates were rebuilt on
+    Depends(get_viewer), the route-decorator call sites kept working and
+    the twelve inline ones started raising AttributeError on
+    `viewer.user_id` - a 500 on every request, on every one of those
+    endpoints. Resolving here means there is one supported behaviour for
+    both shapes rather than a rule every future call site has to know.
+    """
+    if isinstance(value, Request):
+        return await get_viewer(value)
+    return value
+
+
 def require_feature(feature: Feature):
-    """FastAPI dependency: 401 if anonymous, 402 if tier doesn't cover it."""
+    """401 if anonymous, 402 if tier doesn't cover it.
+
+    Usable as a FastAPI dependency or called inline with a Request - see
+    _as_viewer.
+    """
 
     async def _dep(viewer: "Viewer" = Depends(get_viewer)) -> Dict[str, Any]:
+        viewer = await _as_viewer(viewer)
         ent = {"user_id": viewer.user_id, "tier": viewer.tier,
                "is_admin": viewer.is_admin, "features": sorted(viewer.features)}
         if not ent["user_id"]:
@@ -603,9 +713,12 @@ def require_tier(min_tier: Tier):
     """FastAPI dependency for tier-gated (rather than feature-gated) routes.
 
     Built on get_viewer for the same reason require_feature is: one
-    resolution path, one place to override, one place for a bug."""
+    resolution path, one place to override, one place for a bug. Accepts
+    a Request when called inline, same as require_feature - see
+    _as_viewer."""
 
     async def _dep(viewer: "Viewer" = Depends(get_viewer)) -> Dict[str, Any]:
+        viewer = await _as_viewer(viewer)
         ent = {"user_id": viewer.user_id, "tier": viewer.tier,
                "is_admin": viewer.is_admin, "features": sorted(viewer.features)}
         if not ent["user_id"]:

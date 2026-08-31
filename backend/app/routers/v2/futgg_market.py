@@ -47,7 +47,8 @@ import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.auth.access import (
-    Viewer, get_viewer, serialise_card_detail, serialise_opportunities,
+    Viewer, get_viewer, require_account, serialise_card_detail,
+    serialise_opportunities, serialise_player_search,
 )
 from app.auth.entitlements import require_feature
 from app.db import get_core_pool
@@ -397,6 +398,7 @@ async def list_players(
     page: int = Query(1, ge=1),
     page_size: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
     provider: FutggMarketDataProvider = ProviderDep,
+    viewer: Viewer = Depends(get_viewer),
 ) -> Dict[str, Any]:
     rating_min, rating_max = _resolve_rating_bounds(rating, rating_min, rating_max)
     max_price_age_minutes = max_price_age_minutes if max_price_age_minutes is not None else max_price_age
@@ -415,8 +417,11 @@ async def list_players(
         rows = await provider.search_players(
             filters, limit=page_size, offset=(page - 1) * page_size,
         )
-        items = [_serialize_player(r) for r in rows]
-        return {"items": items, "page": page, "page_size": page_size, "total": total}
+        items = serialise_player_search([_serialize_player(r) for r in rows], viewer)
+        return {
+            "items": items, "page": page, "page_size": page_size, "total": total,
+            "viewer_tier": viewer.tier, "requires_account": not viewer.is_authenticated,
+        }
 
     # Any intelligence-derived filter requires scoring candidates in
     # Python first (see CANDIDATE_SCAN_LIMIT), so pagination happens
@@ -428,8 +433,11 @@ async def list_players(
     )
     total = len(scored)
     window = scored[(page - 1) * page_size: page * page_size]
-    items = [_item_with_intelligence(row, ci) for row, ci in window]
-    return {"items": items, "page": page, "page_size": page_size, "total": total}
+    items = serialise_player_search([_item_with_intelligence(row, ci) for row, ci in window], viewer)
+    return {
+        "items": items, "page": page, "page_size": page_size, "total": total,
+        "viewer_tier": viewer.tier, "requires_account": not viewer.is_authenticated,
+    }
 
 
 async def _sales_for_rows(provider, rows: List[Dict[str, Any]]) -> Dict[int, List[Dict[str, Any]]]:
@@ -538,7 +546,13 @@ async def get_player_prices(
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
     provider: FutggMarketDataProvider = ProviderDep,
+    viewer: Viewer = Depends(get_viewer),
 ) -> Dict[str, Any]:
+    # A price series and a completed-sales series ARE the fair-value
+    # analysis, just unaggregated: anyone holding either can compute the
+    # median themselves. Gating the summary while leaving these open would
+    # be a paywall with the source data next to it.
+    require_account(viewer, "the price history")
     rows = await provider.get_price_history(card_id, period=period)
     total = len(rows)
     window = rows[(page - 1) * page_size: page * page_size]
@@ -561,6 +575,7 @@ async def get_player_sales(
     days: int = Query(MAX_CHART_DAYS, ge=1, le=MAX_CHART_DAYS),
     limit: int = Query(MAX_CHART_SALES, ge=1, le=MAX_CHART_SALES),
     provider: FutggMarketDataProvider = ProviderDep,
+    viewer: Viewer = Depends(get_viewer),
 ) -> Dict[str, Any]:
     """Sales series for the chart, over an explicit window.
 
@@ -571,6 +586,7 @@ async def get_player_sales(
     MAX_CHART_DAYS because futgg_market_snapshot's own sales window stops
     at 14 days; a longer range would promise data that does not exist.
     """
+    require_account(viewer, "the sales history")
     rows = await provider.get_sales_series(card_id, days=days, limit=limit)
     # "No sales" and "we have not looked" are different facts, and the UI
     # could not tell them apart. See get_sales_coverage: for most of the
