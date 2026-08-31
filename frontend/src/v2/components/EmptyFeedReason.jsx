@@ -27,11 +27,24 @@ import { STALE_THRESHOLD_SECONDS } from "./MarketFreshness";
 // worth saying out loud rather than leaving the reader to guess.
 const STALE_HOURS = Math.round(STALE_THRESHOLD_SECONDS / 3600);
 
-function newestHeartbeat(heartbeats) {
-  const times = (heartbeats || [])
-    .map((h) => (h.last_run_at ? new Date(h.last_run_at).getTime() : null))
-    .filter((t) => Number.isFinite(t));
-  return times.length ? Math.max(...times) : null;
+function sumValues(byTier) {
+  if (!byTier || typeof byTier !== "object") return null;
+  return Object.values(byTier).reduce((total, n) => total + (Number(n) || 0), 0);
+}
+
+// The age of the WORST collector, not the newest.
+//
+// Taking the newest hid the outage this was written during: three
+// collectors, one of them dead for three weeks, and the healthy ones
+// reporting minutes ago made the whole pipeline look fine. A pipeline is
+// as fresh as its stalest stage.
+function silentCollectorHours(heartbeats) {
+  const ages = (heartbeats || [])
+    .map((h) => (h.last_run_at ? (Date.now() - new Date(h.last_run_at).getTime()) / 3_600_000 : null))
+    .filter((h) => Number.isFinite(h));
+  if (!ages.length) return null;
+  const worst = Math.max(...ages);
+  return worst > STALE_HOURS ? worst : null;
 }
 
 /**
@@ -56,19 +69,24 @@ export default function EmptyFeedReason({ noun = "opportunities", filtersActive,
 
   const data = freshness.data;
   const priced = Number(data?.cards_priced);
-  const stale = Number(data?.cards_stale);
-  const lastRun = newestHeartbeat(data?.heartbeats);
-  const hoursSinceRun = lastRun ? (Date.now() - lastRun) / 3_600_000 : null;
+  const stalePrices = Number(data?.cards_stale);
+  const staleSales = sumValues(data?.stale_sales_by_priority_tier);
+  const silentHours = silentCollectorHours(data?.heartbeats);
 
   // "We have no priced cards at all" and "most of what we have is stale"
-  // are both us, not the market. So is a collector that has not reported
-  // in - a heartbeat gap is the earliest signal that the feed is about to
-  // go quiet for the wrong reason.
+  // are both us, not the market. So is a collector that has stopped.
   const noData = Number.isFinite(priced) && priced === 0;
-  const mostlyStale = Number.isFinite(priced) && Number.isFinite(stale) && priced > 0 && stale / priced > 0.5;
-  const collectorSilent = hoursSinceRun != null && hoursSinceRun > STALE_HOURS;
+  const hasPriced = Number.isFinite(priced) && priced > 0;
+  // Sales and prices are collected by SEPARATE workers and fail
+  // independently - the outage this component was written during had
+  // 100% price coverage and three-week-old sales. Saying "prices are
+  // behind" when the sales collector is the dead one sends whoever reads
+  // it to the wrong worker.
+  const salesStale = hasPriced && staleSales != null && staleSales > priced * 0.5;
+  const pricesStale = hasPriced && Number.isFinite(stalePrices) && stalePrices / priced > 0.5;
 
-  if (noData || mostlyStale || collectorSilent) {
+  if (noData || salesStale || pricesStale || silentHours != null) {
+    const what = salesStale ? "sales data" : pricesStale ? "price data" : "market data";
     return (
       <EmptyState
         icon={<AlertTriangle size={25} />}
@@ -76,8 +94,8 @@ export default function EmptyFeedReason({ noun = "opportunities", filtersActive,
         text={
           noData
             ? "We don't have live prices right now, so there's nothing the engine can score. This is on our side — it should come back on its own."
-            : `Our market prices are behind${
-                hoursSinceRun != null ? ` (last updated about ${Math.round(hoursSinceRun)}h ago)` : ""
+            : `Our ${what} is behind${
+                silentHours != null ? ` (a collector hasn't reported in for about ${Math.round(silentHours)}h)` : ""
               }, so the engine has nothing it can stand behind. This is on our side, not your filters.`
         }
         action={<button onClick={() => freshness.refetch()}><RotateCcw size={14} /> Check again</button>}

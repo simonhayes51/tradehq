@@ -21,6 +21,7 @@ function healthy(overrides = {}) {
   return {
     cards_priced: 1200,
     cards_stale: 40,
+    stale_sales_by_priority_tier: { CRITICAL: 5, HIGH: 10 },
     heartbeats: [{ worker: "snapshot", last_run_at: new Date(Date.now() - 5 * 60_000).toISOString(), ok: true }],
     ...overrides,
   };
@@ -50,24 +51,64 @@ describe("when our data is the problem", () => {
     expect(screen.getByText(/on our side/i)).toBeInTheDocument();
   });
 
-  it("says so when most of what we have is stale", () => {
-    freshness.value = { data: healthy({ cards_priced: 1000, cards_stale: 900 }), refetch: vi.fn() };
+  it("names PRICE data when that is what is stale", () => {
+    freshness.value = {
+      data: healthy({ cards_priced: 1000, cards_stale: 900, stale_sales_by_priority_tier: {} }),
+      refetch: vi.fn(),
+    };
     render(<EmptyFeedReason noun="opportunities" filtersActive={false} />);
-    expect(screen.getByText(/prices are behind/i)).toBeInTheDocument();
+    expect(screen.getByText(/price data is behind/i)).toBeInTheDocument();
   });
 
-  it("says so when the collector has stopped reporting in", () => {
-    // The earliest signal that the feed is about to go quiet for the
-    // wrong reason.
+  it("names SALES data when that is what is stale", () => {
+    // Sales and prices are collected by separate workers and fail
+    // independently. The real outage this was written during had 100%
+    // price coverage and three-week-old sales; saying "prices" would
+    // have sent whoever read it to the wrong worker.
     freshness.value = {
       data: healthy({
-        heartbeats: [{ worker: "snapshot", last_run_at: new Date(Date.now() - 9 * HOURS).toISOString(), ok: true }],
+        cards_priced: 14950,
+        cards_stale: 100,
+        stale_sales_by_priority_tier: { CRITICAL: 1718, HIGH: 3924, NORMAL: 1884, LOW: 44, DORMANT: 2950 },
       }),
       refetch: vi.fn(),
     };
     render(<EmptyFeedReason noun="opportunities" filtersActive={false} />);
-    expect(screen.getByText(/prices are behind/i)).toBeInTheDocument();
-    expect(screen.getByText(/9h ago/)).toBeInTheDocument();
+    expect(screen.getByText(/sales data is behind/i)).toBeInTheDocument();
+    expect(document.body.textContent).not.toMatch(/price data is behind/i);
+  });
+
+  it("notices the WORST collector, not the newest", () => {
+    // The production payload that prompted this: three collectors, one
+    // dead for three weeks, two healthy. Taking the newest heartbeat
+    // made the whole pipeline look fine.
+    freshness.value = {
+      data: healthy({
+        heartbeats: [
+          { worker: "futgg_bulk_price_sync", last_run_at: new Date(Date.now() - 0.5 * HOURS).toISOString(), ok: true },
+          { worker: "futgg_player_sync", last_run_at: new Date(Date.now() - 22 * HOURS).toISOString(), ok: true },
+          { worker: "futgg_price_sync", last_run_at: new Date(Date.now() - 21 * 24 * HOURS).toISOString(), ok: true },
+        ],
+      }),
+      refetch: vi.fn(),
+    };
+    render(<EmptyFeedReason noun="opportunities" filtersActive={false} />);
+    expect(screen.getByText(/hasn't reported in/i)).toBeInTheDocument();
+    // A pipeline is as fresh as its stalest stage.
+    expect(screen.getByText(/504h/)).toBeInTheDocument();
+  });
+
+  it("is not fooled by ok:true on a dead worker", () => {
+    // `ok` is the outcome of the LAST run. A worker that stopped three
+    // weeks ago reports ok:true forever.
+    freshness.value = {
+      data: healthy({
+        heartbeats: [{ worker: "futgg_price_sync", last_run_at: new Date(Date.now() - 21 * 24 * HOURS).toISOString(), ok: true }],
+      }),
+      refetch: vi.fn(),
+    };
+    render(<EmptyFeedReason noun="opportunities" filtersActive={false} />);
+    expect(screen.getByText(/on our side/i)).toBeInTheDocument();
   });
 
   it("never blames the reader's filters when they set none", () => {

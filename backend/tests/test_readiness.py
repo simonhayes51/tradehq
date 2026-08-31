@@ -334,3 +334,128 @@ class TestCredentialMintingIsBounded:
         assert "/api/v2/companion/session" in prefixes, (
             "an endpoint that hands out signed tokens should not be unbounded"
         )
+
+
+# ---------------------------------------------------------------------------
+# The collectors
+# ---------------------------------------------------------------------------
+#
+# This check exists because of a real three-week outage. futgg_price_sync
+# - the SALES collector - stopped on 10 August and was noticed on 31
+# August, because its heartbeat kept reporting ok:true the whole time.
+# `ok` records the outcome of the LAST run and says nothing about whether
+# another one ever happened.
+#
+# Meanwhile the price collector was at 100% coverage and had run minutes
+# ago, so anything that looked at "the newest heartbeat" saw a healthy
+# pipeline. Every market surface was empty and nothing anywhere said why.
+
+from datetime import datetime, timedelta, timezone  # noqa: E402
+
+
+def _freshness(heartbeats, *, priced=14950, stale=100, stale_sales=None):
+    return {
+        "heartbeats": heartbeats,
+        "cards_priced": priced,
+        "cards_stale": stale,
+        "stale_sales_by_priority_tier": stale_sales or {},
+    }
+
+
+def _install_freshness(monkeypatch, summary, fail=False):
+    import app.services.market_data_provider as mdp
+
+    class FakeProvider:
+        def __init__(self, _pool):
+            pass
+
+        async def get_freshness_summary(self):
+            if fail:
+                raise RuntimeError("snapshot unreadable")
+            return summary
+
+    monkeypatch.setattr(mdp, "FutggMarketDataProvider", FakeProvider)
+
+
+def _beat(worker, hours_ago, ok=True):
+    return {
+        "worker": worker,
+        "last_run_at": datetime.now(timezone.utc) - timedelta(hours=hours_ago),
+        "ok": ok,
+    }
+
+
+class TestTheCollectorCheck:
+    def test_a_healthy_pipeline_is_ok(self, monkeypatch):
+        _install_freshness(monkeypatch, _freshness([_beat("bulk_price", 0.5)]))
+        assert run(rd._check_market_data(FakePool()))["status"] == rd.OK
+
+    def test_the_real_outage_is_caught(self, monkeypatch):
+        # The exact production payload: three collectors, two healthy, one
+        # dead for three weeks, all reporting ok:true.
+        _install_freshness(monkeypatch, _freshness(
+            [
+                _beat("futgg_bulk_price_sync", 0.5),
+                _beat("futgg_player_sync", 22),
+                _beat("futgg_price_sync", 21 * 24),
+            ],
+            stale_sales={"CRITICAL": 1718, "HIGH": 3924, "NORMAL": 1884, "LOW": 44, "DORMANT": 2950},
+        ))
+        result = run(rd._check_market_data(FakePool()))
+        assert result["status"] == rd.DEGRADED
+        assert result["reason"] == "collector_silent"
+        # It names WHICH one, with its age - the two healthy workers must
+        # not hide the dead one.
+        silent = " ".join(result["detail"]["silent_collectors"])
+        assert "futgg_price_sync" in silent
+        assert "504h" in silent
+
+    def test_ok_true_does_not_rescue_a_dead_worker(self, monkeypatch):
+        _install_freshness(monkeypatch, _freshness([_beat("futgg_price_sync", 21 * 24, ok=True)]))
+        assert run(rd._check_market_data(FakePool()))["status"] == rd.DEGRADED
+
+    def test_a_worker_that_has_never_run_counts_as_silent(self, monkeypatch):
+        _install_freshness(monkeypatch, _freshness([{"worker": "futgg_price_sync", "last_run_at": None, "ok": True}]))
+        result = run(rd._check_market_data(FakePool()))
+        assert result["status"] == rd.DEGRADED
+        assert "futgg_price_sync" in " ".join(result["detail"]["silent_collectors"])
+
+    def test_stale_sales_are_reported_even_with_live_collectors(self, monkeypatch):
+        # A collector can be running and still be behind.
+        _install_freshness(monkeypatch, _freshness(
+            [_beat("bulk_price", 0.5)], priced=1000,
+            stale_sales={"CRITICAL": 900},
+        ))
+        result = run(rd._check_market_data(FakePool()))
+        assert result["status"] == rd.DEGRADED
+        assert result["reason"] == "sales_data_stale"
+
+    def test_stale_prices_and_stale_sales_are_told_apart(self, monkeypatch):
+        # They are separate workers and fail independently. Reporting the
+        # wrong one sends someone to the wrong service.
+        _install_freshness(monkeypatch, _freshness([_beat("bulk_price", 0.5)], priced=1000, stale=900))
+        assert run(rd._check_market_data(FakePool()))["reason"] == "price_data_stale"
+
+    def test_no_priced_cards_is_unavailable_not_degraded(self, monkeypatch):
+        _install_freshness(monkeypatch, _freshness([_beat("bulk_price", 0.5)], priced=0))
+        result = run(rd._check_market_data(FakePool()))
+        assert result["status"] == rd.UNAVAILABLE
+        assert result["reason"] == "no_priced_cards"
+
+    def test_an_unreadable_snapshot_degrades_rather_than_crashing(self, monkeypatch):
+        _install_freshness(monkeypatch, _freshness([]), fail=True)
+        assert run(rd._check_market_data(FakePool()))["status"] == rd.DEGRADED
+
+    def test_no_scrape_internals_reach_the_payload(self, monkeypatch):
+        # The heartbeat `detail` string carries render failures, retry
+        # counts and script versions. That is not an operator's first
+        # question and it is not this check's job to publish it.
+        _install_freshness(monkeypatch, _freshness([
+            {**_beat("futgg_price_sync", 21 * 24), "detail": "render_failures=28 script_version=v4"},
+        ]))
+        assert "render_failures" not in json.dumps(run(rd._check_market_data(FakePool())))
+
+    def test_it_is_part_of_the_readiness_report(self):
+        # The gap this fills: the single most important worker in the
+        # product was not checked by anything.
+        assert "_check_market_data" in inspect.getsource(rd.readiness)

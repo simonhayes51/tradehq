@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -963,17 +964,33 @@ async def trade_finder(
     return {"items": items, "page": page, "page_size": page_size, "total": total, "sort_by": sort_by}
 
 
+# A collector silent for longer than this has stopped, whatever its last
+# run reported. Generous on purpose - this distinguishes "dead" from
+# "slow", not one cycle from the next.
+_HEARTBEAT_STALE_HOURS = float(os.getenv("HEARTBEAT_STALE_HOURS", "6"))
+
+
 @router.get("/market/freshness")
 async def market_freshness(
     provider: FutggMarketDataProvider = ProviderDep,
 ) -> Dict[str, Any]:
     summary = await provider.get_freshness_summary()
+    now = datetime.now(timezone.utc)
     heartbeats = []
     for h in summary["heartbeats"]:
+        last = h["last_run_at"]
+        age_hours = round((now - last).total_seconds() / 3600, 1) if last else None
         heartbeats.append({
             "worker": h["worker"],
-            "last_run_at": h["last_run_at"].isoformat() if h["last_run_at"] else None,
+            "last_run_at": last.isoformat() if last else None,
+            # `ok` is the outcome of the LAST run and says nothing about
+            # whether another one ever happened. A worker that stopped
+            # three weeks ago reports ok:true forever, which is exactly
+            # how a dead sales collector went unnoticed while every
+            # market surface sat empty. Liveness is reported separately.
             "ok": h["ok"],
+            "age_hours": age_hours,
+            "stale": age_hours is None or age_hours > _HEARTBEAT_STALE_HOURS,
             "detail": h["detail"],
         })
     return {

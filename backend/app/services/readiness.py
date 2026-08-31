@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 log = logging.getLogger("readiness")
@@ -231,6 +232,81 @@ async def _check_funnel_events(pool) -> Dict[str, Any]:
     return _check("funnel_events", OK, detail={"status": health["status"]})
 
 
+# How long a collector may be silent before it is treated as stopped.
+#
+# Deliberately generous: this is a "has it died" check, not a latency
+# target. The case it exists for is real - futgg_price_sync, the SALES
+# collector, stopped for three weeks while its heartbeat kept reporting
+# ok:true, because `ok` records the outcome of the LAST run and says
+# nothing about whether another one ever happened. Every market surface
+# went empty and nothing anywhere said why.
+COLLECTOR_SILENT_HOURS = float(os.getenv("READINESS_COLLECTOR_SILENT_HOURS", "6"))
+
+# Sales older than this are rejected by the engine outright
+# (futgg_config.reject_sales_older_than_minutes, 72h). A collector silent
+# for longer than this has already emptied the feed, whatever its
+# heartbeat says.
+SALES_FRESHNESS_HOURS = float(os.getenv("READINESS_SALES_FRESHNESS_HOURS", "72"))
+
+
+async def _check_market_data(pool) -> Dict[str, Any]:
+    """Are the collectors that feed every market surface still running?
+
+    This is the check whose absence let a three-week sales outage look
+    like a quiet market. Confidence in the engine is a geometric blend, so
+    a single dead input - no sales, or sales past the freshness limit -
+    zeroes every card's score and empties Home, Opportunities and Trade
+    Finder at once, with no error anywhere.
+    """
+    if pool is None:
+        return _check("market_data", UNAVAILABLE, reason="pool_missing")
+    try:
+        from app.services.market_data_provider import FutggMarketDataProvider
+
+        summary = await FutggMarketDataProvider(pool).get_freshness_summary()
+    except Exception:
+        log.warning("readiness: could not read market freshness", exc_info=True)
+        return _check("market_data", DEGRADED, reason="freshness_unreadable")
+
+    now = datetime.now(timezone.utc)
+    silent: List[str] = []
+    for beat in summary.get("heartbeats") or []:
+        last = beat.get("last_run_at")
+        if last is None:
+            silent.append(str(beat.get("worker")))
+            continue
+        hours = (now - last).total_seconds() / 3600
+        if hours > COLLECTOR_SILENT_HOURS:
+            # The worker name and its age. Not the detail string - that
+            # carries scrape internals and is not an operator's first
+            # question.
+            silent.append(f"{beat.get('worker')} ({hours:.0f}h)")
+
+    priced = int(summary.get("cards_priced") or 0)
+    stale = int(summary.get("cards_stale") or 0)
+    stale_sales = sum((summary.get("stale_sales_by_priority_tier") or {}).values())
+
+    detail: Dict[str, Any] = {
+        "cards_priced": priced,
+        "cards_stale": stale,
+        "cards_with_stale_sales": stale_sales,
+    }
+    if silent:
+        detail["silent_collectors"] = silent
+
+    if priced == 0:
+        return _check("market_data", UNAVAILABLE, reason="no_priced_cards", detail=detail)
+    # A silent collector is the earliest and clearest signal, and it is
+    # the one that was missing. Reported ahead of the staleness counts it
+    # will go on to cause.
+    if silent:
+        return _check("market_data", DEGRADED, reason="collector_silent", detail=detail)
+    if stale_sales > priced * 0.5:
+        return _check("market_data", DEGRADED, reason="sales_data_stale", detail=detail)
+    if stale > priced * 0.5:
+        return _check("market_data", DEGRADED, reason="price_data_stale", detail=detail)
+    return _check("market_data", OK, detail=detail)
+
 _SEVERITY = {OK: 0, UNCONFIGURED: 0, DEGRADED: 1, UNAVAILABLE: 2}
 
 
@@ -256,6 +332,7 @@ async def readiness(core_pool, watchlist_pool=None) -> Dict[str, Any]:
         _check_stripe(),
         _check_discord(),
         await _check_discord_reconciliation(core_pool),
+        await _check_market_data(core_pool),
         await _check_free_picks(core_pool),
         await _check_funnel_events(core_pool),
     ]
