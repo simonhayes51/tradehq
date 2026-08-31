@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# scripts/why_no_trades.py
+# app/why_no_trades.py
 #
 # Read-only. Answers one question, completely, in one run:
 #
@@ -20,8 +20,13 @@
 # provider's explicit column list had not been updated. This report goes
 # through that column list deliberately.
 #
-#   python backend/scripts/why_no_trades.py
-#   python backend/scripts/why_no_trades.py --limit 500 --examples 5
+# The same analysis is also served, admin-only, at
+# GET /api/admin/why-no-trades - because the person who needs it is often
+# looking at a phone rather than a shell, which is how this question has
+# repeatedly ended up being answered from screenshots.
+#
+#   cd backend && python -m app.why_no_trades
+#   cd backend && python -m app.why_no_trades --limit 500 --examples 5
 from __future__ import annotations
 
 import argparse

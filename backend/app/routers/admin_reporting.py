@@ -165,3 +165,37 @@ async def readiness_report(admin=Depends(require_admin)) -> Dict[str, Any]:
         log.warning("readiness: watchlist pool unavailable", exc_info=True)
         watchlist = None
     return await readiness(core, watchlist)
+
+
+@router.get("/why-no-trades")
+async def why_no_trades(
+    limit: int = Query(500, ge=50, le=2000),
+    examples: int = Query(3, ge=0, le=10),
+    admin=Depends(require_admin),
+) -> Dict[str, Any]:
+    """Why the market feeds are empty, answered from live data.
+
+    The same analysis as scripts/why_no_trades.py, over HTTP, because the
+    person who needs it is usually looking at a phone rather than a shell
+    - which is how this question has repeatedly ended up being inferred
+    from screenshots.
+
+    Read-only: it evaluates and counts, and writes nothing.
+    """
+    from app.services.market_data_provider import FutggMarketDataProvider
+    from app.services.trade_diagnosis import diagnose
+
+    pool = await get_core_pool()
+    provider = FutggMarketDataProvider(pool)
+    try:
+        async with pool.acquire() as conn:
+            return await diagnose(conn, provider, limit=limit, examples=examples)
+    except Exception:
+        log.warning("trade diagnosis failed", exc_info=True)
+        raise HTTPException(
+            503,
+            {
+                "error": "diagnosis_unavailable",
+                "message": "Could not read the market snapshot to diagnose the feed.",
+            },
+        )
