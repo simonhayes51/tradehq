@@ -253,6 +253,19 @@ _snapshot_columns_sql: Optional[str] = None
 #: resolve_snapshot_columns; None means "not yet resolved".
 _snapshot_has_checked_at: Optional[bool] = None
 
+#: snapshot.get() keys futgg_intelligence.py reads that are NOT selected
+#: from futgg_market_snapshot at all - test_every_column_the_engine_reads
+#: _is_selected (test_futgg_price_freshness_clock.py) would otherwise
+#: flag these as missing from _SNAPSHOT_COLUMNS, which is the wrong
+#: fix: adding them there would make resolve_snapshot_columns() try to
+#: SELECT them from the view, and they do not exist as view columns by
+#: design (see migration 079's own comment on why this stays out of the
+#: view/matview rebuild path). They are attached separately, in Python,
+#: by _attach_sbc_reward_watch() below, after the view query runs.
+SBC_REWARD_SNAPSHOT_KEYS = frozenset({
+    "sbc_reward_active", "sbc_reward_title", "sbc_reward_ends_at",
+})
+
 
 def price_age_sql(column_prefix: str = "") -> str:
     """SQL for "how old is our price for this card", tolerant of a view
@@ -327,6 +340,47 @@ async def resolve_snapshot_columns(conn: asyncpg.Connection) -> str:
     _snapshot_has_checked_at = "bin_checked_at" in present
     _snapshot_columns_sql = ", ".join(c for c in wanted if c in present) or _SNAPSHOT_COLUMNS
     return _snapshot_columns_sql
+
+
+async def _attach_sbc_reward_watch(conn: asyncpg.Connection, rows: List[Dict[str, Any]]) -> None:
+    """Mutates each row in place, adding sbc_reward_active/title/ends_at.
+
+    See migration 079 and app/services/sbc_reward_match.py for why this
+    is a separate lookup rather than a joined view column. Cheap: a
+    single indexed query against a small table, keyed by exactly the
+    card ids already being returned.
+
+    Best-effort - a database that has not yet run migration 079, or any
+    other query failure, degrades to "no active reward" for every row
+    rather than breaking the read path. futgg_intelligence.py's gate
+    already treats absence as false, so this is a silent no-op on an
+    un-migrated database, not a crash.
+    """
+    if not rows:
+        return
+    ids = [int(r["source_card_id"]) for r in rows if r.get("source_card_id") is not None]
+    if not ids:
+        return
+    try:
+        watch_rows = await conn.fetch(
+            """
+            SELECT futgg_source_card_id, reward_title, sbc_ends_at
+            FROM futgg_sbc_reward_watch
+            WHERE futgg_source_card_id = ANY($1::bigint[])
+              AND sbc_ends_at > now()
+            """,
+            ids,
+        )
+    except Exception:
+        log.warning("sbc reward watch lookup failed; leaving rows unflagged", exc_info=True)
+        return
+    by_id = {int(w["futgg_source_card_id"]): w for w in watch_rows}
+    for row in rows:
+        card_id = row.get("source_card_id")
+        watch = by_id.get(int(card_id)) if card_id is not None else None
+        row["sbc_reward_active"] = watch is not None
+        row["sbc_reward_title"] = watch["reward_title"] if watch else None
+        row["sbc_reward_ends_at"] = watch["sbc_ends_at"] if watch else None
 
 
 @dataclass(frozen=True)
@@ -420,7 +474,11 @@ class FutggMarketDataProvider(MarketDataProvider):
                 f"WHERE source_card_id = $1",
                 card_id,
             )
-        return dict(row) if row else None
+            if row is None:
+                return None
+            result = dict(row)
+            await _attach_sbc_reward_watch(conn, [result])
+        return result
 
     async def get_players_by_ids(self, card_ids: List[int]) -> Dict[int, Dict[str, Any]]:
         """Batch lookup keyed by source_card_id - for callers rendering a
@@ -435,7 +493,9 @@ class FutggMarketDataProvider(MarketDataProvider):
                 f"WHERE source_card_id = ANY($1::bigint[])",
                 list(card_ids),
             )
-        return {int(row["source_card_id"]): dict(row) for row in rows}
+            results = [dict(row) for row in rows]
+            await _attach_sbc_reward_watch(conn, results)
+        return {int(r["source_card_id"]): r for r in results}
 
     async def bump_price_priority(self, card_id: int) -> None:
         """Moves a card to the front of futgg_price_sync.py's due queue -
@@ -687,6 +747,8 @@ class FutggMarketDataProvider(MarketDataProvider):
                 """
                 rows = await conn.fetch(sql, segment.limit)
                 out[segment.name] = [dict(r) for r in rows]
+            for segment_rows in out.values():
+                await _attach_sbc_reward_watch(conn, segment_rows)
         return out
 
     # -------------------------------------------------------------------
@@ -754,8 +816,9 @@ class FutggMarketDataProvider(MarketDataProvider):
                 LIMIT ${len(args) - 1} OFFSET ${len(args)}
             """
             rows = await conn.fetch(sql, *args)
+            results = [dict(r) for r in rows]
+            await _attach_sbc_reward_watch(conn, results)
 
-        results = [dict(r) for r in rows]
         if filters.search:
             # ILIKE already narrowed the candidate set at the DB layer
             # (indexed via idx_futgg_market_snapshot_name_lower's
