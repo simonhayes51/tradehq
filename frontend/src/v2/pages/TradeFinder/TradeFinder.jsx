@@ -12,6 +12,7 @@ import { ArrowRight, RotateCcw, ShieldAlert, SlidersHorizontal, TrendingUp } fro
 import CoinValue from "../../components/CoinValue";
 import EmptyState from "../../components/EmptyState";
 import MarketFreshness from "../../components/MarketFreshness";
+import EmptyFeedReason from "../../components/EmptyFeedReason";
 import { useFutggTradeFinder } from "../../hooks/useFutggMarket";
 import { buildWhyText } from "../../lib/tradeNarrative";
 import { PageHead } from "../Players/Players";
@@ -202,7 +203,7 @@ export default function TradeFinder() {
           </Link>;
         })}
       </section>
-    ) : <EmptyState icon={<SlidersHorizontal size={25}/>} text="No current trades match those filters." action={filtersActive ? <button onClick={() => setFilters(DEFAULTS)}>Clear filters</button> : null} />}
+    ) : <EmptyFeedReason noun="trades" filtersActive={filtersActive} onClearFilters={() => setFilters(DEFAULTS)} />}
   </main>;
 }
 
