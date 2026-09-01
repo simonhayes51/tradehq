@@ -1288,9 +1288,24 @@ async def write_heartbeat(
     `ok` is deliberately strict. It means "this cycle collected sales at a
     rate that keeps the catalogue inside the freshness gate", not "the
     process is alive" - liveness is already carried by last_run_at. A
-    tripped breaker or a throughput collapse both mean the feed is
-    draining even though nothing crashed, and that is the state the
-    backend needs to be able to see.
+    throughput collapse means the feed is draining even though nothing
+    crashed, and that is the state the backend needs to be able to see.
+
+    `breaker_tripped` does NOT by itself make a cycle not-ok. Production
+    evidence (1 September) showed that assumption was wrong: with
+    PAGE_CAPTURE_FALLBACK_ON_THROTTLE off (see that constant), hitting
+    FUT.GG's rate-limit wall after ~150-175 productive cards is now the
+    normal, sustainable steady state, not a failure - a real cycle
+    logged cards_ok=153 cards_per_min=27.9 circuit_breaker=tripped, and
+    the old "trip means not ok" rule marked a cycle that was comfortably
+    beating the throughput the catalogue actually needs as unhealthy.
+    That drowns out the one thing this field exists to catch: a cycle
+    that trips immediately having collected nothing (cards_ok=0,
+    0 cards/min) still reads not-ok on cards_per_min alone, with no need
+    to also look at breaker_tripped - so dropping it from this decision
+    loses no real detection and stops crying wolf on healthy cycles.
+    breaker_tripped still rides along in `detail` below, since it is
+    useful context for whoever is reading the row.
 
     Best-effort throughout: monitoring must never take down the worker it
     watches, and `monitoring` is imported here rather than at module load
@@ -1307,11 +1322,7 @@ async def write_heartbeat(
     failed = int(stats.get("failed", 0))
     cards_per_min = (cards_ok / elapsed) * 60 if elapsed > 0 else 0.0
 
-    ok = (
-        not breaker_tripped
-        and cards_ok > 0
-        and cards_per_min >= HEARTBEAT_MIN_CARDS_PER_MIN
-    )
+    ok = cards_ok > 0 and cards_per_min >= HEARTBEAT_MIN_CARDS_PER_MIN
 
     parts = [
         f"transport={transport}",

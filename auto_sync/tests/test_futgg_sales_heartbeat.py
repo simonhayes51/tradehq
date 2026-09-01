@@ -132,13 +132,28 @@ class TestOkMeansKeepingUp:
         _write(stats={"ok": 180, "failed": 4, "sales_seen": 9000}, elapsed=120.0)
         assert recorder.calls[0]["ok"] is True
 
-    def test_a_tripped_breaker_is_not_ok(self, recorder):
-        # The live failure mode. The cycle collected 150+ cards before
-        # FUT.GG started returning 429s and the breaker fell back to page
-        # capture. Plenty of cards succeeded; the transport is still
-        # broken and the feed is still draining.
-        _write(stats={"ok": 176, "failed": 15, "sales_seen": 8000},
-               elapsed=600.0, breaker_tripped=True)
+    def test_a_tripped_breaker_with_healthy_throughput_is_still_ok(self, recorder):
+        # Corrected after production evidence (1 September) contradicted
+        # the original assumption here. With
+        # PAGE_CAPTURE_FALLBACK_ON_THROTTLE off, hitting FUT.GG's
+        # rate-limit wall after ~150-175 productive cards is the normal,
+        # sustainable steady state now, not a failure - a real cycle
+        # logged cards_ok=153 cards_per_min=27.9 circuit_breaker=tripped,
+        # comfortably beating the throughput the catalogue actually
+        # needs. Marking every such cycle not-ok would cry wolf on
+        # exactly the cycles that are working as intended.
+        _write(stats={"ok": 153, "failed": 15, "sales_seen": 4781},
+               elapsed=329.0, breaker_tripped=True)
+        assert recorder.calls[0]["ok"] is True
+
+    def test_a_tripped_breaker_with_no_throughput_is_not_ok(self, recorder):
+        # The pattern this still has to catch: a cycle that trips
+        # immediately having collected nothing (the "instant retrip"
+        # cycle right after a backoff, seen in production as
+        # cards_ok=0 failed=6 in a few seconds). Caught by cards_per_min
+        # alone, with no need to also look at breaker_tripped.
+        _write(stats={"ok": 0, "failed": 6, "sales_seen": 0},
+               elapsed=6.1, breaker_tripped=True)
         assert recorder.calls[0]["ok"] is False
 
     def test_a_throughput_collapse_is_not_ok(self, recorder):
