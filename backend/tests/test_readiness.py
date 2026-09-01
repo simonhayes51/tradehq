@@ -548,3 +548,58 @@ class TestTheCollectorCheck:
         # The gap this fills: the single most important worker in the
         # product was not checked by anything.
         assert "_check_market_data" in inspect.getsource(rd.readiness)
+
+
+class TestPerCollectorSilenceThresholds:
+    """futgg_player_sync is a one-shot DAILY discovery job (Procfile:
+    "Run daily as a Cron Job"), not a continuous service like the other
+    two. A single flat COLLECTOR_SILENT_HOURS applied to all three
+    reported it collector_silent for roughly 18 of every 24 hours -
+    confirmed live in production (age_hours=14.5, detail all zeros - an
+    entirely ordinary mid-day reading, not a stuck run). Each collector
+    now checks against its own expected cadence.
+    """
+
+    def test_player_sync_at_14_5_hours_is_an_ordinary_day_not_an_outage(self, monkeypatch):
+        # The exact production reading that exposed the bug.
+        _install_freshness(monkeypatch, _freshness(_all_healthy(
+            futgg_player_sync=_beat("futgg_player_sync", 14.5),
+        )))
+        assert run(rd._check_market_data(FakePool()))["status"] == rd.OK
+
+    def test_player_sync_at_22_hours_is_still_fine(self, monkeypatch):
+        # Right at the edge of a daily cadence with normal jitter.
+        _install_freshness(monkeypatch, _freshness(_all_healthy(
+            futgg_player_sync=_beat("futgg_player_sync", 22),
+        )))
+        assert run(rd._check_market_data(FakePool()))["status"] == rd.OK
+
+    def test_player_sync_genuinely_stopped_still_gets_caught(self, monkeypatch):
+        # The threshold is generous, not infinite - a multi-day gap is a
+        # real outage for a job that is supposed to run every day.
+        _install_freshness(monkeypatch, _freshness(_all_healthy(
+            futgg_player_sync=_beat("futgg_player_sync", 3 * 24),
+        )))
+        result = run(rd._check_market_data(FakePool()))
+        assert result["status"] == rd.DEGRADED
+        assert "futgg_player_sync" in " ".join(result["detail"]["silent_collectors"])
+
+    def test_the_two_continuous_collectors_keep_the_tight_threshold(self, monkeypatch):
+        # bulk_price_sync and sales_sync cycle every few minutes - the
+        # original 6h "has it died" threshold is still right for them,
+        # and must not have been loosened along with player_sync's.
+        _install_freshness(monkeypatch, _freshness(_all_healthy(
+            futgg_bulk_price_sync=_beat("futgg_bulk_price_sync", 14.5),
+        )))
+        result = run(rd._check_market_data(FakePool()))
+        assert result["status"] == rd.DEGRADED
+        assert "futgg_bulk_price_sync" in " ".join(result["detail"]["silent_collectors"])
+
+    def test_every_expected_collector_has_its_own_threshold(self):
+        assert set(rd.COLLECTOR_SILENT_HOURS_BY_WORKER) == set(rd.EXPECTED_COLLECTORS)
+
+    def test_player_syncs_threshold_is_meaningfully_looser(self):
+        assert (
+            rd.COLLECTOR_SILENT_HOURS_BY_WORKER["futgg_player_sync"]
+            > rd.COLLECTOR_SILENT_HOURS_BY_WORKER["futgg_sales_sync"]
+        )

@@ -239,9 +239,29 @@ async def _check_funnel_events(pool) -> Dict[str, Any]:
 # whether another one ever happened, so a worker that stopped keeps
 # reporting ok:true forever - which is how a sales outage emptied every
 # market surface with nothing anywhere saying why.
+#
+# This is the default for the two CONTINUOUS collectors
+# (futgg_bulk_price_sync, futgg_sales_sync - both run_forever() loops
+# that cycle every few minutes). futgg_player_sync is a different shape
+# entirely - see COLLECTOR_SILENT_HOURS_BY_WORKER below - and must not
+# use this default.
 COLLECTOR_SILENT_HOURS = float(os.getenv("READINESS_COLLECTOR_SILENT_HOURS", "6"))
 
-# Collectors that must be reporting for the market surfaces to work.
+# futgg_player_sync is a one-shot daily discovery job (Procfile: "Run
+# daily as a Cron Job to discover and classify newly-released cards"),
+# not a continuous service - a 14-hour gap since its last run is the
+# middle of an ordinary day, not an outage. Applying the 6h continuous-
+# collector threshold to it produced a false collector_silent for roughly
+# 18 of every 24 hours, confirmed live in production (age_hours=14.5,
+# detail all zeros - a normal mid-day reading, not a stuck run). 30h
+# covers the 24h cadence plus slack for a run that's running a bit late,
+# without still being cheap on a genuine multi-day outage.
+PLAYER_SYNC_SILENT_HOURS = float(os.getenv("READINESS_PLAYER_SYNC_SILENT_HOURS", "30"))
+
+# Collectors that must be reporting for the market surfaces to work, each
+# with the silence threshold that actually matches its own cadence - a
+# single flat number across a daily one-shot job and two continuous
+# services is wrong for whichever one it wasn't tuned for.
 #
 # Checked by name rather than by iterating whatever rows happen to exist,
 # because the failure that motivated this check was an ABSENT row, not a
@@ -249,7 +269,12 @@ COLLECTOR_SILENT_HOURS = float(os.getenv("READINESS_COLLECTOR_SILENT_HOURS", "6"
 # loop over the returned rows had nothing to find and reported nothing
 # wrong. A collector that never checks in is the same outage as one that
 # stopped, and has to read as one.
-EXPECTED_COLLECTORS = ("futgg_player_sync", "futgg_bulk_price_sync", "futgg_sales_sync")
+COLLECTOR_SILENT_HOURS_BY_WORKER: Dict[str, float] = {
+    "futgg_player_sync": PLAYER_SYNC_SILENT_HOURS,
+    "futgg_bulk_price_sync": COLLECTOR_SILENT_HOURS,
+    "futgg_sales_sync": COLLECTOR_SILENT_HOURS,
+}
+EXPECTED_COLLECTORS = tuple(COLLECTOR_SILENT_HOURS_BY_WORKER)
 
 # Sales older than this are rejected by the engine outright
 # (futgg_config.reject_sales_older_than_minutes, 72h). A collector silent
@@ -291,7 +316,8 @@ async def _check_market_data(pool) -> Dict[str, Any]:
             silent.append(worker)
             continue
         hours = (now - last).total_seconds() / 3600
-        if hours > COLLECTOR_SILENT_HOURS:
+        threshold = COLLECTOR_SILENT_HOURS_BY_WORKER.get(worker, COLLECTOR_SILENT_HOURS)
+        if hours > threshold:
             # The worker name and its age. Not the detail string - that
             # carries scrape internals and is not an operator's first
             # question.
