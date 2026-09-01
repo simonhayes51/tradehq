@@ -2431,6 +2431,24 @@ async def run_forever() -> None:
                 started = time.perf_counter()
                 last_progress_attempted = 0
 
+                # `throttle` itself (batch_size/delay) deliberately survives
+                # across cycles - that learned tuning is the whole point of
+                # AdaptiveThrottle. But consecutive_fully_throttled_batches
+                # is a same-cycle streak counter, and it was never reset
+                # between cycles: a cycle that tripped the breaker ends
+                # with this already at/above CONSECUTIVE_FULL_THROTTLE_
+                # BATCHES, so after the CIRCUIT_BREAKER_BACKOFF_SECONDS
+                # sleep, the very next cycle's FIRST batch - even a single
+                # one - could push the inherited streak back over the
+                # threshold and re-trip in seconds, before the backoff had
+                # any real chance to let FUT.GG's rate-limit window clear.
+                # Production logs showed exactly this: a productive
+                # ~150-175 card cycle immediately followed by a near-empty
+                # cards_ok=0 cycle that failed and re-tripped in under 10s,
+                # roughly halving effective throughput. Each cycle must
+                # start its own streak count at zero.
+                throttle.consecutive_fully_throttled_batches = 0
+
                 async with pool.acquire() as conn:
                     due = await select_due(conn)
                     coverage = await report_coverage(conn)

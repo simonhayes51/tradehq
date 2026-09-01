@@ -544,14 +544,34 @@ production operation was run.**
      `docker-entrypoint-sbc.sh` now clear a stale lock (after confirming
      its PID is actually dead) before starting Xvfb.
 
-   **Not fixed:** why `signed_fetch` alone can't keep the catalogue
-   inside the 72h freshness window even without the broken fallback
-   dragging it down — that may still need a lower per-cycle card count,
+   A follow-up live incident, found after the above shipped: coverage
+   was still only advancing at roughly half the rate the log's own
+   productive cycles implied. A 6-hour container log (11:06–17:03)
+   showed a repeating pattern — a healthy ~150–175 card cycle, then
+   (after the 300s circuit-breaker backoff) a near-instant `cards_ok=0`
+   cycle that failed and re-tripped in under 10 seconds, on roughly
+   every other cycle throughout the whole window. Root cause:
+   `AdaptiveThrottle.consecutive_fully_throttled_batches` — the streak
+   the circuit breaker actually trips on — was never reset between
+   cycles. A cycle only trips with this counter already at or above
+   `CONSECUTIVE_FULL_THROTTLE_BATCHES` (2), so the next cycle inherited
+   that count and its very first batch, whether or not FUT.GG's
+   rate-limit window had actually cleared during the backoff, could push
+   it straight back over the threshold. `batch_size`/`delay` are
+   deliberately carried across cycles (that's the point of
+   `AdaptiveThrottle`); this streak counter is not meant to be, and now
+   resets to 0 at the top of every cycle in `run_forever()`, alongside
+   the existing per-cycle `stats` reset. Not yet re-verified against a
+   live log with this fix deployed — watch for the "instant retrip"
+   pattern disappearing from the next few hours of logs, and
+   `signal_capable=` in the heartbeat detail trending up rather than
+   sideways.
+
+   **Still not fixed:** whether `signed_fetch` alone, even running at
+   full effective throughput, keeps the catalogue inside the 72h
+   freshness window — that may still need a lower per-cycle card count,
    a longer inter-batch delay tuned to FUT.GG's actual window, or simply
-   accepting a slower refresh cadence for low-priority cards. Watch
-   `coverage=`/`signal_capable=` in the heartbeat detail over the next
-   few days now that a throttle no longer forces a switch to a
-   transport that was making things worse.
+   accepting a slower refresh cadence for low-priority cards.
 9. **The SBC-reward guard's match quality is unverified against live
    data.** A production case (Lamine Yamal 99 RW, live "Summer Stars
    Tournament Winners" SBC) showed the engine recommending a buy on a
