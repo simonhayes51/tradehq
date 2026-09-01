@@ -17,12 +17,27 @@ import EmptyFeedReason from "./EmptyFeedReason";
 
 const HOURS = 3_600_000;
 
+// Mirrors the real /market/freshness response shape: `stale`/`age_hours`
+// arrive already computed by the backend, per the worker's own cadence
+// (app/services/readiness.py's COLLECTOR_SILENT_HOURS_BY_WORKER) - the
+// component trusts them rather than re-deriving a second, flat-threshold
+// answer from `last_run_at` itself.
+function heartbeat(worker, hoursAgo, { stale, ok = true } = {}) {
+  return {
+    worker,
+    last_run_at: new Date(Date.now() - hoursAgo * HOURS).toISOString(),
+    ok,
+    age_hours: hoursAgo,
+    stale,
+  };
+}
+
 function healthy(overrides = {}) {
   return {
     cards_priced: 1200,
     cards_stale: 40,
     stale_sales_by_priority_tier: { CRITICAL: 5, HIGH: 10 },
-    heartbeats: [{ worker: "snapshot", last_run_at: new Date(Date.now() - 5 * 60_000).toISOString(), ok: true }],
+    heartbeats: [heartbeat("snapshot", 5 / 60, { stale: false })],
     ...overrides,
   };
 }
@@ -81,13 +96,16 @@ describe("when our data is the problem", () => {
   it("notices the WORST collector, not the newest", () => {
     // The production payload that prompted this: three collectors, one
     // dead for three weeks, two healthy. Taking the newest heartbeat
-    // made the whole pipeline look fine.
+    // made the whole pipeline look fine. futgg_player_sync is also
+    // genuinely stale here (40h, past its own 30h daily-cadence
+    // threshold) - the worst (504h) must still win over the
+    // lesser-but-real staleness, not just over the healthy ones.
     freshness.value = {
       data: healthy({
         heartbeats: [
-          { worker: "futgg_bulk_price_sync", last_run_at: new Date(Date.now() - 0.5 * HOURS).toISOString(), ok: true },
-          { worker: "futgg_player_sync", last_run_at: new Date(Date.now() - 22 * HOURS).toISOString(), ok: true },
-          { worker: "futgg_sales_sync", last_run_at: new Date(Date.now() - 21 * 24 * HOURS).toISOString(), ok: true },
+          heartbeat("futgg_bulk_price_sync", 0.5, { stale: false }),
+          heartbeat("futgg_player_sync", 40, { stale: true }),
+          heartbeat("futgg_sales_sync", 21 * 24, { stale: true }),
         ],
       }),
       refetch: vi.fn(),
@@ -100,15 +118,39 @@ describe("when our data is the problem", () => {
 
   it("is not fooled by ok:true on a dead worker", () => {
     // `ok` is the outcome of the LAST run. A worker that stopped three
-    // weeks ago reports ok:true forever.
+    // weeks ago reports ok:true forever - staleness has to come from
+    // the backend's own `stale` judgement, not from `ok`.
     freshness.value = {
       data: healthy({
-        heartbeats: [{ worker: "futgg_sales_sync", last_run_at: new Date(Date.now() - 21 * 24 * HOURS).toISOString(), ok: true }],
+        heartbeats: [heartbeat("futgg_sales_sync", 21 * 24, { stale: true, ok: true })],
       }),
       refetch: vi.fn(),
     };
     render(<EmptyFeedReason noun="opportunities" filtersActive={false} />);
     expect(screen.getByText(/on our side/i)).toBeInTheDocument();
+  });
+
+  it("does not flag a daily job for running on its own normal cadence", () => {
+    // Production false positive this was written to fix:
+    // futgg_player_sync is a one-shot job meant to run once a day. At
+    // 14.5h since its last run - and again checked at 22h, still well
+    // inside a day - it is having an entirely ordinary day, not an
+    // outage, and the backend now marks it stale:false to say so. This
+    // component must trust that rather than re-deriving its own flat
+    // threshold and flagging it anyway.
+    freshness.value = {
+      data: healthy({
+        heartbeats: [
+          heartbeat("futgg_player_sync", 14.5, { stale: false }),
+          heartbeat("futgg_bulk_price_sync", 0.1, { stale: false }),
+          heartbeat("futgg_sales_sync", 0.1, { stale: false }),
+        ],
+      }),
+      refetch: vi.fn(),
+    };
+    render(<EmptyFeedReason noun="opportunities" filtersActive={false} />);
+    expect(document.body.textContent).not.toMatch(/hasn't reported in/i);
+    expect(document.body.textContent).not.toMatch(/on our side/i);
   });
 
   it("never blames the reader's filters when they set none", () => {

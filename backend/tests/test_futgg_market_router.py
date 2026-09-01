@@ -52,8 +52,9 @@ def _row(**overrides) -> Dict[str, Any]:
 
 
 class FakeProvider:
-    def __init__(self, rows: Optional[List[Dict[str, Any]]] = None):
+    def __init__(self, rows: Optional[List[Dict[str, Any]]] = None, heartbeats: Optional[List[Dict[str, Any]]] = None):
         self.rows = rows if rows is not None else [_row()]
+        self.heartbeats = heartbeats
         # Records the order_by every search_players() call was actually
         # made with, so tests can assert on candidate-scan ordering
         # without needing a real Postgres EXPLAIN.
@@ -142,7 +143,7 @@ class FakeProvider:
 
     async def get_freshness_summary(self):
         return {
-            "heartbeats": [
+            "heartbeats": self.heartbeats if self.heartbeats is not None else [
                 {"worker": "futgg_player_sync", "last_run_at": AS_OF, "ok": True, "detail": None},
                 {"worker": "futgg_bulk_price_sync", "last_run_at": AS_OF, "ok": True, "detail": None},
                 {"worker": "futgg_sales_sync", "last_run_at": AS_OF, "ok": True, "detail": None},
@@ -166,10 +167,13 @@ ANON_VIEWER = Viewer(user_id=None, tier="free", is_admin=False,
                      features=frozenset(features_for_tier("free")))
 
 
-def _client(rows: Optional[List[Dict[str, Any]]] = None, viewer: Viewer = ELITE_VIEWER) -> TestClient:
+def _client(
+    rows: Optional[List[Dict[str, Any]]] = None, viewer: Viewer = ELITE_VIEWER,
+    heartbeats: Optional[List[Dict[str, Any]]] = None,
+) -> TestClient:
     app = FastAPI()
     app.include_router(futgg_router, prefix="/api/v2")
-    app.dependency_overrides[get_provider] = lambda: FakeProvider(rows)
+    app.dependency_overrides[get_provider] = lambda: FakeProvider(rows, heartbeats)
     app.dependency_overrides[get_viewer] = lambda: viewer
     app.dependency_overrides[require_trade_finder] = lambda: {"tier": viewer.tier}
     return TestClient(app)
@@ -320,6 +324,27 @@ def test_market_freshness_shape():
     body = resp.json()
     assert body["cards_discovered"] == 10
     assert len(body["heartbeats"]) == 3
+
+
+def test_market_freshness_stale_flag_is_per_worker():
+    # futgg_player_sync is a one-shot DAILY discovery job; 14.5h since
+    # its last run is an ordinary point in an ordinary day, not stale.
+    # The two continuous collectors use the tighter 6h threshold, so the
+    # same 14.5h age on futgg_sales_sync is genuinely stale. Production
+    # incident this fixes: a single flat threshold across all three
+    # reported player_sync stale for ~18 of every 24 hours and the
+    # frontend surfaced that as "our sales data is behind" regardless of
+    # which collector was actually the stale one.
+    heartbeats = [
+        {"worker": "futgg_player_sync", "last_run_at": AS_OF - timedelta(hours=14.5), "ok": True, "detail": None},
+        {"worker": "futgg_bulk_price_sync", "last_run_at": AS_OF, "ok": True, "detail": None},
+        {"worker": "futgg_sales_sync", "last_run_at": AS_OF - timedelta(hours=14.5), "ok": False, "detail": None},
+    ]
+    resp = _client(heartbeats=heartbeats).get("/api/v2/market/freshness")
+    assert resp.status_code == 200
+    by_worker = {h["worker"]: h for h in resp.json()["heartbeats"]}
+    assert by_worker["futgg_player_sync"]["stale"] is False
+    assert by_worker["futgg_sales_sync"]["stale"] is True
 
 
 def test_opportunities_only_returns_buy_signals():

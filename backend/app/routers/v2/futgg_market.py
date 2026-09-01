@@ -967,6 +967,20 @@ async def trade_finder(
 # A collector silent for longer than this has stopped, whatever its last
 # run reported. Generous on purpose - this distinguishes "dead" from
 # "slow", not one cycle from the next.
+#
+# Per-worker, not one flat number: futgg_player_sync is a one-shot daily
+# discovery job (Procfile: "Run daily as a Cron Job"), not a continuous
+# service, so a same-day gap since its last run is normal, not stale. A
+# single 6h threshold across it and the two continuous collectors
+# (futgg_bulk_price_sync, futgg_sales_sync) reported it stale for
+# roughly 18 of every 24 hours - confirmed live (age_hours=14.5, a
+# perfectly ordinary mid-day reading) - and that reading is exactly what
+# EmptyFeedReason.jsx's silentCollectorHours surfaces to every reader as
+# "our sales data is behind", regardless of which collector was actually
+# the stale one. Shares its source of truth with
+# app/services/readiness.py's COLLECTOR_SILENT_HOURS_BY_WORKER rather
+# than keeping a second, independently-tunable copy of the same
+# judgement call.
 _HEARTBEAT_STALE_HOURS = float(os.getenv("HEARTBEAT_STALE_HOURS", "6"))
 
 
@@ -974,12 +988,15 @@ _HEARTBEAT_STALE_HOURS = float(os.getenv("HEARTBEAT_STALE_HOURS", "6"))
 async def market_freshness(
     provider: FutggMarketDataProvider = ProviderDep,
 ) -> Dict[str, Any]:
+    from app.services.readiness import COLLECTOR_SILENT_HOURS_BY_WORKER
+
     summary = await provider.get_freshness_summary()
     now = datetime.now(timezone.utc)
     heartbeats = []
     for h in summary["heartbeats"]:
         last = h["last_run_at"]
         age_hours = round((now - last).total_seconds() / 3600, 1) if last else None
+        threshold = COLLECTOR_SILENT_HOURS_BY_WORKER.get(h["worker"], _HEARTBEAT_STALE_HOURS)
         heartbeats.append({
             "worker": h["worker"],
             "last_run_at": last.isoformat() if last else None,
@@ -991,7 +1008,7 @@ async def market_freshness(
             # separately, in `age_hours`/`stale`.
             "ok": h["ok"],
             "age_hours": age_hours,
-            "stale": age_hours is None or age_hours > _HEARTBEAT_STALE_HOURS,
+            "stale": age_hours is None or age_hours > threshold,
             "detail": h["detail"],
         })
     return {

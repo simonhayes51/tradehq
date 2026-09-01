@@ -20,31 +20,39 @@
 import { AlertTriangle, RotateCcw, TrendingUp } from "lucide-react";
 import EmptyState from "./EmptyState";
 import { useFutggMarketFreshness } from "../hooks/useFutggMarket";
-import { STALE_THRESHOLD_SECONDS } from "./MarketFreshness";
-
-// Anything older than this and the scan is working from prices nobody
-// should trade against - which is why the feed is empty, and which is
-// worth saying out loud rather than leaving the reader to guess.
-const STALE_HOURS = Math.round(STALE_THRESHOLD_SECONDS / 3600);
 
 function sumValues(byTier) {
   if (!byTier || typeof byTier !== "object") return null;
   return Object.values(byTier).reduce((total, n) => total + (Number(n) || 0), 0);
 }
 
-// The age of the WORST collector, not the newest.
+// The age of the WORST silent collector, not the newest - and "silent"
+// per the BACKEND's own `stale` flag on each heartbeat, not a single
+// flat threshold recomputed here.
 //
-// Taking the newest hid the outage this was written during: three
-// collectors, one of them dead for three weeks, and the healthy ones
-// reporting minutes ago made the whole pipeline look fine. A pipeline is
-// as fresh as its stalest stage.
+// Taking the newest heartbeat hid the outage this was written during:
+// three collectors, one of them dead for three weeks, and the healthy
+// ones reporting minutes ago made the whole pipeline look fine. A
+// pipeline is as fresh as its stalest stage - but "stalest" has to be
+// judged against each collector's own expected cadence, not one number
+// for all of them. futgg_player_sync is a one-shot DAILY discovery job;
+// a same-day gap since it last ran is normal, not an outage. Comparing
+// its age against the same flat threshold used for the two continuous
+// collectors (which cycle every few minutes) reported it silent for
+// roughly 18 of every 24 hours - confirmed live in production - which is
+// exactly the false "our sales data is behind" this component exists to
+// avoid saying. The backend's own `stale` field (see
+// app/services/readiness.py's COLLECTOR_SILENT_HOURS_BY_WORKER) is
+// already computed per-worker; trusting it here instead of re-deriving
+// a second, flat-threshold answer is what actually fixes that, and
+// keeps this file from silently drifting out of sync with the backend's
+// own judgement call again.
 function silentCollectorHours(heartbeats) {
-  const ages = (heartbeats || [])
-    .map((h) => (h.last_run_at ? (Date.now() - new Date(h.last_run_at).getTime()) / 3_600_000 : null))
-    .filter((h) => Number.isFinite(h));
-  if (!ages.length) return null;
-  const worst = Math.max(...ages);
-  return worst > STALE_HOURS ? worst : null;
+  const staleAges = (heartbeats || [])
+    .filter((h) => h.stale && Number.isFinite(h.age_hours))
+    .map((h) => h.age_hours);
+  if (!staleAges.length) return null;
+  return Math.max(...staleAges);
 }
 
 /**
