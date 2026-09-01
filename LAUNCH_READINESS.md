@@ -620,9 +620,27 @@ production operation was run.**
    600s → 1200s → ...), capped at `FUTGG_SALES_CIRCUIT_BREAKER_MAX_
    BACKOFF_SECONDS` (default 1800s), and resets to the base 300s the
    moment a cycle actually completes clean. A single, isolated trip
-   still gets exactly the same 300s as before. Not yet re-verified live
-   — watch for a run of consecutive trips ending in genuine recovery
-   rather than repeating indefinitely at the same fixed interval.
+   still gets exactly the same 300s as before.
+
+   Re-verified live within the hour, and the escalation itself needed a
+   correction: four consecutive trips ran the backoff 300s → 600s →
+   1200s → 1800s (the cap) — but two of those trips (`cards_ok=142` at
+   24/min, `cards_ok=185` at 31/min) were healthy, substantial cycles
+   that simply hit the same recurring adaptive-throttle ceiling again
+   after collecting real data, not a sign the prior wait had failed.
+   Only one of the four (`cards_ok=0` at 0/min) was the true
+   "instant retrip" failure this exists to catch. Escalating on every
+   trip alike drove the wait to its 30-minute cap for what was actually
+   `AdaptiveThrottle` behaving exactly as designed — ease the batch size
+   back up, eventually overshoot the limit, back off, repeat — costing
+   real throughput for no reason. Escalation is now gated on the
+   tripped cycle's own throughput (the same `HEARTBEAT_MIN_CARDS_PER_MIN`
+   floor `write_heartbeat`'s `ok` already uses): a productive-but-tripped
+   cycle resets the streak back to the base 300s, since collecting
+   real data before hitting the wall again proves the wait before it
+   was already enough; only a near-zero-output trip escalates the next
+   one. Not yet re-verified against a live log with this correction in
+   place.
 
    **Still not fixed:** whether `signed_fetch` alone, even running at
    full effective throughput, keeps the catalogue inside the 72h
