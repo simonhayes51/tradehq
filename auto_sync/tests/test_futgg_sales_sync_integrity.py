@@ -406,6 +406,24 @@ def test_run_forever_resets_the_cycle_trip_streak_on_a_clean_cycle():
     assert "consecutive_cycle_trips = 0" in following
 
 
+def test_run_forever_logs_the_wall_clock_resume_time_on_a_trip():
+    """Seen twice in one evening: an operator watching the log stream
+    asked whether the worker had stalled during a backoff that was, in
+    fact, exactly as long as designed - the only figure logged was
+    "backing off Ns", which makes the reader do the arithmetic. A
+    resume-time log line, gated to breaker_tripped only (a normal
+    CYCLE_SLEEP between clean cycles needs no such reassurance), turns
+    that into a direct answer the log already contains."""
+    import inspect
+
+    source = inspect.getsource(mod.run_forever)
+    trip_streak_update = source.index("consecutive_cycle_trips += 1")
+    last_sleep_call = source.rindex("await sleep_or_shutdown(")
+    between = source[trip_streak_update:last_sleep_call]
+    assert "if breaker_tripped:" in between
+    assert "next cycle expected around" in between
+
+
 def test_run_forever_uses_the_escalating_backoff_not_the_flat_constant():
     """The sleep at the end of a tripped cycle must route through
     next_backoff_seconds(), not the flat CIRCUIT_BREAKER_BACKOFF_SECONDS
@@ -414,15 +432,15 @@ def test_run_forever_uses_the_escalating_backoff_not_the_flat_constant():
     import inspect
 
     source = inspect.getsource(mod.run_forever)
-    sleep_call = source.index("await sleep_or_shutdown(")
+    trip_streak_update = source.index("consecutive_cycle_trips += 1")
     # The LAST sleep_or_shutdown call in the function is the cycle-end
     # backoff decision (earlier ones are the idle/reprobe/inter-batch
     # sleeps, which are irrelevant here).
     last_sleep_call = source.rindex("await sleep_or_shutdown(")
-    assert last_sleep_call >= sleep_call
-    following = source[last_sleep_call:last_sleep_call + 200]
-    assert "next_backoff_seconds(consecutive_cycle_trips)" in following
-    assert "CIRCUIT_BREAKER_BACKOFF_SECONDS if breaker_tripped" not in following
+    assert last_sleep_call >= trip_streak_update
+    between = source[trip_streak_update:last_sleep_call]
+    assert "next_backoff_seconds(consecutive_cycle_trips)" in between
+    assert "CIRCUIT_BREAKER_BACKOFF_SECONDS if breaker_tripped" not in between
 
 
 def test_the_throttle_streak_also_resets_each_cycle():
