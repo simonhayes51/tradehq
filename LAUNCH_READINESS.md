@@ -599,9 +599,30 @@ production operation was run.**
    `FUTGG_SALES_LOCK_ACQUIRE_RETRY_SECONDS` (default 90s) before giving
    up — long enough for the outgoing instance to finish its own SIGTERM
    handling and release the lock, which the previous fix confirmed
-   completes in well under that. Not yet re-verified against a live
-   redeploy with this fix in place — watch the next deploy's logs for
-   the new container picking the queue back up instead of exiting.
+   completes in well under that. Confirmed live: the manual redeploy
+   after this fix came back up and resumed the queue (`resuming
+   throttle from a previous run: batch=8 delay=10.24s`) instead of both
+   containers exiting.
+
+   A fourth incident, from that same redeploy's logs: a cycle tripped
+   the circuit breaker, backed off the full `CIRCUIT_BREAKER_BACKOFF_
+   SECONDS` (300s), and the very next cycle tripped again almost
+   immediately (`cards_ok=0 failed=9` in 25.3s). This is a different
+   failure from the "instant retrip" bug fixed earlier — that fix
+   (resetting `consecutive_fully_throttled_batches` at cycle start)
+   was working correctly here: the new cycle got several real batches
+   in (9 cards across ~2 batches) before genuinely re-tripping, rather
+   than tripping on batch one from an inherited counter. This is
+   FUT.GG's actual rate-limit window simply outlasting a flat 300s
+   wait — retrying into a still-active limit only spends more requests
+   against it for nothing. `next_backoff_seconds()` now doubles the
+   wait on each consecutive trip with no clean cycle in between (300s →
+   600s → 1200s → ...), capped at `FUTGG_SALES_CIRCUIT_BREAKER_MAX_
+   BACKOFF_SECONDS` (default 1800s), and resets to the base 300s the
+   moment a cycle actually completes clean. A single, isolated trip
+   still gets exactly the same 300s as before. Not yet re-verified live
+   — watch for a run of consecutive trips ending in genuine recovery
+   rather than repeating indefinitely at the same fixed interval.
 
    **Still not fixed:** whether `signed_fetch` alone, even running at
    full effective throughput, keeps the catalogue inside the 72h

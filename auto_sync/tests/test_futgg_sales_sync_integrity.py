@@ -355,6 +355,76 @@ def test_circuit_breaker_recovers_once_stats_reset_for_the_next_cycle():
     assert mod.circuit_breaker_tripped(next_cycle) is False
 
 
+class TestNextBackoffSeconds:
+    """Production evidence (1 September): a cycle re-tripped within
+    seconds of resuming from a full CIRCUIT_BREAKER_BACKOFF_SECONDS
+    (300s) wait - cards_ok=0 failed=9, tripped again in 25.3s. The
+    throttle-streak fix (see above) ruled out the "inherited counter"
+    bug; this was a REAL trip, meaning FUT.GG's own rate-limit window
+    had not reliably cleared within a flat 300s. next_backoff_seconds()
+    makes repeated trips wait longer instead of hammering the same
+    still-active limit on a fixed schedule."""
+
+    def test_a_single_trip_gets_the_base_backoff(self, monkeypatch):
+        monkeypatch.setattr(mod, "CIRCUIT_BREAKER_BACKOFF_SECONDS", 300.0)
+        monkeypatch.setattr(mod, "CIRCUIT_BREAKER_MAX_BACKOFF_SECONDS", 1800.0)
+        assert mod.next_backoff_seconds(1) == 300.0
+
+    def test_zero_or_negative_trips_also_get_the_base_backoff(self, monkeypatch):
+        # Defensive: next_backoff_seconds must never return something
+        # shorter than a single trip's own backoff.
+        monkeypatch.setattr(mod, "CIRCUIT_BREAKER_BACKOFF_SECONDS", 300.0)
+        monkeypatch.setattr(mod, "CIRCUIT_BREAKER_MAX_BACKOFF_SECONDS", 1800.0)
+        assert mod.next_backoff_seconds(0) == 300.0
+        assert mod.next_backoff_seconds(-1) == 300.0
+
+    def test_each_consecutive_trip_doubles_the_wait(self, monkeypatch):
+        monkeypatch.setattr(mod, "CIRCUIT_BREAKER_BACKOFF_SECONDS", 300.0)
+        monkeypatch.setattr(mod, "CIRCUIT_BREAKER_MAX_BACKOFF_SECONDS", 100_000.0)
+        assert mod.next_backoff_seconds(1) == 300.0
+        assert mod.next_backoff_seconds(2) == 600.0
+        assert mod.next_backoff_seconds(3) == 1200.0
+        assert mod.next_backoff_seconds(4) == 2400.0
+
+    def test_the_wait_is_capped(self, monkeypatch):
+        monkeypatch.setattr(mod, "CIRCUIT_BREAKER_BACKOFF_SECONDS", 300.0)
+        monkeypatch.setattr(mod, "CIRCUIT_BREAKER_MAX_BACKOFF_SECONDS", 1800.0)
+        assert mod.next_backoff_seconds(10) == 1800.0
+
+
+def test_run_forever_resets_the_cycle_trip_streak_on_a_clean_cycle():
+    """consecutive_cycle_trips must reset in the same place
+    note_signed_fetch_recovered() already does - a clean cycle proves
+    the wait worked, so the NEXT trip (whenever it happens) should start
+    back at the base backoff, not continue escalating from an old,
+    unrelated streak of trips hours earlier."""
+    import inspect
+
+    source = inspect.getsource(mod.run_forever)
+    recovered_call = source.index("note_signed_fetch_recovered()")
+    following = source[recovered_call:recovered_call + 200]
+    assert "consecutive_cycle_trips = 0" in following
+
+
+def test_run_forever_uses_the_escalating_backoff_not_the_flat_constant():
+    """The sleep at the end of a tripped cycle must route through
+    next_backoff_seconds(), not the flat CIRCUIT_BREAKER_BACKOFF_SECONDS
+    - using the constant directly here is exactly the bug this test
+    guards against regressing to."""
+    import inspect
+
+    source = inspect.getsource(mod.run_forever)
+    sleep_call = source.index("await sleep_or_shutdown(")
+    # The LAST sleep_or_shutdown call in the function is the cycle-end
+    # backoff decision (earlier ones are the idle/reprobe/inter-batch
+    # sleeps, which are irrelevant here).
+    last_sleep_call = source.rindex("await sleep_or_shutdown(")
+    assert last_sleep_call >= sleep_call
+    following = source[last_sleep_call:last_sleep_call + 200]
+    assert "next_backoff_seconds(consecutive_cycle_trips)" in following
+    assert "CIRCUIT_BREAKER_BACKOFF_SECONDS if breaker_tripped" not in following
+
+
 def test_the_throttle_streak_also_resets_each_cycle():
     """The test above only proves the STATS-based half of
     circuit_breaker_tripped() recovers between cycles. In production the

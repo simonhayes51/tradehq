@@ -303,6 +303,18 @@ CIRCUIT_BREAKER_MIN_SAMPLE = env_int("FUTGG_SALES_CIRCUIT_BREAKER_MIN_SAMPLE", 2
 CIRCUIT_BREAKER_BACKOFF_SECONDS = env_float(
     "FUTGG_SALES_CIRCUIT_BREAKER_BACKOFF_SECONDS", 300.0, minimum=0.0
 )
+#: Production evidence: a cycle can trip again within seconds of
+#: resuming from a full CIRCUIT_BREAKER_BACKOFF_SECONDS wait - a fixed
+#: 300s is not reliably long enough for FUT.GG's own rate-limit window
+#: to clear, and retrying straight into a still-active limit only spends
+#: more requests against it for nothing (the same "a rejected request
+#: still costs quota" reasoning AdaptiveThrottle already backs off
+#: within a single cycle for - see its docstring). See
+#: next_backoff_seconds() - the wait doubles on each consecutive trip,
+#: capped here, and resets the moment a cycle actually completes clean.
+CIRCUIT_BREAKER_MAX_BACKOFF_SECONDS = env_float(
+    "FUTGG_SALES_CIRCUIT_BREAKER_MAX_BACKOFF_SECONDS", 1800.0, minimum=0.0
+)
 CONSECUTIVE_FULL_THROTTLE_BATCHES = env_int(
     "FUTGG_SALES_FULL_THROTTLE_BATCHES_BEFORE_BREAKER", 2, minimum=1
 )
@@ -663,6 +675,28 @@ def circuit_breaker_tripped(
     if attempted < CIRCUIT_BREAKER_MIN_SAMPLE:
         return False
     return (stats["failed"] / attempted) >= CIRCUIT_BREAKER_THRESHOLD
+
+
+def next_backoff_seconds(consecutive_trips: int) -> float:
+    """How long to back off after a circuit-breaker trip.
+
+    A single trip gets exactly CIRCUIT_BREAKER_BACKOFF_SECONDS, same as
+    always. But production showed a cycle re-tripping within seconds of
+    resuming from that full wait - the fixed backoff had not actually
+    let FUT.GG's rate limit clear, and immediately retrying into a still
+    -active limit only spends more requests against it for nothing. Each
+    consecutive trip (no clean cycle in between) doubles the wait, up to
+    CIRCUIT_BREAKER_MAX_BACKOFF_SECONDS, so the worker waits longer only
+    once the shorter wait has already proven insufficient - not on the
+    first trip, which is most often just ordinary throttling recovering
+    fine on schedule.
+    """
+    if consecutive_trips <= 0:
+        return CIRCUIT_BREAKER_BACKOFF_SECONDS
+    multiplier = 2 ** (consecutive_trips - 1)
+    return min(
+        CIRCUIT_BREAKER_BACKOFF_SECONDS * multiplier, CIRCUIT_BREAKER_MAX_BACKOFF_SECONDS
+    )
 
 
 # ---------------------------------------------------------------------
@@ -2447,6 +2481,10 @@ async def run_forever() -> None:
 
             run_started_at = time.monotonic()
             cycles_done = 0
+            # Consecutive breaker trips with no clean cycle in between -
+            # see next_backoff_seconds(). Reset the moment a cycle
+            # actually completes without tripping.
+            consecutive_cycle_trips = 0
 
             while not shutdown_event.is_set():
                 # Bounded-run check, at the TOP of the loop so a cycle
@@ -2554,7 +2592,7 @@ async def run_forever() -> None:
                                 "cycle - stopping further selection/marking, backing off %.0fs",
                                 stats["failed"], stats["ok"] + stats["failed"],
                                 CIRCUIT_BREAKER_THRESHOLD * 100, offset, len(due),
-                                CIRCUIT_BREAKER_BACKOFF_SECONDS,
+                                next_backoff_seconds(consecutive_cycle_trips + 1),
                             )
                             if TRANSPORT_MODE == "auto":
                                 switch, why = should_fall_back_to_page_capture(stats, throttle)
@@ -2602,7 +2640,7 @@ async def run_forever() -> None:
                                 "cycle - stopping further selection/marking, backing off %.0fs",
                                 stats["failed"], stats["ok"] + stats["failed"],
                                 CIRCUIT_BREAKER_THRESHOLD * 100, offset, len(due),
-                                CIRCUIT_BREAKER_BACKOFF_SECONDS,
+                                next_backoff_seconds(consecutive_cycle_trips + 1),
                             )
                             break
 
@@ -2644,11 +2682,14 @@ async def run_forever() -> None:
                 # eventually force the expensive fallback for no reason.
                 if not breaker_tripped:
                     note_signed_fetch_recovered()
+                    consecutive_cycle_trips = 0
+                else:
+                    consecutive_cycle_trips += 1
 
                 if shutdown_event.is_set():
                     break
                 await sleep_or_shutdown(
-                    CIRCUIT_BREAKER_BACKOFF_SECONDS if breaker_tripped else CYCLE_SLEEP,
+                    next_backoff_seconds(consecutive_cycle_trips) if breaker_tripped else CYCLE_SLEEP,
                     shutdown_event,
                 )
         finally:
