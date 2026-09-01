@@ -144,6 +144,48 @@ IDLE_SLEEP = env_float("FUTGG_SALES_IDLE_SLEEP", 30.0, minimum=5.0)
 #: How many cards to pull per selection pass.
 SELECT_LIMIT = env_int("FUTGG_SALES_SELECT_LIMIT", 200, minimum=1)
 
+#: Minimum share of SELECT_LIMIT reserved for each rating band every
+#: cycle, so the fast bands cannot starve the slow ones indefinitely.
+#:
+#: select_due()'s ordering puts never-read cards first regardless of
+#: band (backfill), which is correct and unaffected by this. But
+#: backfill exhausts eventually - confirmed in production ("0
+#: never_read") - and once it does, every cycle runs in pure maintenance
+#: mode, ordered by band then by how overdue each card is. The 95+ band
+#: (due every 180min) and 85+ band (every 720min) generate enough "due"
+#: volume on their own to fill an entire cycle's SELECT_LIMIT forever,
+#: while the tail - 75-79 (every 48h) and everything else (every ~67h,
+#: also the LARGEST population) - never reaches the front of the queue
+#: at all. Real sales coverage held flat across 1.5+ hours of otherwise-
+#: healthy continuous running (~150-175 cards refreshed per cycle)
+#: because those refreshes kept landing on cards that already counted,
+#: while the tail's sales aged out of the 14-day freshness window
+#: unopposed - confirmed by stale_sales_by_priority_tier showing the
+#: DORMANT tier more than double every other tier's staleness.
+#:
+#: Shares, not fixed counts, so this scales if SELECT_LIMIT is tuned.
+#: They sum to 0.65 of SELECT_LIMIT, leaving the remaining 35% as
+#: genuine overflow capacity in select_due() that still follows the
+#: original priority order - a quiet cycle for the fast bands lets that
+#: overflow reach further into whichever band actually has the backlog,
+#: rather than being rigidly fixed to a per-band count.
+_BAND_MIN_SHARE: dict[int, float] = {
+    0: 0.05,  # 95+
+    1: 0.10,  # 85+
+    2: 0.10,  # 80-84
+    3: 0.15,  # 75-79
+    4: 0.25,  # everything else - the tail this exists to stop starving
+}
+
+#: SQL condition per band, matching select_due()'s own CASE expression.
+_BAND_WHERE: dict[int, str] = {
+    0: "rating >= 95",
+    1: "rating >= 85 AND rating < 95",
+    2: "rating >= 80 AND rating < 85",
+    3: "rating >= 75 AND rating < 80",
+    4: "(rating < 75 OR rating IS NULL)",
+}
+
 #: Bounded run: exit cleanly after this many minutes. 0 = run forever
 #: (the existing, unchanged default).
 #:
@@ -1153,8 +1195,50 @@ async def select_due(conn: asyncpg.Connection) -> list[asyncpg.Record]:
     routine maintenance) while letting a failure carry a real retry time,
     so the preference is over cards that are DUE, not a licence to retry
     without limit.
+
+    ONCE BACKFILL IS EXHAUSTED (confirmed in production - "0 never_read"),
+    a plain priority order lets the fast bands (95+, 85+) fill the whole
+    SELECT_LIMIT every cycle and never reach the tail at all - see
+    _BAND_MIN_SHARE's own comment for the production evidence. So this
+    first reserves each band its guaranteed floor (still backfill-first,
+    still ordered by how overdue, just scoped to that band), then fills
+    whatever capacity is left with the original global priority order,
+    excluding whatever the floors already picked so nothing is selected
+    twice. A quiet cycle for the fast bands lets that remaining capacity
+    reach further into whichever band actually has the backlog, rather
+    than being rigidly fixed to a per-band count.
     """
-    return await conn.fetch(
+    guaranteed: list[asyncpg.Record] = []
+    guaranteed_ids: list[int] = []
+    for band, share in _BAND_MIN_SHARE.items():
+        floor = int(SELECT_LIMIT * share)
+        if floor <= 0:
+            continue
+        rows = await conn.fetch(
+            f"""
+            SELECT source_card_id, rating, next_sales_due_at, source_url,
+                   sales_first_read_at, sales_consecutive_failures
+            FROM futgg_players
+            WHERE is_active
+              AND is_tradeable IS DISTINCT FROM FALSE
+              AND (next_sales_due_at IS NULL OR next_sales_due_at <= NOW())
+              AND {_BAND_WHERE[band]}
+            ORDER BY
+                (sales_first_read_at IS NOT NULL),
+                next_sales_due_at ASC NULLS FIRST,
+                rating DESC NULLS LAST
+            LIMIT $1
+            """,
+            floor,
+        )
+        guaranteed.extend(rows)
+        guaranteed_ids.extend(int(r["source_card_id"]) for r in rows)
+
+    remaining = SELECT_LIMIT - len(guaranteed)
+    if remaining <= 0:
+        return guaranteed
+
+    overflow = await conn.fetch(
         """
         SELECT source_card_id, rating, next_sales_due_at, source_url,
                sales_first_read_at, sales_consecutive_failures
@@ -1162,6 +1246,7 @@ async def select_due(conn: asyncpg.Connection) -> list[asyncpg.Record]:
         WHERE is_active
           AND is_tradeable IS DISTINCT FROM FALSE
           AND (next_sales_due_at IS NULL OR next_sales_due_at <= NOW())
+          AND NOT (source_card_id = ANY($1::bigint[]))
         ORDER BY
             -- never-SUCCESSFULLY-read cards first (backfill), best cards
             -- within that. A failed attempt does not forfeit this.
@@ -1173,10 +1258,12 @@ async def select_due(conn: asyncpg.Connection) -> list[asyncpg.Record]:
                  ELSE 4 END,
             next_sales_due_at ASC NULLS FIRST,
             rating DESC NULLS LAST
-        LIMIT $1
+        LIMIT $2
         """,
-        SELECT_LIMIT,
+        guaranteed_ids,
+        remaining,
     )
+    return guaranteed + list(overflow)
 
 
 async def report_coverage(conn: asyncpg.Connection) -> dict[str, int] | None:
