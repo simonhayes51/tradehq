@@ -355,6 +355,33 @@ def test_circuit_breaker_recovers_once_stats_reset_for_the_next_cycle():
     assert mod.circuit_breaker_tripped(next_cycle) is False
 
 
+def test_the_throttle_streak_also_resets_each_cycle():
+    """The test above only proves the STATS-based half of
+    circuit_breaker_tripped() recovers between cycles. In production the
+    breaker is called with `throttle` too (see run_forever), and that
+    check fires on throttle.consecutive_fully_throttled_batches alone,
+    independent of stats - a tripped cycle ends with that counter already
+    at or above CONSECUTIVE_FULL_THROTTLE_BATCHES. `throttle` itself
+    (batch_size/delay) deliberately survives across cycles - that's the
+    whole point of AdaptiveThrottle - but without resetting this streak
+    too, the very next cycle's first batch could push the INHERITED count
+    straight back over the threshold and re-trip in seconds, giving the
+    CIRCUIT_BREAKER_BACKOFF_SECONDS backoff no real chance to let FUT.GG's
+    rate-limit window clear. Production logs showed exactly this: a
+    productive ~150-175 card cycle immediately followed by a near-empty
+    cards_ok=0 cycle failing and re-tripping in under 10s, roughly halving
+    effective throughput."""
+    import inspect
+
+    source = inspect.getsource(mod.run_forever)
+    cycle_start = source.index(
+        'stats = {"ok": 0, "failed": 0, "sales_seen": 0, "batch_errors": 0}'
+    )
+    batch_loop_start = source.index('if transport == "signed_fetch":', cycle_start)
+    between = source[cycle_start:batch_loop_start]
+    assert "throttle.consecutive_fully_throttled_batches = 0" in between
+
+
 # ---------------------------------------------------------------------
 # Adaptive throttle reacts to 403/sign failures, not only 429s
 # ---------------------------------------------------------------------
