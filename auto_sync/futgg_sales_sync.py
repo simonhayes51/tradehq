@@ -2609,9 +2609,30 @@ async def run_forever() -> None:
         finally:
             log.info("shutting down: closing browser and database pool")
             await browser.close()
-            await lock_conn.execute(
-                "SELECT pg_advisory_unlock($1)", SALES_SYNC_ADVISORY_LOCK_KEY
-            )
+            # Best-effort: seen in production, the advisory-lock connection
+            # can already be dead by the time this runs - a container
+            # teardown (Railway "Stopping Container") can cut the DB
+            # connection within milliseconds of the SIGTERM that triggers
+            # this shutdown path, before this unlock ever gets to run.
+            # asyncpg detects that and detaches lock_conn automatically, so
+            # calling it here raises InterfaceError. That is not a bug to
+            # propagate: Postgres already drops a session-scoped advisory
+            # lock the instant its connection dies, so the lock is gone
+            # either way - an unhandled exception here only turns a routine
+            # redeploy into a scary "failed" traceback in the logs, and (if
+            # thrown before pool.close()) could leave the pool's other
+            # connections closed uncleanly instead of via close()'s own
+            # graceful path.
+            try:
+                await lock_conn.execute(
+                    "SELECT pg_advisory_unlock($1)", SALES_SYNC_ADVISORY_LOCK_KEY
+                )
+            except Exception:
+                log.warning(
+                    "advisory unlock skipped during shutdown - connection "
+                    "already gone (lock is released with it regardless)",
+                    exc_info=True,
+                )
             await pool.release(lock_conn)
             await pool.close()
     log.info("shutdown complete")
