@@ -382,6 +382,29 @@ def test_the_throttle_streak_also_resets_each_cycle():
     assert "throttle.consecutive_fully_throttled_batches = 0" in between
 
 
+def test_shutdown_survives_a_dead_advisory_lock_connection():
+    """Production evidence: a Railway "Stopping Container" teardown can cut
+    the DB connection within milliseconds of the SIGTERM that triggers this
+    shutdown path - before run_forever()'s finally block ever gets to run
+    `pg_advisory_unlock`. asyncpg detects the dead connection and detaches
+    lock_conn automatically, so calling it raises
+    `asyncpg.exceptions.InterfaceError: cannot call Connection.execute():
+    connection has been released back to the pool`. That must not propagate
+    out of a *shutdown* path: Postgres already drops a session-scoped
+    advisory lock the instant its connection dies, so the lock is gone
+    either way, and an unhandled exception here only turns a routine
+    redeploy into a scary "failed" traceback instead of a clean exit."""
+    import inspect
+
+    source = inspect.getsource(mod.run_forever)
+    finally_start = source.index('finally:\n            log.info("shutting down')
+    unlock_call = source.index("pg_advisory_unlock", finally_start)
+    preceding = source[finally_start:unlock_call]
+    assert "try:" in preceding, "the advisory unlock must be inside a try block"
+    following = source[unlock_call:unlock_call + 400]
+    assert "except Exception" in following
+
+
 # ---------------------------------------------------------------------
 # Adaptive throttle reacts to 403/sign failures, not only 429s
 # ---------------------------------------------------------------------
