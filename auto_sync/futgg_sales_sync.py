@@ -2684,7 +2684,29 @@ async def run_forever() -> None:
                     note_signed_fetch_recovered()
                     consecutive_cycle_trips = 0
                 else:
-                    consecutive_cycle_trips += 1
+                    # Production evidence (1 September): cycles that
+                    # collected cards_ok=142 and 185 (24-31 cards/min,
+                    # comfortably over HEARTBEAT_MIN_CARDS_PER_MIN) each
+                    # still eventually tripped near the end - and under
+                    # the first version of this escalation, that counted
+                    # the same as the true "instant retrip" failure
+                    # (cards_ok=0, 0/min) that motivated it, driving the
+                    # backoff to its 1800s cap even though nothing was
+                    # actually getting worse. AdaptiveThrottle easing its
+                    # batch size back up and eventually overshooting the
+                    # limit again is the intended, recurring shape of a
+                    # HEALTHY cycle, not evidence the prior wait failed -
+                    # only an unproductive trip (proof the wait wasn't
+                    # long enough) should escalate the next one.
+                    cards_ok = int(stats.get("ok", 0))
+                    cycle_cards_per_min = (cards_ok / elapsed) * 60 if elapsed > 0 else 0.0
+                    cycle_was_productive = (
+                        cards_ok > 0 and cycle_cards_per_min >= HEARTBEAT_MIN_CARDS_PER_MIN
+                    )
+                    if cycle_was_productive:
+                        consecutive_cycle_trips = 0
+                    else:
+                        consecutive_cycle_trips += 1
 
                 if shutdown_event.is_set():
                     break

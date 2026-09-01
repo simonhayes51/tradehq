@@ -406,6 +406,30 @@ def test_run_forever_resets_the_cycle_trip_streak_on_a_clean_cycle():
     assert "consecutive_cycle_trips = 0" in following
 
 
+def test_run_forever_only_escalates_on_an_unproductive_trip():
+    """Production evidence (1 September): cycles that collected 142 and
+    185 cards (24-31 cards/min) each still eventually tripped near the
+    end, same as the true "instant retrip" failure (cards_ok=0, 0/min)
+    that motivated escalation in the first place. Treating every trip
+    alike drove the backoff to its 1800s cap across four consecutive
+    trips even though two of them were healthy, substantial cycles that
+    just happened to hit the recurring adaptive-throttle ceiling again -
+    AdaptiveThrottle easing its batch size back up and eventually
+    overshooting is the expected shape of a working cycle, not proof the
+    prior wait was too short. Escalation must be gated on the tripped
+    cycle's own throughput (the same floor write_heartbeat's `ok` uses),
+    not on breaker_tripped alone."""
+    import inspect
+
+    source = inspect.getsource(mod.run_forever)
+    else_branch = source.index("else:", source.index("consecutive_cycle_trips = 0"))
+    increment = source.index("consecutive_cycle_trips += 1")
+    between = source[else_branch:increment]
+    assert "HEARTBEAT_MIN_CARDS_PER_MIN" in between
+    assert "cycle_was_productive" in between
+    assert "consecutive_cycle_trips = 0" in between
+
+
 def test_run_forever_logs_the_wall_clock_resume_time_on_a_trip():
     """Seen twice in one evening: an operator watching the log stream
     asked whether the worker had stalled during a backoff that was, in
