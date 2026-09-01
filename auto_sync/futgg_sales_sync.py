@@ -2688,10 +2688,25 @@ async def run_forever() -> None:
 
                 if shutdown_event.is_set():
                     break
-                await sleep_or_shutdown(
-                    next_backoff_seconds(consecutive_cycle_trips) if breaker_tripped else CYCLE_SLEEP,
-                    shutdown_event,
+                backoff_seconds = (
+                    next_backoff_seconds(consecutive_cycle_trips) if breaker_tripped else CYCLE_SLEEP
                 )
+                if breaker_tripped:
+                    # An escalated backoff can now run up to
+                    # CIRCUIT_BREAKER_MAX_BACKOFF_SECONDS (30 min default),
+                    # long enough that a silent log stream reads as a
+                    # stall rather than the worker doing exactly what it
+                    # should. The "backing off Ns" figure in the TRIPPED
+                    # warning above makes the reader do the arithmetic;
+                    # this states the wall-clock answer directly.
+                    resume_at = datetime.now(timezone.utc) + timedelta(seconds=backoff_seconds)
+                    log.info(
+                        "backing off %.0fs after %d consecutive trip(s) - "
+                        "next cycle expected around %s UTC",
+                        backoff_seconds, consecutive_cycle_trips,
+                        resume_at.strftime("%H:%M:%S"),
+                    )
+                await sleep_or_shutdown(backoff_seconds, shutdown_event)
         finally:
             log.info("shutting down: closing browser and database pool")
             await browser.close()
