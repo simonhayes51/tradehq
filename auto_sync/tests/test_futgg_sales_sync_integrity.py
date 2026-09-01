@@ -382,6 +382,107 @@ def test_the_throttle_streak_also_resets_each_cycle():
     assert "throttle.consecutive_fully_throttled_batches = 0" in between
 
 
+class _FakeLockConn:
+    """fetchval() returns False for the first `fails_before_success`
+    calls, then True - standing in for a Postgres advisory lock that a
+    still-shutting-down previous instance is holding."""
+
+    def __init__(self, fails_before_success: int):
+        self.fails_before_success = fails_before_success
+        self.calls = 0
+
+    async def fetchval(self, sql, key):
+        self.calls += 1
+        return self.calls > self.fails_before_success
+
+
+class TestAdvisoryLockAcquireRetries:
+    """A rolling deploy on a continuous service starts the new container
+    while the old one is still up - see the module docstring on
+    acquire_advisory_lock_with_retry for the full incident this guards
+    against: production evidence of a deploy leaving BOTH the new and
+    the old container stopped, because the new one gave up on its very
+    first pg_try_advisory_lock() attempt (which is expected to lose that
+    race) instead of waiting for the old one to finish its own SIGTERM
+    handling and release the lock."""
+
+    @run_async
+    async def test_succeeds_immediately_when_the_lock_is_free(self):
+        conn = _FakeLockConn(fails_before_success=0)
+        slept = []
+        got = await mod.acquire_advisory_lock_with_retry(
+            conn, 123, retry_seconds=90.0, poll_seconds=5.0,
+            sleep=lambda s: slept.append(s), now=lambda: 0.0,
+        )
+        assert got is True
+        assert conn.calls == 1
+        assert slept == []  # no retry needed - must not sleep at all
+
+    @run_async
+    async def test_retries_until_the_previous_instance_releases_it(self):
+        conn = _FakeLockConn(fails_before_success=3)
+        clock = [0.0]
+        slept = []
+
+        async def fake_sleep(seconds):
+            slept.append(seconds)
+            clock[0] += seconds
+
+        got = await mod.acquire_advisory_lock_with_retry(
+            conn, 123, retry_seconds=90.0, poll_seconds=5.0,
+            sleep=fake_sleep, now=lambda: clock[0],
+        )
+        assert got is True
+        assert conn.calls == 4
+        assert slept == [5.0, 5.0, 5.0]
+
+    @run_async
+    async def test_gives_up_once_the_retry_window_is_spent(self):
+        # A genuinely second, unrelated instance - not just a deploy
+        # handoff - must still result in a clean exit rather than
+        # retrying forever.
+        conn = _FakeLockConn(fails_before_success=10_000)
+        clock = [0.0]
+
+        async def fake_sleep(seconds):
+            clock[0] += seconds
+
+        got = await mod.acquire_advisory_lock_with_retry(
+            conn, 123, retry_seconds=20.0, poll_seconds=5.0,
+            sleep=fake_sleep, now=lambda: clock[0],
+        )
+        assert got is False
+        assert clock[0] >= 20.0
+
+    @run_async
+    async def test_a_zero_retry_window_still_tries_exactly_once(self):
+        # retry_seconds=0.0 must not skip the attempt entirely - it means
+        # "no retrying", not "no lock check at all".
+        conn = _FakeLockConn(fails_before_success=10_000)
+        got = await mod.acquire_advisory_lock_with_retry(
+            conn, 123, retry_seconds=0.0, poll_seconds=5.0,
+            sleep=lambda s: (_ for _ in ()).throw(AssertionError("must not sleep")),
+            now=lambda: 0.0,
+        )
+        assert got is False
+        assert conn.calls == 1
+
+
+def test_run_forever_retries_the_lock_instead_of_exiting_on_first_loss():
+    """The old one-shot check ('if not got_lock: ... return') is exactly
+    what turned a routine rolling deploy into the worker silently never
+    coming back - see TestAdvisoryLockAcquireRetries. run_forever() must
+    route through the retrying helper, not call pg_try_advisory_lock
+    directly."""
+    import inspect
+
+    source = inspect.getsource(mod.run_forever)
+    lock_acquire = source.index("lock_conn = await pool.acquire()")
+    not_got_lock = source.index("if not got_lock:", lock_acquire)
+    between = source[lock_acquire:not_got_lock]
+    assert "acquire_advisory_lock_with_retry(" in between
+
+
 def test_shutdown_survives_a_dead_advisory_lock_connection():
     """Production evidence: a Railway "Stopping Container" teardown can cut
     the DB connection within milliseconds of the SIGTERM that triggers this

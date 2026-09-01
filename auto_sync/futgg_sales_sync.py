@@ -314,6 +314,18 @@ PROGRESS_LOG_EVERY = env_int("FUTGG_SALES_PROGRESS_LOG_EVERY", 25, minimum=1)
 SALES_SYNC_ADVISORY_LOCK_KEY = env_int(
     "FUTGG_SALES_ADVISORY_LOCK_KEY", 7741013
 )
+#: A rolling deploy starts the new container while the old one is still
+#: up, so the new container's very first pg_try_advisory_lock() attempt
+#: is expected to lose - the old instance normally releases the lock
+#: within seconds of its own SIGTERM handling. Retrying for this long
+#: covers that handoff; only a lock genuinely held by a second, unrelated
+#: instance survives the whole window.
+LOCK_ACQUIRE_RETRY_SECONDS = env_float(
+    "FUTGG_SALES_LOCK_ACQUIRE_RETRY_SECONDS", 90.0, minimum=0.0
+)
+LOCK_ACQUIRE_POLL_SECONDS = env_float(
+    "FUTGG_SALES_LOCK_ACQUIRE_POLL_SECONDS", 5.0, minimum=0.5
+)
 
 # ---------------------------------------------------------------------
 # Transport: signed_fetch (the original design) vs page_capture (the
@@ -2303,6 +2315,34 @@ def _on_shutdown_signal(sig: "signal.Signals", shutdown_event: asyncio.Event) ->
     shutdown_event.set()
 
 
+async def acquire_advisory_lock_with_retry(
+    lock_conn: Any, key: int, *, retry_seconds: float, poll_seconds: float,
+    sleep=asyncio.sleep, now=time.monotonic,
+) -> bool:
+    """pg_try_advisory_lock(), retrying for up to `retry_seconds` if it's
+    already held.
+
+    A single failed attempt only ever meant "another SalesSync is running"
+    safely in the old bounded/cron-schedule world, where the previous run
+    would finish and free the lock on its own schedule regardless of what
+    this container did. Running continuously changed that: a rolling
+    deploy starts the NEW container while the OLD one is still up, so the
+    very first attempt here is *expected* to lose that race - and if this
+    container gives up immediately (as it used to), nothing else ever
+    restarts it, so a routine deploy silently stops the worker for good.
+    The old instance releases the lock within seconds of its own SIGTERM
+    handling (see run_forever's finally block), so a short retry window
+    turns that race into a brief handoff instead. `sleep`/`now` are
+    injectable so tests never actually sleep.
+    """
+    got = await lock_conn.fetchval("SELECT pg_try_advisory_lock($1)", key)
+    deadline = now() + retry_seconds
+    while not got and now() < deadline:
+        await sleep(poll_seconds)
+        got = await lock_conn.fetchval("SELECT pg_try_advisory_lock($1)", key)
+    return bool(got)
+
+
 async def run_forever() -> None:
     from playwright.async_api import async_playwright
 
@@ -2310,16 +2350,21 @@ async def run_forever() -> None:
         DATABASE_URL, min_size=1, max_size=4, command_timeout=120
     )
     # Session advisory lock: only one scheduled/continuous SalesSync may
-    # own the queue at a time, even if Railway starts a new cron container
-    # before the previous bounded run has exited.
+    # own the queue at a time, even if Railway starts a new container
+    # before the previous one has exited - a rolling deploy on a
+    # continuous service does exactly this on every single deploy, so
+    # the retry here (not just one attempt) is what keeps a routine
+    # deploy from being indistinguishable from the worker being stopped.
     lock_conn = await pool.acquire()
-    got_lock = await lock_conn.fetchval(
-        "SELECT pg_try_advisory_lock($1)", SALES_SYNC_ADVISORY_LOCK_KEY
+    got_lock = await acquire_advisory_lock_with_retry(
+        lock_conn, SALES_SYNC_ADVISORY_LOCK_KEY,
+        retry_seconds=LOCK_ACQUIRE_RETRY_SECONDS,
+        poll_seconds=LOCK_ACQUIRE_POLL_SECONDS,
     )
     if not got_lock:
         log.warning(
-            "another SalesSync owns advisory lock %d; exiting cleanly",
-            SALES_SYNC_ADVISORY_LOCK_KEY,
+            "another SalesSync still owns advisory lock %d after %.0fs - exiting cleanly",
+            SALES_SYNC_ADVISORY_LOCK_KEY, LOCK_ACQUIRE_RETRY_SECONDS,
         )
         await pool.release(lock_conn)
         await pool.close()

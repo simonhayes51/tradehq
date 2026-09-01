@@ -561,11 +561,47 @@ production operation was run.**
    deliberately carried across cycles (that's the point of
    `AdaptiveThrottle`); this streak counter is not meant to be, and now
    resets to 0 at the top of every cycle in `run_forever()`, alongside
-   the existing per-cycle `stats` reset. Not yet re-verified against a
-   live log with this fix deployed — watch for the "instant retrip"
-   pattern disappearing from the next few hours of logs, and
-   `signal_capable=` in the heartbeat detail trending up rather than
-   sideways.
+   the existing per-cycle `stats` reset. Confirmed live: the next cycle
+   after this deployed logged `cards_ok=137 failed=0` — clean, no
+   retrip — and coverage/`signal_capable` climbed across three
+   consecutive readings over ~2.5 hours (46.8%/38.0% → 47.7%/39.1% →
+   48.0%/39.3%) rather than one good stretch.
+
+   A second incident surfaced immediately after that fix shipped, on the
+   very next redeploy: `asyncpg.exceptions.InterfaceError: cannot call
+   Connection.execute(): connection has been released back to the pool`,
+   thrown from the shutdown path's `pg_advisory_unlock` call and
+   propagating out as an unhandled `futgg_sales_sync failed` traceback.
+   Root cause: a container teardown can cut the DB connection within
+   ~150ms of the SIGTERM that triggers shutdown, before the unlock ever
+   runs; asyncpg detects the dead connection and auto-detaches it, so
+   calling it raises. Harmless in effect (Postgres already drops a
+   session-scoped advisory lock the instant its connection dies) but
+   noisy — a routine redeploy looked like a crash. Fixed by wrapping the
+   unlock call in try/except; a dead connection there now just logs a
+   warning.
+
+   A third incident, found from the SAME redeploy's logs, was more
+   serious: the advisory-lock handoff between the new and old container
+   left **both** stopped. Sequence observed: Railway starts the new
+   container while the old one is still mid-cycle → new container's
+   single `pg_try_advisory_lock` attempt loses (expected — the old one
+   is still running) → old code treated that as "another SalesSync is
+   running, exit cleanly" and returned for good → Railway stops that
+   now-exited container → moments later the old instance also gets
+   SIGTERM as part of the same deploy and shuts down cleanly. Net
+   result: nothing left running, and nothing restarts a container that
+   exited with code 0. That one-shot check was correct for the old
+   bounded/cron-schedule world (the other run would finish and free the
+   lock on its own schedule regardless), but a continuous service's
+   rolling deploy hits this exact race on *every single deploy*.
+   `acquire_advisory_lock_with_retry()` now retries for
+   `FUTGG_SALES_LOCK_ACQUIRE_RETRY_SECONDS` (default 90s) before giving
+   up — long enough for the outgoing instance to finish its own SIGTERM
+   handling and release the lock, which the previous fix confirmed
+   completes in well under that. Not yet re-verified against a live
+   redeploy with this fix in place — watch the next deploy's logs for
+   the new container picking the queue back up instead of exiting.
 
    **Still not fixed:** whether `signed_fetch` alone, even running at
    full effective throughput, keeps the catalogue inside the 72h
