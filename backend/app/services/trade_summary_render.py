@@ -19,6 +19,14 @@ EXPORT_WIDTH = 900
 EXPORT_HEIGHT = 470
 EXPORT_DEVICE_SCALE = 2
 
+# Mirrors components/shareCardFormat.js's DIMENSIONS - see
+# trade_share_render.py's DIMENSIONS_FOR_FORMAT for why these two must
+# stay numerically identical.
+DIMENSIONS_FOR_FORMAT = {
+    "wide": (900, 470),
+    "portrait": (1080, 1350),
+}
+
 _FRONTEND_URL = os.getenv("FRONTEND_URL", "https://app.futhub.co.uk").rstrip("/")
 _NAV_TIMEOUT_MS = int(os.getenv("TRADE_SHARE_RENDER_TIMEOUT_MS", "20000"))
 _READY_TIMEOUT_MS = int(os.getenv("TRADE_SHARE_READY_TIMEOUT_MS", "10000"))
@@ -43,9 +51,10 @@ def _png_dimensions(data: bytes) -> tuple[int, int]:
     return width, height
 
 
-async def render_trade_summary_png(user_id: str, period: str) -> RenderedTradeSummary:
+async def render_trade_summary_png(user_id: str, period: str, format: str = "wide") -> RenderedTradeSummary:
+    width, height = DIMENSIONS_FOR_FORMAT.get(format, DIMENSIONS_FOR_FORMAT["wide"])
     token = make_render_token(user_id, period)
-    url = f"{_FRONTEND_URL}/#/internal/render/trade-summary/{period}?token={token}"
+    url = f"{_FRONTEND_URL}/#/internal/render/trade-summary/{period}?token={token}&format={format}"
 
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(
@@ -54,7 +63,7 @@ async def render_trade_summary_png(user_id: str, period: str) -> RenderedTradeSu
         )
         try:
             context = await browser.new_context(
-                viewport={"width": EXPORT_WIDTH, "height": EXPORT_HEIGHT},
+                viewport={"width": width, "height": height},
                 device_scale_factor=EXPORT_DEVICE_SCALE,
             )
             try:

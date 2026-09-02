@@ -583,3 +583,39 @@
 .summary-share-btn .spin {
   animation: history-share-spin 0.8s linear infinite;
 }
+
+.format-toggle {
+  display: inline-flex;
+  border: 1px solid var(--v2-border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.format-toggle button {
+  background: transparent;
+  color: var(--v2-muted);
+  border: none;
+  padding: 9px 12px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.format-toggle button + button {
+  border-left: 1px solid var(--v2-border);
+}
+.format-toggle button.active {
+  background: var(--v2-accent);
+  color: #08090a;
+}
+.format-toggle button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.history-share-format {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+  font-size: 13px;
+  color: var(--v2-muted);
+}

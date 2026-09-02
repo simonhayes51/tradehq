@@ -17,6 +17,7 @@ export default function TradeShareExport() {
   const { tradeId } = useParams();
   const [searchParams] = useSearchParams();
   const token = searchParams.get("token") || "";
+  const format = searchParams.get("format") === "portrait" ? "portrait" : "wide";
   const [data, setData] = useState(null);
   const [fetchError, setFetchError] = useState(null);
 
@@ -84,11 +85,12 @@ export default function TradeShareExport() {
   }, [data, fetchError]);
 
   if (fetchError) {
+    const size = format === "portrait" ? { width: 1080, height: 1350 } : { width: 900, height: 470 };
     return (
-      <div data-trade-share-export data-trade-share-error={fetchError} style={{ width: 900, height: 470 }} />
+      <div data-trade-share-export data-trade-share-error={fetchError} style={size} />
     );
   }
   if (!data) return null;
 
-  return <TradeShareCardArt data={data} />;
+  return <TradeShareCardArt data={data} format={format} />;
 }

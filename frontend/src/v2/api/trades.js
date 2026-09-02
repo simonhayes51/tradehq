@@ -27,8 +27,9 @@ export const getCardCommunity = (cardId) => request(`/community/${cardId}`);
 // Not under /api/v2/trades - this hits the shared v1 trades router
 // (app/routers/trade_share.py) since the trades table it reads from is
 // the same one both v1 and v2 write to.
-export async function shareTradeCard(tradeId) {
-  const response = await fetch(`${API_BASE}/api/trades/${tradeId}/share-card`, {
+// format: "wide" (900x470, default) | "portrait" (1080x1350, for TikTok/IG)
+export async function shareTradeCard(tradeId, format = "wide") {
+  const response = await fetch(`${API_BASE}/api/trades/${tradeId}/share-card?format=${format}`, {
     method: "POST",
     credentials: "include",
   });
@@ -39,9 +40,9 @@ export async function shareTradeCard(tradeId) {
   return response.json();
 }
 
-// period: "today" | "week" | "all"
-export async function shareSummaryCard(period) {
-  const response = await fetch(`${API_BASE}/api/trades/summary-share-card?period=${period}`, {
+// period: "today" | "week" | "all"; format: "wide" (default) | "portrait"
+export async function shareSummaryCard(period, format = "wide") {
+  const response = await fetch(`${API_BASE}/api/trades/summary-share-card?period=${period}&format=${format}`, {
     method: "POST",
     credentials: "include",
   });

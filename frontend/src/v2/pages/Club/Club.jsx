@@ -89,6 +89,7 @@ const SUMMARY_PERIODS = [
 
 function SummaryShare() {
   const [period, setPeriod] = useState("week");
+  const [format, setFormat] = useState("wide");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [copyUnsupported, setCopyUnsupported] = useState(false);
@@ -98,7 +99,7 @@ function SummaryShare() {
     setError("");
     setCopyUnsupported(false);
     try {
-      const result = await shareSummaryCard(period);
+      const result = await shareSummaryCard(period, format);
       await action(result);
     } catch (err) {
       if (String(err.message || "").includes("copying images")) setCopyUnsupported(true);
@@ -109,7 +110,7 @@ function SummaryShare() {
   }
 
   const download = () => withResult(async ({ image_data_url, caption }) => {
-    await downloadDataUrlAsFile(image_data_url, `eafc-live-${period}-recap.png`);
+    await downloadDataUrlAsFile(image_data_url, `eafc-live-${period}-recap-${format}.png`);
     await copyText(caption);
   });
   const copy = () => withResult(async ({ image_data_url }) => copyImageToClipboard(image_data_url));
@@ -125,6 +126,7 @@ function SummaryShare() {
           <select value={period} onChange={(e) => setPeriod(e.target.value)} disabled={busy}>
             {SUMMARY_PERIODS.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
           </select>
+          <FormatToggle value={format} onChange={setFormat} disabled={busy} />
           <button type="button" className="summary-share-btn" disabled={busy} onClick={download} title="Download image (and copy a caption)">
             {busy ? <Loader2 size={16} className="spin" /> : <Download size={16} />} Download
           </button>
@@ -139,6 +141,18 @@ function SummaryShare() {
   );
 }
 
+// Wide (900x470, Discord/X) vs Portrait (1080x1350, TikTok/IG) - a plain
+// two-button toggle rather than a select, since there are only ever two
+// options and this sits inline with other buttons.
+function FormatToggle({ value, onChange, disabled }) {
+  return (
+    <div className="format-toggle" role="group" aria-label="Image format">
+      <button type="button" className={value === "wide" ? "active" : ""} disabled={disabled} onClick={() => onChange("wide")}>Wide</button>
+      <button type="button" className={value === "portrait" ? "active" : ""} disabled={disabled} onClick={() => onChange("portrait")}>Story</button>
+    </div>
+  );
+}
+
 function OpenTrades({ trades, onClose }) {
   if (!trades.length) return <EmptyState icon={<Target />} title="No open trades yet" text="Open a recommendation on the dashboard and press Log purchase. It will appear here instantly." action={<a href="#">Browse recommendations</a>} />;
   return <section className="trade-grid">{trades.map((trade) => { const qty = Number(trade.quantity || 1); const target = Number(trade.target_sell || 0); const projected = target ? (Math.floor(target * .95) - Number(trade.buy)) * qty : 0; const liveStatus = trade.current_recommendation_status ? trade.current_recommendation_status.toLowerCase() : null; return <article className="trade-card" key={trade.trade_id}><div className="trade-top"><div><span>{versionLabel(trade.version)}</span><h3>{trade.player}</h3></div><b>OPEN</b></div><div className="trade-numbers"><Stat label="Bought" value={<CoinValue value={trade.buy} />} /><Stat label="Quantity" value={qty} /><Stat label="Target" value={<CoinValue value={target || null} />} /><Stat label="Projected" value={<CoinValue value={projected} signed />} /></div>{liveStatus ? <div className="trade-verdict"><RecommendationBadge recommendation={liveStatus} /><p>{trade.current_recommendation_reasoning}</p></div> : null}<div className="trade-meta"><span><Clock3 size={14} /> {date(trade.bought_at || trade.timestamp)}</span><span>{String(trade.platform || "ps").toUpperCase()}</span></div><button className="close-trade" onClick={() => onClose(trade)}>Close trade</button></article>; })}</section>;
@@ -147,12 +161,14 @@ function OpenTrades({ trades, onClose }) {
 function History({ trades }) {
   const [sharingId, setSharingId] = useState(null);
   const [shareError, setShareError] = useState("");
-  const [shareCache, setShareCache] = useState({}); // trade_id -> { image_data_url, caption }
+  const [format, setFormat] = useState("wide");
+  const [shareCache, setShareCache] = useState({}); // `${trade_id}:${format}` -> { image_data_url, caption }
 
   async function fetchShare(trade) {
-    if (shareCache[trade.trade_id]) return shareCache[trade.trade_id];
-    const result = await shareTradeCard(trade.trade_id);
-    setShareCache((prev) => ({ ...prev, [trade.trade_id]: result }));
+    const key = `${trade.trade_id}:${format}`;
+    if (shareCache[key]) return shareCache[key];
+    const result = await shareTradeCard(trade.trade_id, format);
+    setShareCache((prev) => ({ ...prev, [key]: result }));
     return result;
   }
 
@@ -170,13 +186,14 @@ function History({ trades }) {
   }
 
   const download = (trade) => withResult(trade, async ({ image_data_url, caption }) => {
-    await downloadDataUrlAsFile(image_data_url, `eafc-live-${slugFilename(trade.player)}.png`);
+    await downloadDataUrlAsFile(image_data_url, `eafc-live-${slugFilename(trade.player)}-${format}.png`);
     await copyText(caption);
   });
   const copy = (trade) => withResult(trade, async ({ image_data_url }) => copyImageToClipboard(image_data_url));
 
   if (!trades.length) return <EmptyState icon={<CheckCircle2 />} title="No completed sales" text="When you close a trade, the result and EA tax will be stored here." />;
   return <>
+    <div className="history-share-format"><span>Share image format:</span><FormatToggle value={format} onChange={setFormat} disabled={sharingId !== null} /></div>
     {shareError ? <p className="club-error">{shareError}</p> : null}
     <div className="history-table"><div className="history-head"><span>Player</span><span>Bought</span><span>Sold</span><span>Profit</span><span>Date</span><span /></div>{trades.map((trade) => { const busy = sharingId === trade.trade_id; return <div className="history-row" key={trade.trade_id}><div><strong>{trade.player}</strong><small>{versionLabel(trade.version)} · x{trade.quantity || 1}</small></div><CoinValue value={trade.buy} /><CoinValue value={trade.sell} /><strong className={Number(trade.profit) >= 0 ? "positive" : "negative"}><CoinValue value={trade.profit} signed /></strong><span>{date(trade.sold_at)}</span><div className="history-share-actions">
       <button type="button" className="history-share" title="Download a shareable image (and copy a caption)" disabled={busy} onClick={() => download(trade)}>

@@ -21,10 +21,18 @@ logger = logging.getLogger("trade_share_render")
 
 # A wide social-card ratio (close to Discord/OG's 1200x630) rather than
 # the tall player-card ratio - this is a shareable summary card, not a
-# card-art export.
+# card-art export. "portrait" is the newer ~4:5 format for TikTok/IG -
+# mirrored exactly on the frontend (components/shareCardFormat.js's
+# DIMENSIONS) since the viewport here and the card's own width/height
+# style must match or the screenshot crops or letterboxes.
 EXPORT_WIDTH = 900
 EXPORT_HEIGHT = 470
 EXPORT_DEVICE_SCALE = 2
+
+DIMENSIONS_FOR_FORMAT = {
+    "wide": (900, 470),
+    "portrait": (1080, 1350),
+}
 
 _FRONTEND_URL = os.getenv("FRONTEND_URL", "https://app.futhub.co.uk").rstrip("/")
 _NAV_TIMEOUT_MS = int(os.getenv("TRADE_SHARE_RENDER_TIMEOUT_MS", "20000"))
@@ -50,9 +58,10 @@ def _png_dimensions(data: bytes) -> tuple[int, int]:
     return width, height
 
 
-async def render_trade_share_png(user_id: str, trade_id: int) -> RenderedTradeShare:
+async def render_trade_share_png(user_id: str, trade_id: int, format: str = "wide") -> RenderedTradeShare:
+    width, height = DIMENSIONS_FOR_FORMAT.get(format, DIMENSIONS_FOR_FORMAT["wide"])
     token = make_render_token(user_id, trade_id)
-    url = f"{_FRONTEND_URL}/#/internal/render/trade-share/{trade_id}?token={token}"
+    url = f"{_FRONTEND_URL}/#/internal/render/trade-share/{trade_id}?token={token}&format={format}"
 
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(
@@ -61,7 +70,7 @@ async def render_trade_share_png(user_id: str, trade_id: int) -> RenderedTradeSh
         )
         try:
             context = await browser.new_context(
-                viewport={"width": EXPORT_WIDTH, "height": EXPORT_HEIGHT},
+                viewport={"width": width, "height": height},
                 device_scale_factor=EXPORT_DEVICE_SCALE,
             )
             try:

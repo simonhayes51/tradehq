@@ -134,6 +134,35 @@ def test_card_art_missing_never_blocks_the_render(monkeypatch):
     assert render_data["player"] == "Someone Obscure"
 
 
+# ---------------------------------------------------------------------------
+# ROI: computed server-side (app/services/trade_economics.py) and handed
+# to the frontend as data.roi - the frontend never recomputes it. Prior
+# to this, TradeShareCardArt.jsx computed roi = profit / data.buy * 100
+# itself; since `profit` is already quantity-scaled, that overstated ROI
+# by a factor of quantity for any qty>1 trade.
+# ---------------------------------------------------------------------------
+
+
+def test_render_data_roi_accounts_for_quantity(monkeypatch):
+    monkeypatch.setattr(trade_share_data, "search_cards", AsyncMock(return_value=[]))
+    trade = {
+        "player": "Haaland", "version": "TOTS", "buy": 997_000, "sell": 1_450_000,
+        "quantity": 4, "profit": 1_522_000, "ea_tax": 290_000,
+    }
+    render_data = run(trade_share_data.build_trade_share_render_data(trade))
+    assert round(render_data["roi"], 2) == 38.16
+    # The bug this guards: dividing profit by buy alone (ignoring
+    # quantity) would have produced 152.66%, not 38.16%.
+    assert round(render_data["roi"], 2) != round((1_522_000 / 997_000) * 100, 2)
+
+
+def test_render_data_roi_defaults_quantity_to_one(monkeypatch):
+    monkeypatch.setattr(trade_share_data, "search_cards", AsyncMock(return_value=[]))
+    trade = {"player": "X", "version": "Standard", "buy": 1_000_000, "sell": 1_500_000, "profit": 425_000}
+    render_data = run(trade_share_data.build_trade_share_render_data(trade))
+    assert render_data["roi"] == 42.5
+
+
 def test_build_share_caption_labels_loss_correctly():
     caption = trade_share_data.build_share_caption({"player": "X", "version": "TOTS", "profit": -500, "buy": 1000, "sell": 400})
     assert "loss" in caption.lower()

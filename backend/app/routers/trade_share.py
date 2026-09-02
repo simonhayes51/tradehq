@@ -32,6 +32,14 @@ log = logging.getLogger("trade_share")
 internal_router = APIRouter(prefix="/api/internal", tags=["internal-render"])
 router = APIRouter(prefix="/api/trades", tags=["Trades"])
 
+VALID_FORMATS = {"wide", "portrait"}
+
+
+def _validated_format(format: str) -> str:
+    if format not in VALID_FORMATS:
+        raise HTTPException(status_code=400, detail="format must be one of: wide, portrait")
+    return format
+
 
 @internal_router.get("/render/trade-share/{trade_id}")
 async def get_trade_share_render_data(trade_id: int, token: str = Query(...)) -> Dict[str, Any]:
@@ -47,7 +55,8 @@ async def get_trade_share_render_data(trade_id: int, token: str = Query(...)) ->
 
 
 @router.post("/{trade_id}/share-card")
-async def create_trade_share_card(trade_id: int, request: Request):
+async def create_trade_share_card(trade_id: int, request: Request, format: str = "wide"):
+    format = _validated_format(format)
     ent = await compute_entitlements(request)
     user_id = ent.get("user_id")
     if not user_id:
@@ -61,7 +70,7 @@ async def create_trade_share_card(trade_id: int, request: Request):
 
     render_data = await build_trade_share_render_data(trade)
     try:
-        rendered = await render_trade_share_png(str(user_id), trade_id)
+        rendered = await render_trade_share_png(str(user_id), trade_id, format=format)
     except TradeShareRenderError:
         log.warning("Trade share render failed for trade_id=%s", trade_id, exc_info=True)
         raise HTTPException(status_code=502, detail="Couldn't generate the share image - please try again.")
@@ -84,9 +93,10 @@ async def get_trade_summary_render_data(period: str, token: str = Query(...)) ->
 
 
 @router.post("/summary-share-card")
-async def create_trade_summary_share_card(request: Request, period: str = Query(...)):
+async def create_trade_summary_share_card(request: Request, period: str = Query(...), format: str = "wide"):
     if period not in PERIOD_LABELS:
         raise HTTPException(status_code=400, detail="period must be one of: today, week, all")
+    format = _validated_format(format)
 
     ent = await compute_entitlements(request)
     user_id = ent.get("user_id")
@@ -97,7 +107,7 @@ async def create_trade_summary_share_card(request: Request, period: str = Query(
 
     summary = await get_owned_portfolio_summary(str(user_id), period)
     try:
-        rendered = await render_trade_summary_png(str(user_id), period)
+        rendered = await render_trade_summary_png(str(user_id), period, format=format)
     except TradeSummaryRenderError:
         log.warning("Trade summary render failed for user_id=%s period=%s", user_id, period, exc_info=True)
         raise HTTPException(status_code=502, detail="Couldn't generate the share image - please try again.")
