@@ -2,35 +2,50 @@
 //
 // Pure presentation for the portfolio-summary share card (Today/This
 // Week/All-Time) - see pages/internal/TradeSummaryExport.jsx for the
-// readiness/screenshot contract (data-trade-summary-export).
-//
-// Hierarchy: total profit is the one thing this card needs to say in
-// ~1 second, so it is the dominant element, not one box among equals.
-// The record line (wins-losses, win rate) sits right under it at
-// near-hero size deliberately - for the All-Time card this IS the
-// credibility proof (e.g. "78W - 9L / 89.7%"), and a real loss count
-// shown plainly reads as more credible than a card that only ever
-// shows wins. "Trades Tracked" (not "Cards Traded"): `closed_trades`
-// counts trade-calls, not physical cards - a qty-4 trade is one closed
-// trade, not four. Renamed rather than left ambiguous, per the same
-// count that data.closed_trades has always held.
+// readiness/screenshot contract (data-trade-summary-export). Same
+// editorial system as TradeShareCardArt.jsx: total profit is the one
+// hero element (there is no single card to anchor to on this graphic,
+// so the number itself carries that role), everything else is running
+// text sized by importance, wins and losses always rendered in the same
+// weight - the All-Time card's credibility is the honest record, not a
+// curated one.
 import { DIMENSIONS, formatCoinsCompact, formatCoinsExact, scaledFontSize } from "./shareCardFormat";
 
-const ACCENT = "#39ff8a";
+const ACCENT = "#91db32";
 const LOSS = "#ff5f6d";
 const MUTED = "#8d8f95";
+const INK = "#08090a";
+
+const SIZES = {
+  portrait: {
+    padding: "68px 84px 52px",
+    brandIcon: 34, brandText: 22,
+    period: 34,
+    heroLabel: 27, hero: 224, heroMarginTop: 22,
+    recordMarginTop: 66, line1: 60, line2: 52, line2MarginTop: 12,
+    supportMarginTop: 50, thumb: 52, thumbRadius: 7, bestTradeText: 34, completedTrades: 22, completedMarginTop: 16,
+    pill: 15,
+  },
+  wide: {
+    padding: "30px 40px",
+    brandIcon: 20, brandText: 14,
+    period: 18,
+    heroLabel: 13, hero: 94, heroMarginTop: 8,
+    recordMarginTop: 16, line1: 27, line2: 23, line2MarginTop: 4,
+    supportMarginTop: 14, thumb: 30, thumbRadius: 5, bestTradeText: 16, completedTrades: 13, completedMarginTop: 5,
+    pill: 11,
+  },
+};
 
 export default function TradeSummaryCardArt({ data, format = "wide" }) {
   const { width, height } = DIMENSIONS[format] || DIMENSIONS.wide;
-  const isPortrait = format === "portrait";
+  const s = SIZES[format] || SIZES.wide;
   const profit = data.total_profit ?? 0;
   const isProfit = profit >= 0;
   const resultColor = isProfit ? ACCENT : LOSS;
   const best = data.best_sale;
-  const recordText = `${data.wins}W – ${data.losses}L`;
-  const winRateText = `${data.win_rate}% win rate`;
-  const profitText = `${isProfit ? "+" : ""}${formatCoinsExact(profit)}`;
-  const profitFontSize = scaledFontSize(isPortrait ? 150 : 58, profitText, isPortrait ? 9 : 12);
+  const heroText = `${isProfit ? "+" : ""}${formatCoinsExact(profit)}`;
+  const heroFontSize = scaledFontSize(s.hero, heroText, format === "portrait" ? 9 : 6);
 
   return (
     <div
@@ -39,133 +54,109 @@ export default function TradeSummaryCardArt({ data, format = "wide" }) {
         position: "relative",
         width,
         height,
+        background: INK,
+        color: "#f5f5f4",
+        fontFamily: "-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif",
+        overflow: "hidden",
+        boxSizing: "border-box",
         display: "flex",
         flexDirection: "column",
-        justifyContent: "space-between",
-        padding: isPortrait ? "56px 64px" : "34px 44px",
-        background: `
-          radial-gradient(600px 400px at 85% -10%, ${resultColor}22 0%, transparent 60%),
-          radial-gradient(500px 350px at -5% 110%, ${resultColor}14 0%, transparent 55%),
-          #08090a
-        `,
-        color: "#f3f3f2",
-        fontFamily: "'Segoe UI', Inter, system-ui, -apple-system, sans-serif",
-        boxSizing: "border-box",
-        overflow: "hidden",
+        alignItems: "center",
+        padding: s.padding,
       }}
     >
-      <div
-        style={{
-          position: "absolute",
-          inset: 0,
-          backgroundImage:
-            "repeating-linear-gradient(135deg, rgba(255,255,255,0.025) 0px, rgba(255,255,255,0.025) 1px, transparent 1px, transparent 26px)",
-          pointerEvents: "none",
-        }}
-      />
-      <div
-        style={{
-          position: "absolute",
-          top: 0,
-          left: 0,
-          right: 0,
-          height: 4,
-          background: `linear-gradient(90deg, ${resultColor}, transparent 70%)`,
-        }}
-      />
+      <Texture />
 
-      <div style={{ position: "relative", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
-          <div style={{ width: 9, height: 9, borderRadius: 2, background: ACCENT, boxShadow: `0 0 10px ${ACCENT}99` }} />
-          <span style={{ fontSize: isPortrait ? 20 : 15, fontWeight: 800, letterSpacing: "0.08em" }}>
-            EAFC<span style={{ color: ACCENT }}>.LIVE</span>
-          </span>
+      <div style={{ position: "relative", width: "100%" }}>
+        <Brand iconSize={s.brandIcon} textSize={s.brandText} />
+      </div>
+
+      <div style={{ position: "relative", width: "100%", margin: "auto 0", textAlign: "center" }}>
+        <div style={{ fontSize: s.period, fontWeight: 800, letterSpacing: "0.16em", color: ACCENT, textTransform: "uppercase" }}>
+          {data.period_label}
         </div>
-        <div
-          style={{
-            fontSize: isPortrait ? 15 : 11,
-            fontWeight: 700,
-            letterSpacing: "0.08em",
-            color: resultColor,
-            border: `1px solid ${resultColor}55`,
-            background: `${resultColor}14`,
-            borderRadius: 999,
-            padding: isPortrait ? "8px 20px" : "5px 14px",
-            textTransform: "uppercase",
-          }}
-        >
-          {data.period_label} Recap
+
+        <div style={{ marginTop: s.heroMarginTop }}>
+          <div style={{ fontSize: heroFontSize, fontWeight: 900, lineHeight: 0.94, letterSpacing: "-0.03em", color: resultColor }}>{heroText}</div>
+          <div style={{ marginTop: s.heroLabel * 0.35, fontSize: s.heroLabel, fontWeight: 800, letterSpacing: "0.22em", color: MUTED, textTransform: "uppercase" }}>
+            Realized Profit
+          </div>
+        </div>
+
+        <div style={{ marginTop: s.recordMarginTop }}>
+          <div style={{ fontSize: s.line1, fontWeight: 800, letterSpacing: "-0.005em", color: "#f5f5f4" }}>
+            {data.wins} Wins &middot; {data.losses} Losses
+          </div>
+          <div style={{ marginTop: s.line2MarginTop, fontSize: s.line2, fontWeight: 800, letterSpacing: "-0.005em", color: "#d8dade" }}>
+            {data.win_rate}% Win Rate
+          </div>
+        </div>
+
+        <div style={{ marginTop: s.supportMarginTop }}>
+          {best ? (
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: s.thumb * 0.3 }}>
+              <img
+                src={best.image_url || "/img/card-placeholder.png"}
+                alt=""
+                style={{ width: s.thumb, height: s.thumb * 1.27, borderRadius: s.thumbRadius, objectFit: "cover", border: "1px solid rgba(255,255,255,0.14)", opacity: 0.92 }}
+              />
+              <div style={{ fontSize: s.bestTradeText, fontWeight: 700, color: "#c7c9cf" }}>
+                Best trade: <b style={{ color: ACCENT, fontWeight: 800 }}>{best.player} {best.profit >= 0 ? "+" : ""}{formatCoinsCompact(best.profit)}</b>
+              </div>
+            </div>
+          ) : null}
+          <div style={{ marginTop: s.completedMarginTop, fontSize: s.completedTrades, fontWeight: 600, color: "#7d7f85", letterSpacing: "0.01em" }}>
+            {data.closed_trades} completed trades
+          </div>
         </div>
       </div>
 
-      <div style={{ position: "relative", textAlign: isPortrait ? "center" : "left" }}>
-        <div style={{ fontSize: isPortrait ? 20 : 13, color: MUTED, letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: isPortrait ? 14 : 8 }}>
-          Total profit
-        </div>
-        <div style={{ fontSize: profitFontSize, fontWeight: 800, color: resultColor, lineHeight: 1 }}>
-          {profitText}
-        </div>
-        <div
-          style={{
-            fontSize: isPortrait ? 36 : 20,
-            fontWeight: 700,
-            color: "#d8dade",
-            marginTop: isPortrait ? 24 : 12,
-          }}
-        >
-          {recordText} <span style={{ color: MUTED, fontWeight: 600 }}>&middot; {winRateText}</span>
-        </div>
-      </div>
-
-      <div style={{ position: "relative", display: "flex", gap: 14 }}>
-        <StatCard label="Trades Tracked" value={data.closed_trades} isPortrait={isPortrait} />
-        {best ? (
-          <StatCard
-            label="Best Sale"
-            value={best.player}
-            sub={`${best.profit >= 0 ? "+" : ""}${formatCoinsCompact(best.profit)}`}
-            color={resultColor}
-            highlight
-            isPortrait={isPortrait}
-          />
-        ) : null}
-      </div>
-
-      <div style={{ position: "relative", textAlign: "right", fontSize: isPortrait ? 16 : 12, color: MUTED, letterSpacing: "0.04em" }}>
-        app.eafc.live &middot; live market data
+      <div style={{ position: "relative", width: "100%", display: "flex", justifyContent: "center" }}>
+        <AttributionPill size={s.pill} />
       </div>
     </div>
   );
 }
 
-function StatCard({ label, value, sub, color, highlight, isPortrait }) {
+function Texture() {
   return (
     <div
       style={{
-        flex: 1,
-        minWidth: 0,
-        padding: isPortrait ? "22px 26px" : "14px 18px",
-        borderRadius: 10,
-        background: highlight ? `${color}14` : "rgba(255,255,255,0.035)",
-        border: highlight ? `1px solid ${color}40` : "1px solid rgba(255,255,255,0.08)",
+        position: "absolute",
+        inset: 0,
+        backgroundImage:
+          "repeating-linear-gradient(135deg, rgba(255,255,255,0.035) 0px, rgba(255,255,255,0.035) 1px, transparent 1px, transparent 30px)",
+        pointerEvents: "none",
+      }}
+    />
+  );
+}
+
+function Brand({ iconSize, textSize }) {
+  return (
+    <div style={{ position: "relative", display: "flex", alignItems: "center", gap: iconSize * 0.4 }}>
+      <img src="/icons/icon-72x72.png" alt="" style={{ width: iconSize, height: iconSize, borderRadius: iconSize * 0.22, display: "block" }} />
+      <span style={{ fontSize: textSize, fontWeight: 800, letterSpacing: "0.1em", color: MUTED }}>
+        EAFC<span style={{ color: ACCENT }}>.LIVE</span>
+      </span>
+    </div>
+  );
+}
+
+function AttributionPill({ size }) {
+  return (
+    <div
+      style={{
+        fontSize: size,
+        fontWeight: 700,
+        letterSpacing: "0.08em",
+        color: "#7d7f85",
+        border: "1px solid rgba(255,255,255,0.14)",
+        borderRadius: 999,
+        padding: `${size * 0.47}px ${size * 1.07}px`,
       }}
     >
-      <div style={{ fontSize: isPortrait ? 15 : 11, fontWeight: 700, color: MUTED, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: isPortrait ? 10 : 6 }}>
-        {label}
-      </div>
-      <div
-        style={{
-          fontSize: isPortrait ? 32 : 22,
-          fontWeight: 800,
-          color: color || "#f3f3f2",
-          whiteSpace: "nowrap",
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-        }}
-      >
-        {value}
-      </div>
-      {sub ? <div style={{ fontSize: isPortrait ? 22 : 14, fontWeight: 700, color: color || MUTED, marginTop: 2 }}>{sub}</div> : null}
+      DATA FROM EAFC.LIVE
     </div>
   );
 }

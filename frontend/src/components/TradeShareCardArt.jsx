@@ -4,31 +4,70 @@
 // pages/internal/TradeShareExport.jsx for the readiness/screenshot
 // contract this attaches to (data-trade-share-export).
 //
-// Hierarchy (deliberate, not incidental): 1) player/card, 2) profit -
-// the dominant element, readable in ~1s, 3) buy -> sell (with quantity
-// folded in, not hidden in a pill), 4) ROI, 5) EAFC.Live branding, kept
-// subtle. `data.roi` is computed server-side (trade_economics.py) - this
-// component never recomputes it. An earlier version divided profit by
-// unit buy price alone here, overstating ROI by a factor of quantity for
-// every qty>1 trade; that formula no longer exists on the frontend at
-// all, so it can't regress the same way twice.
+// Editorial football-graphic system, not a dashboard export: real card
+// artwork as the dominant visual, one hero number (profit), everything
+// else as running text sized by importance - never four equal boxes.
+// `data.roi` is computed server-side (trade_economics.py) - this
+// component has no ROI math of its own. An earlier version divided
+// profit by unit buy price alone here, overstating ROI by a factor of
+// quantity for every qty>1 trade; that formula doesn't exist on the
+// frontend at all any more.
 import { DIMENSIONS, formatCoinsCompact, formatCoinsExact, formatRoi, scaledFontSize } from "./shareCardFormat";
 
-const ACCENT = "#39ff8a";
+const ACCENT = "#91db32";
 const LOSS = "#ff5f6d";
 const MUTED = "#8d8f95";
+const INK = "#08090a";
+
+const SIZES = {
+  portrait: {
+    // Margins tuned to leave headroom for the widest realistic hero
+    // string ("+" + up to 3 digits + two thousands-commas, e.g.
+    // "+1,522,000") at its scaledFontSize-reduced size - caught in
+    // production QA when that exact string pushed the footer ~37px past
+    // the 1350px canvas and it got clipped by overflow:hidden. Sizes
+    // (font-size, card dimensions) are the approved hierarchy and are
+    // left untouched; only vertical spacing was tightened.
+    padding: "48px 76px 30px",
+    gap: 0,
+    brandIcon: 26, brandText: 18,
+    kicker: 48,
+    cardWidth: 414, cardHeight: 524, cardMarginTop: 10,
+    playerLine: 30, playerLineMarginTop: 14,
+    profitLabel: 25, profitHero: 192, profitMarginTop: 20,
+    priceLabel: 17, priceValue: 60, priceArrow: 56, priceMarginTop: 20, priceGap: 26,
+    roiLabel: 18, roiValue: 72, roiMarginTop: 20,
+    tax: 20, taxMarginTop: 16,
+    pill: 15,
+  },
+  wide: {
+    cardWidth: 210, cardHeight: 266,
+    brandIcon: 18, brandText: 13,
+    kicker: 27,
+    playerLine: 16,
+    profitLabel: 13, profitHero: 82,
+    priceLabel: 10, priceValue: 25, priceArrow: 22,
+    roiLabel: 10, roiValue: 32,
+    tax: 12,
+    pill: 11,
+  },
+};
 
 export default function TradeShareCardArt({ data, format = "wide" }) {
   const { width, height } = DIMENSIONS[format] || DIMENSIONS.wide;
   const isPortrait = format === "portrait";
+  const s = SIZES[format] || SIZES.wide;
+
   const profit = data.profit ?? 0;
   const isProfit = profit >= 0;
   const resultColor = isProfit ? ACCENT : LOSS;
   const quantity = data.quantity || 1;
   const roiText = formatRoi(data.roi);
-  const transparency = quantity > 1
-    ? `${quantity} cards • after 5% EA tax`
-    : "after 5% EA tax";
+  const profitText = `${isProfit ? "+" : ""}${formatCoinsExact(profit)}`;
+  const profitFontSize = scaledFontSize(s.profitHero, profitText, isPortrait ? 9 : 7);
+  const transparency = quantity > 1 ? `${quantity} cards · after 5% EA tax` : "After 5% EA tax";
+  const boughtValue = quantity > 1 ? `${quantity}×${formatCoinsCompact(data.buy)}` : formatCoinsCompact(data.buy);
+  const soldValue = quantity > 1 ? `${quantity}×${formatCoinsCompact(data.sell)}` : formatCoinsCompact(data.sell);
 
   return (
     <div
@@ -37,265 +76,204 @@ export default function TradeShareCardArt({ data, format = "wide" }) {
         position: "relative",
         width,
         height,
-        display: "flex",
-        flexDirection: "column",
-        justifyContent: "space-between",
-        padding: isPortrait ? "56px 64px" : "34px 44px",
-        background: `
-          radial-gradient(600px 400px at 85% -10%, ${resultColor}22 0%, transparent 60%),
-          radial-gradient(500px 350px at -5% 110%, ${resultColor}14 0%, transparent 55%),
-          #08090a
-        `,
-        color: "#f3f3f2",
-        fontFamily: "'Segoe UI', Inter, system-ui, -apple-system, sans-serif",
-        boxSizing: "border-box",
+        background: INK,
+        color: "#f5f5f4",
+        fontFamily: "-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif",
         overflow: "hidden",
+        boxSizing: "border-box",
       }}
     >
-      {/* Faint diagonal texture, purely decorative - gives the flat
-          background some depth without needing an image asset. */}
-      <div
-        style={{
-          position: "absolute",
-          inset: 0,
-          backgroundImage:
-            "repeating-linear-gradient(135deg, rgba(255,255,255,0.025) 0px, rgba(255,255,255,0.025) 1px, transparent 1px, transparent 26px)",
-          pointerEvents: "none",
-        }}
-      />
-      <div
-        style={{
-          position: "absolute",
-          top: 0,
-          left: 0,
-          right: 0,
-          height: 4,
-          background: `linear-gradient(90deg, ${resultColor}, transparent 70%)`,
-        }}
-      />
-
-      <Header resultColor={resultColor} isProfit={isProfit} isPortrait={isPortrait} />
-
+      <Texture />
       {isPortrait ? (
-        <PortraitBody
-          data={data}
-          profit={profit}
-          isProfit={isProfit}
-          resultColor={resultColor}
-          quantity={quantity}
-          roiText={roiText}
-          transparency={transparency}
+        <PortraitLayout
+          data={data} s={s} resultColor={resultColor} isProfit={isProfit}
+          profitText={profitText} profitFontSize={profitFontSize} roiText={roiText}
+          boughtValue={boughtValue} soldValue={soldValue} transparency={transparency}
         />
       ) : (
-        <WideBody
-          data={data}
-          profit={profit}
-          isProfit={isProfit}
-          resultColor={resultColor}
-          quantity={quantity}
-          roiText={roiText}
-          transparency={transparency}
+        <WideLayout
+          data={data} s={s} resultColor={resultColor} isProfit={isProfit}
+          profitText={profitText} profitFontSize={profitFontSize} roiText={roiText}
+          boughtValue={boughtValue} soldValue={soldValue} transparency={transparency}
         />
       )}
-
-      <Footer isPortrait={isPortrait} />
     </div>
   );
 }
 
-function Header({ resultColor, isProfit, isPortrait }) {
+function Texture() {
   return (
-    <div style={{ position: "relative", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-      <Brand size={isPortrait ? 20 : 15} />
-      <div
-        style={{
-          fontSize: isPortrait ? 15 : 11,
-          fontWeight: 700,
-          letterSpacing: "0.08em",
-          color: resultColor,
-          border: `1px solid ${resultColor}55`,
-          background: `${resultColor}14`,
-          borderRadius: 999,
-          padding: isPortrait ? "8px 20px" : "5px 14px",
-          textTransform: "uppercase",
-        }}
-      >
-        {isProfit ? "Trade Won" : "Trade Closed"}
-      </div>
-    </div>
+    <div
+      style={{
+        position: "absolute",
+        inset: 0,
+        backgroundImage:
+          "repeating-linear-gradient(135deg, rgba(255,255,255,0.035) 0px, rgba(255,255,255,0.035) 1px, transparent 1px, transparent 30px)",
+        pointerEvents: "none",
+      }}
+    />
   );
 }
 
-function Brand({ size }) {
+function Brand({ iconSize, textSize }) {
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
-      <div style={{ width: size * 0.6, height: size * 0.6, borderRadius: 2, background: ACCENT, boxShadow: `0 0 10px ${ACCENT}99` }} />
-      <span style={{ fontSize: size, fontWeight: 800, letterSpacing: "0.08em" }}>
+    <div style={{ position: "relative", display: "flex", alignItems: "center", gap: iconSize * 0.4 }}>
+      <img src="/icons/icon-72x72.png" alt="" style={{ width: iconSize, height: iconSize, borderRadius: iconSize * 0.22, display: "block" }} />
+      <span style={{ fontSize: textSize, fontWeight: 800, letterSpacing: "0.1em", color: MUTED }}>
         EAFC<span style={{ color: ACCENT }}>.LIVE</span>
       </span>
     </div>
   );
 }
 
-function PlayerBlock({ data, thumbSize, nameSize }) {
-  return (
-    <div style={{ position: "relative", display: "flex", alignItems: "center", gap: thumbSize * 0.2 }}>
-      {data.image_url ? (
-        <div style={{ position: "relative", width: thumbSize, height: thumbSize, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
-          <div
-            style={{
-              position: "absolute",
-              inset: thumbSize * 0.05,
-              background: "radial-gradient(circle, rgba(255,255,255,0.12) 0%, transparent 72%)",
-              filter: "blur(2px)",
-            }}
-          />
-          <img
-            data-trade-share-thumb
-            src={data.image_url}
-            alt=""
-            style={{ position: "relative", width: "100%", height: "100%", objectFit: "contain" }}
-          />
-        </div>
-      ) : null}
-      <div style={{ minWidth: 0 }}>
-        <div
-          style={{
-            fontSize: data.player.length > 22 ? nameSize * 0.8 : nameSize,
-            fontWeight: 800,
-            lineHeight: 1.08,
-            wordBreak: "break-word",
-          }}
-        >
-          {data.player}
-        </div>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 12 }}>
-          <Pill>{data.version}</Pill>
-          {data.rating ? <Pill>{data.rating} OVR</Pill> : null}
-          {data.platform ? <Pill>{String(data.platform).toUpperCase()}</Pill> : null}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function ProfitHero({ profit, isProfit, resultColor, size, transparency }) {
-  const profitText = `${isProfit ? "+" : ""}${formatCoinsExact(profit)}`;
-  const profitFontSize = scaledFontSize(size, profitText, 9);
-  return (
-    <div style={{ position: "relative", textAlign: "center" }}>
-      <div style={{ fontSize: size * 0.16, color: MUTED, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: size * 0.06 }}>
-        {isProfit ? "Profit" : "Loss"}
-      </div>
-      <div style={{ fontSize: profitFontSize, fontWeight: 800, color: resultColor, lineHeight: 1 }}>
-        {profitText}
-      </div>
-      <div style={{ fontSize: size * 0.14, color: MUTED, marginTop: size * 0.1, letterSpacing: "0.02em" }}>{transparency}</div>
-    </div>
-  );
-}
-
-function BuySellLine({ data, quantity, size }) {
-  const qtyPrefix = quantity > 1 ? `${quantity}x @ ` : "";
-  return (
-    <div style={{ position: "relative", display: "flex", alignItems: "baseline", justifyContent: "center", gap: size * 0.3, flexWrap: "wrap" }}>
-      <span style={{ fontSize: size, fontWeight: 700, color: "#d8dade" }}>
-        {qtyPrefix}{formatCoinsCompact(data.buy)}
-      </span>
-      <span style={{ fontSize: size * 0.8, color: MUTED }}>&rarr;</span>
-      <span style={{ fontSize: size, fontWeight: 700, color: "#d8dade" }}>
-        {qtyPrefix}{formatCoinsCompact(data.sell)}
-      </span>
-    </div>
-  );
-}
-
-function WideBody({ data, profit, isProfit, resultColor, quantity, roiText, transparency }) {
-  return (
-    <>
-      <PlayerBlock data={data} thumbSize={172} nameSize={42} />
-      <div style={{ position: "relative", display: "flex", gap: 14, alignItems: "stretch" }}>
-        <StatCard label="Bought" value={quantity > 1 ? `${quantity}x @ ${formatCoinsCompact(data.buy)}` : formatCoinsExact(data.buy)} />
-        <StatCard label="Sold" value={quantity > 1 ? `${quantity}x @ ${formatCoinsCompact(data.sell)}` : formatCoinsExact(data.sell)} />
-        <StatCard
-          label={isProfit ? "Profit" : "Loss"}
-          value={`${isProfit ? "+" : ""}${formatCoinsExact(profit)}`}
-          color={resultColor}
-          highlight
-        />
-        {roiText ? <StatCard label="ROI" value={roiText} color={resultColor} /> : null}
-      </div>
-      <div style={{ position: "relative", textAlign: "right", fontSize: 12, color: MUTED, letterSpacing: "0.02em" }}>{transparency}</div>
-    </>
-  );
-}
-
-function PortraitBody({ data, profit, isProfit, resultColor, quantity, roiText, transparency }) {
-  return (
-    <div style={{ position: "relative", display: "flex", flexDirection: "column", alignItems: "center", gap: 40 }}>
-      <PlayerBlock data={data} thumbSize={220} nameSize={56} />
-      <ProfitHero profit={profit} isProfit={isProfit} resultColor={resultColor} size={132} transparency={transparency} />
-      <BuySellLine data={data} quantity={quantity} size={40} />
-      {roiText ? (
-        <div
-          style={{
-            fontSize: 30,
-            fontWeight: 800,
-            color: resultColor,
-            border: `1px solid ${resultColor}55`,
-            background: `${resultColor}14`,
-            borderRadius: 999,
-            padding: "10px 28px",
-          }}
-        >
-          ROI {roiText}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function Footer({ isPortrait }) {
-  return (
-    <div style={{ position: "relative", textAlign: "right", fontSize: isPortrait ? 16 : 12, color: MUTED, letterSpacing: "0.04em" }}>
-      app.eafc.live &middot; live market data
-    </div>
-  );
-}
-
-function Pill({ children }) {
-  return (
-    <span
-      style={{
-        fontSize: 14,
-        fontWeight: 600,
-        color: "#d8dade",
-        background: "rgba(255,255,255,0.06)",
-        border: "1px solid rgba(255,255,255,0.1)",
-        borderRadius: 999,
-        padding: "5px 13px",
-      }}
-    >
-      {children}
-    </span>
-  );
-}
-
-function StatCard({ label, value, color, highlight }) {
+function CardFrame({ data, width, height, ratingSize }) {
   return (
     <div
       style={{
-        flex: 1,
-        padding: "14px 18px",
-        borderRadius: 10,
-        background: highlight ? `${color}14` : "rgba(255,255,255,0.035)",
-        border: highlight ? `1px solid ${color}40` : "1px solid rgba(255,255,255,0.08)",
+        position: "relative",
+        width,
+        height,
+        borderRadius: width * 0.045,
+        overflow: "hidden",
+        flexShrink: 0,
+        background: "#111214",
+        border: "1px solid rgba(255,255,255,0.08)",
+        boxShadow: "0 24px 48px rgba(0,0,0,0.5)",
       }}
     >
-      <div style={{ fontSize: 11, fontWeight: 700, color: MUTED, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 6 }}>
-        {label}
+      <img
+        data-trade-share-thumb
+        src={data.image_url || "/img/card-placeholder.png"}
+        alt=""
+        style={{ width: "100%", height: "100%", objectFit: "cover", display: "block", opacity: 0.94 }}
+      />
+      {!data.image_url && data.rating ? (
+        <div style={{ position: "absolute", top: height * 0.03, left: width * 0.04, fontSize: ratingSize, fontWeight: 900, color: ACCENT, letterSpacing: "-0.02em" }}>
+          {data.rating}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function PlayerLine({ data, size, marginTop = 0 }) {
+  return (
+    <div style={{ position: "relative", marginTop, fontSize: size, fontWeight: 700, letterSpacing: "0.06em", color: "#d8dade", textTransform: "uppercase" }}>
+      {data.player}
+      <span style={{ color: "#5c5e64", margin: `0 ${size * 0.33}px` }}>&middot;</span>
+      {data.version}
+    </div>
+  );
+}
+
+function ProfitBlock({ isProfit, profitText, profitFontSize, resultColor, labelSize, marginTop = 0, align = "center" }) {
+  return (
+    <div style={{ position: "relative", marginTop, textAlign: align }}>
+      <div style={{ fontSize: labelSize, fontWeight: 800, letterSpacing: "0.22em", color: MUTED, textTransform: "uppercase" }}>
+        {isProfit ? "Profit" : "Loss"}
       </div>
-      <div style={{ fontSize: 26, fontWeight: 800, color: color || "#f3f3f2", whiteSpace: "nowrap" }}>{value}</div>
+      <div style={{ marginTop: labelSize * 0.08, fontSize: profitFontSize, fontWeight: 900, lineHeight: 0.94, letterSpacing: "-0.03em", color: resultColor }}>
+        {profitText}
+      </div>
+    </div>
+  );
+}
+
+function PriceLine({ boughtValue, soldValue, s, marginTop = 0, justify = "center" }) {
+  return (
+    <div style={{ position: "relative", marginTop, display: "flex", alignItems: "center", justifyContent: justify, gap: s.priceGap || s.priceLabel * 1.4 }}>
+      <div style={{ textAlign: "center" }}>
+        <div style={{ fontSize: s.priceLabel, fontWeight: 800, letterSpacing: "0.18em", color: MUTED, textTransform: "uppercase" }}>Bought</div>
+        <div style={{ marginTop: 2, fontSize: s.priceValue, fontWeight: 800, color: "#f5f5f4" }}>{boughtValue}</div>
+      </div>
+      <div style={{ fontSize: s.priceArrow, fontWeight: 700, color: ACCENT, marginTop: s.priceLabel * 1.1 }}>&rarr;</div>
+      <div style={{ textAlign: "center" }}>
+        <div style={{ fontSize: s.priceLabel, fontWeight: 800, letterSpacing: "0.18em", color: MUTED, textTransform: "uppercase" }}>Sold</div>
+        <div style={{ marginTop: 2, fontSize: s.priceValue, fontWeight: 800, color: "#f5f5f4" }}>{soldValue}</div>
+      </div>
+    </div>
+  );
+}
+
+function RoiBlock({ roiText, s, marginTop = 0, align = "center" }) {
+  if (!roiText) return null;
+  return (
+    <div style={{ position: "relative", marginTop, textAlign: align }}>
+      <div style={{ fontSize: s.roiLabel, fontWeight: 800, letterSpacing: "0.18em", color: MUTED, textTransform: "uppercase" }}>ROI</div>
+      <div style={{ marginTop: 2, fontSize: s.roiValue, fontWeight: 900, letterSpacing: "-0.01em", color: ACCENT }}>{roiText}</div>
+    </div>
+  );
+}
+
+function PortraitLayout({ data, s, resultColor, isProfit, profitText, profitFontSize, roiText, boughtValue, soldValue, transparency }) {
+  return (
+    <div style={{ position: "relative", width: "100%", height: "100%", display: "flex", flexDirection: "column", alignItems: "center", padding: s.padding, boxSizing: "border-box" }}>
+      <div style={{ position: "relative", width: "100%" }}>
+        <Brand iconSize={s.brandIcon} textSize={s.brandText} />
+        <div style={{ marginTop: 8, fontSize: s.kicker, fontWeight: 900, letterSpacing: "0.03em", color: "#f5f5f4", textTransform: "uppercase" }}>
+          Trade Result
+        </div>
+      </div>
+
+      <div style={{ position: "relative", marginTop: s.cardMarginTop, width: "100%", display: "flex", justifyContent: "center" }}>
+        <CardFrame data={data} width={s.cardWidth} height={s.cardHeight} ratingSize={38} />
+      </div>
+
+      <PlayerLine data={data} size={s.playerLine} marginTop={s.playerLineMarginTop} />
+      <ProfitBlock isProfit={isProfit} profitText={profitText} profitFontSize={profitFontSize} resultColor={resultColor} labelSize={s.profitLabel} marginTop={s.profitMarginTop} />
+      <PriceLine boughtValue={boughtValue} soldValue={soldValue} s={s} marginTop={s.priceMarginTop} />
+      <RoiBlock roiText={roiText} s={s} marginTop={s.roiMarginTop} />
+
+      <div style={{ position: "relative", marginTop: s.taxMarginTop, fontSize: s.tax, color: "#7d7f85", letterSpacing: "0.02em" }}>{transparency}</div>
+
+      <div style={{ position: "relative", marginTop: "auto", width: "100%", display: "flex", justifyContent: "center" }}>
+        <AttributionPill size={s.pill} />
+      </div>
+    </div>
+  );
+}
+
+function WideLayout({ data, s, resultColor, isProfit, profitText, profitFontSize, roiText, boughtValue, soldValue, transparency }) {
+  return (
+    <div style={{ position: "relative", width: "100%", height: "100%", boxSizing: "border-box", padding: "26px 32px" }}>
+      <div style={{ position: "absolute", top: 24, left: 32 }}>
+        <Brand iconSize={s.brandIcon} textSize={s.brandText} />
+      </div>
+      <div style={{ position: "absolute", bottom: 20, right: 32 }}>
+        <AttributionPill size={s.pill} />
+      </div>
+
+      <div style={{ position: "relative", width: "100%", height: "100%", display: "flex", alignItems: "center", gap: 30 }}>
+        <CardFrame data={data} width={s.cardWidth} height={s.cardHeight} ratingSize={26} />
+        <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", alignItems: "flex-start" }}>
+          <div style={{ fontSize: s.kicker, fontWeight: 900, letterSpacing: "0.03em", color: "#f5f5f4", textTransform: "uppercase" }}>Trade Result</div>
+          <PlayerLine data={data} size={s.playerLine} marginTop={6} />
+          <ProfitBlock isProfit={isProfit} profitText={profitText} profitFontSize={profitFontSize} resultColor={resultColor} labelSize={s.profitLabel} marginTop={12} align="left" />
+          <PriceLine boughtValue={boughtValue} soldValue={soldValue} s={s} marginTop={14} justify="flex-start" />
+          <div style={{ display: "flex", alignItems: "flex-end", gap: 20, marginTop: 12 }}>
+            <RoiBlock roiText={roiText} s={s} align="left" />
+            <div style={{ fontSize: s.tax, color: "#7d7f85", letterSpacing: "0.02em" }}>{transparency}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AttributionPill({ size }) {
+  return (
+    <div
+      style={{
+        fontSize: size,
+        fontWeight: 700,
+        letterSpacing: "0.08em",
+        color: "#7d7f85",
+        border: "1px solid rgba(255,255,255,0.14)",
+        borderRadius: 999,
+        padding: `${size * 0.47}px ${size * 1.07}px`,
+      }}
+    >
+      DATA FROM EAFC.LIVE
     </div>
   );
 }
