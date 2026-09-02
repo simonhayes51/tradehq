@@ -24,6 +24,14 @@ describe("TradeShareCardArt", () => {
     expect(screen.queryByText(/152\.6/)).not.toBeInTheDocument();
   });
 
+  it("renders the hero profit compact, not as a full integer", () => {
+    // A full "+1,522,000" is exactly the kind of long string that risks
+    // clipping the canvas; the hero is always compact-formatted now.
+    render(<TradeShareCardArt data={HAALAND} />);
+    expect(screen.getByText("+1.52M")).toBeInTheDocument();
+    expect(screen.queryByText("+1,522,000")).not.toBeInTheDocument();
+  });
+
   it("shows quantity folded into the buy/sell figures, per-card price unambiguous", () => {
     render(<TradeShareCardArt data={HAALAND} />);
     expect(screen.getByText("4×997K")).toBeInTheDocument();
@@ -48,7 +56,7 @@ describe("TradeShareCardArt", () => {
 
   it("labels a loss as Loss, not Profit, and renders no '+' sign", () => {
     render(<TradeShareCardArt data={{ ...HAALAND, profit: -50000, roi: -1.25 }} />);
-    expect(screen.getByText("-50,000")).toBeInTheDocument();
+    expect(screen.getByText("-50K")).toBeInTheDocument();
     expect(screen.getByText("Loss")).toBeInTheDocument();
     expect(screen.queryByText("Profit")).not.toBeInTheDocument();
   });
@@ -58,9 +66,39 @@ describe("TradeShareCardArt", () => {
     expect(screen.queryByText("ROI")).not.toBeInTheDocument();
   });
 
-  it("always shows the player name, not just the card art", () => {
+  it("shows just the player name, not a duplicated version/card caption", () => {
+    // Version/rating/platform are already visible on the card art -
+    // repeating the version as "· TOTS" here duplicated the photo.
     render(<TradeShareCardArt data={{ ...HAALAND, image_url: "https://cdn.example.com/haaland.png" }} />);
-    expect(screen.getByText(/Haaland/)).toBeInTheDocument();
+    expect(screen.getByText("Haaland")).toBeInTheDocument();
+    expect(screen.queryByText(/TOTS/)).not.toBeInTheDocument();
+  });
+
+  it("shrinks an unusually long player name instead of letting it overflow", () => {
+    const longName = "Alexander Isak-Christiansen-Whitfield";
+    render(<TradeShareCardArt data={{ ...HAALAND, player: longName }} format="portrait" />);
+    const el = screen.getByText(longName);
+    expect(parseInt(el.style.fontSize, 10)).toBeLessThan(30);
+    // Belt-and-braces backstop even past the font-shrink floor.
+    expect(el.style.textOverflow).toBe("ellipsis");
+    expect(el.style.whiteSpace).toBe("nowrap");
+  });
+
+  it("never lets the player name silently collapse to zero height", () => {
+    // Real bug, caught only by rendering through an actual layout
+    // engine (jsdom doesn't lay out flexbox, so this only asserts the
+    // fix's presence, not the failure mode itself): a flex item inside
+    // a flex-direction:column container gets its automatic minimum
+    // main-axis size forced to 0 by the spec once it has any overflow
+    // other than visible. If the column ever ran even slightly over its
+    // vertical budget, Chromium would collapse the player name to
+    // height:0 - invisibly, with no visual overflow at all - before it
+    // touched any sibling that lacked overflow:hidden. flexShrink:0
+    // opts this element out, so a real overflow shows up as actual
+    // clipping (loud) instead of the name just vanishing (silent).
+    render(<TradeShareCardArt data={HAALAND} format="portrait" />);
+    const el = screen.getByText("Haaland");
+    expect(el.style.flexShrink).toBe("0");
   });
 
   it("shows the card rating on the fallback frame only when there is no real card art", () => {

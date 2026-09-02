@@ -30,8 +30,35 @@ describe("formatCoinsCompact", () => {
     expect(formatCoinsCompact(1450000)).toBe("1.45M");
   });
 
-  it("drops a trailing zero rather than padding it", () => {
-    expect(formatCoinsCompact(1500000)).toBe("1.5M");
+  it("keeps a trailing zero at the million scale rather than trimming it", () => {
+    // Every hero figure gets a fixed, pre-measured width: "1.50M" not
+    // "1.5M". Trimming would make the width unpredictable per value,
+    // reopening the clipping risk a fixed format is meant to close.
+    expect(formatCoinsCompact(1500000)).toBe("1.50M");
+  });
+
+  it("rounds to the nearest whole thousand below 1M, with no decimal", () => {
+    expect(formatCoinsCompact(2195500)).not.toMatch(/K$/);
+    expect(formatCoinsCompact(997450)).toBe("997K");
+  });
+
+  it("promotes a value that rounds up to a full 1000K into the M tier", () => {
+    expect(formatCoinsCompact(999600)).toBe("1.00M");
+  });
+
+  it("shows the exact worked examples from the design spec", () => {
+    expect(formatCoinsCompact(230000)).toBe("230K");
+    expect(formatCoinsCompact(480000)).toBe("480K");
+    expect(formatCoinsCompact(226000)).toBe("226K");
+    expect(formatCoinsCompact(997000)).toBe("997K");
+    expect(formatCoinsCompact(1450000)).toBe("1.45M");
+    expect(formatCoinsCompact(1522000)).toBe("1.52M");
+    expect(formatCoinsCompact(2195500)).toBe("2.20M");
+  });
+
+  it("signs a negative value with a minus, applied before the suffix", () => {
+    expect(formatCoinsCompact(-1450000)).toBe("-1.45M");
+    expect(formatCoinsCompact(-997000)).toBe("-997K");
   });
 });
 

@@ -28,9 +28,10 @@ describe("TradeSummaryCardArt", () => {
     expect(screen.getByText("89.7% Win Rate")).toBeInTheDocument();
   });
 
-  it("shows the total profit as the dominant figure", () => {
+  it("renders the total profit hero compact, not as a full integer", () => {
     render(<TradeSummaryCardArt data={WEEK_SUMMARY} />);
-    expect(screen.getByText("+4,250,000")).toBeInTheDocument();
+    expect(screen.getByText("+4.25M")).toBeInTheDocument();
+    expect(screen.queryByText("+4,250,000")).not.toBeInTheDocument();
   });
 
   it("compacts the best-sale profit for readability, alongside its card thumbnail", () => {
@@ -39,15 +40,29 @@ describe("TradeSummaryCardArt", () => {
     expect(screen.getByText(/Mbappe/)).toBeInTheDocument();
   });
 
+  it("renders the best-trade thumbnail large enough to stay identifiable on a phone", () => {
+    const { container } = render(<TradeSummaryCardArt data={WEEK_SUMMARY} format="portrait" />);
+    const thumb = container.querySelector("img[src*='card-placeholder']");
+    expect(parseInt(thumb.style.width, 10)).toBeGreaterThanOrEqual(60);
+  });
+
   it("omits the best-trade line entirely when there is no best sale", () => {
     render(<TradeSummaryCardArt data={{ ...WEEK_SUMMARY, best_sale: null }} />);
     expect(screen.queryByText(/Best trade/)).not.toBeInTheDocument();
     expect(screen.getByText("87 completed trades")).toBeInTheDocument();
   });
 
+  it("shrinks an unusually long best-trade line instead of letting it overflow", () => {
+    const longBest = { player: "Wojciech Szczesny-Fernandez del Castillo", profit: 500000, image_url: null };
+    render(<TradeSummaryCardArt data={{ ...WEEK_SUMMARY, best_sale: longBest }} format="portrait" />);
+    const el = screen.getByText(/Best trade:/);
+    expect(parseInt(el.style.fontSize, 10)).toBeLessThan(34);
+    expect(el.style.textOverflow).toBe("ellipsis");
+  });
+
   it("renders a loss period without a '+' on total profit", () => {
     render(<TradeSummaryCardArt data={{ ...WEEK_SUMMARY, total_profit: -15000, wins: 2, losses: 5 }} />);
-    expect(screen.getByText("-15,000")).toBeInTheDocument();
+    expect(screen.getByText("-15K")).toBeInTheDocument();
   });
 
   it("defaults to the 900x470 wide export size", () => {
@@ -64,15 +79,17 @@ describe("TradeSummaryCardArt", () => {
     expect(root.style.height).toBe("1350px");
   });
 
-  it("scales down an extreme all-time total instead of letting it clip", () => {
-    // Caught in visual QA: an all-time total like "+24,650,000" clipped
-    // off the right edge of the 1080-wide portrait card at a flat hero
-    // font size.
-    const { container } = render(
-      <TradeSummaryCardArt data={{ ...WEEK_SUMMARY, period_label: "All-Time", total_profit: 24650000 }} format="portrait" />
-    );
-    const hero = screen.getByText("+24,650,000");
+  it("keeps a realistic all-time total short enough to never need the scale-down backstop", () => {
+    render(<TradeSummaryCardArt data={{ ...WEEK_SUMMARY, period_label: "All-Time", total_profit: 24650000 }} format="portrait" />);
+    const hero = screen.getByText("+24.65M");
+    expect(parseInt(hero.style.fontSize, 10)).toBe(224);
+  });
+
+  it("still has a scaledFontSize backstop for a figure too large for even compact formatting", () => {
+    // Synthetic, unrealistic magnitude - the point is only that the
+    // backstop exists and fires, not that this figure is plausible.
+    render(<TradeSummaryCardArt data={{ ...WEEK_SUMMARY, period_label: "All-Time", total_profit: 123456789000 }} format="portrait" />);
+    const hero = screen.getByText("+123456.79M");
     expect(parseInt(hero.style.fontSize, 10)).toBeLessThan(224);
-    expect(container.querySelector("[data-trade-summary-export]")).toBeInTheDocument();
   });
 });
