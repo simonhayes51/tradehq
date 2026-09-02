@@ -1,5 +1,6 @@
 import os
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 
 import pytest
 
@@ -177,6 +178,7 @@ def test_opportunity_post_embed_includes_required_fields():
         liquidity_score = 0.8
         confidence_score = 0.9
         recommended_buy_max = 505000
+        current_executable_buy = 500000
 
     embed, components = build_opportunity_post_embed(row, CI())
     names = {f["name"] for f in embed["fields"]}
@@ -185,6 +187,70 @@ def test_opportunity_post_embed_includes_required_fields():
     # Branded and links back to the card in the app.
     assert embed["author"]["name"] == "EAFC.Live"
     assert components and components[0]["components"][0]["url"]
+
+
+def test_the_buy_field_shows_the_price_profit_was_actually_computed_from():
+    """Production bug, reported live: a Discord post showed BUY 985,000 /
+    SELL TARGET 1,120,000 / EXPECTED PROFIT +129,000 - but 1,120,000 *
+    0.95 - 985,000 = 79,000, not 129,000. The BUY field was reading
+    row.get('current_executable_buy'), and `row` is _segmented_
+    candidates()'s raw futgg_market_snapshot-shaped dict, which has never
+    had that column (see market_data_provider.py's _SNAPSHOT_COLUMNS) -
+    so it silently always fell through to ci.recommended_buy_max (the
+    conservative ceiling), while EXPECTED PROFIT below it was correctly
+    computed from ci.expected_profit_after_tax, which futgg_
+    intelligence.py derives from the REAL executable entry
+    (ci.current_executable_buy) whenever the card is actually
+    executable. The two fields described two different buy prices.
+
+    This card is executable (current_executable_buy=935,000, well below
+    the 985,000 ceiling) - the BUY field must show the real, lower,
+    executable price, and that price must be exactly the one that makes
+    the shown EXPECTED PROFIT correct after EA's 5% tax."""
+    row = {"source_card_id": 1, "name": "Sophia Wilson", "version": "FUTTIES"}
+
+    class CI:
+        recommended_sell_target = 1_120_000
+        expected_profit_after_tax = 129_000.0
+        risk_level = "low"
+        liquidity_score = 0.9
+        confidence_score = 0.95
+        recommended_buy_max = 985_000
+        current_executable_buy = 935_000
+
+    embed, _ = build_opportunity_post_embed(row, CI())
+    buy_field = next(f for f in embed["fields"] if f["name"] == "BUY")
+    assert buy_field["value"] == "935,000 coins"
+
+    buy_price = Decimal(buy_field["value"].split(" coins")[0].replace(",", ""))
+    profit_field = next(f for f in embed["fields"] if f["name"].startswith("EXPECTED PROFIT"))
+    shown_profit = Decimal(profit_field["value"].split(" coins")[0].replace(",", ""))
+    real_profit = Decimal(CI.recommended_sell_target) * Decimal("0.95") - buy_price
+    assert shown_profit == real_profit, (
+        "BUY and EXPECTED PROFIT must describe the same entry price - "
+        f"shown profit {shown_profit} does not match {real_profit} "
+        f"computed from the shown BUY price"
+    )
+
+
+def test_the_buy_field_falls_back_to_the_ceiling_when_not_executable():
+    """A WATCH-shaped candidate (current_executable_buy is None because
+    the live price is above what's worth paying) must still show
+    something - the ceiling it's watching for, same as before."""
+    row = {"source_card_id": 1, "name": "Sample"}
+
+    class CI:
+        recommended_sell_target = 1000
+        expected_profit_after_tax = None
+        risk_level = "medium"
+        liquidity_score = 0.5
+        confidence_score = 0.5
+        recommended_buy_max = 800
+        current_executable_buy = None
+
+    embed, _ = build_opportunity_post_embed(row, CI())
+    buy_field = next(f for f in embed["fields"] if f["name"] == "BUY")
+    assert buy_field["value"] == "800 coins"
 
 
 def test_test_post_embed_is_clearly_labelled():
@@ -197,6 +263,7 @@ def test_test_post_embed_is_clearly_labelled():
         liquidity_score = 0.5
         confidence_score = 0.5
         recommended_buy_max = 1000
+        current_executable_buy = 1000
 
     embed, components = build_opportunity_post_embed(row, CI(), test=True)
     assert "[TEST]" in embed["title"]
@@ -212,6 +279,7 @@ def test_opportunity_post_embed_colors_by_risk_level():
         liquidity_score = 0.5
         confidence_score = 0.5
         recommended_buy_max = 90
+        current_executable_buy = 90
 
         def __init__(self, risk):
             self.risk_level = risk
@@ -316,6 +384,7 @@ def test_publish_live_opportunities_posts_only_one_per_call(monkeypatch):
             self.expected_profit_after_tax = 5000.0
             self.recommended_sell_target = 20000
             self.recommended_buy_max = 15000
+            self.current_executable_buy = 15000
             self.risk_level = "low"
             self.liquidity_score = 0.8
 

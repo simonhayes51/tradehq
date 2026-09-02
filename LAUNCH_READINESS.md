@@ -763,6 +763,38 @@ production operation was run.**
     still don't, the next lever is whether real throughput can support
     ANY reasonable CRITICAL/HIGH treatment at this catalogue size, not
     another share/interval rebalance.
+11. **Discord trading-feed posts showed a BUY price that didn't match
+    the EXPECTED PROFIT next to it.** Reported live with two real
+    examples: one showed BUY 985,000 / SELL TARGET 1,120,000 /
+    EXPECTED PROFIT (after EA tax) +129,000 — but `1,120,000 × 0.95 −
+    985,000 = 79,000`, not 129,000, a 50,000-coin gap. Root cause in
+    `discord_trading_feed.py`'s `build_opportunity_post_embed()`: the
+    BUY field read `row.get('current_executable_buy')`, but `row` is
+    `_segmented_candidates()`'s raw `futgg_market_snapshot`-shaped
+    candidate dict, which has never had that column (it's a
+    `CandidateIntelligence`-computed field, not a raw snapshot one —
+    see `market_data_provider.py`'s `_SNAPSHOT_COLUMNS`). `row.get(...)`
+    therefore always returned `None`, so BUY always silently fell
+    through to `ci.recommended_buy_max` — the conservative buy
+    *ceiling* — while EXPECTED PROFIT next to it was correctly computed
+    from `ci.expected_profit_after_tax`, which `futgg_intelligence.py`
+    derives from the real, usually-lower, executable entry
+    (`ci.current_executable_buy`) whenever the card actually is
+    executable. Every single live post showed the wrong buy price; the
+    size of the gap just varied with how far the live BIN sat below its
+    ceiling at post time. The same bug existed in the budget-band
+    classification used for per-tier posting quotas. Fixed by reading
+    `ci.current_executable_buy` (falling back to `ci.recommended_buy_max`
+    only for a genuine WATCH-shaped candidate) in both places. Also
+    fixed in passing: the admin "send test post" fixture
+    (`_FakeIntelligence`) was missing `recommended_buy_max` entirely — a
+    pre-existing `AttributeError` waiting to fire the next time someone
+    ran that command, unrelated to this bug but caught by the same fix.
+    Two new regression tests reproduce the exact reported numbers and
+    assert BUY/EXPECTED PROFIT can never describe two different entry
+    prices again. Not yet re-verified against a live Discord post —
+    watch the next few live posts for BUY/SELL TARGET/EXPECTED PROFIT
+    to actually reconcile under a 5% tax.
 
 ---
 
