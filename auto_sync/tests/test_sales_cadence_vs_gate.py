@@ -63,6 +63,26 @@ class TestTheMirroredConstantDoesNotDrift:
             "silently validates against the wrong limit."
         )
 
+    def test_tier_intervals_equal_the_backend_priority_config(self):
+        """The exact mismatch this repo lived through: select_due() now
+        schedules by card_priority.effective_tier, and the customer-
+        facing "sales data is behind" message is judged against the SAME
+        tiers via a completely separate config (priority_config.py's
+        PRIORITY_ENGINE_CONFIG.tier_sales_interval_minutes) that this
+        worker cannot import (separate deployment). If the two ever
+        drift again - one side tuned without updating the other - the
+        collector goes back to scheduling against a target the
+        customer-facing message isn't actually using, or vice versa."""
+        sys.path.insert(0, str(ROOT / "backend"))
+        from app.services.priority_config import PRIORITY_ENGINE_CONFIG
+
+        assert ss.SALES_INTERVALS == PRIORITY_ENGINE_CONFIG.tier_sales_interval_minutes, (
+            "futgg_sales_sync's SALES_INTERVALS has drifted from "
+            "priority_config.py's tier_sales_interval_minutes. Update both "
+            "together, or scheduling and the staleness message disagree "
+            "about what 'due' means for the same tier again."
+        )
+
 
 class TestConflictDetection:
     LIMIT = 4320  # 72h

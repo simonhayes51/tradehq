@@ -705,20 +705,64 @@ production operation was run.**
     staleness-reporting can no longer quietly disagree about a card
     neither side has classified yet.
 
-    **Not fixed by this change, and possibly not fixable by scheduling
-    alone:** whether FUT.GG's real rate limit can sustain CRITICAL's
-    15-minute target at all. ~1,700 CRITICAL cards refreshed every 15
-    minutes needs roughly 113 cards/min sustained just for that one
-    tier — well above anything observed as sustainable tonight
-    (~25-30 cards/min at best, with the collector now spending a real
-    fraction of wall-clock time in circuit-breaker backoff). If
-    CRITICAL still reads mostly-stale after this deploys, the next
-    question is whether 15 minutes is a realistic target at all, not
-    whether the collector is trying hard enough to hit it. Not yet
-    verified against a live log — watch `stale_sales_by_priority_tier`
-    ["CRITICAL"]/["HIGH"] specifically, not just the aggregate sum, and
-    whether "Our sales data is behind" stops appearing during a normal,
-    healthy stretch.
+    **Confirmed, not just predicted:** re-deployed and watched live for
+    ~3 hours. `select_due()` was scheduling by tier correctly (confirmed
+    in the startup log: `intervals={'CRITICAL': 15, 'HIGH': 60, ...}`)
+    and overall coverage climbed steadily the whole time (any_sales
+    8424→9007, signal_capable 7183→7860) — but `CRITICAL`/`HIGH`'s own
+    `stale_sales_by_priority_tier` counts stayed flat-to-rising (1714→
+    1777, 4104→4639) regardless. Exactly the predicted outcome: 15
+    minutes for ~1,700 CRITICAL cards needs ~118 cards/min sustained for
+    that tier alone, against a real observed ceiling of ~12-15 cards/min
+    even during this healthy stretch. No amount of scheduling
+    improvement could have closed that gap — the targets themselves were
+    the bug, set in `priority_config.py` before this worker ever
+    scheduled by tier at all, with nothing to check them against.
+
+    `tier_sales_interval_minutes` (`priority_config.py`) and its
+    `auto_sync` mirror (`SALES_INTERVALS`) both changed: CRITICAL
+    15→180min (matching the old rating-band system's *proven*-
+    sustainable 95_plus cadence — the one real data point available),
+    HIGH 60→720min, NORMAL 240→1440min, LOW 1440→2880min (matching the
+    old system's proven under_75 cadence), DORMANT 4320→4000min
+    (unchanged in effect, just consistent with the auto_sync default
+    already in place). NORMAL/LOW were already comfortably met at their
+    old targets (stale counts in the hundreds/low thousands, not
+    thousands), so this is a deliberately conservative staircase down
+    from the one hard data point (CRITICAL=180min), not a second guess.
+    A new test (`test_tier_intervals_equal_the_backend_priority_config`
+    in `test_sales_cadence_vs_gate.py`) pins the two configs equal so
+    this exact class of drift — one side tuned without the other —
+    fails CI going forward.
+
+    **The interval fix alone was not enough, and the follow-up
+    confirms why.** Re-checked ~3 hours later: `CRITICAL`/`HIGH`/
+    `NORMAL`'s stale counts were all still rising (1777→1857, 4639→
+    4976, 1439→1708) despite now-achievable targets, while `DORMANT` —
+    the loosest target of all — was the only one actually falling
+    (3783→2984). The remaining bug was `_TIER_MIN_SHARE`, the
+    guaranteed-cards-per-cycle floor: it still gave `DORMANT` the
+    largest reservation (25%) and `CRITICAL` the smallest (5%),
+    unchanged since the original rating-band port, where that made
+    sense (protect the slow, large tail from the fast bands). It does
+    not make sense now that priority tiers replaced rating bands:
+    `DORMANT`'s loose 4000-minute target barely needs guaranteed
+    throughput to stay met, while `CRITICAL`'s population needs real
+    volume to have any chance at its (already loosened) 180-minute
+    target — a 20-card floor per cycle was never going to move a
+    population in the thousands. Reallocated to `CRITICAL`=0.25,
+    `HIGH`=0.25, `NORMAL`=0.10, `LOW`=0.05, `DORMANT`=0.10 (still 25%
+    overflow capacity left over). Full test suite green, including a
+    replacement for the test that had encoded the old "DORMANT gets the
+    biggest floor" assumption as a permanent property rather than a
+    rating-band-specific one. **Not yet re-verified live against this
+    third correction** — this is the second time a plausible-looking
+    fix under-shot; watch `stale_sales_by_priority_tier["CRITICAL"]`/
+    `["HIGH"]` specifically over several hours, not just whether they
+    stop rising but whether they actually turn around and fall. If they
+    still don't, the next lever is whether real throughput can support
+    ANY reasonable CRITICAL/HIGH treatment at this catalogue size, not
+    another share/interval rebalance.
 
 ---
 

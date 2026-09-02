@@ -132,17 +132,36 @@ class TestTierFloorsExist:
         # backlog" property this was built to keep is gone.
         assert sum(sales._TIER_MIN_SHARE.values()) < 1.0
 
-    def test_dormant_gets_the_largest_guaranteed_share(self):
-        # DORMANT is both the largest population and the one production
-        # evidence (under the old rating-band axis) showed being
-        # starved - it must be guaranteed more than any single faster
-        # tier, not just a token allocation.
-        tail_share = sales._TIER_MIN_SHARE["DORMANT"]
-        assert all(
-            tail_share >= share
-            for tier, share in sales._TIER_MIN_SHARE.items()
-            if tier != "DORMANT"
-        )
+    def test_critical_and_high_get_the_largest_guaranteed_shares(self):
+        # CORRECTED after live evidence. DORMANT used to get the
+        # largest share, ported straight from the old rating-band
+        # allocation - but DORMANT's interval (SALES_INTERVALS) is now
+        # loose enough (4000min) that a small floor keeps it satisfied,
+        # while CRITICAL/HIGH's much tighter intervals (180/720min) for
+        # populations in the thousands need real guaranteed throughput.
+        # Confirmed live: under the old shares, DORMANT's stale count
+        # fell every reading while CRITICAL/HIGH/NORMAL's kept rising
+        # despite already-achievable interval targets - a 20-card
+        # CRITICAL floor per cycle was never going to keep pace with a
+        # population in the thousands. CRITICAL and HIGH must now be
+        # guaranteed at least as much as any other single tier.
+        critical_share = sales._TIER_MIN_SHARE["CRITICAL"]
+        high_share = sales._TIER_MIN_SHARE["HIGH"]
+        for tier, share in sales._TIER_MIN_SHARE.items():
+            if tier in ("CRITICAL", "HIGH"):
+                continue
+            assert critical_share >= share, f"CRITICAL's floor must be >= {tier}'s"
+            assert high_share >= share, f"HIGH's floor must be >= {tier}'s"
+
+    def test_dormant_no_longer_dominates_the_floor(self):
+        # The specific regression this correction guards against: DORMANT
+        # silently creeping back to the largest share (e.g. someone
+        # "restoring" the old allocation without re-checking it against
+        # the new, much looser DORMANT interval) would reproduce the
+        # exact starvation this fix corrected, just for CRITICAL/HIGH
+        # instead of DORMANT.
+        assert sales._TIER_MIN_SHARE["DORMANT"] <= sales._TIER_MIN_SHARE["CRITICAL"]
+        assert sales._TIER_MIN_SHARE["DORMANT"] <= sales._TIER_MIN_SHARE["HIGH"]
 
     def test_every_tier_has_a_where_clause(self):
         assert set(sales._TIER_WHERE) == {"CRITICAL", "HIGH", "NORMAL", "LOW", "DORMANT"}
