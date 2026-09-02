@@ -668,6 +668,57 @@ production operation was run.**
    `matched`/`unmatched` counts in the refresher's logs look sane.**
    `FUTGG_SBC_REWARD_GUARD=false` turns the downstream gate off without
    a deploy if the match rate turns out to be poor.
+10. **The sales collector was scheduling by rating, while the
+    customer-facing staleness signal was judged by adaptive priority
+    tier — two axes over the same catalogue that were never
+    reconciled.** Live: "Our sales data is behind" kept showing on Home
+    even after item 8's fixes, during a 6-hour stretch where coverage
+    was climbing steadily and every heartbeat was healthy. Root cause:
+    `EmptyFeedReason.jsx`'s staleness gate sums
+    `stale_sales_by_priority_tier` — cards judged overdue against
+    `card_priority.effective_tier`'s own interval (CRITICAL=15min,
+    HIGH=60min, migration 044's adaptive-priority engine, refreshed
+    every 15 minutes independently of this worker). But
+    `select_due()` had no concept of `card_priority` at all — it
+    scheduled purely by rating band, whose fastest tier (95+) only
+    ever targeted once per 180 minutes. So CRITICAL (~1,700 cards) and
+    HIGH (~4,100 cards) were permanently reported stale by the exact
+    metric shown to users, regardless of collector health, because
+    nothing in the pipeline ever attempted their interval — not a
+    throughput problem, a scheduling-axis mismatch. Migration 044's
+    own comments already anticipated this as deferred scope ("a later
+    milestone starts writing next_sales_due_at").
+
+    `select_due()` now bands by `card_priority.effective_tier` instead
+    of rating, reusing the exact guaranteed-floor-then-overflow
+    mechanism from item 8's band-floor fix (`_TIER_MIN_SHARE`/
+    `_TIER_WHERE` replace `_BAND_MIN_SHARE`/`_BAND_WHERE`), and
+    `sales_interval_minutes()` now takes a tier instead of a rating
+    (`SALES_INTERVALS` keys changed from `95_plus`/`85_plus`/`80_84`/
+    `75_79`/`under_75` to `CRITICAL`/`HIGH`/`NORMAL`/`LOW`/`DORMANT` —
+    the old `FUTGG_SALES_95_PLUS_INTERVAL_MIN`-style env vars are no
+    longer read; the new ones are `FUTGG_SALES_CRITICAL_INTERVAL_MIN`
+    etc., defaulting to 15/60/240/1440/4000 minutes, mirroring the
+    backend's `PRIORITY_ENGINE_CONFIG.tier_sales_interval_minutes`).
+    Both sides default an unscored card to `NORMAL`, matching
+    `market_data_provider.py`'s `DEFAULT_SALES_TIER`, so scheduling and
+    staleness-reporting can no longer quietly disagree about a card
+    neither side has classified yet.
+
+    **Not fixed by this change, and possibly not fixable by scheduling
+    alone:** whether FUT.GG's real rate limit can sustain CRITICAL's
+    15-minute target at all. ~1,700 CRITICAL cards refreshed every 15
+    minutes needs roughly 113 cards/min sustained just for that one
+    tier — well above anything observed as sustainable tonight
+    (~25-30 cards/min at best, with the collector now spending a real
+    fraction of wall-clock time in circuit-breaker backoff). If
+    CRITICAL still reads mostly-stale after this deploys, the next
+    question is whether 15 minutes is a realistic target at all, not
+    whether the collector is trying hard enough to hit it. Not yet
+    verified against a live log — watch `stale_sales_by_priority_tier`
+    ["CRITICAL"]/["HIGH"] specifically, not just the aggregate sum, and
+    whether "Our sales data is behind" stops appearing during a normal,
+    healthy stretch.
 
 ---
 
