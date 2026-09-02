@@ -9,7 +9,7 @@
 // text sized by importance, wins and losses always rendered in the same
 // weight - the All-Time card's credibility is the honest record, not a
 // curated one.
-import { DIMENSIONS, formatCoinsCompact, formatCoinsExact, scaledFontSize } from "./shareCardFormat";
+import { DIMENSIONS, formatCoinsCompact, scaledFontSize } from "./shareCardFormat";
 
 const ACCENT = "#91db32";
 const LOSS = "#ff5f6d";
@@ -18,21 +18,25 @@ const INK = "#08090a";
 
 const SIZES = {
   portrait: {
+    paddingX: 84,
     padding: "68px 84px 52px",
     brandIcon: 34, brandText: 22,
     period: 34,
     heroLabel: 27, hero: 224, heroMarginTop: 22,
     recordMarginTop: 66, line1: 60, line2: 52, line2MarginTop: 12,
-    supportMarginTop: 50, thumb: 52, thumbRadius: 7, bestTradeText: 34, completedTrades: 22, completedMarginTop: 16,
+    // Thumbnail bumped up from 52 so the card it names stays
+    // identifiable at actual phone feed size, not just full-res.
+    supportMarginTop: 50, thumb: 64, thumbRadius: 8, bestTradeText: 34, completedTrades: 22, completedMarginTop: 16,
     pill: 15,
   },
   wide: {
+    paddingX: 40,
     padding: "30px 40px",
     brandIcon: 20, brandText: 14,
     period: 18,
     heroLabel: 13, hero: 94, heroMarginTop: 8,
     recordMarginTop: 16, line1: 27, line2: 23, line2MarginTop: 4,
-    supportMarginTop: 14, thumb: 30, thumbRadius: 5, bestTradeText: 16, completedTrades: 13, completedMarginTop: 5,
+    supportMarginTop: 14, thumb: 36, thumbRadius: 6, bestTradeText: 16, completedTrades: 13, completedMarginTop: 5,
     pill: 11,
   },
 };
@@ -44,8 +48,13 @@ export default function TradeSummaryCardArt({ data, format = "wide" }) {
   const isProfit = profit >= 0;
   const resultColor = isProfit ? ACCENT : LOSS;
   const best = data.best_sale;
-  const heroText = `${isProfit ? "+" : ""}${formatCoinsExact(profit)}`;
+  // Compact, not the full integer - an all-time total summed across a
+  // power user's whole history can run to 8-9 digits; scaledFontSize
+  // below is a backstop for the rare extreme case, not the primary
+  // defence against clipping the canvas.
+  const heroText = `${isProfit ? "+" : ""}${formatCoinsCompact(profit)}`;
   const heroFontSize = scaledFontSize(s.hero, heroText, format === "portrait" ? 9 : 6);
+  const bestTradeMaxWidth = width - s.paddingX * 2;
 
   return (
     <div
@@ -94,13 +103,23 @@ export default function TradeSummaryCardArt({ data, format = "wide" }) {
 
         <div style={{ marginTop: s.supportMarginTop }}>
           {best ? (
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: s.thumb * 0.3 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: s.thumb * 0.3, maxWidth: bestTradeMaxWidth, margin: "0 auto" }}>
               <img
                 src={best.image_url || "/img/card-placeholder.png"}
                 alt=""
-                style={{ width: s.thumb, height: s.thumb * 1.27, borderRadius: s.thumbRadius, objectFit: "cover", border: "1px solid rgba(255,255,255,0.14)", opacity: 0.92 }}
+                style={{ width: s.thumb, height: s.thumb * 1.27, borderRadius: s.thumbRadius, objectFit: "cover", border: "1px solid rgba(255,255,255,0.14)", opacity: 0.92, flexShrink: 0 }}
               />
-              <div style={{ fontSize: s.bestTradeText, fontWeight: 700, color: "#c7c9cf" }}>
+              <div
+                style={{
+                  fontSize: scaledFontSize(s.bestTradeText, `Best trade: ${best.player} +${formatCoinsCompact(best.profit)}`, 24),
+                  fontWeight: 700,
+                  color: "#c7c9cf",
+                  minWidth: 0,
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                }}
+              >
                 Best trade: <b style={{ color: ACCENT, fontWeight: 800 }}>{best.player} {best.profit >= 0 ? "+" : ""}{formatCoinsCompact(best.profit)}</b>
               </div>
             </div>

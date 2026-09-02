@@ -12,7 +12,7 @@
 // profit by unit buy price alone here, overstating ROI by a factor of
 // quantity for every qty>1 trade; that formula doesn't exist on the
 // frontend at all any more.
-import { DIMENSIONS, formatCoinsCompact, formatCoinsExact, formatRoi, scaledFontSize } from "./shareCardFormat";
+import { DIMENSIONS, formatCoinsCompact, formatRoi, scaledFontSize } from "./shareCardFormat";
 
 const ACCENT = "#91db32";
 const LOSS = "#ff5f6d";
@@ -21,23 +21,24 @@ const INK = "#08090a";
 
 const SIZES = {
   portrait: {
-    // Margins tuned to leave headroom for the widest realistic hero
-    // string ("+" + up to 3 digits + two thousands-commas, e.g.
-    // "+1,522,000") at its scaledFontSize-reduced size - caught in
-    // production QA when that exact string pushed the footer ~37px past
-    // the 1350px canvas and it got clipped by overflow:hidden. Sizes
-    // (font-size, card dimensions) are the approved hierarchy and are
-    // left untouched; only vertical spacing was tightened.
-    padding: "48px 76px 30px",
+    // Vertical rhythm tuned so the ROI/tax/attribution cluster at the
+    // bottom gets real breathing room while still guaranteeing the
+    // footer never clips: the hero is compact-formatted now (max ~8
+    // chars - "+487.32M" - so it renders at its full, predictable
+    // height almost every time, unlike the old full-integer hero whose
+    // height varied with digit count). Portrait is the primary format;
+    // these values are not constrained by what wide needs.
+    paddingX: 76,
+    padding: "36px 76px 26px",
     gap: 0,
     brandIcon: 26, brandText: 18,
     kicker: 48,
-    cardWidth: 414, cardHeight: 524, cardMarginTop: 10,
-    playerLine: 30, playerLineMarginTop: 14,
-    profitLabel: 25, profitHero: 192, profitMarginTop: 20,
-    priceLabel: 17, priceValue: 60, priceArrow: 56, priceMarginTop: 20, priceGap: 26,
-    roiLabel: 18, roiValue: 72, roiMarginTop: 20,
-    tax: 20, taxMarginTop: 16,
+    cardWidth: 414, cardHeight: 524, cardMarginTop: 4,
+    playerLine: 30, playerLineMarginTop: 6,
+    profitLabel: 25, profitHero: 192, profitMarginTop: 10,
+    priceLabel: 17, priceValue: 60, priceArrow: 56, priceMarginTop: 12, priceGap: 26,
+    roiLabel: 18, roiValue: 72, roiMarginTop: 32,
+    tax: 20, taxMarginTop: 24,
     pill: 15,
   },
   wide: {
@@ -63,7 +64,11 @@ export default function TradeShareCardArt({ data, format = "wide" }) {
   const resultColor = isProfit ? ACCENT : LOSS;
   const quantity = data.quantity || 1;
   const roiText = formatRoi(data.roi);
-  const profitText = `${isProfit ? "+" : ""}${formatCoinsExact(profit)}`;
+  // Compact, not the full integer: a hero string this short (max ~8
+  // chars, "+487.32M") can't realistically overflow the canvas the way
+  // an exact multi-comma integer could - scaledFontSize below is a
+  // backstop for the extreme case, not the primary defence.
+  const profitText = `${isProfit ? "+" : ""}${formatCoinsCompact(profit)}`;
   const profitFontSize = scaledFontSize(s.profitHero, profitText, isPortrait ? 9 : 7);
   const transparency = quantity > 1 ? `${quantity} cards · after 5% EA tax` : "After 5% EA tax";
   const boughtValue = quantity > 1 ? `${quantity}×${formatCoinsCompact(data.buy)}` : formatCoinsCompact(data.buy);
@@ -156,12 +161,42 @@ function CardFrame({ data, width, height, ratingSize }) {
   );
 }
 
-function PlayerLine({ data, size, marginTop = 0 }) {
+function PlayerLine({ data, size, marginTop = 0, maxWidth }) {
+  // Just the name - version/rating/platform are already visible on the
+  // card art itself, and repeating them here as "· TOTS" duplicated
+  // information the photo already shows. A real player's name can still
+  // run long (double-barrelled surnames, longer non-English names);
+  // scaledFontSize shrinks it first, and the hard nowrap+ellipsis is the
+  // backstop if a name is long enough that even the floor scale would
+  // still overflow the card's width.
+  const fontSize = scaledFontSize(size, data.player || "", 16);
   return (
-    <div style={{ position: "relative", marginTop, fontSize: size, fontWeight: 700, letterSpacing: "0.06em", color: "#d8dade", textTransform: "uppercase" }}>
+    <div
+      style={{
+        position: "relative",
+        marginTop,
+        maxWidth,
+        fontSize,
+        fontWeight: 700,
+        letterSpacing: "0.06em",
+        color: "#d8dade",
+        textTransform: "uppercase",
+        whiteSpace: "nowrap",
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+        // A flex item (this sits in a flex-direction:column layout) with
+        // any overflow other than visible gets its automatic minimum
+        // main-axis size forced to 0 per the flexbox spec - if the
+        // column ever runs even slightly over its budget, Chromium
+        // collapses THIS element to zero height first (silently, with
+        // no visual overflow at all) rather than any of its siblings.
+        // flexShrink:0 opts it out: any real overflow now shows up as
+        // actual clipping, which is easy to catch, instead of the name
+        // just vanishing.
+        flexShrink: 0,
+      }}
+    >
       {data.player}
-      <span style={{ color: "#5c5e64", margin: `0 ${size * 0.33}px` }}>&middot;</span>
-      {data.version}
     </div>
   );
 }
@@ -219,7 +254,7 @@ function PortraitLayout({ data, s, resultColor, isProfit, profitText, profitFont
         <CardFrame data={data} width={s.cardWidth} height={s.cardHeight} ratingSize={38} />
       </div>
 
-      <PlayerLine data={data} size={s.playerLine} marginTop={s.playerLineMarginTop} />
+      <PlayerLine data={data} size={s.playerLine} marginTop={s.playerLineMarginTop} maxWidth={DIMENSIONS.portrait.width - s.paddingX * 2} />
       <ProfitBlock isProfit={isProfit} profitText={profitText} profitFontSize={profitFontSize} resultColor={resultColor} labelSize={s.profitLabel} marginTop={s.profitMarginTop} />
       <PriceLine boughtValue={boughtValue} soldValue={soldValue} s={s} marginTop={s.priceMarginTop} />
       <RoiBlock roiText={roiText} s={s} marginTop={s.roiMarginTop} />
@@ -247,7 +282,7 @@ function WideLayout({ data, s, resultColor, isProfit, profitText, profitFontSize
         <CardFrame data={data} width={s.cardWidth} height={s.cardHeight} ratingSize={26} />
         <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", alignItems: "flex-start" }}>
           <div style={{ fontSize: s.kicker, fontWeight: 900, letterSpacing: "0.03em", color: "#f5f5f4", textTransform: "uppercase" }}>Trade Result</div>
-          <PlayerLine data={data} size={s.playerLine} marginTop={6} />
+          <PlayerLine data={data} size={s.playerLine} marginTop={6} maxWidth="100%" />
           <ProfitBlock isProfit={isProfit} profitText={profitText} profitFontSize={profitFontSize} resultColor={resultColor} labelSize={s.profitLabel} marginTop={12} align="left" />
           <PriceLine boughtValue={boughtValue} soldValue={soldValue} s={s} marginTop={14} justify="flex-start" />
           <div style={{ display: "flex", alignItems: "flex-end", gap: 20, marginTop: 12 }}>
