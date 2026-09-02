@@ -63,12 +63,19 @@ export default function TradeShareExport() {
         return;
       }
       const thumb = document.querySelector("[data-trade-share-thumb]");
+      // Only "load" counts as settled, not "error": TradeShareCardArt's
+      // CardFrame now swaps a failed remote image_url to the local
+      // placeholder itself (see its own onError), which then fires a
+      // fresh load/error cycle for the SAME element. Resolving on the
+      // original "error" would let the screenshot fire mid-swap, before
+      // the placeholder has actually finished loading - the timeout
+      // below is the only backstop needed for the (effectively
+      // impossible) case where even the bundled local placeholder fails.
       const imageSettled = thumb
         ? Promise.race([
             new Promise((resolve) => {
-              if (thumb.complete) return resolve();
+              if (thumb.complete && thumb.naturalWidth > 0) return resolve();
               thumb.addEventListener("load", () => resolve(), { once: true });
-              thumb.addEventListener("error", () => resolve(), { once: true });
             }),
             new Promise((resolve) => setTimeout(resolve, IMAGE_SETTLE_TIMEOUT_MS)),
           ])

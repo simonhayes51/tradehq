@@ -1,12 +1,21 @@
 // src/pages/internal/TradeSummaryExport.jsx
 //
 // Hidden render-only route for the Portfolio period-summary Share button
-// (Today/This Week/All-Time) - mirrors TradeShareExport.jsx exactly, but
-// has no thumbnail to track since the summary card art is text/stat-only.
+// (Today/This Week/All-Time) - mirrors TradeShareExport.jsx's readiness
+// contract, best-trade thumbnail included: this card was originally
+// text/stat-only, but TradeSummaryCardArt now renders a real card-art
+// thumbnail next to the best-trade line, and the screenshot has to wait
+// for that image to settle (load or fail) the same way the trade-result
+// card's thumbnail does - otherwise Playwright can screenshot before the
+// image has even started loading, producing a blank thumbnail in the
+// exported PNG regardless of whether the image itself was ever going to
+// succeed.
 import { useEffect, useState } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import api from "../../axios";
 import TradeSummaryCardArt from "../../components/TradeSummaryCardArt";
+
+const IMAGE_SETTLE_TIMEOUT_MS = 6000;
 
 export default function TradeSummaryExport() {
   const { period } = useParams();
@@ -51,12 +60,34 @@ export default function TradeSummaryExport() {
   useEffect(() => {
     if (!data && !fetchError) return undefined;
     let cancelled = false;
-    (async () => {
-      if (!fetchError) await (document.fonts?.ready ?? Promise.resolve());
+
+    async function markReady() {
+      if (fetchError) {
+        document.documentElement.dataset.tradeSummaryReady = "true";
+        return;
+      }
+      const thumb = document.querySelector("[data-trade-summary-thumb]");
+      // Only "load" counts as settled, not "error" - see the identical
+      // comment in TradeShareExport.jsx. BestTradeThumb swaps a failed
+      // remote image to the local placeholder itself, which then fires
+      // its own fresh load/error cycle; the timeout is the backstop.
+      const imageSettled = thumb
+        ? Promise.race([
+            new Promise((resolve) => {
+              if (thumb.complete && thumb.naturalWidth > 0) return resolve();
+              thumb.addEventListener("load", () => resolve(), { once: true });
+            }),
+            new Promise((resolve) => setTimeout(resolve, IMAGE_SETTLE_TIMEOUT_MS)),
+          ])
+        : Promise.resolve();
+
+      await Promise.all([document.fonts?.ready ?? Promise.resolve(), imageSettled]);
       if (cancelled) return;
       await new Promise((resolve) => requestAnimationFrame(resolve));
       if (!cancelled) document.documentElement.dataset.tradeSummaryReady = "true";
-    })();
+    }
+
+    markReady();
     return () => { cancelled = true; };
   }, [data, fetchError]);
 

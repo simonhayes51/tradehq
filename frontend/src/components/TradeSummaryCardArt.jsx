@@ -9,12 +9,14 @@
 // text sized by importance, wins and losses always rendered in the same
 // weight - the All-Time card's credibility is the honest record, not a
 // curated one.
+import { useEffect, useState } from "react";
 import { DIMENSIONS, formatCoinsCompact, scaledFontSize } from "./shareCardFormat";
 
 const ACCENT = "#91db32";
 const LOSS = "#ff5f6d";
 const MUTED = "#8d8f95";
 const INK = "#08090a";
+const PLACEHOLDER_CARD_ART = "/img/card-placeholder.png";
 
 const SIZES = {
   portrait: {
@@ -26,7 +28,7 @@ const SIZES = {
     recordMarginTop: 66, line1: 60, line2: 52, line2MarginTop: 12,
     // Thumbnail bumped up from 52 so the card it names stays
     // identifiable at actual phone feed size, not just full-res.
-    supportMarginTop: 50, thumb: 64, thumbRadius: 8, bestTradeText: 34, completedTrades: 22, completedMarginTop: 16,
+    supportMarginTop: 34, thumb: 64, thumbRadius: 8, bestTradeText: 34, completedTrades: 22, completedMarginTop: 16,
     pill: 15,
   },
   wide: {
@@ -104,11 +106,7 @@ export default function TradeSummaryCardArt({ data, format = "wide" }) {
         <div style={{ marginTop: s.supportMarginTop }}>
           {best ? (
             <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: s.thumb * 0.3, maxWidth: bestTradeMaxWidth, margin: "0 auto" }}>
-              <img
-                src={best.image_url || "/img/card-placeholder.png"}
-                alt=""
-                style={{ width: s.thumb, height: s.thumb * 1.27, borderRadius: s.thumbRadius, objectFit: "cover", border: "1px solid rgba(255,255,255,0.14)", opacity: 0.92, flexShrink: 0 }}
-              />
+              <BestTradeThumb src={best.image_url} s={s} />
               <div
                 style={{
                   fontSize: scaledFontSize(s.bestTradeText, `Best trade: ${best.player} +${formatCoinsCompact(best.profit)}`, 24),
@@ -147,6 +145,25 @@ function Texture() {
           "repeating-linear-gradient(135deg, rgba(255,255,255,0.035) 0px, rgba(255,255,255,0.035) 1px, transparent 1px, transparent 30px)",
         pointerEvents: "none",
       }}
+    />
+  );
+}
+
+function BestTradeThumb({ src, s }) {
+  // Same fallback-on-failure treatment as TradeShareCardArt's
+  // CardFrame: a remote image_url that 404s or CORS-fails at render
+  // time must not sit there as a blank bordered box - it degrades to
+  // the same placeholder a missing URL already uses.
+  const [failed, setFailed] = useState(false);
+  useEffect(() => { setFailed(false); }, [src]);
+  const resolvedSrc = !src || failed ? PLACEHOLDER_CARD_ART : src;
+  return (
+    <img
+      data-trade-summary-thumb
+      src={resolvedSrc}
+      alt=""
+      onError={() => setFailed(true)}
+      style={{ width: s.thumb, height: s.thumb * 1.27, borderRadius: s.thumbRadius, objectFit: "cover", border: "1px solid rgba(255,255,255,0.14)", opacity: 0.92, flexShrink: 0 }}
     />
   );
 }
