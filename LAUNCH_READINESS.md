@@ -705,20 +705,43 @@ production operation was run.**
     staleness-reporting can no longer quietly disagree about a card
     neither side has classified yet.
 
-    **Not fixed by this change, and possibly not fixable by scheduling
-    alone:** whether FUT.GG's real rate limit can sustain CRITICAL's
-    15-minute target at all. ~1,700 CRITICAL cards refreshed every 15
-    minutes needs roughly 113 cards/min sustained just for that one
-    tier — well above anything observed as sustainable tonight
-    (~25-30 cards/min at best, with the collector now spending a real
-    fraction of wall-clock time in circuit-breaker backoff). If
-    CRITICAL still reads mostly-stale after this deploys, the next
-    question is whether 15 minutes is a realistic target at all, not
-    whether the collector is trying hard enough to hit it. Not yet
-    verified against a live log — watch `stale_sales_by_priority_tier`
-    ["CRITICAL"]/["HIGH"] specifically, not just the aggregate sum, and
-    whether "Our sales data is behind" stops appearing during a normal,
-    healthy stretch.
+    **Confirmed, not just predicted:** re-deployed and watched live for
+    ~3 hours. `select_due()` was scheduling by tier correctly (confirmed
+    in the startup log: `intervals={'CRITICAL': 15, 'HIGH': 60, ...}`)
+    and overall coverage climbed steadily the whole time (any_sales
+    8424→9007, signal_capable 7183→7860) — but `CRITICAL`/`HIGH`'s own
+    `stale_sales_by_priority_tier` counts stayed flat-to-rising (1714→
+    1777, 4104→4639) regardless. Exactly the predicted outcome: 15
+    minutes for ~1,700 CRITICAL cards needs ~118 cards/min sustained for
+    that tier alone, against a real observed ceiling of ~12-15 cards/min
+    even during this healthy stretch. No amount of scheduling
+    improvement could have closed that gap — the targets themselves were
+    the bug, set in `priority_config.py` before this worker ever
+    scheduled by tier at all, with nothing to check them against.
+
+    `tier_sales_interval_minutes` (`priority_config.py`) and its
+    `auto_sync` mirror (`SALES_INTERVALS`) both changed: CRITICAL
+    15→180min (matching the old rating-band system's *proven*-
+    sustainable 95_plus cadence — the one real data point available),
+    HIGH 60→720min, NORMAL 240→1440min, LOW 1440→2880min (matching the
+    old system's proven under_75 cadence), DORMANT 4320→4000min
+    (unchanged in effect, just consistent with the auto_sync default
+    already in place). NORMAL/LOW were already comfortably met at their
+    old targets (stale counts in the hundreds/low thousands, not
+    thousands), so this is a deliberately conservative staircase down
+    from the one hard data point (CRITICAL=180min), not a second guess.
+    A new test (`test_tier_intervals_equal_the_backend_priority_config`
+    in `test_sales_cadence_vs_gate.py`) pins the two configs equal so
+    this exact class of drift — one side tuned without the other —
+    fails CI going forward. **Not yet re-verified live against the new
+    targets** — watch whether `stale_sales_by_priority_tier["CRITICAL"]`
+    /`["HIGH"]` actually turn around and fall (not just stop rising)
+    over the next several hours, and whether "Our sales data is behind"
+    stops appearing during a normal, healthy stretch. If CRITICAL is
+    still mostly-stale at a 180-minute target, the collector's real
+    ceiling is lower than tonight's estimate and the interval — or the
+    tier's guaranteed floor share in `_TIER_MIN_SHARE` — needs another
+    look, informed by that.
 
 ---
 

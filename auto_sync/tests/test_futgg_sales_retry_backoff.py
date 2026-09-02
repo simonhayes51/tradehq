@@ -184,12 +184,16 @@ class TestCircuitBreakerUnchanged:
     def test_priority_tier_intervals_are_untouched(self):
         # This change fixes retries; it does not suppress scheduled work.
         # Request suppression is a separate, flagged phase. Values updated
-        # for the rating-band -> adaptive-priority-tier switch (see
-        # select_due()); the property under test - retries do not touch
-        # scheduled-interval config - is unchanged.
-        assert sales.SALES_INTERVALS["HIGH"] == 60
-        assert sales.SALES_INTERVALS["NORMAL"] == 240
-        assert sales.SALES_INTERVALS["LOW"] == 1440
+        # twice since - first for the rating-band -> adaptive-priority-
+        # tier switch (see select_due()), then again for the tier
+        # intervals themselves (see SALES_INTERVALS' own comment: the
+        # original 15/60/240-minute CRITICAL/HIGH/NORMAL were never
+        # achievable given FUT.GG's real rate limit). The property under
+        # test - retries do not touch scheduled-interval config - is
+        # unchanged either time.
+        assert sales.SALES_INTERVALS["HIGH"] == 720
+        assert sales.SALES_INTERVALS["NORMAL"] == 1440
+        assert sales.SALES_INTERVALS["LOW"] == 2880
         assert sales.SALES_INTERVALS["DORMANT"] == 4000
 
 

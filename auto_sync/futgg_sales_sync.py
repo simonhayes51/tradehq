@@ -426,19 +426,26 @@ SIGNED_REPROBE_SAMPLE = env_int("FUTGG_SALES_SIGNED_REPROBE_SAMPLE", 5, minimum=
 # (median, trimmed mean, dispersion, liquidity), which moves slowly.
 #
 # Defaults mirror backend PRIORITY_ENGINE_CONFIG.tier_sales_interval_
-# minutes (priority_config.py) - CRITICAL/HIGH tight enough to matter
-# for genuinely volatile/liquid cards, DORMANT loose enough that a huge,
-# largely-inactive tail does not dominate every cycle's SELECT_LIMIT.
-# DORMANT's default is 4000, not that config's 4320, to stay strictly
-# under ENGINE_REJECT_SALES_OLDER_THAN_MINUTES below (see
+# minutes (priority_config.py). The original 15/60/240-minute CRITICAL/
+# HIGH/NORMAL defaults were aspirational, set before this worker
+# actually scheduled by tier at all - live evidence once it did:
+# CRITICAL/HIGH's stale counts stayed flat-to-rising for hours even as
+# overall coverage climbed steadily, because 15 minutes for ~1,700
+# CRITICAL cards needs ~118 cards/min sustained for that tier alone,
+# against a real FUT.GG-rate-limited ceiling of roughly 12-15 cards/min
+# even during a healthy stretch. See priority_config.py's own comment
+# for the full incident and the reasoning behind these specific
+# replacement values (CRITICAL matches the old rating-band system's
+# proven-sustainable 95_plus cadence; LOW matches its proven under_75
+# cadence). DORMANT's default is 4000, not that config's 4320, to stay
+# strictly under ENGINE_REJECT_SALES_OLDER_THAN_MINUTES below (see
 # cadence_gate_conflicts() - exactly at the limit still counts as a
-# conflict) and to match this worker's own already-deployed slowest-tier
-# value.
+# conflict).
 SALES_INTERVALS = {
-    "CRITICAL": env_int("FUTGG_SALES_CRITICAL_INTERVAL_MIN", 15, minimum=5),
-    "HIGH": env_int("FUTGG_SALES_HIGH_INTERVAL_MIN", 60, minimum=5),
-    "NORMAL": env_int("FUTGG_SALES_NORMAL_INTERVAL_MIN", 240, minimum=10),
-    "LOW": env_int("FUTGG_SALES_LOW_INTERVAL_MIN", 1440, minimum=30),
+    "CRITICAL": env_int("FUTGG_SALES_CRITICAL_INTERVAL_MIN", 180, minimum=5),
+    "HIGH": env_int("FUTGG_SALES_HIGH_INTERVAL_MIN", 720, minimum=5),
+    "NORMAL": env_int("FUTGG_SALES_NORMAL_INTERVAL_MIN", 1440, minimum=10),
+    "LOW": env_int("FUTGG_SALES_LOW_INTERVAL_MIN", 2880, minimum=30),
     "DORMANT": env_int("FUTGG_SALES_DORMANT_INTERVAL_MIN", 4000, minimum=60),
 }
 # A more urgent tier must never accidentally run less often than a less

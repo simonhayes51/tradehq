@@ -205,14 +205,46 @@ class PriorityEngineConfig:
     conservative_demotion_max_interval_minutes: int = field(default_factory=lambda: _env_int("PRIORITY_CONSERVATIVE_DEMOTION_MAX_INTERVAL_MIN", 4320))
 
     # Sales-refresh cadence per tier - used by get_freshness_summary()'s
-    # observability reporting today; not yet consulted by any live
-    # scheduling write (that's Milestone 3).
+    # observability reporting (stale_sales_by_priority_tier), which feeds
+    # both readiness.py's health check and EmptyFeedReason.jsx's
+    # customer-facing "sales data is behind" message. Milestone 3
+    # (auto_sync/futgg_sales_sync.py's select_due() actually scheduling
+    # by this same tier) has since shipped, and it exposed these original
+    # 15/60/240-minute CRITICAL/HIGH/NORMAL defaults as aspirational
+    # rather than real: they were set before Milestone 3 existed, with no
+    # live collector to check them against. Live evidence once
+    # select_due() started trying to hit them: CRITICAL/HIGH's stale
+    # counts stayed flat-to-rising for hours even as overall sales
+    # coverage climbed steadily and the collector ran cleanly - because
+    # 15 minutes for ~1,700 CRITICAL cards needs ~118 cards/min sustained
+    # just for that tier, against a real, FUT.GG-rate-limited ceiling of
+    # roughly 12-15 cards/min even during a healthy stretch (see
+    # auto_sync's own CIRCUIT_BREAKER_* machinery and
+    # LAUNCH_READINESS.md item 10). No scheduling improvement can close
+    # that gap - only a realistic target can.
+    #
+    # CRITICAL now matches the fastest cadence this catalogue has
+    # actually sustained in production (the old rating-band system's
+    # 95_plus interval, 180min). The rest step up from there in
+    # proportion to roughly how much larger each tier's population is
+    # (HIGH's stale count alone, at the old target, ran ~2.6x
+    # CRITICAL's) - not measured precisely, but a deliberately
+    # conservative staircase so the same "aspirational, never checked
+    # against real throughput" mistake is not simply repeated one tier
+    # down. LOW's new value matches the old rating-band system's
+    # under_75 default (2880min), which WAS proven sustainable in
+    # production. DORMANT drops from 4320 to 4000 to match
+    # auto_sync/futgg_sales_sync.py's own default and stay clear of
+    # ENGINE_REJECT_SALES_OLDER_THAN_MINUTES (4320) rather than sitting
+    # exactly on it. auto_sync mirrors this dict (cannot import
+    # app.services - separate deployment); test_sales_cadence_vs_gate.py
+    # asserts the two stay equal.
     tier_sales_interval_minutes: Dict[str, int] = field(default_factory=lambda: {
-        "CRITICAL": _env_int("TIER_CRITICAL_SALES_INTERVAL_MIN", 15),
-        "HIGH": _env_int("TIER_HIGH_SALES_INTERVAL_MIN", 60),
-        "NORMAL": _env_int("TIER_NORMAL_SALES_INTERVAL_MIN", 240),
-        "LOW": _env_int("TIER_LOW_SALES_INTERVAL_MIN", 1440),
-        "DORMANT": _env_int("TIER_DORMANT_SALES_INTERVAL_MIN", 4320),
+        "CRITICAL": _env_int("TIER_CRITICAL_SALES_INTERVAL_MIN", 180),
+        "HIGH": _env_int("TIER_HIGH_SALES_INTERVAL_MIN", 720),
+        "NORMAL": _env_int("TIER_NORMAL_SALES_INTERVAL_MIN", 1440),
+        "LOW": _env_int("TIER_LOW_SALES_INTERVAL_MIN", 2880),
+        "DORMANT": _env_int("TIER_DORMANT_SALES_INTERVAL_MIN", 4000),
     })
 
     # Recent-window (not lifetime) watchlist popularity, per the review's
