@@ -795,6 +795,54 @@ production operation was run.**
     prices again. Not yet re-verified against a live Discord post —
     watch the next few live posts for BUY/SELL TARGET/EXPECTED PROFIT
     to actually reconcile under a 5% tax.
+12. **"Our sales data is behind" (item 10) had a twin: "Our price data
+    is behind," which only started firing once item 10's fix stopped
+    the sales gate from tripping first and masking it.** Reported live:
+    `cards_stale` at 56.7% of priced cards, despite
+    `futgg_bulk_price_sync`'s own heartbeat reporting `ok=true, cycle=40,
+    coverage_pct=100.0` the whole time — the exact same shape as the
+    sales incident, on the price side. Root cause, in
+    `market_data_provider.py`'s `EXPECTED_PRICE_INTERVAL_MINUTES`: an
+    earlier fix (already in this file, its own "CORRECTED" comment)
+    assumed the bulk price collector writes a fresh `price_updated_at`
+    for the *entire* catalogue every cycle, and set the threshold to
+    2×that cycle (10 minutes at the 300s default). True for the feed
+    *fetch* every cycle, false for the database *write* the threshold
+    actually measures: `auto_sync/futgg_bulk_price_sync.py`'s
+    `CHANGE_ONLY_WRITES` optimization (default on, added separately and
+    never reconciled with this threshold) skips writing — and skips
+    bumping `price_updated_at` — for any card whose price hasn't
+    changed and whose own per-card heartbeat window
+    (`HEARTBEAT_MINUTES` + `card_id % HEARTBEAT_MINUTES`, 15–29 minutes
+    at defaults) hasn't elapsed. A stable-priced card — the common case
+    — was structurally guaranteed to spend part of every heartbeat cycle
+    reading "stale" no matter how healthy the collector was.
+
+    The real candidate-rejection gate that decides whether a card can
+    actually be scored as a trade (`futgg_config.py`'s
+    `max_price_age_minutes_by_tier`) was checked and is unaffected —
+    it was already correctly calibrated against this exact heartbeat
+    mechanism in an earlier, separate fix (its own comment references
+    the same 29-minute worst case). So this bug was in the *reported*
+    staleness figure and the customer-facing message, not in which
+    cards could qualify as opportunities.
+
+    `EXPECTED_PRICE_INTERVAL_MINUTES` now derives from the documented
+    worst-case heartbeat gap (`2×HEARTBEAT_MINUTES − 1`) plus one
+    bulk-fetch cycle of slack, mirroring `HEARTBEAT_MINUTES` from the
+    auto_sync worker the same way `_BULK_PRICE_INTERVAL_SECONDS`
+    already mirrors its cycle length (same env var names and defaults;
+    cannot import — separate deployment). A new
+    `test_price_cadence_vs_gate.py` pins the two worker defaults equal
+    and exhaustively checks every `card_id % HEARTBEAT_MINUTES` spread
+    clears the threshold, so this can't quietly reintroduce itself a
+    third time. Not yet re-verified live — watch `cards_stale` and
+    whether "Our price data is behind" stops appearing during a normal,
+    healthy stretch. Separately, unconfirmed: whether a genuinely empty
+    Opportunities feed right now reflects current market conditions
+    (no card clearing the bar) or something else — this fix corrects
+    the message and the reported staleness figure, not necessarily the
+    opportunity count itself.
 
 ---
 

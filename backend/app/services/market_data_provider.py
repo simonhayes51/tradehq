@@ -134,21 +134,46 @@ MAX_CHART_DAYS = 14
 # math (that lives in futgg_intelligence.py and uses a single confidence-
 # weighted staleness curve, not a per-tier cliff).
 #
-# CORRECTED: this used to be a per-price_tier dict of guessed intervals
-# (special:30/gold_rare:60/gold_common:180/silver:360/bronze:720 min),
-# explicitly flagged in this module's own history as "not values verified
-# against auto_sync's actual scheduling". That guess is now provably
-# wrong, not just unverified: BIN price is captured for the ENTIRE
-# catalogue in one pass every FUTGG_BULK_INTERVAL_SECONDS by
-# auto_sync/futgg_bulk_price_sync.py (the live PriceSync worker) - there
-# is no per-tier price cadence anymore, so a single threshold (with a
-# safety margin for one missed cycle) is what actually describes current
-# reality. Sales-side staleness (a genuinely per-card, per-tier cadence -
-# see auto_sync/futgg_sales_sync.py's SALES_INTERVALS and
+# CORRECTED AGAIN, after the first correction turned out to repeat the
+# same mistake it fixed. The prior version of this comment claimed "BIN
+# price is captured for the ENTIRE catalogue in one pass every
+# FUTGG_BULK_INTERVAL_SECONDS" and set the threshold to 2x that cycle
+# (10min at the 300s default). True for the FEED FETCH, false for the
+# database write this threshold actually measures: auto_sync/
+# futgg_bulk_price_sync.py's CHANGE_ONLY_WRITES optimization (default
+# on) skips writing - and skips bumping price_updated_at - for any card
+# whose price hasn't changed and whose own heartbeat window
+# (_heartbeat_minutes_for, spread HEARTBEAT_MINUTES..2*HEARTBEAT_
+# MINUTES-1 minutes per card so quiet cards don't all write in one
+# burst) hasn't elapsed. A card with a perfectly stable price - the
+# common case, not an edge case - only gets price_updated_at bumped
+# every 15-29 minutes by design, not every 5. Reported live: "Our price
+# data is behind" started firing right after an unrelated fix stopped a
+# DIFFERENT gate (sales staleness) from firing first and masking this
+# one - cards_stale was 56.7% of priced despite futgg_bulk_price_sync's
+# own heartbeat reporting ok=true, cycle=40, coverage_pct=100.0. The
+# collector was never broken; this threshold just demanded a write
+# cadence the collector was deliberately never going to hit for most of
+# the catalogue. Sales-side staleness (a genuinely per-card, per-tier
+# cadence - see auto_sync/futgg_sales_sync.py's SALES_INTERVALS and
 # card_priority.effective_tier) is reported separately below, not
 # folded into this same number.
 _BULK_PRICE_INTERVAL_SECONDS = int(os.getenv("FUTGG_BULK_INTERVAL_SECONDS", "300"))
-EXPECTED_PRICE_INTERVAL_MINUTES = (_BULK_PRICE_INTERVAL_SECONDS / 60.0) * 2  # one missed cycle of slack
+#: Mirrors auto_sync/futgg_bulk_price_sync.py's HEARTBEAT_MINUTES - same
+#: env var name and default, the same way _BULK_PRICE_INTERVAL_SECONDS
+#: above already mirrors that worker's INTERVAL_SECONDS. Cannot import
+#: auto_sync (separate deployment); test_price_cadence_vs_gate.py
+#: asserts the two stay equal.
+_BULK_PRICE_HEARTBEAT_MINUTES = int(os.getenv("FUTGG_BULK_HEARTBEAT_MINUTES", "15"))
+# Worst-case age before ANY card - including one whose price has not
+# moved at all - is guaranteed a fresh price_updated_at: the widest
+# possible per-card heartbeat spread (2*HEARTBEAT_MINUTES - 1, per
+# _heartbeat_minutes_for's own modulo formula), plus one bulk-fetch
+# cycle of slack for the collector to actually run and notice the
+# window elapsed.
+EXPECTED_PRICE_INTERVAL_MINUTES = (
+    (2 * _BULK_PRICE_HEARTBEAT_MINUTES - 1) + (_BULK_PRICE_INTERVAL_SECONDS / 60.0)
+)
 
 # Sales-refresh cadence per adaptive-priority tier (see
 # app/services/priority_config.py's tier_sales_interval_minutes - same
