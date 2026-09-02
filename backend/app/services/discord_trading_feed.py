@@ -399,7 +399,21 @@ def build_opportunity_post_embed(row: dict[str, Any], ci: Any, *, test: bool = F
     fields = [
         {
             "name": "BUY",
-            "value": f"{embeds.coins(row.get('current_executable_buy') or ci.recommended_buy_max)} coins",
+            # `row` is _segmented_candidates()'s raw candidate dict - a
+            # futgg_market_snapshot-shaped row, which has NEVER had a
+            # current_executable_buy column (see market_data_provider.py's
+            # _SNAPSHOT_COLUMNS). row.get(...) therefore always returned
+            # None, so this ALWAYS displayed ci.recommended_buy_max (the
+            # conservative buy ceiling) as "BUY" - never the actual, lower
+            # live price the card was really executable at. Meanwhile
+            # EXPECTED PROFIT below is computed from ci.expected_profit_
+            # after_tax, which futgg_intelligence.py derives from the
+            # REAL entry (current_bin when executable) - so the two
+            # numbers described two different buy prices, and profit
+            # looked inflated relative to the price actually shown.
+            # ci.current_executable_buy is the field evaluate_card()
+            # actually populates from this same row; read it from there.
+            "value": f"{embeds.coins(ci.current_executable_buy or ci.recommended_buy_max)} coins",
             "inline": True,
         },
         {"name": "SELL TARGET", "value": f"{embeds.coins(ci.recommended_sell_target)} coins", "inline": True},
@@ -472,6 +486,8 @@ class _FakeIntelligence:
     risk_level = "low"
     liquidity_score = 0.82
     confidence_score = 0.77
+    recommended_buy_max = 12500
+    current_executable_buy = 12500
 
 
 async def send_test_post(pool, server: ServerRecord, client: Optional[DiscordClient] = None) -> tuple[bool, Optional[str]]:
@@ -700,7 +716,12 @@ async def publish_live_opportunities(pool, server: ServerRecord, client: Optiona
         if band_budget is not None:
             from app.services.discord_feed_billing import classify_budget_band
 
-            price = row.get("current_executable_buy") or ci.recommended_buy_max
+            # Same fix as build_opportunity_post_embed's BUY field: `row`
+            # never carries current_executable_buy, so this always
+            # classified by the conservative ceiling (ci.recommended_buy_
+            # max) instead of the real executable price - ci.current_
+            # executable_buy is the field evaluate_card() actually sets.
+            price = ci.current_executable_buy or ci.recommended_buy_max
             band = classify_budget_band(float(price) if price is not None else None)
             if band_used[band] >= band_budget[band]:
                 continue  # this budget band's daily allocation is exhausted
