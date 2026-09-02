@@ -3,31 +3,46 @@
 // Pure presentation for the portfolio-summary share card (Today/This
 // Week/All-Time) - see pages/internal/TradeSummaryExport.jsx for the
 // readiness/screenshot contract (data-trade-summary-export).
+//
+// Hierarchy: total profit is the one thing this card needs to say in
+// ~1 second, so it is the dominant element, not one box among equals.
+// The record line (wins-losses, win rate) sits right under it at
+// near-hero size deliberately - for the All-Time card this IS the
+// credibility proof (e.g. "78W - 9L / 89.7%"), and a real loss count
+// shown plainly reads as more credible than a card that only ever
+// shows wins. "Trades Tracked" (not "Cards Traded"): `closed_trades`
+// counts trade-calls, not physical cards - a qty-4 trade is one closed
+// trade, not four. Renamed rather than left ambiguous, per the same
+// count that data.closed_trades has always held.
+import { DIMENSIONS, formatCoinsCompact, formatCoinsExact, scaledFontSize } from "./shareCardFormat";
+
 const ACCENT = "#39ff8a";
 const LOSS = "#ff5f6d";
 const MUTED = "#8d8f95";
 
-function formatCoins(n) {
-  return Number(n || 0).toLocaleString();
-}
-
-export default function TradeSummaryCardArt({ data }) {
+export default function TradeSummaryCardArt({ data, format = "wide" }) {
+  const { width, height } = DIMENSIONS[format] || DIMENSIONS.wide;
+  const isPortrait = format === "portrait";
   const profit = data.total_profit ?? 0;
   const isProfit = profit >= 0;
   const resultColor = isProfit ? ACCENT : LOSS;
   const best = data.best_sale;
+  const recordText = `${data.wins}W – ${data.losses}L`;
+  const winRateText = `${data.win_rate}% win rate`;
+  const profitText = `${isProfit ? "+" : ""}${formatCoinsExact(profit)}`;
+  const profitFontSize = scaledFontSize(isPortrait ? 150 : 58, profitText, isPortrait ? 9 : 12);
 
   return (
     <div
       data-trade-summary-export
       style={{
         position: "relative",
-        width: 900,
-        height: 470,
+        width,
+        height,
         display: "flex",
         flexDirection: "column",
         justifyContent: "space-between",
-        padding: "34px 44px",
+        padding: isPortrait ? "56px 64px" : "34px 44px",
         background: `
           radial-gradient(600px 400px at 85% -10%, ${resultColor}22 0%, transparent 60%),
           radial-gradient(500px 350px at -5% 110%, ${resultColor}14 0%, transparent 55%),
@@ -62,20 +77,20 @@ export default function TradeSummaryCardArt({ data }) {
       <div style={{ position: "relative", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
           <div style={{ width: 9, height: 9, borderRadius: 2, background: ACCENT, boxShadow: `0 0 10px ${ACCENT}99` }} />
-          <span style={{ fontSize: 15, fontWeight: 800, letterSpacing: "0.08em" }}>
+          <span style={{ fontSize: isPortrait ? 20 : 15, fontWeight: 800, letterSpacing: "0.08em" }}>
             EAFC<span style={{ color: ACCENT }}>.LIVE</span>
           </span>
         </div>
         <div
           style={{
-            fontSize: 11,
+            fontSize: isPortrait ? 15 : 11,
             fontWeight: 700,
             letterSpacing: "0.08em",
             color: resultColor,
             border: `1px solid ${resultColor}55`,
             background: `${resultColor}14`,
             borderRadius: 999,
-            padding: "5px 14px",
+            padding: isPortrait ? "8px 20px" : "5px 14px",
             textTransform: "uppercase",
           }}
         >
@@ -83,56 +98,64 @@ export default function TradeSummaryCardArt({ data }) {
         </div>
       </div>
 
-      <div style={{ position: "relative" }}>
-        <div style={{ fontSize: 13, color: MUTED, letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: 8 }}>
+      <div style={{ position: "relative", textAlign: isPortrait ? "center" : "left" }}>
+        <div style={{ fontSize: isPortrait ? 20 : 13, color: MUTED, letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: isPortrait ? 14 : 8 }}>
           Total profit
         </div>
-        <div style={{ fontSize: 58, fontWeight: 800, color: resultColor, lineHeight: 1 }}>
-          {isProfit ? "+" : ""}
-          {formatCoins(profit)}
+        <div style={{ fontSize: profitFontSize, fontWeight: 800, color: resultColor, lineHeight: 1 }}>
+          {profitText}
+        </div>
+        <div
+          style={{
+            fontSize: isPortrait ? 36 : 20,
+            fontWeight: 700,
+            color: "#d8dade",
+            marginTop: isPortrait ? 24 : 12,
+          }}
+        >
+          {recordText} <span style={{ color: MUTED, fontWeight: 600 }}>&middot; {winRateText}</span>
         </div>
       </div>
 
       <div style={{ position: "relative", display: "flex", gap: 14 }}>
-        <StatCard label="Record" value={`${data.wins}W – ${data.losses}L`} />
-        <StatCard label="Win Rate" value={`${data.win_rate}%`} />
-        <StatCard label="Cards Traded" value={data.closed_trades} />
+        <StatCard label="Trades Tracked" value={data.closed_trades} isPortrait={isPortrait} />
         {best ? (
           <StatCard
             label="Best Sale"
             value={best.player}
-            sub={`${best.profit >= 0 ? "+" : ""}${formatCoins(best.profit)}`}
+            sub={`${best.profit >= 0 ? "+" : ""}${formatCoinsCompact(best.profit)}`}
             color={resultColor}
             highlight
+            isPortrait={isPortrait}
           />
         ) : null}
       </div>
 
-      <div style={{ position: "relative", textAlign: "right", fontSize: 12, color: MUTED, letterSpacing: "0.04em" }}>
-        app.eafc.live
+      <div style={{ position: "relative", textAlign: "right", fontSize: isPortrait ? 16 : 12, color: MUTED, letterSpacing: "0.04em" }}>
+        app.eafc.live &middot; live market data
       </div>
     </div>
   );
 }
 
-function StatCard({ label, value, sub, color, highlight }) {
+function StatCard({ label, value, sub, color, highlight, isPortrait }) {
   return (
     <div
       style={{
         flex: 1,
         minWidth: 0,
-        padding: "14px 18px",
+        padding: isPortrait ? "22px 26px" : "14px 18px",
         borderRadius: 10,
         background: highlight ? `${color}14` : "rgba(255,255,255,0.035)",
         border: highlight ? `1px solid ${color}40` : "1px solid rgba(255,255,255,0.08)",
       }}
     >
-      <div style={{ fontSize: 11, fontWeight: 700, color: MUTED, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 6 }}>
+      <div style={{ fontSize: isPortrait ? 15 : 11, fontWeight: 700, color: MUTED, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: isPortrait ? 10 : 6 }}>
         {label}
       </div>
       <div
         style={{
-          fontSize: 22,
+          fontSize: isPortrait ? 32 : 22,
           fontWeight: 800,
           color: color || "#f3f3f2",
           whiteSpace: "nowrap",
@@ -142,7 +165,7 @@ function StatCard({ label, value, sub, color, highlight }) {
       >
         {value}
       </div>
-      {sub ? <div style={{ fontSize: 14, fontWeight: 700, color: color || MUTED, marginTop: 2 }}>{sub}</div> : null}
+      {sub ? <div style={{ fontSize: isPortrait ? 22 : 14, fontWeight: 700, color: color || MUTED, marginTop: 2 }}>{sub}</div> : null}
     </div>
   );
 }

@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from app.auth.access import get_viewer, limit_reached
 from app.auth.entitlements import ELITE_OPEN_TRADE_MAX, compute_entitlements
+from app.services.trade_economics import close_trade_economics
 
 router = APIRouter(prefix="/trades", tags=["v2-trades"])
 
@@ -135,8 +136,7 @@ async def close_trade(trade_id: int, request: Request, body: CloseTrade):
         )
         if not row:
             raise HTTPException(404, "Open trade not found")
-        tax_each = body.sell - int(body.sell * 0.95)
-        profit = (int(body.sell * 0.95) - row["buy"]) * row["quantity"]
+        economics = close_trade_economics(row["buy"], body.sell, row["quantity"])
         await conn.execute(
             """UPDATE trades SET sell=$3, sold_at=$4, status='closed',
                 profit=$5, ea_tax=$6 WHERE user_id=$1 AND trade_id=$2""",
@@ -144,8 +144,8 @@ async def close_trade(trade_id: int, request: Request, body: CloseTrade):
             trade_id,
             body.sell,
             sold_at,
-            profit,
-            tax_each * row["quantity"],
+            economics.profit,
+            economics.ea_tax,
         )
     return {"ok": True, "trade_id": trade_id, "status": "closed", "profit": profit}
 

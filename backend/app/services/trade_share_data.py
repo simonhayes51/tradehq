@@ -16,6 +16,7 @@ from typing import Any, Optional
 
 from app.db import get_core_pool
 from app.services.discord_command_data import get_card, search_cards
+from app.services.trade_economics import realised_roi_percent
 
 
 async def get_owned_trade(user_id: str, trade_id: int) -> Optional[dict[str, Any]]:
@@ -69,13 +70,21 @@ async def build_trade_share_render_data(trade: dict[str, Any]) -> dict[str, Any]
     if card:
         image_url = card.get("card_image_stored_url") or card.get("card_image_url") or card.get("card_design_image_url")
         rating = card.get("rating")
+    quantity = trade.get("quantity") or 1
+    profit = trade.get("profit") or 0
     return {
         "player": trade["player"],
         "version": trade.get("version") or "Standard",
         "buy": trade["buy"],
         "sell": trade["sell"],
-        "quantity": trade.get("quantity") or 1,
-        "profit": trade.get("profit") or 0,
+        "quantity": quantity,
+        "profit": profit,
+        # Derived from the already-taxed, already-quantity-scaled `profit`
+        # against total cost (buy * quantity) - see trade_economics.py.
+        # Never recompute this in the frontend: a prior version of the
+        # share card divided profit by unit buy price alone, overstating
+        # ROI by a factor of quantity for every qty>1 trade.
+        "roi": realised_roi_percent(profit, trade["buy"], quantity),
         "ea_tax": trade.get("ea_tax") or 0,
         "platform": trade.get("platform"),
         "timestamp": _isoformat(trade.get("timestamp")),

@@ -4,6 +4,7 @@ from typing import Dict, Any, List
 from pydantic import BaseModel, Field, validator
 from app.db import get_db
 from app.auth.entitlements import compute_entitlements, require_feature
+from app.services.trade_economics import close_trade_economics
 from datetime import datetime
 
 router = APIRouter(prefix="/api/trades", tags=["Trades"])
@@ -90,13 +91,7 @@ async def create_trade(
         raise HTTPException(status_code=401, detail="Not authenticated")
 
     # Calculate profit/tax
-    ea_tax_rate = 0.05
-    sell_after_tax = int(trade.sell * (1 - ea_tax_rate))
-    ea_tax = trade.sell - sell_after_tax
-    profit = (sell_after_tax - trade.buy) * trade.quantity
-    
-    # Calculate tax for the whole quantity
-    total_ea_tax = ea_tax * trade.quantity
+    profit, total_ea_tax = close_trade_economics(trade.buy, trade.sell, trade.quantity)
 
     if trade.buy >= trade.sell:
         raise HTTPException(status_code=400, detail="Buy price must be less than sell price")
@@ -205,10 +200,7 @@ async def bulk_insert_trades(
 
         for idx, trade in enumerate(body.trades):
             # Calculate profit and EA tax
-            ea_tax_rate = 0.05  # 5% EA tax
-            sell_after_tax = int(trade.sell * (1 - ea_tax_rate))
-            ea_tax = trade.sell - sell_after_tax
-            profit = (sell_after_tax - trade.buy) * trade.quantity
+            profit, total_ea_tax = close_trade_economics(trade.buy, trade.sell, trade.quantity)
 
             # Validation checks
             if trade.buy >= trade.sell:
@@ -234,7 +226,7 @@ async def bulk_insert_trades(
                 "quantity": trade.quantity,
                 "platform": trade.platform,
                 "profit": profit,
-                "ea_tax": ea_tax * trade.quantity,
+                "ea_tax": total_ea_tax,
                 "tag": trade.tag or None,
                 "notes": trade.notes or None,
                 "timestamp": datetime.utcnow()
