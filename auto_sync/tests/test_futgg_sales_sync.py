@@ -138,16 +138,29 @@ class TestBuildSaleRows:
 
 
 class TestIntervals:
-    def test_rating_bands(self):
-        assert sales_interval_minutes(91) < sales_interval_minutes(82)
-        assert sales_interval_minutes(82) < sales_interval_minutes(77)
-        assert sales_interval_minutes(77) < sales_interval_minutes(60)
+    """sales_interval_minutes() takes a card_priority.effective_tier
+    value now, not a rating - see select_due()/apply_batch_results()."""
 
-    def test_none_rating_is_slowest(self):
-        assert sales_interval_minutes(None) == sales_interval_minutes(50)
+    def test_tiers_run_in_urgency_order(self):
+        assert (
+            sales_interval_minutes("CRITICAL")
+            < sales_interval_minutes("HIGH")
+            < sales_interval_minutes("NORMAL")
+            < sales_interval_minutes("LOW")
+            < sales_interval_minutes("DORMANT")
+        )
 
-    def test_95_plus_is_never_slower_than_85_plus(self):
-        assert sales_interval_minutes(98) <= sales_interval_minutes(91)
+    def test_an_unscored_card_defaults_to_normal(self):
+        assert sales_interval_minutes(None) == sales_interval_minutes("NORMAL")
+
+    def test_an_unrecognised_tier_also_defaults_to_normal(self):
+        # A card_priority row from a future tier value this worker does
+        # not know about yet must degrade to NORMAL, not crash or stall
+        # forever on a KeyError-shaped bug.
+        assert sales_interval_minutes("SOMETHING_NEW") == sales_interval_minutes("NORMAL")
+
+    def test_critical_is_never_slower_than_high(self):
+        assert sales_interval_minutes("CRITICAL") <= sales_interval_minutes("HIGH")
 
 
 class TestAdaptiveThrottle:

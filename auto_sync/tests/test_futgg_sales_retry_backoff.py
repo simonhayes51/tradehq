@@ -143,7 +143,7 @@ class TestFailureAndSuccessWrites:
 
     def test_success_resets_the_consecutive_failure_count(self):
         body = self._process_batch_source()
-        assert 'sales_interval_minutes(rating), "success", True, 0' in body
+        assert 'sales_interval_minutes(tier), "success", True, 0' in body
 
     def test_first_read_is_written_once_and_never_overwritten(self):
         """Tolerant of the table alias, because the write became a
@@ -181,13 +181,16 @@ class TestCircuitBreakerUnchanged:
         assert hasattr(sales, "AdaptiveThrottle")
         assert hasattr(sales.AdaptiveThrottle, "record")
 
-    def test_rating_band_intervals_are_untouched(self):
+    def test_priority_tier_intervals_are_untouched(self):
         # This change fixes retries; it does not suppress scheduled work.
-        # Request suppression is a separate, flagged phase.
-        assert sales.SALES_INTERVALS["85_plus"] == 60
-        assert sales.SALES_INTERVALS["80_84"] == 240
-        assert sales.SALES_INTERVALS["75_79"] == 720
-        assert sales.SALES_INTERVALS["under_75"] == 2880
+        # Request suppression is a separate, flagged phase. Values updated
+        # for the rating-band -> adaptive-priority-tier switch (see
+        # select_due()); the property under test - retries do not touch
+        # scheduled-interval config - is unchanged.
+        assert sales.SALES_INTERVALS["HIGH"] == 60
+        assert sales.SALES_INTERVALS["NORMAL"] == 240
+        assert sales.SALES_INTERVALS["LOW"] == 1440
+        assert sales.SALES_INTERVALS["DORMANT"] == 4000
 
 
 class TestSchemaAndAudit:

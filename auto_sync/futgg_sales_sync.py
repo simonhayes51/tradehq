@@ -144,46 +144,56 @@ IDLE_SLEEP = env_float("FUTGG_SALES_IDLE_SLEEP", 30.0, minimum=5.0)
 #: How many cards to pull per selection pass.
 SELECT_LIMIT = env_int("FUTGG_SALES_SELECT_LIMIT", 200, minimum=1)
 
-#: Minimum share of SELECT_LIMIT reserved for each rating band every
-#: cycle, so the fast bands cannot starve the slow ones indefinitely.
+#: Minimum share of SELECT_LIMIT reserved for each adaptive-priority
+#: tier every cycle, so a fast tier cannot starve a slow one
+#: indefinitely.
 #:
-#: select_due()'s ordering puts never-read cards first regardless of
-#: band (backfill), which is correct and unaffected by this. But
-#: backfill exhausts eventually - confirmed in production ("0
-#: never_read") - and once it does, every cycle runs in pure maintenance
-#: mode, ordered by band then by how overdue each card is. The 95+ band
-#: (due every 180min) and 85+ band (every 720min) generate enough "due"
-#: volume on their own to fill an entire cycle's SELECT_LIMIT forever,
-#: while the tail - 75-79 (every 48h) and everything else (every ~67h,
-#: also the LARGEST population) - never reaches the front of the queue
-#: at all. Real sales coverage held flat across 1.5+ hours of otherwise-
-#: healthy continuous running (~150-175 cards refreshed per cycle)
-#: because those refreshes kept landing on cards that already counted,
-#: while the tail's sales aged out of the 14-day freshness window
-#: unopposed - confirmed by stale_sales_by_priority_tier showing the
-#: DORMANT tier more than double every other tier's staleness.
+#: select_due() used to band cards by RATING (95+/85+/80-84/75-79/
+#: everything else), which starved the ratings-based tail for exactly
+#: the reason this floor mechanism was first built to fix (see this
+#: file's git history for that incident). But rating was never the
+#: right axis: card_priority (migration 044's adaptive-priority engine,
+#: see backend/app/services/priority_recompute.py, refreshed every 15
+#: minutes) already tiers every active card as CRITICAL/HIGH/NORMAL/
+#: LOW/DORMANT by liquidity/volatility/opportunity - and the customer-
+#: facing "sales data is behind" signal (market_data_provider.py's
+#: stale_sales_by_priority_tier) is judged against THAT tiering, not
+#: rating. A rating-band scheduler could run perfectly and still leave
+#: most of CRITICAL/HIGH permanently "stale" by the metric actually
+#: shown to users, simply because nothing ever tried to hit their
+#: interval - confirmed live: CRITICAL/HIGH accounted for most of a
+#: stale-sum that stayed over 50% of priced cards through a 6-hour
+#: stretch where coverage was otherwise climbing steadily. Banding by
+#: effective_tier instead means "due" and "reported stale" finally
+#: agree on every card, not just the ones a rating cutoff happened to
+#: also prioritise.
 #:
 #: Shares, not fixed counts, so this scales if SELECT_LIMIT is tuned.
 #: They sum to 0.65 of SELECT_LIMIT, leaving the remaining 35% as
 #: genuine overflow capacity in select_due() that still follows the
-#: original priority order - a quiet cycle for the fast bands lets that
-#: overflow reach further into whichever band actually has the backlog,
-#: rather than being rigidly fixed to a per-band count.
-_BAND_MIN_SHARE: dict[int, float] = {
-    0: 0.05,  # 95+
-    1: 0.10,  # 85+
-    2: 0.10,  # 80-84
-    3: 0.15,  # 75-79
-    4: 0.25,  # everything else - the tail this exists to stop starving
+#: original priority order - a quiet cycle for a fast tier lets that
+#: overflow reach further into whichever tier actually has the
+#: backlog, rather than being rigidly fixed to a per-tier count.
+_TIER_MIN_SHARE: dict[str, float] = {
+    "CRITICAL": 0.05,
+    "HIGH": 0.10,
+    "NORMAL": 0.10,
+    "LOW": 0.15,
+    "DORMANT": 0.25,  # the largest population - the tail this exists to stop starving
 }
 
-#: SQL condition per band, matching select_due()'s own CASE expression.
-_BAND_WHERE: dict[int, str] = {
-    0: "rating >= 95",
-    1: "rating >= 85 AND rating < 95",
-    2: "rating >= 80 AND rating < 85",
-    3: "rating >= 75 AND rating < 80",
-    4: "(rating < 75 OR rating IS NULL)",
+#: SQL condition per tier, matching select_due()'s own CASE expression.
+#: COALESCE to NORMAL mirrors market_data_provider.py's
+#: DEFAULT_SALES_TIER: a card card_priority has not scored yet (or a
+#: database migration 044 predates) defaults to NORMAL on both the
+#: scheduling side here and the staleness-reporting side there, so the
+#: two never quietly disagree about an unscored card.
+_TIER_WHERE: dict[str, str] = {
+    "CRITICAL": "COALESCE(cp.effective_tier, 'NORMAL') = 'CRITICAL'",
+    "HIGH": "COALESCE(cp.effective_tier, 'NORMAL') = 'HIGH'",
+    "NORMAL": "COALESCE(cp.effective_tier, 'NORMAL') = 'NORMAL'",
+    "LOW": "COALESCE(cp.effective_tier, 'NORMAL') = 'LOW'",
+    "DORMANT": "COALESCE(cp.effective_tier, 'NORMAL') = 'DORMANT'",
 }
 
 #: Bounded run: exit cleanly after this many minutes. 0 = run forever
@@ -391,9 +401,18 @@ SIGNED_REPROBE_MINUTES = env_int("FUTGG_SALES_SIGNED_REPROBE_MINUTES", 60, minim
 #: whole due queue.
 SIGNED_REPROBE_SAMPLE = env_int("FUTGG_SALES_SIGNED_REPROBE_SAMPLE", 5, minimum=1)
 
-#: Sales refresh cadence by rating.
-#
-# Deliberately much slower than the price cadence, for two reasons.
+#: Sales refresh cadence by adaptive-priority tier (card_priority.
+#: effective_tier, migration 044) - NOT by rating. Was rating-banded
+#: (95_plus/85_plus/80_84/75_79/under_75) until production evidence
+#: showed that axis structurally could not agree with the
+#: customer-facing staleness signal, which has always been judged
+#: against these same CRITICAL/HIGH/NORMAL/LOW/DORMANT tiers (see
+#: market_data_provider.py's stale_sales_by_priority_tier and
+#: _TIER_MIN_SHARE's own comment for the full incident). The env var
+#: names below changed with it - FUTGG_SALES_95_PLUS_INTERVAL_MIN etc.
+#: are no longer read.
+#:
+#: Deliberately much slower than the price cadence, for two reasons.
 #
 # Sales are CUMULATIVE: a sale already captured stays captured, so a
 # refresh only adds what happened since the last read. The interval
@@ -406,23 +425,30 @@ SIGNED_REPROBE_SAMPLE = env_int("FUTGG_SALES_SIGNED_REPROBE_SAMPLE", 5, minimum=
 # for all 10,064 cards. Sales are needed for the fair-value ANCHOR
 # (median, trimmed mean, dispersion, liquidity), which moves slowly.
 #
-# Sized against measured capacity: the previous 30/120/360/1440 spread
-# demanded ~133 cards/min sustained, which is what produced 144 HTTP 429s
-# in the first live run. Halving each band brings it to ~67/min.
+# Defaults mirror backend PRIORITY_ENGINE_CONFIG.tier_sales_interval_
+# minutes (priority_config.py) - CRITICAL/HIGH tight enough to matter
+# for genuinely volatile/liquid cards, DORMANT loose enough that a huge,
+# largely-inactive tail does not dominate every cycle's SELECT_LIMIT.
+# DORMANT's default is 4000, not that config's 4320, to stay strictly
+# under ENGINE_REJECT_SALES_OLDER_THAN_MINUTES below (see
+# cadence_gate_conflicts() - exactly at the limit still counts as a
+# conflict) and to match this worker's own already-deployed slowest-tier
+# value.
 SALES_INTERVALS = {
-    "95_plus": env_int("FUTGG_SALES_95_PLUS_INTERVAL_MIN", 180, minimum=5),
-    "85_plus": env_int("FUTGG_SALES_85_PLUS_INTERVAL_MIN", 60, minimum=5),
-    "80_84": env_int("FUTGG_SALES_80_84_INTERVAL_MIN", 240, minimum=10),
-    "75_79": env_int("FUTGG_SALES_75_79_INTERVAL_MIN", 720, minimum=30),
-    "under_75": env_int("FUTGG_SALES_UNDER_75_INTERVAL_MIN", 2880, minimum=60),
+    "CRITICAL": env_int("FUTGG_SALES_CRITICAL_INTERVAL_MIN", 15, minimum=5),
+    "HIGH": env_int("FUTGG_SALES_HIGH_INTERVAL_MIN", 60, minimum=5),
+    "NORMAL": env_int("FUTGG_SALES_NORMAL_INTERVAL_MIN", 240, minimum=10),
+    "LOW": env_int("FUTGG_SALES_LOW_INTERVAL_MIN", 1440, minimum=30),
+    "DORMANT": env_int("FUTGG_SALES_DORMANT_INTERVAL_MIN", 4000, minimum=60),
 }
-# A more valuable band must never accidentally run less often because an
-# operator tightened the broader 85+ override but left the new 95+ env
-# unset. Railway's current 85+=1440 makes this 180; the source defaults
-# make it 60.
-SALES_INTERVALS["95_plus"] = min(
-    SALES_INTERVALS["95_plus"], SALES_INTERVALS["85_plus"]
-)
+# A more urgent tier must never accidentally run less often than a less
+# urgent one because of a partial env override - same guard the old
+# rating bands had for 95+ vs 85+, now over the tier order instead.
+_TIER_URGENCY_ORDER = ("CRITICAL", "HIGH", "NORMAL", "LOW", "DORMANT")
+for _prev_tier, _next_tier in zip(_TIER_URGENCY_ORDER, _TIER_URGENCY_ORDER[1:]):
+    SALES_INTERVALS[_next_tier] = max(
+        SALES_INTERVALS[_next_tier], SALES_INTERVALS[_prev_tier]
+    )
 
 #: Mirror of backend futgg_config.EngineConfig.reject_sales_older_than_minutes.
 #: Past this age the engine refuses to value a card at all - the sales
@@ -442,7 +468,13 @@ def cadence_gate_conflicts(
     intervals: dict[str, int] | None = None,
     reject_after_minutes: int | None = None,
 ) -> list[tuple[str, int, int]]:
-    """Rating bands whose refresh interval exceeds what the engine accepts.
+    """Bands whose refresh interval exceeds what the engine accepts.
+
+    Generic over whatever `intervals` names its bands - SALES_INTERVALS
+    today keys on adaptive-priority tier (CRITICAL/HIGH/NORMAL/LOW/
+    DORMANT), though the historical example below predates that switch
+    and still uses the original rating-band names; the check itself
+    never cared which axis the bands were drawn on.
 
     A band scheduled to be re-read less often than the engine's sales-age
     limit is not merely slow - it is structurally incapable of ever
@@ -483,8 +515,8 @@ def log_cadence_gate_conflicts() -> None:
     if not conflicts:
         return
     log.warning(
-        "CADENCE EXCEEDS THE ENGINE'S SALES-AGE LIMIT for %d band(s): %s. "
-        "Cards in these bands are scheduled to be re-read less often than "
+        "CADENCE EXCEEDS THE ENGINE'S SALES-AGE LIMIT for %d tier(s): %s. "
+        "Cards in these tiers are scheduled to be re-read less often than "
         "the engine will accept sales for (%d min), so their sales age out "
         "before the next scrape is due and they can NEVER produce a "
         "recommendation - however well this worker runs. Either shorten "
@@ -752,18 +784,15 @@ def signed_reprobe_due() -> bool:
     return datetime.now(timezone.utc) >= _next_signed_reprobe_at
 
 
-def sales_interval_minutes(rating: int | None) -> int:
-    if rating is None:
-        return SALES_INTERVALS["under_75"]
-    if rating >= 95:
-        return SALES_INTERVALS["95_plus"]
-    if rating >= 85:
-        return SALES_INTERVALS["85_plus"]
-    if rating >= 80:
-        return SALES_INTERVALS["80_84"]
-    if rating >= 75:
-        return SALES_INTERVALS["75_79"]
-    return SALES_INTERVALS["under_75"]
+def sales_interval_minutes(tier: str | None) -> int:
+    """`tier` is a card_priority.effective_tier value (CRITICAL/HIGH/
+    NORMAL/LOW/DORMANT) - see select_due()'s `effective_tier` column and
+    apply_batch_results()'s use of it. An unrecognised or missing tier
+    (a card_priority row that predates a new tier value, or absent
+    entirely) falls back to NORMAL, matching market_data_provider.py's
+    DEFAULT_SALES_TIER so scheduling and staleness-reporting never
+    quietly disagree about an unscored card."""
+    return SALES_INTERVALS.get(tier or "NORMAL", SALES_INTERVALS["NORMAL"])
 
 
 # The signing + fetch pair, executed inside the page so it is same-origin
@@ -1218,18 +1247,19 @@ def _row_value(row, key: str, default=None):
 async def select_due(conn: asyncpg.Connection) -> list[asyncpg.Record]:
     """Pick the next cards to read.
 
-    Cards that have NEVER been read come first, regardless of rating.
+    Cards that have NEVER been read come first, regardless of tier.
 
-    That ordering matters more than it looks. Sorting by rating band first
-    starves the tail: the 85+ band alone needs ~55 cards/min at its
-    cadence, so if throughput sits anywhere near that, lower-rated cards
-    never reach the front of the queue and never get a FIRST read at all -
-    they would sit permanently at zero sales, and a card with no sales
-    returns insufficient_data forever no matter how fresh its BIN is.
+    That ordering matters more than it looks. Sorting by priority tier
+    first starves the tail: the CRITICAL/HIGH tiers alone generate
+    enough "due" volume at their cadence that, if throughput sits
+    anywhere near it, unclassified/lower-tier cards never reach the
+    front of the queue and never get a FIRST read at all - they would
+    sit permanently at zero sales, and a card with no sales returns
+    insufficient_data forever no matter how fresh its BIN is.
 
     Backfill-first guarantees every card gets covered once, after which
     NULLs are exhausted and the ordering settles into normal
-    band-priority maintenance.
+    tier-priority maintenance.
 
     Backfill preference now keys on sales_first_read_at, NOT on
     next_sales_due_at being NULL. Those used to be the same test, which
@@ -1243,32 +1273,40 @@ async def select_due(conn: asyncpg.Connection) -> list[asyncpg.Record]:
     without limit.
 
     ONCE BACKFILL IS EXHAUSTED (confirmed in production - "0 never_read"),
-    a plain priority order lets the fast bands (95+, 85+) fill the whole
-    SELECT_LIMIT every cycle and never reach the tail at all - see
-    _BAND_MIN_SHARE's own comment for the production evidence. So this
-    first reserves each band its guaranteed floor (still backfill-first,
-    still ordered by how overdue, just scoped to that band), then fills
-    whatever capacity is left with the original global priority order,
-    excluding whatever the floors already picked so nothing is selected
-    twice. A quiet cycle for the fast bands lets that remaining capacity
-    reach further into whichever band actually has the backlog, rather
-    than being rigidly fixed to a per-band count.
+    a plain priority order lets the fast tiers (CRITICAL, HIGH) fill the
+    whole SELECT_LIMIT every cycle and never reach the tail at all - see
+    _TIER_MIN_SHARE's own comment for why tier, not rating, is the axis
+    this bands on. So this first reserves each tier its guaranteed floor
+    (still backfill-first, still ordered by how overdue, just scoped to
+    that tier), then fills whatever capacity is left with the original
+    global priority order, excluding whatever the floors already picked
+    so nothing is selected twice. A quiet cycle for a fast tier lets
+    that remaining capacity reach further into whichever tier actually
+    has the backlog, rather than being rigidly fixed to a per-tier
+    count.
+
+    Every row carries `effective_tier` (card_priority.effective_tier,
+    defaulting to NORMAL for an unscored card) so apply_batch_results()
+    can schedule the NEXT read against the same tier this one was
+    selected under, via sales_interval_minutes().
     """
     guaranteed: list[asyncpg.Record] = []
     guaranteed_ids: list[int] = []
-    for band, share in _BAND_MIN_SHARE.items():
+    for tier, share in _TIER_MIN_SHARE.items():
         floor = int(SELECT_LIMIT * share)
         if floor <= 0:
             continue
         rows = await conn.fetch(
             f"""
             SELECT source_card_id, rating, next_sales_due_at, source_url,
-                   sales_first_read_at, sales_consecutive_failures
+                   sales_first_read_at, sales_consecutive_failures,
+                   COALESCE(cp.effective_tier, 'NORMAL') AS effective_tier
             FROM futgg_players
+            LEFT JOIN card_priority cp ON cp.card_id = futgg_players.source_card_id
             WHERE is_active
               AND is_tradeable IS DISTINCT FROM FALSE
               AND (next_sales_due_at IS NULL OR next_sales_due_at <= NOW())
-              AND {_BAND_WHERE[band]}
+              AND {_TIER_WHERE[tier]}
             ORDER BY
                 (sales_first_read_at IS NOT NULL),
                 next_sales_due_at ASC NULLS FIRST,
@@ -1287,20 +1325,24 @@ async def select_due(conn: asyncpg.Connection) -> list[asyncpg.Record]:
     overflow = await conn.fetch(
         """
         SELECT source_card_id, rating, next_sales_due_at, source_url,
-               sales_first_read_at, sales_consecutive_failures
+               sales_first_read_at, sales_consecutive_failures,
+               COALESCE(cp.effective_tier, 'NORMAL') AS effective_tier
         FROM futgg_players
+        LEFT JOIN card_priority cp ON cp.card_id = futgg_players.source_card_id
         WHERE is_active
           AND is_tradeable IS DISTINCT FROM FALSE
           AND (next_sales_due_at IS NULL OR next_sales_due_at <= NOW())
           AND NOT (source_card_id = ANY($1::bigint[]))
         ORDER BY
-            -- never-SUCCESSFULLY-read cards first (backfill), best cards
-            -- within that. A failed attempt does not forfeit this.
+            -- never-SUCCESSFULLY-read cards first (backfill), most
+            -- urgent tier within that. A failed attempt does not
+            -- forfeit this.
             (sales_first_read_at IS NOT NULL),
-            CASE WHEN rating >= 95 THEN 0
-                 WHEN rating >= 85 THEN 1
-                 WHEN rating >= 80 THEN 2
-                 WHEN rating >= 75 THEN 3
+            CASE COALESCE(cp.effective_tier, 'NORMAL')
+                 WHEN 'CRITICAL' THEN 0
+                 WHEN 'HIGH' THEN 1
+                 WHEN 'NORMAL' THEN 2
+                 WHEN 'LOW' THEN 3
                  ELSE 4 END,
             next_sales_due_at ASC NULLS FIRST,
             rating DESC NULLS LAST
@@ -1971,7 +2013,11 @@ async def apply_batch_results(
     for result in results or []:
         card_id = int(result.get("eaId"))
         row = by_id.get(card_id)
-        rating = row["rating"] if row is not None else None
+        # select_due() carries effective_tier on every row it selects;
+        # a row from a hand-rolled query (run_diagnostic_card, a stale
+        # reprobe sample) that never selected the column falls back to
+        # NORMAL, same default the tier itself uses for an unscored card.
+        tier = _row_value(row, "effective_tier", "NORMAL") if row is not None else "NORMAL"
         # True only for a card that has NEVER had a successful (or even
         # attempted) read before this batch - see select_due()'s
         # never-read-first ordering and report_coverage()'s never_read
@@ -2055,7 +2101,7 @@ async def apply_batch_results(
         # A success stamps sales_first_read_at (once - COALESCE below keeps
         # the original) and clears the consecutive-failure count, so a card
         # that recovers after an outage is not left on a punitive backoff.
-        updates.append((card_id, sales_interval_minutes(rating), "success", True, 0))
+        updates.append((card_id, sales_interval_minutes(tier), "success", True, 0))
 
     if throttle is not None:
         throttle.record(len(rows), throttled)

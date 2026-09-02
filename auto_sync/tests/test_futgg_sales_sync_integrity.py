@@ -311,8 +311,8 @@ async def test_failed_fetch_gives_previously_read_card_a_short_backoff(monkeypat
     assert after["next_sales_due_at"] is not None
     assert after["last_sales_status"] == "error:data_403"
     # Distinct from (much shorter than) any real success interval - the
-    # shortest configured tier is 5 minutes (under_75 minimum via
-    # env_int's floor); 2 here is clearly a backoff, not coverage.
+    # shortest configured tier (CRITICAL) has a 5-minute floor via
+    # env_int's minimum; 2 here is clearly a backoff, not coverage.
     due_in = after["next_sales_due_at"] - datetime.now(timezone.utc)
     assert due_in < timedelta(minutes=3)
 
