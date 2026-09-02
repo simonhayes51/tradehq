@@ -169,17 +169,37 @@ SELECT_LIMIT = env_int("FUTGG_SALES_SELECT_LIMIT", 200, minimum=1)
 #: also prioritise.
 #:
 #: Shares, not fixed counts, so this scales if SELECT_LIMIT is tuned.
-#: They sum to 0.65 of SELECT_LIMIT, leaving the remaining 35% as
+#: They sum to 0.75 of SELECT_LIMIT, leaving the remaining 25% as
 #: genuine overflow capacity in select_due() that still follows the
 #: original priority order - a quiet cycle for a fast tier lets that
 #: overflow reach further into whichever tier actually has the
 #: backlog, rather than being rigidly fixed to a per-tier count.
+#:
+#: CORRECTED after live evidence: the first version of these shares
+#: (CRITICAL 0.05 .. DORMANT 0.25) ported the OLD rating-band
+#: allocation directly - biggest floor for the slowest/largest tier,
+#: on the theory that it needed protecting from starvation. That
+#: reasoning made sense for rating bands, where the slow tail also had
+#: the loosest interval AND got crowded out by faster bands. It does
+#: NOT hold for priority tiers: DORMANT's interval (SALES_INTERVALS,
+#: 4000min) is now so loose that a small floor keeps it satisfied on
+#: its own, while CRITICAL/HIGH's much tighter intervals (180/720min)
+#: for populations in the thousands genuinely need real guaranteed
+#: throughput to have any chance of being met. Confirmed live: with the
+#: old shares, DORMANT's stale count fell every reading (3783->2984)
+#: while CRITICAL/HIGH/NORMAL's kept RISING (1777->1857, 4639->4976,
+#: 1439->1708) despite already-loosened, achievable interval targets -
+#: a 20-card CRITICAL floor and a 40-card HIGH floor per cycle were
+#: simply never going to keep pace with populations in the thousands,
+#: no matter how achievable the interval was. DORMANT and LOW now get
+#: just enough floor to avoid the original starvation failure mode,
+#: not the largest share in the file.
 _TIER_MIN_SHARE: dict[str, float] = {
-    "CRITICAL": 0.05,
-    "HIGH": 0.10,
+    "CRITICAL": 0.25,
+    "HIGH": 0.25,
     "NORMAL": 0.10,
-    "LOW": 0.15,
-    "DORMANT": 0.25,  # the largest population - the tail this exists to stop starving
+    "LOW": 0.05,
+    "DORMANT": 0.10,
 }
 
 #: SQL condition per tier, matching select_due()'s own CASE expression.

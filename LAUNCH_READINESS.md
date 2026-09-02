@@ -733,15 +733,36 @@ production operation was run.**
     A new test (`test_tier_intervals_equal_the_backend_priority_config`
     in `test_sales_cadence_vs_gate.py`) pins the two configs equal so
     this exact class of drift — one side tuned without the other —
-    fails CI going forward. **Not yet re-verified live against the new
-    targets** — watch whether `stale_sales_by_priority_tier["CRITICAL"]`
-    /`["HIGH"]` actually turn around and fall (not just stop rising)
-    over the next several hours, and whether "Our sales data is behind"
-    stops appearing during a normal, healthy stretch. If CRITICAL is
-    still mostly-stale at a 180-minute target, the collector's real
-    ceiling is lower than tonight's estimate and the interval — or the
-    tier's guaranteed floor share in `_TIER_MIN_SHARE` — needs another
-    look, informed by that.
+    fails CI going forward.
+
+    **The interval fix alone was not enough, and the follow-up
+    confirms why.** Re-checked ~3 hours later: `CRITICAL`/`HIGH`/
+    `NORMAL`'s stale counts were all still rising (1777→1857, 4639→
+    4976, 1439→1708) despite now-achievable targets, while `DORMANT` —
+    the loosest target of all — was the only one actually falling
+    (3783→2984). The remaining bug was `_TIER_MIN_SHARE`, the
+    guaranteed-cards-per-cycle floor: it still gave `DORMANT` the
+    largest reservation (25%) and `CRITICAL` the smallest (5%),
+    unchanged since the original rating-band port, where that made
+    sense (protect the slow, large tail from the fast bands). It does
+    not make sense now that priority tiers replaced rating bands:
+    `DORMANT`'s loose 4000-minute target barely needs guaranteed
+    throughput to stay met, while `CRITICAL`'s population needs real
+    volume to have any chance at its (already loosened) 180-minute
+    target — a 20-card floor per cycle was never going to move a
+    population in the thousands. Reallocated to `CRITICAL`=0.25,
+    `HIGH`=0.25, `NORMAL`=0.10, `LOW`=0.05, `DORMANT`=0.10 (still 25%
+    overflow capacity left over). Full test suite green, including a
+    replacement for the test that had encoded the old "DORMANT gets the
+    biggest floor" assumption as a permanent property rather than a
+    rating-band-specific one. **Not yet re-verified live against this
+    third correction** — this is the second time a plausible-looking
+    fix under-shot; watch `stale_sales_by_priority_tier["CRITICAL"]`/
+    `["HIGH"]` specifically over several hours, not just whether they
+    stop rising but whether they actually turn around and fall. If they
+    still don't, the next lever is whether real throughput can support
+    ANY reasonable CRITICAL/HIGH treatment at this catalogue size, not
+    another share/interval rebalance.
 
 ---
 
