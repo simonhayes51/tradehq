@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import TradeShareCardArt from "./TradeShareCardArt";
 
 const HAALAND = {
@@ -110,6 +110,50 @@ describe("TradeShareCardArt", () => {
     expect(screen.queryByText("91")).not.toBeInTheDocument();
   });
 
+  it("shows the local placeholder art immediately when no image_url is given", () => {
+    render(<TradeShareCardArt data={{ ...HAALAND, image_url: null }} />);
+    const img = document.querySelector("[data-trade-share-thumb]");
+    expect(img.src).toContain("/img/card-placeholder.png");
+  });
+
+  it("falls back to the placeholder, rating overlay included, when a real image_url fails to load", () => {
+    // The exact bug this guards: a remote card photo that 404s or
+    // CORS-fails left a blank bordered box with nothing but a tiny
+    // browser broken-image glyph in it - recognisable as "this graphic
+    // is broken," not "this card has no photo."
+    render(<TradeShareCardArt data={{ ...HAALAND, image_url: "https://cdn.example.com/gone.png", rating: 91 }} />);
+    const img = document.querySelector("[data-trade-share-thumb]");
+    expect(img.src).toBe("https://cdn.example.com/gone.png");
+    expect(screen.queryByText("91")).not.toBeInTheDocument();
+
+    fireEvent.error(img);
+
+    expect(img.src).toContain("/img/card-placeholder.png");
+    expect(screen.getByText("91")).toBeInTheDocument();
+  });
+
+  it("does not keep retrying a failed image_url across re-renders with the same url", () => {
+    const { rerender } = render(<TradeShareCardArt data={{ ...HAALAND, image_url: "https://cdn.example.com/gone.png" }} />);
+    const img = document.querySelector("[data-trade-share-thumb]");
+    fireEvent.error(img);
+    expect(img.src).toContain("/img/card-placeholder.png");
+
+    // A re-render that doesn't change image_url (e.g. a sibling prop
+    // changing) must not re-attempt the URL that just failed.
+    rerender(<TradeShareCardArt data={{ ...HAALAND, image_url: "https://cdn.example.com/gone.png", profit: 1600000 }} />);
+    expect(img.src).toContain("/img/card-placeholder.png");
+  });
+
+  it("gives a new image_url a fresh attempt after a previous one failed", () => {
+    const { rerender } = render(<TradeShareCardArt data={{ ...HAALAND, image_url: "https://cdn.example.com/gone.png" }} />);
+    const img = document.querySelector("[data-trade-share-thumb]");
+    fireEvent.error(img);
+    expect(img.src).toContain("/img/card-placeholder.png");
+
+    rerender(<TradeShareCardArt data={{ ...HAALAND, image_url: "https://cdn.example.com/fresh.png" }} />);
+    expect(img.src).toBe("https://cdn.example.com/fresh.png");
+  });
+
   it("defaults to the 900x470 wide export size", () => {
     const { container } = render(<TradeShareCardArt data={HAALAND} />);
     const root = container.querySelector("[data-trade-share-export]");
@@ -124,5 +168,22 @@ describe("TradeShareCardArt", () => {
     expect(root.style.height).toBe("1350px");
     // Portrait still shows the same figures, just at a different scale.
     expect(screen.getByText("+38.2%")).toBeInTheDocument();
+  });
+
+  it("keeps the Haaland worked example exact internally while displaying it compact", () => {
+    // The canonical regression example from the audit spec: buy 997,000
+    // x4, sell 1,450,000 x4 -> profit 1,522,000, ROI 38.16%. Compact
+    // formatting is display-only - this asserts both halves of that:
+    // the props this component was handed are untouched, and what
+    // actually paints is the rounded/abbreviated form, never the exact
+    // figure recomputed or mutated by this component.
+    const exact = { ...HAALAND, profit: 1522000, roi: 38.164493 };
+    render(<TradeShareCardArt data={exact} />);
+    expect(exact.profit).toBe(1522000);
+    expect(exact.roi).toBe(38.164493);
+    expect(screen.getByText("+1.52M")).toBeInTheDocument();
+    expect(screen.getByText("+38.2%")).toBeInTheDocument();
+    expect(screen.queryByText("+1,522,000")).not.toBeInTheDocument();
+    expect(screen.queryByText(/38\.164/)).not.toBeInTheDocument();
   });
 });

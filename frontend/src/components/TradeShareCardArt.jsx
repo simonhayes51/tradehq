@@ -12,6 +12,7 @@
 // profit by unit buy price alone here, overstating ROI by a factor of
 // quantity for every qty>1 trade; that formula doesn't exist on the
 // frontend at all any more.
+import { useEffect, useState } from "react";
 import { DIMENSIONS, formatCoinsCompact, formatRoi, scaledFontSize } from "./shareCardFormat";
 
 const ACCENT = "#91db32";
@@ -131,7 +132,23 @@ function Brand({ iconSize, textSize }) {
   );
 }
 
+const PLACEHOLDER_CARD_ART = "/img/card-placeholder.png";
+
 function CardFrame({ data, width, height, ratingSize }) {
+  // A remote card photo can fail at render time (the source CDN pruned
+  // an old asset, a transient 404, CORS) even when data.image_url is
+  // set - without this, that showed as a blank box with a tiny browser
+  // broken-image glyph inside the card's own border: recognisable as
+  // "this graphic is broken," not "this card has no photo." Missing and
+  // failed now look identical - both fall back to the same placeholder
+  // every other page in the app already uses for this exact situation -
+  // and the rating overlay (which the real photo already shows) reappears
+  // whenever the placeholder is what's actually on screen, failure
+  // included, not just for a genuinely absent URL.
+  const [imageFailed, setImageFailed] = useState(false);
+  useEffect(() => { setImageFailed(false); }, [data.image_url]);
+  const usingPlaceholder = !data.image_url || imageFailed;
+
   return (
     <div
       style={{
@@ -148,11 +165,12 @@ function CardFrame({ data, width, height, ratingSize }) {
     >
       <img
         data-trade-share-thumb
-        src={data.image_url || "/img/card-placeholder.png"}
+        src={usingPlaceholder ? PLACEHOLDER_CARD_ART : data.image_url}
         alt=""
         style={{ width: "100%", height: "100%", objectFit: "cover", display: "block", opacity: 0.94 }}
+        onError={() => setImageFailed(true)}
       />
-      {!data.image_url && data.rating ? (
+      {usingPlaceholder && data.rating ? (
         <div style={{ position: "absolute", top: height * 0.03, left: width * 0.04, fontSize: ratingSize, fontWeight: 900, color: ACCENT, letterSpacing: "-0.02em" }}>
           {data.rating}
         </div>

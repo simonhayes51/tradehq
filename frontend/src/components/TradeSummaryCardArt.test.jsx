@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import TradeSummaryCardArt from "./TradeSummaryCardArt";
 
 const WEEK_SUMMARY = {
@@ -42,8 +42,28 @@ describe("TradeSummaryCardArt", () => {
 
   it("renders the best-trade thumbnail large enough to stay identifiable on a phone", () => {
     const { container } = render(<TradeSummaryCardArt data={WEEK_SUMMARY} format="portrait" />);
-    const thumb = container.querySelector("img[src*='card-placeholder']");
+    const thumb = container.querySelector("[data-trade-summary-thumb]");
     expect(parseInt(thumb.style.width, 10)).toBeGreaterThanOrEqual(60);
+  });
+
+  it("shows the local placeholder immediately when the best sale has no image_url", () => {
+    render(<TradeSummaryCardArt data={WEEK_SUMMARY} />);
+    const thumb = document.querySelector("[data-trade-summary-thumb]");
+    expect(thumb.src).toContain("/img/card-placeholder.png");
+  });
+
+  it("falls back to the placeholder when the best sale's image_url fails to load", () => {
+    // Same failure this guards against on the trade-result card: a
+    // remote photo that 404s or CORS-fails must not sit there as a
+    // blank bordered box.
+    const best = { player: "Mbappe", profit: 320000, image_url: "https://cdn.example.com/gone.png" };
+    render(<TradeSummaryCardArt data={{ ...WEEK_SUMMARY, best_sale: best }} />);
+    const thumb = document.querySelector("[data-trade-summary-thumb]");
+    expect(thumb.src).toBe("https://cdn.example.com/gone.png");
+
+    fireEvent.error(thumb);
+
+    expect(thumb.src).toContain("/img/card-placeholder.png");
   });
 
   it("omits the best-trade line entirely when there is no best sale", () => {
@@ -91,5 +111,15 @@ describe("TradeSummaryCardArt", () => {
     render(<TradeSummaryCardArt data={{ ...WEEK_SUMMARY, period_label: "All-Time", total_profit: 123456789000 }} format="portrait" />);
     const hero = screen.getByText("+123456.79M");
     expect(parseInt(hero.style.fontSize, 10)).toBeLessThan(224);
+  });
+
+  it("keeps the total profit exact internally while displaying it compact", () => {
+    // Compact formatting is display-only: the props handed to this
+    // component are never mutated, only what paints is rounded.
+    const exact = { ...WEEK_SUMMARY, period_label: "All-Time", total_profit: 4160000 };
+    render(<TradeSummaryCardArt data={exact} />);
+    expect(exact.total_profit).toBe(4160000);
+    expect(screen.getByText("+4.16M")).toBeInTheDocument();
+    expect(screen.queryByText("+4,160,000")).not.toBeInTheDocument();
   });
 });
