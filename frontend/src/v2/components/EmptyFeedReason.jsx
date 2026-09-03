@@ -21,9 +21,30 @@ import { AlertTriangle, RotateCcw, TrendingUp } from "lucide-react";
 import EmptyState from "./EmptyState";
 import { useFutggMarketFreshness } from "../hooks/useFutggMarket";
 
-function sumValues(byTier) {
+// DORMANT is intentionally allowed to run far behind its own ~67-hour
+// (4000-minute) sales-refresh interval - see priority_config.py's
+// tier_sales_interval_minutes and the "CRITICAL now matches..." comment
+// there: DORMANT is the low-liquidity, no-recent-sales, no-interest tail
+// this catalogue deliberately stops chasing so real throughput can go to
+// CRITICAL/HIGH instead. The candidate scan behind /opportunities also
+// orders by sales_count DESC (see futgg_market.py's CANDIDATE_SCAN_ORDER_BY),
+// so a DORMANT-tier card was never going to surface as a trade candidate
+// regardless of how fresh its sales data is.
+//
+// Summing DORMANT's own, by-design backlog into "is our sales data
+// behind" made the gate trip on a population that was never relevant to
+// whether the engine has anything to recommend - confirmed live: a
+// 14,946-card catalogue with a healthy CRITICAL/HIGH/NORMAL/LOW picture
+// crossed the 50% threshold by only 245 stale rows out of 7,718 summed
+// across all tiers, and DORMANT alone accounted for 1,566 of them
+// (production `stale_sales_by_priority_tier`: CRITICAL 1096, HIGH 4264,
+// NORMAL 792, LOW 0, DORMANT 1566) - a false "our sales data is behind"
+// on a feed that had real, sufficiently-fresh candidates to show.
+function staleSalesForCandidateTiers(byTier) {
   if (!byTier || typeof byTier !== "object") return null;
-  return Object.values(byTier).reduce((total, n) => total + (Number(n) || 0), 0);
+  return Object.entries(byTier)
+    .filter(([tier]) => tier !== "DORMANT")
+    .reduce((total, [, n]) => total + (Number(n) || 0), 0);
 }
 
 // The age of the WORST silent collector, not the newest - and "silent"
@@ -78,7 +99,7 @@ export default function EmptyFeedReason({ noun = "opportunities", filtersActive,
   const data = freshness.data;
   const priced = Number(data?.cards_priced);
   const stalePrices = Number(data?.cards_stale);
-  const staleSales = sumValues(data?.stale_sales_by_priority_tier);
+  const staleSales = staleSalesForCandidateTiers(data?.stale_sales_by_priority_tier);
   const silentHours = silentCollectorHours(data?.heartbeats);
 
   // "We have no priced cards at all" and "most of what we have is stale"

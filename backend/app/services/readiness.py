@@ -330,7 +330,23 @@ async def _check_market_data(pool) -> Dict[str, Any]:
 
     priced = int(summary.get("cards_priced") or 0)
     stale = int(summary.get("cards_stale") or 0)
-    stale_sales = sum((summary.get("stale_sales_by_priority_tier") or {}).values())
+    # DORMANT is excluded: its ~67h (4000-minute) sales-refresh interval
+    # is an intentional design choice (see priority_config.py's
+    # tier_sales_interval_minutes), not a fault - it is the low-liquidity,
+    # no-recent-sales, no-interest tail this catalogue deliberately stops
+    # chasing so real throughput goes to CRITICAL/HIGH instead, and the
+    # opportunity candidate scan (ordered by sales_count DESC) would never
+    # surface a DORMANT-tier card regardless of how fresh its sales are.
+    # Summing it in here made this check - and the customer-facing
+    # EmptyFeedReason.jsx message it mirrors - report "sales data behind"
+    # on DORMANT's own, by-design backlog: confirmed live, a healthy
+    # CRITICAL/HIGH/NORMAL/LOW picture (6,152 stale rows on a 14,946-card
+    # catalogue, well under the 50% gate) crossed that gate by only 245
+    # rows once DORMANT's 1,566 was added on top.
+    stale_sales = sum(
+        n for tier, n in (summary.get("stale_sales_by_priority_tier") or {}).items()
+        if tier != "DORMANT"
+    )
 
     detail: Dict[str, Any] = {
         "cards_priced": priced,

@@ -422,12 +422,43 @@ def test_run_forever_only_escalates_on_an_unproductive_trip():
     import inspect
 
     source = inspect.getsource(mod.run_forever)
-    else_branch = source.index("else:", source.index("consecutive_cycle_trips = 0"))
-    increment = source.index("consecutive_cycle_trips += 1")
+    # Anchor on note_signed_fetch_recovered() rather than the first
+    # "consecutive_cycle_trips = 0" - that string also appears at the
+    # top of the function (the pre-loop initialization), and searching
+    # for the next "else:" from THAT position can land on an unrelated
+    # else clause elsewhere in the function body instead of the
+    # breaker_tripped escalation branch this test means to inspect.
+    recovered_call = source.index("note_signed_fetch_recovered()")
+    else_branch = source.index("else:", recovered_call)
+    increment = source.index("consecutive_cycle_trips += 1", else_branch)
     between = source[else_branch:increment]
     assert "HEARTBEAT_MIN_CARDS_PER_MIN" in between
     assert "cycle_was_productive" in between
-    assert "consecutive_cycle_trips = 0" in between
+
+
+def test_run_forever_a_productive_trip_neither_resets_nor_increments_the_streak():
+    """Corrected after a full 10-hour production trace (2 September):
+    the first version of this escalation RESET the streak to 0 on every
+    productive-but-tripped cycle, on the theory that a healthy cycle
+    proves the prior wait was sufficient. It doesn't - it only proves
+    that cycle's OWN wait was sufficient, which says nothing about the
+    very next one. Across 61 real cycles, productive and unproductive
+    trips alternated almost metronomically (28 of 61, 46%, collected
+    zero cards) for the entire window - because a productive cycle
+    always intervened, the old reset-on-productive logic meant the
+    streak could never reach 2 and escalation never engaged even once
+    in 10 hours, despite the same near-instant wall recurring on a
+    stable cadence throughout. Only a cycle that runs completely clean
+    (not breaker_tripped at all) may now reset the streak; a
+    productive-but-tripped cycle must leave it exactly where it was."""
+    import inspect
+
+    source = inspect.getsource(mod.run_forever)
+    recovered_call = source.index("note_signed_fetch_recovered()")
+    else_branch = source.index("else:", recovered_call)
+    increment = source.index("consecutive_cycle_trips += 1", else_branch)
+    between = source[else_branch:increment]
+    assert "consecutive_cycle_trips = 0" not in between
 
 
 def test_run_forever_logs_the_wall_clock_resume_time_on_a_trip():
