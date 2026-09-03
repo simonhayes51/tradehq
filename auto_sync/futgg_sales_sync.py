@@ -2659,14 +2659,37 @@ async def run_forever() -> None:
 
                         if circuit_breaker_tripped(stats, throttle):
                             breaker_tripped = True
-                            log.warning(
-                                "circuit breaker TRIPPED on signed_fetch: %d/%d failed "
-                                "(>=%.0f%% threshold) after selecting %d/%d cards this "
-                                "cycle - stopping further selection/marking, backing off %.0fs",
-                                stats["failed"], stats["ok"] + stats["failed"],
-                                CIRCUIT_BREAKER_THRESHOLD * 100, offset, len(due),
-                                next_backoff_seconds(consecutive_cycle_trips + 1),
-                            )
+                            # circuit_breaker_tripped() has two independent
+                            # trip conditions (see its own docstring): this
+                            # unconditionally logged the cumulative-ratio
+                            # wording even when the OTHER condition (two
+                            # consecutive fully-throttled batches) was what
+                            # actually fired - which, read against a real
+                            # 10-hour trace, it almost always was: cycles
+                            # logged as "15/165 failed (>=80% threshold)"
+                            # are 9.1% failed, nowhere near 80%. The message
+                            # now names whichever condition actually tripped
+                            # it, rather than always citing the ratio text.
+                            # (The exact backoff this trip leads to is
+                            # logged separately below, once this cycle's
+                            # productivity - which the backoff depends on -
+                            # is actually known; predicting it here was
+                            # itself a second inaccuracy this fixes.)
+                            if throttle.consecutive_fully_throttled_batches >= CONSECUTIVE_FULL_THROTTLE_BATCHES:
+                                log.warning(
+                                    "circuit breaker TRIPPED on signed_fetch: %d consecutive "
+                                    "fully-throttled batches after selecting %d/%d cards this "
+                                    "cycle - stopping further selection/marking",
+                                    throttle.consecutive_fully_throttled_batches, offset, len(due),
+                                )
+                            else:
+                                log.warning(
+                                    "circuit breaker TRIPPED on signed_fetch: %d/%d failed "
+                                    "(>=%.0f%% threshold) after selecting %d/%d cards this "
+                                    "cycle - stopping further selection/marking",
+                                    stats["failed"], stats["ok"] + stats["failed"],
+                                    CIRCUIT_BREAKER_THRESHOLD * 100, offset, len(due),
+                                )
                             if TRANSPORT_MODE == "auto":
                                 switch, why = should_fall_back_to_page_capture(stats, throttle)
                                 if switch:
@@ -2707,13 +2730,19 @@ async def run_forever() -> None:
 
                         if circuit_breaker_tripped(stats):
                             breaker_tripped = True
+                            # Same fix as the signed_fetch branch above: the
+                            # actual backoff now depends on this cycle's
+                            # productivity, which isn't known yet here -
+                            # predicting it against consecutive_cycle_trips + 1
+                            # was already wrong before that change and more
+                            # so now. The wall-clock resume time is logged
+                            # separately below once it's actually computed.
                             log.warning(
                                 "circuit breaker TRIPPED on page_capture: %d/%d failed "
                                 "(>=%.0f%% threshold) after selecting %d/%d cards this "
-                                "cycle - stopping further selection/marking, backing off %.0fs",
+                                "cycle - stopping further selection/marking",
                                 stats["failed"], stats["ok"] + stats["failed"],
                                 CIRCUIT_BREAKER_THRESHOLD * 100, offset, len(due),
-                                next_backoff_seconds(consecutive_cycle_trips + 1),
                             )
                             break
 
@@ -2760,25 +2789,49 @@ async def run_forever() -> None:
                     # Production evidence (1 September): cycles that
                     # collected cards_ok=142 and 185 (24-31 cards/min,
                     # comfortably over HEARTBEAT_MIN_CARDS_PER_MIN) each
-                    # still eventually tripped near the end - and under
-                    # the first version of this escalation, that counted
-                    # the same as the true "instant retrip" failure
-                    # (cards_ok=0, 0/min) that motivated it, driving the
-                    # backoff to its 1800s cap even though nothing was
-                    # actually getting worse. AdaptiveThrottle easing its
-                    # batch size back up and eventually overshooting the
-                    # limit again is the intended, recurring shape of a
-                    # HEALTHY cycle, not evidence the prior wait failed -
-                    # only an unproductive trip (proof the wait wasn't
-                    # long enough) should escalate the next one.
+                    # still eventually tripped near the end, and the first
+                    # version of this escalation counted that the same as
+                    # the true "instant retrip" failure (cards_ok=0, 0/min)
+                    # it was built to catch - driving the backoff to its
+                    # 1800s cap even though nothing was actually getting
+                    # worse. AdaptiveThrottle easing its batch size back up
+                    # and eventually overshooting the limit again is the
+                    # intended, recurring shape of a HEALTHY cycle, so a
+                    # productive-but-tripped cycle must not itself count as
+                    # evidence the wait was too short (still true, see
+                    # circuit_breaker_tripped's own docstring).
+                    #
+                    # CORRECTED after a full 10-hour trace (2 September):
+                    # the fix above also RESET the streak to 0 on every
+                    # such productive trip, on the theory that a healthy
+                    # cycle proves the backoff before it was sufficient.
+                    # It doesn't - it proves that cycle's OWN wait was
+                    # sufficient, which says nothing about whether the very
+                    # next one will be. Across 61 real cycles, productive
+                    # and unproductive trips alternated almost metronomically
+                    # (a cycle collecting 110-190 cards, immediately followed
+                    # by one collecting 0-11) for the entire window - 28 of
+                    # 61 cycles (46%) collected nothing. Because a productive
+                    # cycle always intervened, the streak could never reach
+                    # 2 and escalation never engaged even once in 10 hours,
+                    # despite the same near-instant wall recurring on a
+                    # stable cadence the whole time. The mechanism this
+                    # matches is a rolling rate-limit window: a productive
+                    # cycle spends down the budget a 300s wait let
+                    # accumulate, so the very next cycle - only 300s later -
+                    # finds it already drained again. A productive trip is
+                    # therefore left alone (neither resets nor increments:
+                    # it is not proof of failure, per the comment above),
+                    # but only a cycle that runs completely clean now resets
+                    # the streak - only that is proof the window has
+                    # actually cleared, not merely that one more cycle's
+                    # worth of it was available.
                     cards_ok = int(stats.get("ok", 0))
                     cycle_cards_per_min = (cards_ok / elapsed) * 60 if elapsed > 0 else 0.0
                     cycle_was_productive = (
                         cards_ok > 0 and cycle_cards_per_min >= HEARTBEAT_MIN_CARDS_PER_MIN
                     )
-                    if cycle_was_productive:
-                        consecutive_cycle_trips = 0
-                    else:
+                    if not cycle_was_productive:
                         consecutive_cycle_trips += 1
 
                 if shutdown_event.is_set():
@@ -2796,7 +2849,9 @@ async def run_forever() -> None:
                     # this states the wall-clock answer directly.
                     resume_at = datetime.now(timezone.utc) + timedelta(seconds=backoff_seconds)
                     log.info(
-                        "backing off %.0fs after %d consecutive trip(s) - "
+                        "backing off %.0fs after %d unresolved trip(s) "
+                        "(a productive cycle no longer clears this count - "
+                        "only a fully clean one does) - "
                         "next cycle expected around %s UTC",
                         backoff_seconds, consecutive_cycle_trips,
                         resume_at.strftime("%H:%M:%S"),
