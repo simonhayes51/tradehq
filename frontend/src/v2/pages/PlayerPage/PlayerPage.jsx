@@ -33,6 +33,12 @@ export default function PlayerPage() {
   const settled = !futggQuery.isLoading;
   const origin = location.state?.from;
   const returnPath = origin === "trade-finder" ? "/trade-finder" : "/players";
+  // Discord's "View in EAFC.Live" button on a Server Feed opportunity
+  // post links here with ?src=discord_feed (see discord_trading_feed.py's
+  // build_opportunity_post_embed) so the signed-out preview below can
+  // acknowledge the visitor already saw this exact trade's numbers in
+  // Discord, instead of reading as re-hiding what was just given away.
+  const fromDiscordFeed = new URLSearchParams(location.search).get("src") === "discord_feed";
   const backLabel = origin === "trade-finder" ? "Back to Trade Finder" : "Back to player search";
 
   function goBack() {
@@ -77,6 +83,7 @@ export default function PlayerPage() {
         cardId={cardId}
         onBack={goBack}
         backLabel={backLabel}
+        fromDiscordFeed={fromDiscordFeed}
       />
     );
   }

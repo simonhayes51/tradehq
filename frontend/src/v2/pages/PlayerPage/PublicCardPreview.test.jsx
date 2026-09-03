@@ -48,14 +48,14 @@ const FULL = {
   expected_profit_after_tax: 84000, expected_roi: 0.2, signal_reasons: ["Below median"],
 };
 
-function renderPage() {
+function renderPage(path = "/players/111") {
   // The signed-in path renders the price chart, which is a real
   // react-query consumer. The signed-out path never reaches it - that it
   // does not is part of what is being tested.
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
   return render(
     <QueryClientProvider client={client}>
-      <MemoryRouter initialEntries={["/players/111"]}>
+      <MemoryRouter initialEntries={[path]}>
         <Routes>
           <Route path="/players/:cardId" element={<PlayerPage />} />
           <Route path="/signup" element={<p>SIGNUP</p>} />
@@ -111,6 +111,22 @@ describe("the signed-out card page", () => {
   it("says the account is free and needs no card", () => {
     renderPage();
     expect(screen.getByText(/Free permanently\. No card required\./i)).toBeInTheDocument();
+  });
+
+  it("shows the default copy when not linked from Discord", () => {
+    renderPage();
+    expect(screen.getByRole("heading", { name: "See what this card is really worth" })).toBeInTheDocument();
+    expect(screen.getByText(/^Approximate\. The exact live price is on the free account\.$/)).toBeInTheDocument();
+  });
+
+  it("acknowledges the visitor already saw this trade in Discord, rather than re-hiding it", () => {
+    renderPage("/players/111?src=discord_feed");
+    expect(screen.getByRole("heading", { name: /Save this card and get the next one free/i })).toBeInTheDocument();
+    expect(screen.getByText(/already got the live buy\/sell numbers.*in Discord/i)).toBeInTheDocument();
+    expect(screen.getByText(/daily trade ideas like the one you just saw in Discord/i)).toBeInTheDocument();
+    // The lock stays - this is tailored copy, not a bypass of the paywall.
+    expect(screen.getAllByText("Free account")).toHaveLength(2);
+    expect(screen.getByRole("link", { name: /Create free account/ })).toBeInTheDocument();
   });
 
   it("records that the account prompt was seen, with no card identity", () => {

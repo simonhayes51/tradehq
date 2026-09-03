@@ -479,7 +479,13 @@ def build_opportunity_post_embed(row: dict[str, Any], ci: Any, *, test: bool = F
     components: list[dict[str, Any]] = []
     card_id = row.get("source_card_id")
     if not test and card_id is not None and int(card_id) > 0:
-        components = [embeds.link_row("View in EAFC.Live", f"{app_url.rstrip('/')}/#/players/{card_id}")]
+        # ?src=discord_feed lets PlayerPage.jsx recognise a signed-out
+        # visitor already saw this exact trade's buy/sell numbers here in
+        # Discord, so its account-signup prompt can say so instead of
+        # reading as re-hiding what was just given away for free.
+        components = [embeds.link_row(
+            "View in EAFC.Live", f"{app_url.rstrip('/')}/#/players/{card_id}?src=discord_feed"
+        )]
     return embed, components
 
 
