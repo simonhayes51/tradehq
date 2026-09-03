@@ -68,6 +68,36 @@
 .billing-v2-legal { text-align: center; color: var(--v2-muted); font-size: 11.5px; margin-top: 8px; }
 .billing-v2-legal a { color: var(--v2-accent); text-decoration: none; }
 
+/* Discord server plans - a separate, guild-scoped product from the
+   personal plan above it on this page. */
+.billing-v2-server-plans { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px; }
+.billing-v2-server-plan { border: 1px solid var(--v2-border); border-radius: var(--v2-radius); padding: 14px; background: var(--v2-elevated); display: flex; flex-direction: column; gap: 4px; }
+.billing-v2-server-plan strong { font-size: 13.5px; color: var(--v2-text); }
+.billing-v2-server-plan-price { font-size: 17px; font-weight: 800; color: var(--v2-accent); }
+.billing-v2-server-plan-limit { font-size: 12px; color: var(--v2-muted); }
+
+.billing-v2-server-empty { text-align: center; padding: 8px 0 4px; }
+.billing-v2-server-empty p { color: var(--v2-muted); font-size: 13px; margin: 0 0 10px; }
+.billing-v2-server-empty code { background: var(--v2-elevated); border: 1px solid var(--v2-border); border-radius: 3px; padding: 1px 6px; color: var(--v2-text); font-family: var(--v2-font-mono); font-size: 12px; }
+.billing-v2-server-empty .billing-v2-btn { margin-top: 6px; }
+
+.billing-v2-server-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.billing-v2-server-list li { display: flex; align-items: center; gap: 12px; border: 1px solid var(--v2-border); border-radius: var(--v2-radius); padding: 12px 14px; flex-wrap: wrap; }
+.billing-v2-server-list-name { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 160px; }
+.billing-v2-server-list-name svg { color: var(--v2-muted); flex: none; }
+.billing-v2-server-list-name strong { display: block; font-size: 13.5px; color: var(--v2-text); }
+.billing-v2-server-list-name span { font-size: 12px; color: var(--v2-muted); }
+.billing-v2-server-status { font-size: 11px; font-weight: 800; letter-spacing: .03em; padding: 4px 10px; border-radius: 999px; background: var(--v2-elevated); border: 1px solid var(--v2-border); color: var(--v2-muted); flex: none; }
+.billing-v2-server-status.status-active,
+.billing-v2-server-status.status-trialing { color: var(--v2-accent); border-color: rgba(57,255,138,.35); background: rgba(57,255,138,.1); }
+.billing-v2-server-status.status-past_due,
+.billing-v2-server-status.status-unpaid { color: var(--v2-negative); border-color: rgba(255,92,92,.35); background: rgba(255,92,92,.1); }
+
+@media (max-width: 480px) {
+  .billing-v2-server-plans { grid-template-columns: 1fr; }
+  .billing-v2-server-list li { flex-direction: column; align-items: flex-start; }
+}
+
 @media (max-width: 720px) {
   .billing-v2-feature-grid, .billing-v2-compare { grid-template-columns: 1fr; }
   .billing-v2-compare .featured { border-left: none; padding-left: 0; border-top: 1px solid var(--v2-border); padding-top: 14px; }
