@@ -4057,7 +4057,18 @@ async def _refresh_plan_catalogue(now: float) -> Dict[str, Any]:
         }
         if stripe_price_id:
             try:
-                price = await asyncio.to_thread(stripe.Price.retrieve, stripe_price_id)
+                # Newer stripe-python releases no longer make resource
+                # objects (Price, Subscription, ...) dict subclasses -
+                # .get() raises AttributeError ("'get' is a dict method,
+                # but a Price is not a dict"), which is exactly what was
+                # hitting production here (see the Stripe webhook handler
+                # below for the same bug class, fixed the same way: work
+                # from a plain dict, not the SDK's typed object).
+                # to_dict() is Stripe's own documented conversion, and is
+                # recursive by default, so the nested `recurring` object
+                # becomes a plain dict too - every .get() below keeps
+                # working unchanged.
+                price = (await asyncio.to_thread(stripe.Price.retrieve, stripe_price_id)).to_dict()
                 recurring = price.get("recurring") or {}
                 interval = recurring.get("interval")
                 count = recurring.get("interval_count") or 1

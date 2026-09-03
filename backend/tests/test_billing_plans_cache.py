@@ -38,6 +38,25 @@ def clean_cache(monkeypatch):
     main._plan_cache.update({"at": 0.0, "value": None, "last_good": None, "last_good_at": 0.0})
 
 
+class _FakeStripeResource:
+    """Mimics the real stripe-python resource shape, not a plain dict.
+
+    Newer stripe-python releases stopped making resource objects (Price,
+    Subscription, ...) dict subclasses - .get() on the real thing raises
+    AttributeError. This fixture used to return a plain dict, which meant
+    every test here happily exercised a .get()-based code path that broke
+    the instant it touched a real Stripe response - the exact bug that
+    shipped to production. Returning something with only .to_dict() (no
+    .get()) makes that class of regression fail here again.
+    """
+
+    def __init__(self, data):
+        self._data = data
+
+    def to_dict(self):
+        return dict(self._data)
+
+
 class FakeStripePrice:
     """Stands in for stripe.Price.retrieve, and can be made to fail."""
 
@@ -51,11 +70,11 @@ class FakeStripePrice:
         self.calls += 1
         if self.fail:
             raise RuntimeError("stripe is having a moment")
-        return {
+        return _FakeStripeResource({
             "unit_amount": self.amount,
             "currency": self.currency,
             "recurring": {"interval": "month", "interval_count": 1},
-        }
+        })
 
 
 @pytest.fixture
