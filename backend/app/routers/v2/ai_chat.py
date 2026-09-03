@@ -406,7 +406,12 @@ async def chat(body: ChatRequest, request: Request) -> Dict[str, Any]:
                 # Bounds the output side. "Keep replies short and concrete"
                 # is already in the system prompt; this is the same
                 # instruction made enforceable rather than requested.
-                max_tokens=ai_usage.MAX_OUTPUT_TOKENS,
+                # gpt-5.6-luna rejects the older `max_tokens` param outright
+                # (400 unsupported_parameter, confirmed live in production)
+                # and wants `max_completion_tokens` instead - every request
+                # was failing before a single token was generated, so this
+                # isn't a cosmetic rename.
+                max_completion_tokens=ai_usage.MAX_OUTPUT_TOKENS,
             )
             # Every call in the loop counts. One CUSTOMER message is up to
             # _MAX_TOOL_ROUNDS model calls, each resending the whole

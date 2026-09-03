@@ -82,7 +82,7 @@ class TestInputIsBounded:
 
         from app.routers.v2 import ai_chat
 
-        assert "max_tokens=ai_usage.MAX_OUTPUT_TOKENS" in inspect.getsource(ai_chat.chat)
+        assert "max_completion_tokens=ai_usage.MAX_OUTPUT_TOKENS" in inspect.getsource(ai_chat.chat)
 
 
 class TestTheLimits:
