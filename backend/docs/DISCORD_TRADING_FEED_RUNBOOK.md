@@ -81,20 +81,62 @@ tells you which step failed.
 
 ## 3. Register the slash commands with Discord
 
+**This is now automatic.** The backend registers its whole command set on
+every boot — see `app/services/discord_command_sync.py`. It loads every
+command extension in `app/services/discord_commands/` (which is where
+`/feed` and the seven per-user commands are defined), confirms the bot
+token belongs to the expected application, then PUTs the set **globally**
+and to each guild in `DISCORD_COMMAND_SYNC_GUILD_IDS` (guild-scoped
+commands appear within seconds; global ones can take up to an hour to
+propagate, which is why both are synced).
+
+Expected startup log lines:
+
 ```
-python scripts/register_discord_commands.py
+INFO:discord_command_sync:🔄 Discord command sync: loading command extensions...
+INFO:discord_commands:📦 Loaded command extension app.services.discord_commands.core (7 command(s): /price, /fairvalue, /watchlist, /alerts, /results, /account, /help)
+INFO:discord_commands:📦 Loaded command extension app.services.discord_commands.feed (1 command(s): /feed)
+INFO:discord_commands:📦 All 2 command extension(s) loaded: 8 command(s) total
+INFO:discord_commands:✅ /feed group present with 10 subcommand(s): /feed activate, /feed billing, /feed channel, /feed help, /feed pause, /feed preferences, /feed resume, /feed setup, /feed status, /feed test
+INFO:discord_command_sync:🤖 Discord command sync: authenticated as application 'EAFC.Live' (application_id=1408193521986437251)
+INFO:discord_command_sync:✅ Discord command sync: token confirmed for expected application_id=1408193521986437251
+INFO:discord_command_sync:🌍 Discord command sync: 8 global command(s) synced: /price, /fairvalue, /watchlist, /alerts, /results, /account, /help, /feed
+INFO:discord_command_sync:🏠 Discord command sync: 8 command(s) synced to guild 818516082934546432: /price, /fairvalue, /watchlist, /alerts, /results, /account, /help, /feed
+INFO:discord_command_sync:✅ Discord command sync complete: application_id=1408193521986437251, 8 global command(s), 1 guild(s) synced
 ```
 
-Registers `/price /fairvalue /watchlist /alerts /results /account /help`
-as **guild-scoped** commands (visible in `DISCORD_GUILD_ID` within
-seconds — global commands can take up to an hour to propagate). Safe to
-re-run any time; it replaces the guild's command set idempotently.
+If you don't see those lines, the commands were not registered and
+Discord will show nothing. The failure is always logged at `ERROR` with
+`❌ Discord command sync FAILED` and the Discord status code/body — grep
+the deploy logs for `Discord command sync`. Common causes:
 
-To roll back (remove them again):
+| Log line | Cause |
+| --- | --- |
+| `DISCORD_BOT_TOKEN is not set` | no token in the environment |
+| `HTTP 401: {"message": "401: Unauthorized"...}` | wrong/rotated bot token |
+| `bot token belongs to application id X ... but this deployment expects 1408193521986437251` | the token is another app's |
+| `HTTP 403` on the guild sync | bot isn't in that guild, or was invited without `applications.commands` |
+| `⏸️ Discord command sync skipped` | `DISCORD_SYNC_COMMANDS_ON_BOOT=0` |
+
+Relevant env vars (all optional, defaults shown):
 
 ```
-python scripts/register_discord_commands.py --clear
+DISCORD_SYNC_COMMANDS_ON_BOOT=1                       # 0 disables the boot sync entirely
+DISCORD_COMMAND_SYNC_STRICT=0                         # 1 makes a sync failure fail the boot
+DISCORD_EXPECTED_APPLICATION_ID=1408193521986437251   # empty skips the token/app check
+DISCORD_COMMAND_SYNC_GUILD_IDS=818516082934546432     # comma-separated; empty = global only
 ```
+
+The manual script is still there as an escape hatch — for a one-off
+guild, or to clear a guild's commands after a test:
+
+```
+python scripts/register_discord_commands.py                # guild DISCORD_GUILD_ID
+python scripts/register_discord_commands.py --global       # global
+python scripts/register_discord_commands.py --clear        # roll back
+```
+
+It reads the same definitions as the boot sync, so the two can't drift.
 
 ## 4. Configure the Interactions Endpoint URL (Developer Portal)
 
@@ -183,13 +225,9 @@ Prices in the Stripe Dashboard (test mode first) and put their IDs here.
 Without them, `/feed setup` replies with a friendly "billing isn't fully
 configured yet" message rather than failing silently.
 
-**Re-run command registration** after pulling this change — `/feed` is a
-new top-level command with subcommands, registered alongside the existing
-seven by the same script:
-
-```
-python scripts/register_discord_commands.py
-```
+**Command registration** needs no manual step — `/feed` is defined in
+`app/services/discord_commands/feed.py` and is registered alongside the
+existing seven by the boot-time sync (§3) on the next deploy.
 
 **Stripe webhook**: no new endpoint — `/feed setup`'s checkout sessions
 and subscriptions are tagged `metadata.kind = "discord_feed"` and routed

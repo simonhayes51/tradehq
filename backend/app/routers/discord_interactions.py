@@ -47,6 +47,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from app.services import discord_command_data as data
+from app.services import discord_command_sync as command_sync
 from app.services import discord_embeds as embeds
 from app.services import discord_feed_billing as feed_billing
 from app.services import discord_permissions as perms
@@ -430,7 +431,10 @@ async def interactions(request: Request, background_tasks: BackgroundTasks) -> J
             "data": {"content": "You're using that command too fast — please wait a moment and try again.", "flags": EPHEMERAL},
         })
 
-    application_id = os.getenv("DISCORD_APPLICATION_ID")
+    # Env var first, then the id the boot-time command sync resolved from
+    # the bot token itself - so follow-ups still work on a deployment that
+    # only has DISCORD_BOT_TOKEN set.
+    application_id = os.getenv("DISCORD_APPLICATION_ID") or command_sync.authenticated_application_id()
     interaction_token = payload.get("token")
     ephemeral = name in ACCOUNT_COMMANDS or name == "feed"
 

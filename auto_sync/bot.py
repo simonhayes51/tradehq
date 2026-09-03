@@ -27,7 +27,17 @@ initial_cogs = []
 
 @bot.event
 async def on_ready():
-    logging.info(f"✅ Logged in as {bot.user.name}")
+    logging.info(f"✅ Logged in as {bot.user.name} (application_id={bot.application_id})")
+    # This gateway bot registers NO slash commands and has no command tree
+    # to sync. Every EAFC.Live slash command (/feed included) is an HTTP
+    # interaction served by the backend, which registers the command set
+    # itself on boot - see backend/app/services/discord_command_sync.py.
+    # If you are looking for the command-sync log lines, they are in the
+    # *backend* service's logs, not this worker's.
+    logging.info(
+        "ℹ️  Slash commands are registered by the backend service "
+        "(app/services/discord_command_sync.py), not by this worker"
+    )
 
     for cog in initial_cogs:
         try:
