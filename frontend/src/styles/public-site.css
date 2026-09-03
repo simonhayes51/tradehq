@@ -11,6 +11,10 @@
 .pub-nav nav a:hover,.pub-nav nav button.pub-nav-extra:hover { color: #fff; }
 .pub-nav nav a.pub-cta { color: #06120a; background: #39ff8a; padding: 10px 18px; border-radius: 4px; font-weight: 900; }
 
+.pub-nav-toggle { display: none; align-items: center; justify-content: center; width: 40px; height: 40px; border-radius: 4px; border: 1px solid #222327; background: transparent; color: #f8f8f8; cursor: pointer; }
+.pub-nav-toggle:hover { border-color: #39ff8a; }
+.pub-nav-drawer { display: none; }
+
 .pub-main { max-width: 1120px; margin: 0 auto; padding: 0 32px 60px; }
 
 /* Hero */
@@ -24,6 +28,17 @@
 a.pub-cta, button.pub-cta { display: inline-flex; align-items: center; gap: 8px; min-height: 48px; padding: 0 22px; border-radius: 4px; background: #39ff8a; color: #06120a; font-weight: 900; text-decoration: none; border: none; font-size: 14px; cursor: pointer; font-family: inherit; }
 button.pub-secondary { display: inline-flex; align-items: center; min-height: 48px; padding: 0 22px; border-radius: 4px; border: 1px solid #2c2d32; background: transparent; color: #fff; text-decoration: none; font-weight: 700; font-size: 14px; cursor: pointer; font-family: inherit; }
 button.pub-secondary:hover { border-color: #4a4b52; }
+.pub-hero-inline-link { display: inline-flex; align-items: center; gap: 4px; margin-top: 16px; padding: 0; border: none; background: transparent; color: #8d8f95; font-weight: 600; font-size: 12.5px; cursor: pointer; font-family: inherit; }
+.pub-hero-inline-link:hover { color: #c6c6ca; }
+
+/* Two product paths - individual traders vs Discord communities */
+.pub-paths { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 12px; }
+.pub-path-card { border: 1px solid #222327; border-radius: 6px; padding: 22px; background: #111214; display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.pub-path-card svg { color: #39ff8a; }
+.pub-path-card h3 { margin: 4px 0 0; font-size: 16px; }
+.pub-path-card p { margin: 0; color: #a7a7ac; font-size: 13px; line-height: 1.55; flex: 1; }
+.pub-path-card a, .pub-path-card button { display: inline-flex; align-items: center; gap: 6px; margin-top: 6px; padding: 0; border: none; background: transparent; color: #39ff8a; font-weight: 800; font-size: 13px; text-decoration: none; cursor: pointer; font-family: inherit; }
+.pub-path-card a:hover, .pub-path-card button:hover { text-decoration: underline; }
 
 /* Hero card / locked opportunity preview */
 .pub-hero-visual { display: flex; justify-content: center; }
@@ -70,7 +85,10 @@ button.pub-secondary:hover { border-color: #4a4b52; }
 .pub-trust-grid strong { display: block; margin-bottom: 6px; font-size: 14.5px; }
 .pub-trust-grid p { margin: 0; font-size: 12.5px; color: #a7a7ac; line-height: 1.5; }
 
-.pub-how-steps { list-style: none; margin: 20px 0 0; padding: 0; display: grid; gap: 10px; }
+.pub-how-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 20px; }
+.pub-how-block h3 { display: flex; align-items: center; gap: 8px; margin: 0 0 12px; font-size: 14px; color: #e6e6e6; }
+.pub-how-block h3 svg { color: #39ff8a; }
+.pub-how-steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
 .pub-how-steps li { display: flex; align-items: flex-start; gap: 14px; border: 1px solid #222327; border-radius: 6px; padding: 16px 18px; background: #111214; }
 .pub-how-steps b { display: grid; place-items: center; width: 28px; height: 28px; flex: none; border-radius: 50%; background: #39ff8a; color: #06120a; font-weight: 900; font-size: 13px; }
 .pub-how-steps strong { display: block; font-size: 14px; margin-bottom: 2px; }
@@ -104,6 +122,21 @@ button.pub-secondary:hover { border-color: #4a4b52; }
 .pub-pricing-card a { margin-top: 10px; display: block; text-align: center; min-height: 42px; line-height: 42px; border-radius: 4px; border: 1px solid #39ff8a; background: #39ff8a; color: #06120a; font-weight: 900; font-size: 12.5px; text-decoration: none; }
 .pub-pricing-card:not(.pub-featured) a { background: transparent; color: #fff; }
 
+/* Discord server pricing - visually distinct from the personal Free vs
+   Elite section above it, so the two products never read as one list. */
+.pub-discord-pricing { padding: 32px; border: 1px solid #26331f; border-radius: 10px; background: radial-gradient(ellipse at top left, rgba(57,255,138,.06), transparent 55%), #0d1210; }
+.pub-discord-grid { max-width: none; }
+.pub-discord-note { margin-top: 18px; max-width: none; }
+.pub-discord-note code { background: #17181b; border: 1px solid #222327; border-radius: 3px; padding: 1px 6px; font-size: 12px; color: #e6e6e6; }
+.pub-discord-note a { color: #39ff8a; }
+
+/* FAQ */
+.pub-faq { margin: 20px 0 0; display: grid; gap: 14px; max-width: 760px; }
+.pub-faq > div { border: 1px solid #222327; border-radius: 6px; padding: 16px 18px; background: #111214; }
+.pub-faq dt { font-size: 14px; font-weight: 700; color: #f2f2f4; margin: 0 0 6px; }
+.pub-faq dd { margin: 0; font-size: 13px; color: #a7a7ac; line-height: 1.6; }
+.pub-faq code { background: #17181b; border: 1px solid #222327; border-radius: 3px; padding: 1px 6px; font-size: 12px; color: #e6e6e6; }
+
 /* Mid-page CTA */
 .pub-midcta { margin-top: 60px; padding: 40px 32px; text-align: center; border: 1px solid #222327; border-radius: 8px; background: radial-gradient(ellipse at top, rgba(57,255,138,.08), transparent 60%), #111214; }
 .pub-midcta h2 { margin: 0 0 18px; font-size: 22px; }
@@ -111,19 +144,39 @@ button.pub-secondary:hover { border-color: #4a4b52; }
 
 .pub-disclaimer { text-align: center; color: #55565c; font-size: 11px; margin-top: 44px; }
 
-.pub-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 22px 32px; border-top: 1px solid #222327; color: #8d8f95; font-size: 12px; max-width: 1120px; margin: 0 auto; flex-wrap: wrap; }
-.pub-footer nav { display: flex; gap: 16px; flex-wrap: wrap; }
-.pub-footer a { color: #8d8f95; text-decoration: none; }
-.pub-footer a:hover { color: #fff; }
+.pub-footer { padding: 44px 32px 22px; border-top: 1px solid #222327; max-width: 1120px; margin: 0 auto; }
+.pub-footer-cols { display: grid; grid-template-columns: 1.4fr 1fr 1fr 1fr; gap: 28px; }
+.pub-footer-col { display: flex; flex-direction: column; gap: 10px; }
+.pub-footer-brand { color: #fff; font-weight: 900; font-size: 15px; }
+.pub-footer-brand b { color: #39ff8a; }
+.pub-footer-col p { margin: 4px 0 0; color: #7f8086; font-size: 12px; line-height: 1.6; }
+.pub-footer-heading { color: #55565c; font-size: 11px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; margin-bottom: 2px; }
+.pub-footer-col a, .pub-footer-col button { color: #a7a7ac; text-decoration: none; font-size: 13px; text-align: left; padding: 0; border: none; background: transparent; cursor: pointer; font-family: inherit; width: fit-content; }
+.pub-footer-col a:hover, .pub-footer-col button:hover { color: #fff; }
+.pub-footer-bottom { margin-top: 32px; padding-top: 18px; border-top: 1px solid #1a1b1f; color: #6c6d73; font-size: 12px; }
 
 @media (max-width: 900px) {
   .pub-hero-split { grid-template-columns: 1fr; gap: 36px; padding-top: 40px; }
   .pub-hero-visual { order: -1; }
   .pub-hero-card { max-width: 100%; }
-  .pub-opp-grid, .pub-trust-grid, .pub-pricing-grid { grid-template-columns: 1fr; }
+  .pub-opp-grid, .pub-trust-grid, .pub-pricing-grid, .pub-paths, .pub-how-grid { grid-template-columns: 1fr; }
   .pub-hero-copy h1 { font-size: 30px; }
-  .pub-nav-pricing, .pub-nav-discord { display: none; }
-  .pub-nav nav { gap: 14px; }
+  .pub-footer-cols { grid-template-columns: 1fr 1fr; }
+
+  /* Below 900px the inline nav gives way to a hamburger + drawer -
+     there's no room for five links plus two CTAs on one row without
+     them wrapping into an unreadable tangle. */
+  .pub-nav { position: relative; flex-wrap: wrap; }
+  .pub-nav-links { display: none; }
+  .pub-nav-toggle { display: inline-flex; }
+  .pub-nav-drawer {
+    display: flex; flex-direction: column; gap: 4px;
+    position: absolute; top: 100%; left: 0; right: 0;
+    padding: 12px 16px 18px; background: #0a0a0b; border-bottom: 1px solid #222327;
+    box-shadow: 0 16px 30px -12px rgba(0,0,0,.5);
+  }
+  .pub-nav-drawer button, .pub-nav-drawer > a { text-align: left; padding: 12px 4px; border: none; background: transparent; color: #d6d6da; font-size: 15px; font-weight: 600; text-decoration: none; cursor: pointer; font-family: inherit; border-bottom: 1px solid #17181b; }
+  .pub-nav-drawer a.pub-cta { text-align: center; border: none; border-radius: 4px; margin-top: 8px; padding: 13px 4px; color: #06120a; }
 }
 @media (max-width: 480px) {
   .pub-nav { padding: 14px 16px; }
@@ -134,8 +187,10 @@ button.pub-secondary:hover { border-color: #4a4b52; }
   .pub-hero-actions { flex-direction: column; }
   .pub-hero-actions a, .pub-hero-actions button { width: 100%; justify-content: center; }
   .pub-section { margin-top: 40px; }
+  .pub-discord-pricing { padding: 20px; }
   .pub-midcta { padding: 28px 20px; }
-  .pub-footer { flex-direction: column; align-items: flex-start; gap: 10px; padding: 18px 16px; }
+  .pub-footer { padding: 32px 16px 18px; }
+  .pub-footer-cols { grid-template-columns: 1fr; gap: 22px; }
 }
 
 /* Public track record - headline numbers only; the full ledger is in
