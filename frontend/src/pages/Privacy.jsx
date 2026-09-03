@@ -44,7 +44,7 @@ export default function Privacy() {
       <h2>AI Chat</h2>
       <p>
         If you use the AI Chat feature, the message you type is sent to OpenAI
-        (model <code>gpt-4o-mini</code>) to generate a reply. This only happens when you actively
+        (model <code>gpt-5.6-luna</code>) to generate a reply. This only happens when you actively
         use AI Chat — it does not apply to your general use of EAFC Live. We do not keep a stored
         transcript of your AI Chat conversations in our own database.
       </p>

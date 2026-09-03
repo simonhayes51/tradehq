@@ -89,7 +89,10 @@ included on Free" was true and was also true of no account at all.
 
 ## 3. AI model, measured usage and cost
 
-**Model:** `gpt-4o-mini`, via `OPENAI_CHAT_MODEL`.
+**Model:** `gpt-5.6-luna`, via `OPENAI_CHAT_MODEL` — the only model the
+chat endpoint will call; there is no fallback to another model on error
+(see `app/routers/v2/ai_chat.py`'s `except Exception` block, which raises
+a 503 rather than retrying on a different model).
 **Model calls per customer message:** up to 3 — the loop calls, runs a
 tool, calls again with the result in context. Every round resends the
 whole conversation plus a 438-token tool schema.
@@ -110,11 +113,24 @@ records **provider-reported** usage, so the first day of real traffic
 replaces every number with a measured one.
 
 **No pricing existed anywhere in the repository.** The defaults —
-$0.15/1M input, $0.60/1M output — are published list rates for the default
-model and are **not verified against this account's invoices**. They are
-env-overridable for that reason, and the doc, the API payload and the
-deployment checklist all say so. **Verifying them against one real invoice
-is on the launch checklist.**
+$0.15/1M input, $0.60/1M output — are published list rates for
+`gpt-4o-mini`, the *previous* default model, and were never verified
+against this account's invoices even then. They are env-overridable for
+that reason, and the doc, the API payload and the deployment checklist
+all say so.
+
+**These rates are now stale on their face, not just unverified.**
+`gpt-5.6-luna` is a different model with (presumably) different pricing —
+nobody has supplied a real rate card for it as part of this change, so
+`AI_CHAT_PRICE_PER_1M_INPUT`/`AI_CHAT_PRICE_PER_1M_OUTPUT` still default
+to `gpt-4o-mini`'s numbers. Every cost figure below this line, and the
+entire "final AI limits" table in section 4, was sized against those
+numbers — if `gpt-5.6-luna` costs meaningfully more per token, the real
+cost per message and per Elite member is understated by whatever that
+gap is, and the rate limits below may no longer hold the line they were
+chosen to hold. **Getting `gpt-5.6-luna`'s real per-token price into
+`AI_CHAT_PRICE_PER_1M_INPUT`/`_OUTPUT` and re-running this costing is now
+on the launch checklist, ahead of verifying against an invoice.**
 
 Monthly cost per Elite member against the £3 subscription:
 
