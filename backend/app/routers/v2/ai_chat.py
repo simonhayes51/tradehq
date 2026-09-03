@@ -412,6 +412,22 @@ async def chat(body: ChatRequest, request: Request) -> Dict[str, Any]:
                 # was failing before a single token was generated, so this
                 # isn't a cosmetic rename.
                 max_completion_tokens=ai_usage.MAX_OUTPUT_TOKENS,
+                # gpt-5.6-luna is a reasoning-tier model and defaults to a
+                # nonzero reasoning_effort even on /v1/chat/completions -
+                # OpenAI rejects function tools outright in that state
+                # ("Function tools with reasoning_effort are not supported
+                # ... use /v1/responses or set reasoning_effort to 'none'",
+                # confirmed live in production, second 400 in a row after
+                # the max_tokens one above). Switching to /v1/responses
+                # would be the architecture change this endpoint's tool
+                # loop was explicitly built to avoid disturbing, so this
+                # takes the other documented option instead. `extra_body`
+                # rather than a real kwarg: the installed openai SDK
+                # (1.54.0) predates reasoning_effort as a typed
+                # chat.completions parameter, and create()'s signature has
+                # no **kwargs passthrough - passing it directly would raise
+                # a client-side TypeError before any request went out.
+                extra_body={"reasoning_effort": "none"},
             )
             # Every call in the loop counts. One CUSTOMER message is up to
             # _MAX_TOOL_ROUNDS model calls, each resending the whole
