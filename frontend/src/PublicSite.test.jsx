@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -56,12 +56,24 @@ describe("public homepage navigation", () => {
 
   it("keeps the launch links wired to their intended destinations", () => {
     renderSite();
-    expect(screen.getAllByRole("link", { name: "Pricing" })[0]).toHaveAttribute("href", "https://app.eafc.live/#/billing");
+    // Pricing is now an in-page nav item (both the personal and Discord
+    // pricing sections live on this page) rather than a jump straight to
+    // the app - covered by the "scrolls to the pricing section" test
+    // below. Billing (manage an existing subscription) is still a real
+    // link to the app.
+    expect(screen.getByRole("link", { name: "Billing" })).toHaveAttribute("href", "https://app.eafc.live/#/billing");
     expect(screen.getAllByRole("link", { name: "Log in" })[0]).toHaveAttribute("href", "https://app.eafc.live/#/login");
     expect(screen.getAllByRole("link", { name: /Create free account/ })[0]).toHaveAttribute("href", "https://app.eafc.live/#/signup");
     expect(screen.getAllByRole("link", { name: "Discord" })[0].getAttribute("href")).toMatch(/^https:\/\/discord\.gg\//);
     expect(screen.getByRole("link", { name: "Privacy" })).toHaveAttribute("href", "#/privacy");
     expect(screen.getByRole("link", { name: "Terms" })).toHaveAttribute("href", "#/terms");
+  });
+
+  it("scrolls the nav's Pricing link to the on-page pricing section", () => {
+    renderSite();
+    fireEvent.click(screen.getAllByRole("button", { name: "Pricing" })[0]);
+    expect(Element.prototype.scrollIntoView).toHaveBeenCalledWith({ behavior: "smooth", block: "start" });
+    expect(window.location.hash).toBe("#/");
   });
 });
 
@@ -91,8 +103,12 @@ describe("public pricing", () => {
     renderSite();
     // The old page hardcoded "£3/mo or £25/season" - the exact class of
     // claim that must never outlive a price change in Stripe. "£0" on the
-    // Free card is not a Stripe number and stays.
-    expect(screen.queryByText(/\/month|\/season/)).not.toBeInTheDocument();
+    // Free card is not a Stripe number and stays. Scoped to the personal
+    // pricing section: the separate Discord Server Feed pricing further
+    // down the page is flat-rate product copy, not read from this
+    // (personal-Elite-only) billing-plans hook, so it legitimately shows
+    // "£9.99/month" regardless of Stripe's personal-plan configuration.
+    expect(within(document.getElementById("pricing")).queryByText(/\/month|\/season/)).not.toBeInTheDocument();
   });
 
   it("calls the paid plan Elite and never Premium", () => {

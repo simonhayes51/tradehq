@@ -11,9 +11,10 @@
 // unnecessarily."
 import { useEffect, useState } from "react";
 import { useSearchParams, Link } from "react-router-dom";
-import { Crown, Check, CreditCard, Shield, Clock, AlertTriangle, MessageCircle, ExternalLink, Gift } from "lucide-react";
+import { Crown, Check, CreditCard, Shield, Clock, AlertTriangle, MessageCircle, ExternalLink, Gift, Hash, Loader2, Settings } from "lucide-react";
 import SectionCard from "../../components/SectionCard";
 import PlanComparison from "../../components/PlanComparison";
+import api from "../../../axios";
 import { DISCORD_INVITE_URL } from "../../../lib/domains";
 import { EVENTS, track, trackOnce } from "../../../lib/analytics";
 import { FREE_LIMITS } from "../../lib/limits";
@@ -77,6 +78,95 @@ const UNLOCK_COPY = {
   "trade-finder": "Search every live-priced card by budget, risk, position and return.",
   alerts: `Up to ${FREE_LIMITS.eliteAlerts} active price alerts instead of ${FREE_LIMITS.alerts}.`,
 };
+
+// Discord Server Feed plan copy. Display only, same rule as FREE_LIMITS
+// above - the price and daily-post allowance that actually apply come
+// from Stripe and discord_server_settings server-side (see
+// app/services/discord_feed_billing.py's PLANS dict, which these numbers
+// mirror). This is a SEPARATE, guild-scoped product from personal
+// Free/Elite: a member can hold both at once, and neither includes the
+// other - Elite does not add a server feed, and a paid server feed does
+// not grant the member's own account Elite.
+const SERVER_PLANS = [
+  { key: "server_feed", label: "Server Feed", price: "£9.99/month", postsPerDay: 6 },
+  { key: "server_feed_plus", label: "Server Feed+", price: "£19.99/month", postsPerDay: 12 },
+];
+
+const SERVER_STATUS_LABEL = {
+  active: "Active",
+  trialing: "Trial",
+  past_due: "Payment failed",
+  checkout_pending: "Checkout not finished",
+  unpaid: "Not paid",
+  canceled: "Cancelled",
+};
+
+// The user's connected Discord servers with a Server Feed - separate
+// from the personal Free/Elite plan above, because a server subscription
+// belongs to the GUILD (billed via Stripe on the guild's own
+// stripe_subscription_id, see discord_servers), not to this account. A
+// member can manage feeds for zero, one or several servers here,
+// regardless of their own personal plan.
+function DiscordServerPlansSection() {
+  const [guilds, setGuilds] = useState(null); // null = loading, [] = none, Error = failed
+  const [loadFailed, setLoadFailed] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.get("/api/v2/discord-feed/guilds")
+      .then(({ data }) => { if (!cancelled) setGuilds(data?.guilds || []); })
+      .catch(() => { if (!cancelled) { setGuilds([]); setLoadFailed(true); } });
+    return () => { cancelled = true; };
+  }, []);
+
+  return (
+    <SectionCard title="Discord server plans" subtitle="Billed separately from your personal plan above, per Discord server.">
+      <div className="billing-v2-server-plans">
+        {SERVER_PLANS.map((plan) => (
+          <div key={plan.key} className="billing-v2-server-plan">
+            <strong>{plan.label}</strong>
+            <span className="billing-v2-server-plan-price">{plan.price}</span>
+            <span className="billing-v2-server-plan-limit">Up to {plan.postsPerDay} feed posts a day</span>
+          </div>
+        ))}
+      </div>
+
+      {guilds === null ? (
+        <div className="v2-page-state" role="status"><Loader2 className="spin" size={15} /> Loading your Discord servers…</div>
+      ) : loadFailed ? (
+        <div className="billing-v2-msg err"><AlertTriangle size={15} /> Couldn't load your connected Discord servers. Try refreshing this page.</div>
+      ) : guilds.length === 0 ? (
+        <div className="billing-v2-server-empty">
+          <p>No Discord server is set up with a feed under your account yet.</p>
+          <p>Invite the EAFC Live bot to your server, then run <code>/feed setup</code> there (you'll need Manage Server) to pick a plan and posting channel.</p>
+          <a href={DISCORD_INVITE_URL} target="_blank" rel="noreferrer" className="billing-v2-btn secondary">
+            Join our Discord for setup help <ExternalLink size={13} />
+          </a>
+        </div>
+      ) : (
+        <ul className="billing-v2-server-list">
+          {guilds.map((g) => (
+            <li key={g.guild_id}>
+              <div className="billing-v2-server-list-name">
+                <Hash size={14} />
+                <div>
+                  <strong>{g.name}</strong>
+                  <span>{g.plan === "server_feed_plus" ? "Server Feed+" : g.plan === "server_feed" ? "Server Feed" : "No plan selected"}</span>
+                </div>
+              </div>
+              <span className={`billing-v2-server-status status-${g.subscription_status || "unknown"}`}>
+                {SERVER_STATUS_LABEL[g.subscription_status] || g.subscription_status || "Unknown"}
+              </span>
+              <Link to="/discord-feed" className="billing-v2-btn ghost">
+                <Settings size={14} /> Manage
+              </Link>
+            </li>
+          ))}
+        </ul>
+      )}
+    </SectionCard>
+  );
+}
 
 // What a customer is told when a billing call fails.
 //
@@ -455,6 +545,8 @@ export default function Billing() {
             </p>
           </>
         )}
+
+        <DiscordServerPlansSection />
 
         <p className="billing-v2-legal">
           By subscribing, you agree to our{" "}

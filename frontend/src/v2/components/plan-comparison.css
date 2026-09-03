@@ -1,0 +1,69 @@
+/* src/v2/components/plan-comparison.css
+ *
+ * Styles for PlanComparison.jsx, the Free vs Elite table shared by the
+ * pricing page, the signup page and the billing page.
+ *
+ * This file used to live only inside pages/signup.css - so any OTHER
+ * page rendering <PlanComparison> (the v2 Billing page included) got
+ * none of it: no grid, no column widths, no row borders. Three plain
+ * <span>s per row with no layout rules render as one run-on line of
+ * text - heading, value and checkmark all concatenated with nothing to
+ * break them apart. Importing this file from the component itself,
+ * rather than from whichever page happens to remember to load it,
+ * makes that class of bug impossible to reintroduce.
+ */
+.plan-comparison {
+  margin-top: 16px;
+  border: 1px solid var(--v2-border, #2c2c2c);
+  border-radius: var(--v2-radius, 6px);
+  overflow: hidden;
+}
+.plan-comparison-head,
+.plan-comparison-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+  padding: 11px 12px;
+  align-items: start;
+}
+.plan-comparison-head {
+  background: var(--v2-elevated, #161616);
+  border-bottom: 1px solid var(--v2-border, #2c2c2c);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--v2-muted, #a0a0a0);
+}
+.plan-comparison-head .plan-col-elite { color: var(--v2-accent, #39ff8a); }
+.plan-comparison-head small {
+  display: block;
+  margin-top: 3px;
+  color: var(--v2-text, #cfcfcf);
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.plan-comparison-row {
+  border-bottom: 1px solid var(--v2-border, #202020);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+.plan-comparison-row:last-child { border-bottom: 0; }
+.plan-row-label { color: var(--v2-text, #e4e4e4); font-weight: 600; }
+.plan-yes { display: inline-flex; align-items: flex-start; gap: 5px; color: var(--v2-accent, #39ff8a); }
+.plan-no { display: inline-flex; align-items: flex-start; gap: 5px; color: var(--v2-muted, #7f7f7f); }
+.plan-detail { color: var(--v2-text, #c2c2c2); }
+.plan-yes svg, .plan-no svg { flex: 0 0 auto; margin-top: 1px; }
+
+/* Below ~430px the three-column grid is too tight for the value copy
+   ("The full live feed, all day") to sit next to the label without
+   wrapping into an unreadable knot - stack each row as label / Free /
+   Elite instead. */
+@media (max-width: 430px) {
+  .plan-comparison-head { display: none; }
+  .plan-comparison-row { grid-template-columns: 1fr; gap: 4px; padding: 12px; }
+  .plan-row-label { font-size: 13px; }
+  .plan-comparison-row > :nth-child(2)::before { content: "Free: "; color: var(--v2-muted, #8e8e8e); }
+  .plan-comparison-row > :nth-child(3)::before { content: "Elite: "; color: var(--v2-accent, #39ff8a); }
+}

@@ -9,6 +9,7 @@
 // they want them.
 import { Check, X } from "lucide-react";
 import { FREE_LIMITS } from "../lib/limits";
+import "./plan-comparison.css";
 
 export const PLAN_ROWS = [
   {
