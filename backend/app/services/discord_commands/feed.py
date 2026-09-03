@@ -16,7 +16,7 @@ from typing import Any, Dict, List
 
 PLAN_CHOICES = [
     {"name": "Server Feed — £9.99/mo, up to 6/day", "value": "server_feed"},
-    {"name": "Server Feed+ — £19.99/mo, up to 12/day", "value": "server_feed_plus"},
+    {"name": "Server Feed+ — £19.99/mo, up to 15/day", "value": "server_feed_plus"},
 ]
 FEED_PLATFORM_CHOICES = [
     {"name": "Console", "value": "console"},
@@ -67,6 +67,19 @@ FEED_COMMAND: Dict[str, Any] = {
         {
             "type": 1, "name": "channel", "description": "Change the posting channel",
             "options": [CHANNEL_OPTION],
+        },
+        {
+            "type": 1, "name": "sell_channel",
+            "description": "Route TARGET HIT / result posts to a separate channel (omit channel to clear)",
+            "options": [
+                {
+                    "type": 7,  # CHANNEL
+                    "name": "channel",
+                    "description": "Sell-time results channel - omit to go back to posting results in the main feed channel",
+                    "required": False,
+                    "channel_types": [0, 5],  # GUILD_TEXT, GUILD_ANNOUNCEMENT only
+                },
+            ],
         },
         {
             "type": 1, "name": "preferences", "description": "Update feed preferences",

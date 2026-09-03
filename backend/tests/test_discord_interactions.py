@@ -745,6 +745,24 @@ def test_feed_test_requires_a_configured_channel(monkeypatch):
     assert "setup" in reply["content"].lower()
 
 
+def test_feed_sell_channel_sets_the_configured_channel(monkeypatch):
+    set_sell_channel = AsyncMock(return_value={"sell_channel_id": "chan-sell"})
+    monkeypatch.setattr(feed_billing, "set_sell_channel", set_sell_channel)
+    payload = _feed_payload(subcommand="sell_channel", options=[{"name": "channel", "value": "chan-sell"}])
+    reply = run(_build_reply("feed", payload["data"]["options"], "712239212749127740", "corr", payload))
+    set_sell_channel.assert_awaited_once_with(guild_id="g1", admin_id="712239212749127740", channel_id="chan-sell")
+    assert "chan-sell" in reply["content"]
+
+
+def test_feed_sell_channel_with_no_channel_clears_it(monkeypatch):
+    set_sell_channel = AsyncMock(return_value={"sell_channel_id": None})
+    monkeypatch.setattr(feed_billing, "set_sell_channel", set_sell_channel)
+    payload = _feed_payload(subcommand="sell_channel", options=[])
+    reply = run(_build_reply("feed", payload["data"]["options"], "712239212749127740", "corr", payload))
+    set_sell_channel.assert_awaited_once_with(guild_id="g1", admin_id="712239212749127740", channel_id=None)
+    assert "main feed channel" in reply["content"].lower()
+
+
 def test_feed_activate_reports_feed_error_to_user(monkeypatch):
     async def raise_error(**kwargs):
         raise feed_billing.FeedError("This server needs an active Server Feed subscription first - run /feed setup or /feed billing.")

@@ -128,6 +128,23 @@ async def set_channel(guild_id: str, request: Request, body: SetChannelBody):
     return {"feed": feed}
 
 
+class SetSellChannelBody(BaseModel):
+    # None (the JSON field omitted, or explicit null) clears it - result
+    # posts go back to the main feed channel.
+    channel_id: Optional[str] = None
+
+
+@router.patch("/{guild_id}/sell-channel")
+async def set_sell_channel(guild_id: str, request: Request, body: SetSellChannelBody):
+    client = DiscordClient()
+    discord_id = await _require_guild_access(request, guild_id, client)
+    try:
+        feed = await feed_billing.set_sell_channel(guild_id=guild_id, admin_id=discord_id, channel_id=body.channel_id)
+    except feed_billing.FeedError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"feed": feed}
+
+
 class SetPreferencesBody(BaseModel):
     platform_scope: Optional[str] = None
     budget_mix: Optional[str] = None

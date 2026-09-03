@@ -392,6 +392,11 @@ def feed_status_embed(feed: dict[str, Any], *, posts_used: int, channel_ok: bool
         {"name": "SUBSCRIPTION", "value": sub_status, "inline": True},
         {"name": "STATE", "value": state, "inline": True},
         {"name": "CHANNEL", "value": f"<#{feed['feed_channel_id']}>" if feed.get("feed_channel_id") else "Not set", "inline": True},
+        {
+            "name": "SELL-TIME CHANNEL",
+            "value": f"<#{feed['sell_channel_id']}>" if feed.get("sell_channel_id") else "Same as CHANNEL",
+            "inline": True,
+        },
         {"name": "PLATFORM", "value": _PLATFORM_SCOPE_LABELS.get(feed.get("platform_scope"), "n/a"), "inline": True},
         {"name": "PAID THROUGH", "value": paid_through_label, "inline": True},
         {
@@ -437,7 +442,7 @@ def feed_help_embed() -> dict[str, Any]:
         ),
         "fields": [
             {"name": "Server Feed — £9.99/month", "value": "Up to 6 opportunities per day.", "inline": False},
-            {"name": "Server Feed+ — £19.99/month", "value": "Up to 12 opportunities per day.", "inline": False},
+            {"name": "Server Feed+ — £19.99/month", "value": "Up to 15 opportunities per day.", "inline": False},
             {
                 "name": "\"Up to\" means exactly that",
                 "value": "EAFC.Live will never post a weak trade just to fill your daily quota — some days you may see fewer posts than your allowance.",
@@ -448,6 +453,7 @@ def feed_help_embed() -> dict[str, Any]:
             {"name": "/feed activate", "value": "Turn on live posting once payment and a test post are confirmed.", "inline": False},
             {"name": "/feed status", "value": "See your plan, subscription, channel and today's post count.", "inline": False},
             {"name": "/feed channel / preferences", "value": "Change the posting channel or platform/budget/confidence settings.", "inline": False},
+            {"name": "/feed sell_channel", "value": "Route TARGET HIT / result posts to a separate sell-time channel. Run it with no channel to go back to posting results in your main feed channel.", "inline": False},
             {"name": "/feed pause / resume", "value": "Pause or resume posting without affecting billing.", "inline": False},
             {"name": "/feed billing", "value": "Get a secure link to manage or cancel your subscription.", "inline": False},
         ],

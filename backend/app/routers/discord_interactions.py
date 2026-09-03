@@ -200,7 +200,7 @@ async def _build_feed_reply(interaction_payload: Dict[str, Any], options: List[D
     guild_name = ((interaction_payload.get("guild") or {}).get("name")) or f"Guild {guild_id}"
 
     if not options:
-        return {"content": "Usage: `/feed <setup|test|activate|status|channel|preferences|pause|resume|billing|help>`"}
+        return {"content": "Usage: `/feed <setup|test|activate|status|channel|sell_channel|preferences|pause|resume|billing|help>`"}
     sub = options[0]
     sub_name = str(sub.get("name") or "")
     sub_options = sub.get("options") or []
@@ -278,6 +278,14 @@ async def _build_feed_reply(interaction_payload: Dict[str, Any], options: List[D
             channel_id = str(_sub_option(sub_options, "channel"))
             feed = await feed_billing.set_channel(guild_id=guild_id, admin_id=str(discord_id), channel_id=channel_id)
             return {"content": f"✅ Posting channel updated to <#{feed['feed_channel_id']}>."}
+
+        if sub_name == "sell_channel":
+            channel_raw = _sub_option(sub_options, "channel")
+            channel_id = str(channel_raw) if channel_raw is not None else None
+            feed = await feed_billing.set_sell_channel(guild_id=guild_id, admin_id=str(discord_id), channel_id=channel_id)
+            if feed.get("sell_channel_id"):
+                return {"content": f"✅ TARGET HIT / result posts will now go to <#{feed['sell_channel_id']}>."}
+            return {"content": "✅ Sell-time results will post in your main feed channel again."}
 
         if sub_name == "preferences":
             platform_scope = _sub_option(sub_options, "platform")

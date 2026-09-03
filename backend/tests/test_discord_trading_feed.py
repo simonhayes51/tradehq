@@ -517,3 +517,258 @@ def test_publish_live_opportunities_skips_outside_posting_window(monkeypatch):
     posted = asyncio.run(publish_live_opportunities(conn, server, fake_client))
     assert posted == 0
     assert fake_client.post_embed.await_count == 0
+
+
+# ---------------------------------------------------------------------------
+# publish_opportunity_updates must grade a posted opportunity against ITS
+# OWN buy_price/sell_target (stored in the post's payload), never against
+# "whatever futgg_recommendation_outcomes last graded for this card_id" -
+# that table is fed by a separately-scheduled scanner that can (and did,
+# in production) attach a completely different trade's result to the one
+# actually shown to users. Regression test for a TARGET HIT result whose
+# profit was mathematically impossible from the posted buy price.
+# ---------------------------------------------------------------------------
+
+
+class _FakeUpdatesConn:
+    def __init__(self, *, pending, bin_history):
+        self._pending = pending
+        self._bin_history = bin_history  # dict[card_id] -> list[{"lowest_bin", "captured_at"}]
+        self.record_calls = 0
+
+    def acquire(self):
+        return self
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def fetch(self, query, *args):
+        if "FROM discord_server_posts p" in query:
+            return self._pending
+        if "FROM futgg_bin_history" in query:
+            return self._bin_history.get(args[0], [])
+        return []
+
+    async def fetchval(self, query, *args):
+        if "INSERT INTO discord_server_posts" in query:
+            self.record_calls += 1
+            return self.record_calls
+        return None
+
+    async def execute(self, *a, **kw):
+        return None
+
+
+def _pending_post(*, payload, sent_at, dedup_key="dk1"):
+    return {"post_id": 1, "payload": payload, "dedup_key": dedup_key, "sent_at": sent_at}
+
+
+def test_publish_opportunity_updates_grades_the_posts_own_prices(monkeypatch):
+    monkeypatch.setenv("DISCORD_TRADING_FEED_ENABLED", "1")
+    import app.services.discord_trading_feed as feed_module
+
+    now = datetime(2026, 8, 20, 12, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(feed_module, "_now", lambda: now)
+    sent_at = now - timedelta(hours=2)
+
+    card_id = 999
+    conn = _FakeUpdatesConn(
+        pending=[_pending_post(
+            payload={"source_card_id": card_id, "name": "Gregor Kobel", "buy_price": 5500.0, "sell_target": 9600.0},
+            sent_at=sent_at,
+        )],
+        bin_history={
+            card_id: [
+                {"lowest_bin": 5400, "captured_at": sent_at + timedelta(minutes=5)},
+                {"lowest_bin": 9700, "captured_at": sent_at + timedelta(minutes=30)},
+            ],
+        },
+    )
+    fake_client = MagicMock()
+    fake_client.post_embed = AsyncMock(return_value=(200, {"id": "msg1"}))
+    server = ServerRecord(
+        id=1, guild_id="g1", name="Test", access_level="paid_partner", feed_channel_id="chan1",
+        proof_channel_id=None, status="active", expires_at=None,
+    )
+
+    from app.services.discord_trading_feed import publish_opportunity_updates
+
+    updated = asyncio.run(publish_opportunity_updates(conn, server, fake_client))
+    assert updated == 1
+    embed = fake_client.post_embed.call_args.args[1]
+    result_field = next(f for f in embed["fields"] if f["name"] == "RESULT")
+    # Profit must be derivable from THIS post's own 5,500 buy - not some
+    # other, unrelated recommendation's much lower entry.
+    assert "TARGET HIT" in embed["title"]
+    assert result_field["value"] != "n/a"
+
+
+def test_publish_opportunity_updates_posts_to_the_feed_channel_by_default(monkeypatch):
+    """No sell_channel_id configured - unchanged behavior: results post
+    into the same channel as the original opportunity."""
+    monkeypatch.setenv("DISCORD_TRADING_FEED_ENABLED", "1")
+    import app.services.discord_trading_feed as feed_module
+
+    now = datetime(2026, 8, 20, 12, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(feed_module, "_now", lambda: now)
+    sent_at = now - timedelta(hours=2)
+    card_id = 999
+    conn = _FakeUpdatesConn(
+        pending=[_pending_post(
+            payload={"source_card_id": card_id, "name": "Gregor Kobel", "buy_price": 5500.0, "sell_target": 9600.0},
+            sent_at=sent_at,
+        )],
+        bin_history={card_id: [
+            {"lowest_bin": 5400, "captured_at": sent_at + timedelta(minutes=5)},
+            {"lowest_bin": 9700, "captured_at": sent_at + timedelta(minutes=30)},
+        ]},
+    )
+    fake_client = MagicMock()
+    fake_client.post_embed = AsyncMock(return_value=(200, {"id": "msg1"}))
+    server = ServerRecord(
+        id=1, guild_id="g1", name="Test", access_level="paid_partner", feed_channel_id="chan1",
+        proof_channel_id=None, status="active", expires_at=None,
+    )
+
+    from app.services.discord_trading_feed import publish_opportunity_updates
+
+    asyncio.run(publish_opportunity_updates(conn, server, fake_client))
+    assert fake_client.post_embed.call_args.args[0] == "chan1"
+
+
+def test_publish_opportunity_updates_posts_to_the_configured_sell_channel(monkeypatch):
+    monkeypatch.setenv("DISCORD_TRADING_FEED_ENABLED", "1")
+    import app.services.discord_trading_feed as feed_module
+
+    now = datetime(2026, 8, 20, 12, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(feed_module, "_now", lambda: now)
+    sent_at = now - timedelta(hours=2)
+    card_id = 999
+    conn = _FakeUpdatesConn(
+        pending=[_pending_post(
+            payload={"source_card_id": card_id, "name": "Gregor Kobel", "buy_price": 5500.0, "sell_target": 9600.0},
+            sent_at=sent_at,
+        )],
+        bin_history={card_id: [
+            {"lowest_bin": 5400, "captured_at": sent_at + timedelta(minutes=5)},
+            {"lowest_bin": 9700, "captured_at": sent_at + timedelta(minutes=30)},
+        ]},
+    )
+    fake_client = MagicMock()
+    fake_client.post_embed = AsyncMock(return_value=(200, {"id": "msg1"}))
+    server = ServerRecord(
+        id=1, guild_id="g1", name="Test", access_level="paid_partner", feed_channel_id="chan1",
+        proof_channel_id=None, status="active", expires_at=None, sell_channel_id="chan-sell",
+    )
+
+    from app.services.discord_trading_feed import publish_opportunity_updates
+
+    asyncio.run(publish_opportunity_updates(conn, server, fake_client))
+    assert fake_client.post_embed.call_args.args[0] == "chan-sell"
+
+
+def test_publish_opportunity_updates_skips_posts_without_stored_prices(monkeypatch):
+    """A post made before this fix (or a test post) has no buy_price/
+    sell_target in its payload - there is nothing honest to grade, so no
+    update is ever fabricated for it."""
+    monkeypatch.setenv("DISCORD_TRADING_FEED_ENABLED", "1")
+    import app.services.discord_trading_feed as feed_module
+
+    now = datetime(2026, 8, 20, 12, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(feed_module, "_now", lambda: now)
+
+    conn = _FakeUpdatesConn(
+        pending=[_pending_post(
+            payload={"source_card_id": 999, "name": "Old Post"}, sent_at=now - timedelta(hours=2),
+        )],
+        bin_history={},
+    )
+    fake_client = MagicMock()
+    fake_client.post_embed = AsyncMock(return_value=(200, {"id": "msg1"}))
+    server = ServerRecord(
+        id=1, guild_id="g1", name="Test", access_level="paid_partner", feed_channel_id="chan1",
+        proof_channel_id=None, status="active", expires_at=None,
+    )
+
+    from app.services.discord_trading_feed import publish_opportunity_updates
+
+    updated = asyncio.run(publish_opportunity_updates(conn, server, fake_client))
+    assert updated == 0
+    assert fake_client.post_embed.await_count == 0
+
+
+def test_publish_opportunity_updates_withholds_a_loss_until_the_window_elapses(monkeypatch):
+    """Target hits are reported the moment they're observed, but a
+    negative/flat result must wait for the full grading window - an early
+    read of a still-open, merely-down position is not a loss yet."""
+    monkeypatch.setenv("DISCORD_TRADING_FEED_ENABLED", "1")
+    import app.services.discord_trading_feed as feed_module
+
+    now = datetime(2026, 8, 20, 12, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(feed_module, "_now", lambda: now)
+    sent_at = now - timedelta(hours=1)  # 24h horizon window has not elapsed yet
+
+    card_id = 999
+    conn = _FakeUpdatesConn(
+        pending=[_pending_post(
+            payload={"source_card_id": card_id, "name": "Gregor Kobel", "buy_price": 5500.0, "sell_target": 9600.0},
+            sent_at=sent_at,
+        )],
+        bin_history={
+            card_id: [
+                {"lowest_bin": 5400, "captured_at": sent_at + timedelta(minutes=5)},
+                {"lowest_bin": 4500, "captured_at": sent_at + timedelta(minutes=30)},
+            ],
+        },
+    )
+    fake_client = MagicMock()
+    fake_client.post_embed = AsyncMock(return_value=(200, {"id": "msg1"}))
+    server = ServerRecord(
+        id=1, guild_id="g1", name="Test", access_level="paid_partner", feed_channel_id="chan1",
+        proof_channel_id=None, status="active", expires_at=None,
+    )
+
+    from app.services.discord_trading_feed import publish_opportunity_updates
+
+    updated = asyncio.run(publish_opportunity_updates(conn, server, fake_client))
+    assert updated == 0
+    assert fake_client.post_embed.await_count == 0
+
+
+def test_publish_opportunity_updates_reports_a_loss_after_the_window_elapses(monkeypatch):
+    monkeypatch.setenv("DISCORD_TRADING_FEED_ENABLED", "1")
+    import app.services.discord_trading_feed as feed_module
+
+    now = datetime(2026, 8, 20, 12, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(feed_module, "_now", lambda: now)
+    sent_at = now - timedelta(hours=25)  # 24h horizon window has fully elapsed
+
+    card_id = 999
+    conn = _FakeUpdatesConn(
+        pending=[_pending_post(
+            payload={"source_card_id": card_id, "name": "Gregor Kobel", "buy_price": 5500.0, "sell_target": 9600.0},
+            sent_at=sent_at,
+        )],
+        bin_history={
+            card_id: [
+                {"lowest_bin": 5400, "captured_at": sent_at + timedelta(minutes=5)},
+                {"lowest_bin": 4500, "captured_at": sent_at + timedelta(minutes=30)},
+            ],
+        },
+    )
+    fake_client = MagicMock()
+    fake_client.post_embed = AsyncMock(return_value=(200, {"id": "msg1"}))
+    server = ServerRecord(
+        id=1, guild_id="g1", name="Test", access_level="paid_partner", feed_channel_id="chan1",
+        proof_channel_id=None, status="active", expires_at=None,
+    )
+
+    from app.services.discord_trading_feed import publish_opportunity_updates
+
+    updated = asyncio.run(publish_opportunity_updates(conn, server, fake_client))
+    assert updated == 1
+    embed = fake_client.post_embed.call_args.args[1]
+    assert "LOSS" in embed["title"] or "STOP" in embed["title"]
