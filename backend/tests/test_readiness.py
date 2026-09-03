@@ -492,6 +492,36 @@ class TestTheCollectorCheck:
         _install_freshness(monkeypatch, _freshness(_all_healthy(), priced=1000, stale=900))
         assert run(rd._check_market_data(FakePool()))["reason"] == "price_data_stale"
 
+    def test_dormants_own_by_design_backlog_does_not_report_sales_as_stale(self, monkeypatch):
+        # Exact live production payload: DORMANT is allowed to run ~67h
+        # behind by design (priority_config.py's own
+        # tier_sales_interval_minutes) and the opportunity candidate scan
+        # (ordered by sales_count DESC) would never surface a DORMANT-tier
+        # card regardless of its sales freshness. Summed across every
+        # tier this crossed the 50%-of-priced gate by only 245 rows
+        # (7,718 vs a 7,473 threshold on 14,946 priced cards) - entirely
+        # accounted for by DORMANT's own 1,566. CRITICAL+HIGH+NORMAL+LOW
+        # alone (6,152) are well under half of 14,946.
+        _install_freshness(monkeypatch, _freshness(
+            _all_healthy(), priced=14946, stale=2070,
+            stale_sales={"CRITICAL": 1096, "HIGH": 4264, "NORMAL": 792, "LOW": 0, "DORMANT": 1566},
+        ))
+        result = run(rd._check_market_data(FakePool()))
+        assert result["status"] == rd.OK
+        assert result["detail"]["cards_with_stale_sales"] == 6152
+
+    def test_a_genuine_outage_in_the_candidate_relevant_tiers_still_reports_stale(self, monkeypatch):
+        # The DORMANT exclusion must not defeat the check entirely - a
+        # real outage in the tiers that actually matter for candidates
+        # still has to fire, DORMANT or no DORMANT.
+        _install_freshness(monkeypatch, _freshness(
+            _all_healthy(), priced=14950, stale=100,
+            stale_sales={"CRITICAL": 1718, "HIGH": 3924, "NORMAL": 1884, "LOW": 44, "DORMANT": 2950},
+        ))
+        result = run(rd._check_market_data(FakePool()))
+        assert result["status"] == rd.DEGRADED
+        assert result["reason"] == "sales_data_stale"
+
     def test_no_priced_cards_is_unavailable_not_degraded(self, monkeypatch):
         _install_freshness(monkeypatch, _freshness(_all_healthy(), priced=0))
         result = run(rd._check_market_data(FakePool()))

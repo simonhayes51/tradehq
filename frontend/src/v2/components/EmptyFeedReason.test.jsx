@@ -93,6 +93,47 @@ describe("when our data is the problem", () => {
     expect(document.body.textContent).not.toMatch(/price data is behind/i);
   });
 
+  it("does not count DORMANT's own, by-design backlog as sales data being behind", () => {
+    // Exact live production payload that prompted this fix: DORMANT is
+    // allowed to run ~67h behind by design (priority_config.py's own
+    // tier_sales_interval_minutes), and a candidate scan ordered by
+    // sales_count would never surface a DORMANT-tier card as an
+    // opportunity regardless of its sales freshness. Summed across every
+    // tier this crossed the 50%-of-priced gate by only 245 rows (7,718
+    // vs a 7,473 threshold on 14,946 priced cards) - entirely accounted
+    // for by DORMANT's own 1,566. CRITICAL/HIGH/NORMAL/LOW together
+    // (6,152) are well under half of 14,946, so the feed should not have
+    // called this "our sales data is behind" at all.
+    freshness.value = {
+      data: healthy({
+        cards_priced: 14946,
+        cards_stale: 2070,
+        stale_sales_by_priority_tier: { CRITICAL: 1096, HIGH: 4264, NORMAL: 792, LOW: 0, DORMANT: 1566 },
+      }),
+      refetch: vi.fn(),
+    };
+    render(<EmptyFeedReason noun="opportunities" filtersActive={false} />);
+    expect(document.body.textContent).not.toMatch(/sales data is behind/i);
+    expect(document.body.textContent).not.toMatch(/on our side/i);
+  });
+
+  it("still flags sales data as behind when non-DORMANT tiers alone cross the gate", () => {
+    // The exclusion must not defeat the check entirely - a genuine
+    // outage in the tiers that actually matter for candidates still has
+    // to fire. CRITICAL+HIGH+NORMAL+LOW alone here already exceed half
+    // of priced, with or without DORMANT.
+    freshness.value = {
+      data: healthy({
+        cards_priced: 14950,
+        cards_stale: 100,
+        stale_sales_by_priority_tier: { CRITICAL: 1718, HIGH: 3924, NORMAL: 1884, LOW: 44, DORMANT: 2950 },
+      }),
+      refetch: vi.fn(),
+    };
+    render(<EmptyFeedReason noun="opportunities" filtersActive={false} />);
+    expect(screen.getByText(/sales data is behind/i)).toBeInTheDocument();
+  });
+
   it("notices the WORST collector, not the newest", () => {
     // The production payload that prompted this: three collectors, one
     // dead for three weeks, two healthy. Taking the newest heartbeat
