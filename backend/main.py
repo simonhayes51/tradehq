@@ -68,6 +68,7 @@ from app.services.discord_integration import (
 )
 from app.services.discord_trading_feed import run_all_server_feeds, seed_official_server
 from app.services import discord_feed_billing
+from app.services.discord_command_sync import sync_commands_on_boot
 from app.routers.market import router as market_router
 from app.routers.ai_engine import router as ai_router
 from app.routers.players import router as players_router
@@ -526,6 +527,18 @@ async def lifespan(app: FastAPI):
     # (target: watchlist), both applied by run_on_boot() above. See those
     # files for the exact DDL; nothing here changed functionally, this only
     # moved schema authority to the migration runner instead of duplicating it.
+
+    # Discord slash-command registration - the HTTP-interactions
+    # equivalent of `await bot.tree.sync()`. Runs on every boot (globally
+    # + to the test guild) so a deployed application always has a command
+    # set; without it the bot installs fine but Discord shows no commands
+    # at all. Loads every command extension first and logs the resolved
+    # application id plus every synced command name. Never touches feed
+    # rows or subscription state, and a failure here is logged loudly but
+    # does not stop the API from serving (unless
+    # DISCORD_COMMAND_SYNC_STRICT=1). See
+    # app/services/discord_command_sync.py.
+    await sync_commands_on_boot()
 
     # Background refresher/scanner/Discord-poster loops - gate-able so a
     # deployment can run this backend as pure HTTP-serving (multiple
