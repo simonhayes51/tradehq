@@ -42,7 +42,7 @@ describe("public homepage navigation", () => {
 
   it("scrolls How it works without changing the HashRouter route", () => {
     renderSite();
-    fireEvent.click(screen.getByRole("button", { name: "How it works" }));
+    fireEvent.click(screen.getAllByRole("button", { name: "How it works" })[0]);
     expect(Element.prototype.scrollIntoView).toHaveBeenCalledWith({ behavior: "smooth", block: "start" });
     expect(window.location.hash).toBe("#/");
   });
@@ -56,11 +56,11 @@ describe("public homepage navigation", () => {
 
   it("keeps the launch links wired to their intended destinations", () => {
     renderSite();
-    // Pricing is now an in-page nav item (both the personal and Discord
-    // pricing sections live on this page) rather than a jump straight to
-    // the app - covered by the "scrolls to the pricing section" test
-    // below. Billing (manage an existing subscription) is still a real
-    // link to the app.
+    // Personal/Server pricing are now in-page nav items (both the personal
+    // and Discord pricing sections live on this page) rather than a jump
+    // straight to the app - covered by the "scrolls to the pricing
+    // section" test below. Billing (manage an existing subscription) is
+    // still a real link to the app.
     expect(screen.getByRole("link", { name: "Billing" })).toHaveAttribute("href", "https://app.eafc.live/#/billing");
     expect(screen.getAllByRole("link", { name: "Log in" })[0]).toHaveAttribute("href", "https://app.eafc.live/#/login");
     expect(screen.getAllByRole("link", { name: /Create free account/ })[0]).toHaveAttribute("href", "https://app.eafc.live/#/signup");
@@ -69,9 +69,16 @@ describe("public homepage navigation", () => {
     expect(screen.getByRole("link", { name: "Terms" })).toHaveAttribute("href", "#/terms");
   });
 
-  it("scrolls the nav's Pricing link to the on-page pricing section", () => {
+  it("scrolls the nav's Personal pricing link to the on-page pricing section", () => {
     renderSite();
-    fireEvent.click(screen.getAllByRole("button", { name: "Pricing" })[0]);
+    fireEvent.click(screen.getAllByRole("button", { name: "Personal pricing" })[0]);
+    expect(Element.prototype.scrollIntoView).toHaveBeenCalledWith({ behavior: "smooth", block: "start" });
+    expect(window.location.hash).toBe("#/");
+  });
+
+  it("scrolls the nav's Server pricing link to the on-page Discord pricing section", () => {
+    renderSite();
+    fireEvent.click(screen.getAllByRole("button", { name: "Server pricing" })[0]);
     expect(Element.prototype.scrollIntoView).toHaveBeenCalledWith({ behavior: "smooth", block: "start" });
     expect(window.location.hash).toBe("#/");
   });

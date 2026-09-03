@@ -69,7 +69,12 @@
 .billing-v2-legal a { color: var(--v2-accent); text-decoration: none; }
 
 /* Discord server plans - a separate, guild-scoped product from the
-   personal plan above it on this page. */
+   personal plan above it on this page. Visually distinguished (green-
+   tinted border/background, own "SERVER PRODUCT" tag) so it never reads
+   as another row of the personal Free/Elite plan above it - the two are
+   billed on entirely different objects (this account vs. a guild). */
+.billing-v2-discord-section { border-color: rgba(57,255,138,.28); background: radial-gradient(ellipse at top left, rgba(57,255,138,.06), transparent 60%), var(--v2-card); position: relative; margin-top: 8px; }
+.billing-v2-discord-section-tag { display: inline-flex; align-items: center; gap: 5px; margin-bottom: 14px; padding: 3px 9px; border-radius: 999px; border: 1px solid rgba(57,255,138,.35); color: var(--v2-accent); font-size: 10px; font-weight: 900; letter-spacing: .05em; }
 .billing-v2-server-plans { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px; }
 .billing-v2-server-plan { border: 1px solid var(--v2-border); border-radius: var(--v2-radius); padding: 14px; background: var(--v2-elevated); display: flex; flex-direction: column; gap: 4px; }
 .billing-v2-server-plan strong { font-size: 13.5px; color: var(--v2-text); }
