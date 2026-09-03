@@ -440,6 +440,19 @@ function PublicHome() {
               <button type="button" className="pub-secondary" onClick={scrollToDiscordPricing}><Server size={15} /> View Discord server plans</button>
             </div>
             <button type="button" className="pub-hero-inline-link" onClick={scrollToPreview}>See live opportunities <ChevronRight size={14} /></button>
+            {/* Balances the left column against the taller opportunities
+                panel/hero card on the right (see pub-hero-split's
+                align-items: center) instead of leaving a bare void under
+                the CTA row - and it's substantive, not filler. Distinct
+                from the trust strip immediately below this section
+                (real sales / no guessing / BUY-WAIT-AVOID / Discord) on
+                purpose, since the two sit right on top of each other on
+                narrow screens where the hero stacks to one column. */}
+            <ul className="pub-hero-facts">
+              <li><Sliders size={14} /> Exact buy-below and sell-target on every call</li>
+              <li><Gauge size={14} /> Confidence and risk shown alongside each one</li>
+              <li><Wallet size={14} /> Free forever plan — no card required to start</li>
+            </ul>
           </div>
           <div className="pub-hero-visual">
             <DemoTradePanel rows={DEMO_ROWS.slice(0, 3)} compact title="Today's opportunities" subtitle="What Elite members see" />
