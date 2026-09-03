@@ -8,6 +8,17 @@
 // bolted-on marketing page - just without the app shell (sidebar,
 // auth-gated sections) around it.
 //
+// Structural note (rebuild): this used to be a single narrow (1120px)
+// centred column of cards on one solid black field - every section the
+// same width, same card treatment, same background, so the page read as
+// "a few boxes floating in a lot of empty black" rather than a real
+// marketing site. It's now a stack of FULL-WIDTH bands that alternate
+// background (black / charcoal / off-white) for visual rhythm, each with
+// its own constrained inner container - the Unbounce-style rhythm the
+// design brief asked for - while keeping EAFC Live's actual black/white/
+// green identity and never copying that reference site's branding,
+// imagery or copy.
+//
 // Anonymous visitors get AT MOST one real opportunity, with the
 // actionable numbers (exact buy/sell target, profit, ROI, rationale)
 // redacted server-side (GET /api/v2/opportunities/preview, see
@@ -15,10 +26,18 @@
 // /opportunities feed. That's a deliberate product decision (don't give
 // away the paid/free-account value to a visitor who hasn't even
 // registered), enforced by the API contract itself, not by hiding
-// fields client-side over data that was already sent in full.
+// fields client-side over data that was already sent in full. The
+// multi-row trade-panel mockups below (hero visual, "Live product
+// demonstration", the Discord message mockup) are illustrative UI
+// composites, not a second live feed - each is labelled "Example" so it
+// is never mistaken for the one real redacted card the API does return.
 import { useEffect, useRef, useState } from "react";
 import { HashRouter, Routes, Route, Link } from "react-router-dom";
-import { ArrowRight, Lock, TrendingUp, ShieldCheck, Zap, ChevronRight, Menu, X, Users, Server } from "lucide-react";
+import {
+  ArrowRight, Lock, TrendingUp, TrendingDown, ShieldCheck, Zap, ChevronRight,
+  Menu, X, Users, Server, Bot, Sliders, Activity, Wallet, Eye,
+  LineChart, Hash, CheckCircle2, Gauge,
+} from "lucide-react";
 import { useFutggOpportunityPreview, useFutggMarketFreshness } from "./v2/hooks/useFutggMarket";
 import { useTrackRecord } from "./v2/hooks/useTrackRecord";
 import { useBillingPlans, headlinePrice } from "./v2/hooks/useBillingPlans";
@@ -51,7 +70,8 @@ export function scrollToPublicSection(sectionId) {
 const NAV_LINKS = [
   { label: "How it works", onClick: () => scrollToPublicSection("how") },
   { label: "Features", onClick: () => scrollToPublicSection("trust") },
-  { label: "Pricing", onClick: () => scrollToPublicSection("pricing") },
+  { label: "Personal pricing", onClick: () => scrollToPublicSection("pricing") },
+  { label: "Server pricing", onClick: () => scrollToPublicSection("discord-pricing") },
 ];
 
 function PublicNav() {
@@ -64,24 +84,29 @@ function PublicNav() {
 
   return (
     <header className="pub-nav">
-      <Link to="/" className="pub-brand" onClick={() => setOpen(false)}>EAFC <b>Live</b></Link>
-      <nav className="pub-nav-links">
-        {NAV_LINKS.map((link) => (
-          <button key={link.label} type="button" className="pub-nav-extra" onClick={link.onClick}>{link.label}</button>
-        ))}
-        <a href={DISCORD_INVITE_URL} className="pub-nav-discord" target="_blank" rel="noreferrer">Discord</a>
-        <a href={`${APP_ORIGIN}/#/login`} className="pub-nav-login">Log in</a>
-        <a href={`${APP_ORIGIN}/#/signup`} className="pub-cta">Create free account</a>
-      </nav>
-      <button
-        type="button"
-        className="pub-nav-toggle"
-        aria-label={open ? "Close menu" : "Open menu"}
-        aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
-      >
-        {open ? <X size={22} /> : <Menu size={22} />}
-      </button>
+      <div className="pub-nav-inner">
+        <Link to="/" className="pub-brand" onClick={() => setOpen(false)}>
+          <img src="/icons/icon-192x192.png" alt="" width="32" height="32" className="pub-brand-mark" />
+          <span>EAFC <b>Live</b></span>
+        </Link>
+        <nav className="pub-nav-links">
+          {NAV_LINKS.map((link) => (
+            <button key={link.label} type="button" className="pub-nav-extra" onClick={link.onClick}>{link.label}</button>
+          ))}
+          <a href={DISCORD_INVITE_URL} className="pub-nav-discord" target="_blank" rel="noreferrer">Discord</a>
+          <a href={`${APP_ORIGIN}/#/login`} className="pub-nav-login">Log in</a>
+          <a href={`${APP_ORIGIN}/#/signup`} className="pub-cta pub-cta-nav">Create free account</a>
+        </nav>
+        <button
+          type="button"
+          className="pub-nav-toggle"
+          aria-label={open ? "Close menu" : "Open menu"}
+          aria-expanded={open}
+          onClick={() => setOpen((v) => !v)}
+        >
+          {open ? <X size={22} /> : <Menu size={22} />}
+        </button>
+      </div>
       {open ? (
         <div className="pub-nav-drawer" role="menu">
           {NAV_LINKS.map((link) => (
@@ -97,6 +122,79 @@ function PublicNav() {
 }
 
 const SIGNAL_LABEL = { buy: "BUY", strong_buy: "STRONG BUY", watch: "WATCH" };
+
+// Illustrative multi-row trade data, shaped like the real engine's output
+// (see HomeDashboard.jsx's normaliseFutgg() / QueueCard for the actual
+// field names this mirrors: entryPrice/buyBelow, recommendedSellTarget,
+// expected profit after EA's 5% tax, confidence, risk, sellingSpeed,
+// priceAgeSeconds-style freshness). Used only for the hero visual and the
+// "Live product demonstration" panel below, both explicitly labelled
+// "Example" - the one REAL card on this page is the redacted preview
+// fetched from /api/v2/opportunities/preview via LockedOpportunityCard.
+const DEMO_ROWS = [
+  { name: "E. Haaland", rating: 91, position: "ST", version: "Winter Wildcard", bin: 895000, buyBelow: 860000, sellTarget: 985000, profit: 88750, confidence: 84, risk: "Low", speed: "Fast", movement: 4.1, sales: 38 },
+  { name: "J. Bellingham", rating: 89, position: "CAM", version: "Rare", bin: 118000, buyBelow: 112000, sellTarget: 134000, profit: 15900, confidence: 77, risk: "Medium", speed: "Good", movement: 2.6, sales: 61 },
+  { name: "G. Xhaka", rating: 84, position: "CDM", version: "Rare", bin: 15200, buyBelow: 14500, sellTarget: 17800, profit: 2680, confidence: 71, risk: "Medium", speed: "Good", movement: -1.2, sales: 94 },
+  { name: "V. van Dijk", rating: 90, position: "CB", version: "Rare", bin: 246000, buyBelow: 235000, sellTarget: 271000, profit: 21500, confidence: 68, risk: "Medium", speed: "Fair", movement: 1.4, sales: 22 },
+  { name: "R. Lewandowski", rating: 88, position: "ST", version: "Rare", bin: 62000, buyBelow: 58500, sellTarget: 71000, profit: 8925, confidence: 74, risk: "Low", speed: "Good", movement: 3.0, sales: 47 },
+];
+
+function DemoTradeRow({ row, compact = false }) {
+  return (
+    <div className={`pub-demo-row${compact ? " compact" : ""}`}>
+      <div className="pub-demo-row-id">
+        <div className="pub-demo-row-avatar" aria-hidden="true">{row.rating}</div>
+        <div>
+          <strong>{row.name}</strong>
+          <span>{row.position} &middot; {row.version}</span>
+        </div>
+      </div>
+      <div className="pub-demo-row-figs">
+        <div><span>Current BIN</span><b>{coins(row.bin)}</b></div>
+        <div><span>Buy below</span><b className="entry">{coins(row.buyBelow)}</b></div>
+        {!compact ? <div><span>Sell target</span><b>{coins(row.sellTarget)}</b></div> : null}
+        <div><span>Est. profit</span><b className="profit">+{coins(row.profit)}</b></div>
+        {!compact ? (
+          <div className="pub-demo-row-move">
+            <span>Market move</span>
+            <b className={row.movement >= 0 ? "up" : "down"}>
+              {row.movement >= 0 ? <TrendingUp size={12} /> : <TrendingDown size={12} />}
+              {row.movement >= 0 ? "+" : ""}{row.movement}%
+            </b>
+          </div>
+        ) : null}
+      </div>
+      {!compact ? (
+        <div className="pub-demo-row-meta">
+          <span className={`pub-demo-conf conf-${row.confidence >= 80 ? "high" : row.confidence >= 65 ? "mid" : "low"}`}>
+            <Gauge size={12} /> {row.confidence}% confidence
+          </span>
+          <span>{row.risk} risk</span>
+          <span>{row.speed} selling speed</span>
+          <span>{row.sales} sales analysed</span>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function DemoTradePanel({ rows, compact = false, title = "Today's opportunities", subtitle }) {
+  return (
+    <div className={`pub-demo-panel${compact ? " compact" : ""}`}>
+      <div className="pub-demo-panel-head">
+        <div className="feed-live"><i /> LIVE</div>
+        <div>
+          <strong>{title}</strong>
+          {subtitle ? <span>{subtitle}</span> : null}
+        </div>
+        <span className="pub-demo-panel-tag">Example</span>
+      </div>
+      <div className="pub-demo-panel-rows">
+        {rows.map((row) => <DemoTradeRow key={row.name} row={row} compact={compact} />)}
+      </div>
+    </div>
+  );
+}
 
 // The hero/preview visual - a real card (or, while data loads/if nothing
 // currently qualifies, an honest empty state), with the verdict and
@@ -126,6 +224,7 @@ function LockedOpportunityCard({ item, loading }) {
     <div className="pub-hero-card">
       <div className="pub-hero-card-top">
         <span className={`pub-verdict pub-verdict-${item.signal === "avoid" ? "avoid" : "buy"}`}>{verdict}</span>
+        <span className="pub-hero-card-real">Real, live pick</span>
         {item.rating ? <span className="pub-hero-card-rating">{item.rating} OVR</span> : null}
       </div>
       <div className="pub-hero-card-player">
@@ -161,6 +260,41 @@ function LockedOpportunityCard({ item, loading }) {
   );
 }
 
+// A Discord-message-shaped mockup of what a server's feed actually posts,
+// built from the same illustrative row shape as the trade-panel demo
+// above (never live data) - explained by the flow steps beside it so the
+// server product is understandable without needing to already have the
+// bot installed.
+function DiscordFeedMock() {
+  const row = DEMO_ROWS[0];
+  return (
+    <div className="pub-discord-mock">
+      <div className="pub-discord-mock-topbar">
+        <Hash size={14} /> trading-feed
+        <span className="pub-discord-mock-tag">Example</span>
+      </div>
+      <div className="pub-discord-mock-msg">
+        <div className="pub-discord-mock-avatar"><Bot size={16} /></div>
+        <div className="pub-discord-mock-body">
+          <div className="pub-discord-mock-author">EAFC Live <span>BOT</span> <em>Today at 18:04</em></div>
+          <div className="pub-discord-mock-embed">
+            <div className="pub-discord-mock-embed-head">
+              <strong>{SIGNAL_LABEL.strong_buy}</strong> {row.name} &middot; {row.rating} OVR {row.position}
+            </div>
+            <div className="pub-discord-mock-embed-grid">
+              <div><span>Buy below</span><b>{coins(row.buyBelow)}</b></div>
+              <div><span>Sell target</span><b>{coins(row.sellTarget)}</b></div>
+              <div><span>Est. profit</span><b>+{coins(row.profit)}</b></div>
+              <div><span>Confidence</span><b>{row.confidence}%</b></div>
+            </div>
+            <div className="pub-discord-mock-embed-foot">Posted automatically by your server's EAFC Live feed</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // The public pricing table. Rows come from PLAN_ROWS - the same list the
 // signup page, the billing page and every locked state in the app read -
 // so a difference stated here is a difference the product actually
@@ -190,6 +324,7 @@ function PublicPlanTable() {
         <a href={`${APP_ORIGIN}/#/signup`}>Create free account</a>
       </div>
       <div className="pub-pricing-card pub-featured">
+        <span className="pub-pricing-ribbon">Most popular</span>
         <h3>
           {PAID_PLAN_NAME}
           {priceLine ? <span>{priceLine}</span> : null}
@@ -236,7 +371,7 @@ function PublicTrackRecord() {
   if (!stats.length) return null;
 
   return (
-    <section className="pub-section">
+    <div className="pub-record-block">
       <div className="pub-section-head"><span>TRACK RECORD</span><h2>How the calls have actually done</h2></div>
       <p className="pub-section-lead">
         The last {query.data?.window_days ?? 30} days of recommendations that were genuinely published
@@ -257,9 +392,20 @@ function PublicTrackRecord() {
       <a className="pub-see-all" href={`${APP_ORIGIN}/#/signup`}>
         Create free account to see the record <ArrowRight size={15} />
       </a>
-    </section>
+    </div>
   );
 }
+
+const WHY_ITEMS = [
+  { icon: LineChart, title: "Real completed sales", desc: "Verdicts are built from what cards actually sold for, not just what sellers are asking." },
+  { icon: Gauge, title: "Fair-value calculations", desc: "Every card gets a computed fair value to compare its current price against." },
+  { icon: Activity, title: "Live market monitoring", desc: "Prices and sales are checked continuously, not on a daily snapshot." },
+  { icon: Sliders, title: "Clear buy & sell targets", desc: "A maximum entry and a target sale price, not just a vague direction." },
+  { icon: Zap, title: "Trade Finder", desc: "Search every live-priced card by budget, risk, position and expected return." },
+  { icon: Eye, title: "Watchlists & alerts", desc: "Track the cards you care about and get notified when your conditions are met." },
+  { icon: Wallet, title: "Portfolio tracking", desc: "Log trades and see real profit and loss across your open and closed positions." },
+  { icon: Bot, title: "Automatic Discord feeds", desc: "Point a server's channel at EAFC Live and it posts opportunities for you." },
+];
 
 function PublicHome() {
   const previewQuery = useFutggOpportunityPreview();
@@ -277,202 +423,279 @@ function PublicHome() {
 
   return (
     <main className="pub-main">
-      <section className="pub-hero pub-hero-split">
-        <div className="pub-hero-copy">
-          <span className="pub-eyebrow">EAFC LIVE</span>
-          <h1>Know what a card is really worth before you buy it.</h1>
-          <p>
-            EAFC Live compares live prices against real completed sales to show which cards may be
-            worth buying, and why. Use it yourself to find your own trades, or point a Discord
-            server's feed at it to post the same calls automatically.
+      {/* ============ HERO — full-width, black ============ */}
+      <section className="pub-band pub-band-black pub-hero-band">
+        <div className="pub-container pub-hero-split">
+          <div className="pub-hero-copy">
+            <span className="pub-eyebrow">EAFC LIVE &middot; FC TRADING INTELLIGENCE</span>
+            <h1>Find the FC cards actually worth buying — before everyone else does.</h1>
+            <p>
+              EAFC Live compares live prices against real completed sales to show which cards may be
+              worth buying, and why. Use it yourself to find your own trades, or point a Discord
+              server's feed at it to post the same calls automatically.
+            </p>
+            {cardsTracked ? <p className="pub-proof"><Activity size={13} /> {count(cardsTracked)} cards tracked right now</p> : null}
+            <div className="pub-hero-actions">
+              <a className="pub-cta" href={`${APP_ORIGIN}/#/signup`}>Create free account <ArrowRight size={16} /></a>
+              <button type="button" className="pub-secondary" onClick={scrollToDiscordPricing}><Server size={15} /> View Discord server plans</button>
+            </div>
+            <button type="button" className="pub-hero-inline-link" onClick={scrollToPreview}>See live opportunities <ChevronRight size={14} /></button>
+          </div>
+          <div className="pub-hero-visual">
+            <DemoTradePanel rows={DEMO_ROWS.slice(0, 3)} compact title="Today's opportunities" subtitle="What Elite members see" />
+            <LockedOpportunityCard item={previewItem} loading={previewQuery.isLoading} />
+          </div>
+        </div>
+      </section>
+
+      {/* ============ TRUST STRIP — full-width, charcoal ============ */}
+      <section className="pub-band pub-band-charcoal pub-strip-band">
+        <div className="pub-container pub-strip">
+          <div><TrendingUp size={16} /> Real completed sales, not asking prices</div>
+          <div><ShieldCheck size={16} /> No guessing — an honest "not enough data" beats a fake one</div>
+          <div><Zap size={16} /> A simple BUY / WAIT / AVOID answer, evidence one tap away</div>
+          <div><Bot size={16} /> Bring it to your Discord server automatically</div>
+        </div>
+      </section>
+
+      {/* ============ TWO PRODUCT PATHS — full-width, black ============ */}
+      <section id="how" className="pub-band pub-band-black">
+        <div className="pub-container pub-section">
+          <div className="pub-section-head"><span>ONE ENGINE, TWO WAYS TO USE IT</span><h2>Trade it yourself, or run it in your server</h2></div>
+          <div className="pub-paths">
+            <div className="pub-path-card">
+              <div className="pub-path-icon"><Users size={20} /></div>
+              <h3>For individual traders</h3>
+              <p>Search any card and see what it's really worth, complete sales history included. Get buy and sell targets, track cards on a watchlist, log trades in a portfolio, and see the full live opportunities feed with Elite.</p>
+              <ul className="pub-path-list">
+                <li><CheckCircle2 size={14} /> Fair value & completed sales on every card</li>
+                <li><CheckCircle2 size={14} /> Buy-below and sell-target prices</li>
+                <li><CheckCircle2 size={14} /> Watchlist, alerts and portfolio tracking</li>
+                <li><CheckCircle2 size={14} /> Full live opportunities feed on Elite</li>
+              </ul>
+              <a href={`${APP_ORIGIN}/#/signup`}>Create free account <ArrowRight size={14} /></a>
+            </div>
+            <div className="pub-path-connector" aria-hidden="true"><span /><em>+</em><span /></div>
+            <div className="pub-path-card">
+              <div className="pub-path-icon"><Server size={20} /></div>
+              <h3>For Discord communities</h3>
+              <p>Add the EAFC Live bot to your server, choose a trading channel, and it posts branded trading opportunities automatically — with the platform, budget and posting-limit mix you configure.</p>
+              <ul className="pub-path-list">
+                <li><CheckCircle2 size={14} /> Add the bot, run <code>/feed setup</code></li>
+                <li><CheckCircle2 size={14} /> Pick a channel, platform and budget filters</li>
+                <li><CheckCircle2 size={14} /> Set a daily posting limit for your plan</li>
+                <li><CheckCircle2 size={14} /> Members get regular, useful trading content</li>
+              </ul>
+              <button type="button" onClick={scrollToDiscordPricing}>See server plans <ArrowRight size={14} /></button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* ============ LIVE PRODUCT DEMONSTRATION — full-width, charcoal ============ */}
+      <section ref={oppRef} id="opportunities" className="pub-band pub-band-charcoal">
+        <div className="pub-container pub-section">
+          <div className="pub-section-head"><span>LIVE OPPORTUNITIES</span><h2>This is what EAFC Live finds</h2></div>
+          <p className="pub-section-lead">
+            A realistic look at the opportunities feed Elite members see — player, current price, fair
+            value, buy target, sell target, expected profit, confidence and risk, all in one row.
           </p>
-          {cardsTracked ? <p className="pub-proof">{count(cardsTracked)} cards tracked right now</p> : null}
-          <div className="pub-hero-actions">
-            <a className="pub-cta" href={`${APP_ORIGIN}/#/signup`}>Create free account <ArrowRight size={16} /></a>
-            <button type="button" className="pub-secondary" onClick={scrollToDiscordPricing}>View Discord server plans</button>
+          <DemoTradePanel rows={DEMO_ROWS} title="Live opportunities feed" subtitle="Illustrative — real feed updates continuously" />
+          <div className="pub-preview-wide">
+            <LockedOpportunityCard item={previewItem} loading={previewQuery.isLoading} />
           </div>
-          <button type="button" className="pub-hero-inline-link" onClick={scrollToPreview}>See live opportunities <ChevronRight size={14} /></button>
-        </div>
-        <div className="pub-hero-visual">
-          <LockedOpportunityCard item={previewItem} loading={previewQuery.isLoading} />
+          <a className="pub-see-all" href={`${APP_ORIGIN}/#/signup`}>Create free account to see today's real opportunities <ArrowRight size={15} /></a>
         </div>
       </section>
 
-      <section className="pub-paths">
-        <div className="pub-path-card">
-          <Users size={20} />
-          <h3>For individual traders</h3>
-          <p>Search any card, see what it's really worth, and get a short daily list of the opportunities EAFC Live currently rates as worth buying.</p>
-          <a href={`${APP_ORIGIN}/#/signup`}>Create free account <ArrowRight size={14} /></a>
-        </div>
-        <div className="pub-path-card">
-          <Server size={20} />
-          <h3>For Discord communities</h3>
-          <p>Add the EAFC Live bot to your server and it posts live buy calls straight to a channel, with the platform, budget and posting frequency you choose.</p>
-          <button type="button" onClick={scrollToDiscordPricing}>See server plans <ArrowRight size={14} /></button>
-        </div>
-      </section>
-
-      <section ref={oppRef} id="opportunities" className="pub-section">
-        <div className="pub-section-head"><span>LIVE OPPORTUNITIES</span><h2>This is what EAFC Live finds</h2></div>
-        <p className="pub-section-lead">
-          One real example, right now. Create a free account to see today's full list — buy targets,
-          expected profit and the reasoning behind every call.
-        </p>
-        <div className="pub-preview-wide">
-          <LockedOpportunityCard item={previewItem} loading={previewQuery.isLoading} />
-        </div>
-        <a className="pub-see-all" href={`${APP_ORIGIN}/#/signup`}>Create free account to see today's opportunities <ArrowRight size={15} /></a>
-      </section>
-
-      <PublicTrackRecord />
-
-      <section id="trust" className="pub-section">
-        <div className="pub-section-head"><span>WHY TRUST IT</span><h2>No guessing, no hype</h2></div>
-        <div className="pub-trust-grid">
-          <div>
-            <TrendingUp size={18} />
-            <strong>Real sales</strong>
-            <p>We use completed sales, not just what sellers are asking.</p>
-          </div>
-          <div>
-            <ShieldCheck size={18} />
-            <strong>No guessing</strong>
-            <p>Not enough reliable data? We'll tell you instead of making up a number.</p>
-          </div>
-          <div>
-            <Zap size={18} />
-            <strong>Simple answer</strong>
-            <p>BUY, WAIT or AVOID — with the full reasoning there if you want it.</p>
-          </div>
-        </div>
-      </section>
-
-      <section id="how" className="pub-section">
-        <div className="pub-section-head"><span>HOW IT WORKS</span><h2>Two ways to use it</h2></div>
-        <div className="pub-how-grid">
-          <div className="pub-how-block">
-            <h3><Users size={16} /> On your own account</h3>
-            <ol className="pub-how-steps">
-              <li><b>1</b><div><strong>We track the market</strong><p>Prices, completed sales and movement, updated live.</p></div></li>
-              <li><b>2</b><div><strong>We compare the evidence</strong><p>EAFC Live checks whether a card looks cheap, fair or overpriced.</p></div></li>
-              <li><b>3</b><div><strong>You get the simple answer</strong><p>BUY, WAIT or AVOID — plus a target price and expected profit.</p></div></li>
-            </ol>
-          </div>
-          <div className="pub-how-block">
-            <h3><Server size={16} /> On a Discord server</h3>
-            <ol className="pub-how-steps">
+      {/* ============ DISCORD FEED DEMONSTRATION — full-width, black ============ */}
+      <section className="pub-band pub-band-black">
+        <div className="pub-container pub-section pub-discord-demo">
+          <div className="pub-discord-demo-copy">
+            <div className="pub-section-head"><span>DISCORD SERVER FEED</span><h2>What your members actually see</h2></div>
+            <p className="pub-section-lead">
+              Once a server's feed is set up, opportunities land straight in your chosen channel —
+              no one has to open the app.
+            </p>
+            <ol className="pub-how-steps pub-how-steps-stack">
               <li><b>1</b><div><strong>Invite the bot</strong><p>Add EAFC Live to your server (you'll need Manage Server).</p></div></li>
-              <li><b>2</b><div><strong>Run /feed setup</strong><p>Pick a plan, a posting channel and the platform and budget mix you want.</p></div></li>
-              <li><b>3</b><div><strong>The feed posts for you</strong><p>Buy calls land in that channel automatically, up to your plan's daily limit.</p></div></li>
+              <li><b>2</b><div><strong>Run /feed setup</strong><p>Pick a plan, a posting channel, and the platform and budget mix you want.</p></div></li>
+              <li><b>3</b><div><strong>Choose channel &amp; preferences</strong><p>Set posting limits and filters — the bot handles the rest automatically.</p></div></li>
+              <li><b>4</b><div><strong>Opportunities post automatically</strong><p>Buy calls land in that channel on their own, up to your plan's daily limit.</p></div></li>
             </ol>
+            <button type="button" className="pub-secondary" onClick={scrollToDiscordPricing}><Server size={15} /> See server plans</button>
+          </div>
+          <DiscordFeedMock />
+        </div>
+      </section>
+
+      {/* ============ WHY PEOPLE USE IT — full-width, LIGHT ============ */}
+      <section id="trust" className="pub-band pub-band-light">
+        <div className="pub-container pub-section">
+          <div className="pub-section-head light"><span>WHY PEOPLE USE IT</span><h2>What EAFC Live actually does</h2></div>
+          <div className="pub-why-grid">
+            {WHY_ITEMS.map((item) => (
+              <div key={item.title} className="pub-why-item">
+                <item.icon size={18} />
+                <strong>{item.title}</strong>
+                <p>{item.desc}</p>
+              </div>
+            ))}
           </div>
         </div>
       </section>
 
-      <section className="pub-section">
-        <div className="pub-section-head"><span>SIMPLE TO ADVANCED</span><h2>Easy for casual trades, deep enough for serious ones</h2></div>
-        <p className="pub-section-lead">Every call starts simple. The full evidence is always one tap away, for anyone who wants it.</p>
-        <div className="pub-demo">
-          <div className="pub-demo-simple">
-            <span className="pub-verdict pub-verdict-buy">BUY</span>
-            <p>Buy around <b>76,000</b> · profit around <b>4,000</b> after tax</p>
-            <span className="pub-demo-speed">Selling speed: Good</span>
-            <p className="pub-demo-note">This card has recently been selling above its current asking price.</p>
+      {/* ============ PROOF — full-width, charcoal ============ */}
+      <section className="pub-band pub-band-charcoal">
+        <div className="pub-container pub-section">
+          <div className="pub-proof-grid">
+            {cardsTracked ? (
+              <div className="pub-proof-stat"><strong>{count(cardsTracked)}</strong><span>Cards priced right now</span></div>
+            ) : null}
+            <div className="pub-proof-stat"><strong>Live</strong><span>Prices &amp; completed sales, monitored continuously</span></div>
+            <div className="pub-proof-stat"><strong>1</strong><span>Real opportunity shown below, unlocked with a free account</span></div>
           </div>
-          <button type="button" className="pub-demo-advanced" disabled aria-disabled="true">
-            <span><ChevronRight size={14} /> Advanced rationale</span>
-            <span className="pub-demo-advanced-hint">Exact price, what it&apos;s worth, recent sales, confidence and risk — on the free account</span>
-          </button>
+          <PublicTrackRecord />
         </div>
       </section>
 
-      <section id="pricing" className="pub-section">
-        <div className="pub-section-head">
-          <span>PERSONAL &middot; FREE VS {PAID_PLAN_NAME.toUpperCase()}</span>
-          <h2>Start free — upgrade if EAFC Live is worth it to you</h2>
-        </div>
-        <p className="pub-section-lead">
-          The free account is free permanently, not a trial. No card needed to create one.
-        </p>
-        <PublicPlanTable />
-      </section>
-
-      <section id="discord-pricing" className="pub-section pub-discord-pricing">
-        <div className="pub-section-head">
-          <span>DISCORD SERVERS &middot; A SEPARATE PLAN</span>
-          <h2>Give your server its own live trading feed</h2>
-        </div>
-        <p className="pub-section-lead">
-          Billed per server, separately from any member's personal account. {PAID_PLAN_NAME} does not
-          include a server feed, and a server feed does not give its members {PAID_PLAN_NAME} — they're
-          two different products.
-        </p>
-        <div className="pub-pricing-grid pub-discord-grid">
-          <div className="pub-pricing-card">
-            <h3>Server Feed <span>£9.99/month</span></h3>
-            <p className="pub-pricing-tagline">For a smaller or casual trading community.</p>
-            <ul>
-              <li><b>Up to 6 feed posts a day</b></li>
-              <li><b>Choose your posting channel</b></li>
-              <li><b>Platform and budget filters</b></li>
-              <li><b>Owner-only setup via /feed setup</b></li>
-            </ul>
-            <a href={DISCORD_INVITE_URL} target="_blank" rel="noreferrer">Get the bot <ArrowRight size={13} /></a>
-          </div>
-          <div className="pub-pricing-card pub-featured">
-            <h3>Server Feed+ <span>£19.99/month</span></h3>
-            <p className="pub-pricing-tagline">For a larger or more active trading community.</p>
-            <ul>
-              <li><b>Up to 12 feed posts a day</b></li>
-              <li><b>Choose your posting channel</b></li>
-              <li><b>Platform and budget filters</b></li>
-              <li><b>Owner-only setup via /feed setup</b></li>
-            </ul>
-            <a href={DISCORD_INVITE_URL} target="_blank" rel="noreferrer">Get the bot <ArrowRight size={13} /></a>
+      {/* ============ SIMPLE TO ADVANCED — full-width, black ============ */}
+      <section className="pub-band pub-band-black">
+        <div className="pub-container pub-section">
+          <div className="pub-section-head"><span>SIMPLE TO ADVANCED</span><h2>Easy for casual trades, deep enough for serious ones</h2></div>
+          <p className="pub-section-lead">Every call starts simple. The full evidence is always one tap away, for anyone who wants it.</p>
+          <div className="pub-demo">
+            <div className="pub-demo-simple">
+              <span className="pub-verdict pub-verdict-buy">BUY</span>
+              <p>Buy around <b>76,000</b> · profit around <b>4,000</b> after tax</p>
+              <span className="pub-demo-speed">Selling speed: Good</span>
+              <p className="pub-demo-note">This card has recently been selling above its current asking price.</p>
+            </div>
+            <button type="button" className="pub-demo-advanced" disabled aria-disabled="true">
+              <span><ChevronRight size={14} /> Advanced rationale</span>
+              <span className="pub-demo-advanced-hint">Exact price, what it&apos;s worth, recent sales, confidence and risk — on the free account</span>
+            </button>
           </div>
         </div>
-        <p className="pub-section-lead pub-discord-note">
-          Invite the bot, then run <code>/feed setup</code> in your server (you need Manage Server) to
-          choose a plan and start checkout. Already have the bot in your server? Manage or upgrade its
-          feed from <a href={`${APP_ORIGIN}/#/discord-feed`}>your account's Server Feed page</a>.
-        </p>
       </section>
 
-      <section id="faq" className="pub-section">
-        <div className="pub-section-head"><span>FAQ</span><h2>Common questions</h2></div>
-        <dl className="pub-faq">
-          <div>
-            <dt>What's the difference between Free and {PAID_PLAN_NAME}?</dt>
-            <dd>Free gets {FREE_LIMITS.dailyOpportunities} complete opportunity picks a day, a {FREE_LIMITS.watchlist}-card watchlist and the last {FREE_LIMITS.trackRecordDays} days of track record. {PAID_PLAN_NAME} unlocks the full live opportunities feed, Trade Finder, a {FREE_LIMITS.eliteWatchlist}-card watchlist, more alerts and the complete track record. The full breakdown is on the pricing page in the app.</dd>
+      {/* ============ PRICING — full-width, LIGHT ============ */}
+      <section id="pricing" className="pub-band pub-band-light">
+        <div className="pub-container pub-section">
+          <div className="pub-section-head light">
+            <span>PERSONAL &middot; FREE VS {PAID_PLAN_NAME.toUpperCase()}</span>
+            <h2>Start free — upgrade if EAFC Live is worth it to you</h2>
           </div>
-          <div>
-            <dt>Is a personal account the same thing as a Discord server subscription?</dt>
-            <dd>No. Your personal plan (Free or {PAID_PLAN_NAME}) is tied to your own account. A Discord Server Feed is tied to a specific Discord server and billed separately. You can have a personal {PAID_PLAN_NAME} subscription, own a Server Feed for your Discord, both, or neither.</dd>
-          </div>
-          <div>
-            <dt>Does {PAID_PLAN_NAME} include a Discord server feed?</dt>
-            <dd>No. {PAID_PLAN_NAME} is a personal upgrade for your own account. If you want EAFC Live to post live opportunities into a Discord server automatically, that server needs its own Server Feed or Server Feed+ subscription.</dd>
-          </div>
-          <div>
-            <dt>What do the daily server post limits mean?</dt>
-            <dd>Server Feed posts up to 6 opportunities a day into your chosen channel; Server Feed+ posts up to 12. You choose the split across low, medium and high budget cards, and can restrict posting to certain hours.</dd>
-          </div>
-          <div>
-            <dt>Which platforms are supported?</dt>
-            <dd>Console (PlayStation and Xbox share one EA transfer market) and PC are tracked separately. You choose which one your account or a server's feed follows.</dd>
-          </div>
-          <div>
-            <dt>How do I manage or cancel billing?</dt>
-            <dd>Personal plans: manage payment method, cancel or resubscribe from Billing in the app, which opens Stripe's secure billing portal. Discord server plans: manage them per-server from the Server Feed page or the <code>/feed billing</code> command; cancelling stops the feed at the end of the paid period.</dd>
-          </div>
-        </dl>
+          <p className="pub-section-lead light">
+            The free account is free permanently, not a trial. No card needed to create one.
+          </p>
+          <PublicPlanTable />
+        </div>
       </section>
 
-      <section className="pub-midcta">
-        <h2>Ready to find your own opportunities?</h2>
-        <a className="pub-cta" href={`${APP_ORIGIN}/#/signup`}>Create free account <ArrowRight size={16} /></a>
-        <p>Free permanently, no card required. Two complete picks every day.</p>
+      {/* ============ DISCORD PRICING — full-width, charcoal ============ */}
+      <section id="discord-pricing" className="pub-band pub-band-charcoal">
+        <div className="pub-container pub-section">
+          <div className="pub-section-head">
+            <span>DISCORD SERVERS &middot; A SEPARATE PLAN</span>
+            <h2>Give your server its own live trading feed</h2>
+          </div>
+          <p className="pub-section-lead">
+            Billed per server, separately from any member's personal account. {PAID_PLAN_NAME} does not
+            include a server feed, and a server feed does not give its members {PAID_PLAN_NAME} — they're
+            two different products that work well together.
+          </p>
+          <div className="pub-pricing-grid pub-discord-grid">
+            <div className="pub-pricing-card">
+              <h3>Server Feed <span>£9.99/month</span></h3>
+              <p className="pub-pricing-tagline">For a smaller or casual trading community.</p>
+              <ul>
+                <li><b>Up to 6 feed posts a day</b></li>
+                <li><b>Choose your posting channel</b></li>
+                <li><b>Platform and budget filters</b></li>
+                <li><b>Owner-only setup via /feed setup</b></li>
+              </ul>
+              <a href={DISCORD_INVITE_URL} target="_blank" rel="noreferrer">Get the bot <ArrowRight size={13} /></a>
+            </div>
+            <div className="pub-pricing-card pub-featured">
+              <span className="pub-pricing-ribbon">Most posts</span>
+              <h3>Server Feed+ <span>£19.99/month</span></h3>
+              <p className="pub-pricing-tagline">For a larger or more active trading community.</p>
+              <ul>
+                <li><b>Up to 12 feed posts a day</b></li>
+                <li><b>Choose your posting channel</b></li>
+                <li><b>Platform and budget filters</b></li>
+                <li><b>Owner-only setup via /feed setup</b></li>
+              </ul>
+              <a href={DISCORD_INVITE_URL} target="_blank" rel="noreferrer">Get the bot <ArrowRight size={13} /></a>
+            </div>
+          </div>
+          <p className="pub-section-lead pub-discord-note">
+            Invite the bot, then run <code>/feed setup</code> in your server (you need Manage Server) to
+            choose a plan and start checkout. Already have the bot in your server? Manage or upgrade its
+            feed from <a href={`${APP_ORIGIN}/#/discord-feed`}>your account's Server Feed page</a>.
+          </p>
+        </div>
+      </section>
+
+      {/* ============ FAQ — full-width, black ============ */}
+      <section id="faq" className="pub-band pub-band-black">
+        <div className="pub-container pub-section">
+          <div className="pub-section-head"><span>FAQ</span><h2>Common questions</h2></div>
+          <dl className="pub-faq">
+            <div>
+              <dt>What does EAFC Live actually do?</dt>
+              <dd>It compares a card's live listed price against real completed sales and a computed fair value, then gives a simple BUY, WAIT or AVOID call with a target entry and sell price and the reasoning behind it.</dd>
+            </div>
+            <div>
+              <dt>Is profit guaranteed?</dt>
+              <dd>No. Every call is an estimate built from live market data, not a guarantee. Prices move, and EA takes 5% tax on every sale — that's already factored into the profit figures shown.</dd>
+            </div>
+            <div>
+              <dt>What's the difference between Free and {PAID_PLAN_NAME}?</dt>
+              <dd>Free gets {FREE_LIMITS.dailyOpportunities} complete opportunity picks a day, a {FREE_LIMITS.watchlist}-card watchlist and the last {FREE_LIMITS.trackRecordDays} days of track record. {PAID_PLAN_NAME} unlocks the full live opportunities feed, Trade Finder, a {FREE_LIMITS.eliteWatchlist}-card watchlist, more alerts and the complete track record. The full breakdown is on the pricing page in the app.</dd>
+            </div>
+            <div>
+              <dt>Is a personal account the same thing as a Discord server subscription?</dt>
+              <dd>No. Your personal plan (Free or {PAID_PLAN_NAME}) is tied to your own account. A Discord Server Feed is tied to a specific Discord server and billed separately. You can have a personal {PAID_PLAN_NAME} subscription, own a Server Feed for your Discord, both, or neither.</dd>
+            </div>
+            <div>
+              <dt>Does {PAID_PLAN_NAME} include a Discord server feed?</dt>
+              <dd>No. {PAID_PLAN_NAME} is a personal upgrade for your own account. If you want EAFC Live to post live opportunities into a Discord server automatically, that server needs its own Server Feed or Server Feed+ subscription.</dd>
+            </div>
+            <div>
+              <dt>How does the Discord feed work?</dt>
+              <dd>Invite the bot to your server, run <code>/feed setup</code> (you need Manage Server), pick a plan, posting channel and platform/budget preferences. EAFC Live then posts opportunities into that channel automatically, up to your plan's daily limit.</dd>
+            </div>
+            <div>
+              <dt>Which platforms are supported?</dt>
+              <dd>Console (PlayStation and Xbox share one EA transfer market) and PC are tracked separately. You choose which one your account or a server's feed follows.</dd>
+            </div>
+            <div>
+              <dt>How do I manage or cancel billing?</dt>
+              <dd>Personal plans: manage payment method, cancel or resubscribe from Billing in the app, which opens Stripe's secure billing portal. Discord server plans: manage them per-server from the Server Feed page or the <code>/feed billing</code> command; cancelling stops the feed at the end of the paid period.</dd>
+            </div>
+          </dl>
+        </div>
+      </section>
+
+      {/* ============ FINAL CTA — full-width, accent banner ============ */}
+      <section className="pub-band pub-band-accent">
+        <div className="pub-container pub-midcta">
+          <div className="pub-midcta-block">
+            <Users size={22} />
+            <h2>Trade it yourself</h2>
+            <p>Free permanently, no card required. Two complete picks every day.</p>
+            <a className="pub-cta" href={`${APP_ORIGIN}/#/signup`}>Create free account <ArrowRight size={16} /></a>
+          </div>
+          <div className="pub-midcta-divider" aria-hidden="true" />
+          <div className="pub-midcta-block">
+            <Server size={22} />
+            <h2>Run it in your server</h2>
+            <p>From £9.99/month, posted straight to a channel your members already use.</p>
+            <a className="pub-cta pub-cta-outline" href={DISCORD_INVITE_URL} target="_blank" rel="noreferrer">Set up a Discord server feed <ArrowRight size={16} /></a>
+          </div>
+        </div>
       </section>
 
       <p className="pub-disclaimer">Recent sales and live listings are used to estimate opportunities. Profit is never guaranteed and EA charges 5% on sales.</p>
@@ -514,35 +737,48 @@ export default function PublicSite() {
           <Route path="*" element={<ForwardToApp />} />
         </Routes>
         <footer className="pub-footer">
-          <div className="pub-footer-cols">
-            <div className="pub-footer-col">
-              <span className="pub-footer-brand">EAFC <b>Live</b></span>
-              <p>Live prices vs completed sales, for your own trading or a Discord server's feed.</p>
-            </div>
-            <div className="pub-footer-col">
-              <span className="pub-footer-heading">Product</span>
-              <button type="button" onClick={() => scrollToPublicSection("trust")}>Features</button>
-              <button type="button" onClick={() => scrollToPublicSection("pricing")}>Personal pricing</button>
-              <button type="button" onClick={() => scrollToPublicSection("discord-pricing")}>Discord server plans</button>
-              <button type="button" onClick={() => scrollToPublicSection("faq")}>FAQ</button>
-            </div>
-            <div className="pub-footer-col">
-              <span className="pub-footer-heading">Account</span>
-              <a href={`${APP_ORIGIN}/#/signup`}>Create free account</a>
-              <a href={`${APP_ORIGIN}/#/login`}>Log in</a>
-              <a href={`${APP_ORIGIN}/#/billing`}>Billing</a>
-              <a href={`${APP_ORIGIN}/#/discord-feed`}>Manage Server Feed</a>
-            </div>
-            <div className="pub-footer-col">
-              <span className="pub-footer-heading">Community &amp; legal</span>
-              <a href={DISCORD_INVITE_URL} target="_blank" rel="noreferrer">Discord</a>
-              <Link to="/privacy">Privacy</Link>
-              <Link to="/terms">Terms</Link>
-              <a href="mailto:support@eafc.live">support@eafc.live</a>
+          <div className="pub-footer-top">
+            <div className="pub-container pub-footer-cols">
+              <div className="pub-footer-col pub-footer-brand-col">
+                <span className="pub-footer-brand">
+                  <img src="/icons/icon-192x192.png" alt="" width="28" height="28" />
+                  EAFC <b>Live</b>
+                </span>
+                <p>Live prices vs completed sales, for your own trading or a Discord server's feed.</p>
+              </div>
+              <div className="pub-footer-col">
+                <span className="pub-footer-heading">Product</span>
+                <button type="button" onClick={() => scrollToPublicSection("how")}>How it works</button>
+                <button type="button" onClick={() => scrollToPublicSection("trust")}>Features</button>
+                <button type="button" onClick={() => scrollToPublicSection("opportunities")}>Live opportunities</button>
+                <button type="button" onClick={() => scrollToPublicSection("faq")}>FAQ</button>
+              </div>
+              <div className="pub-footer-col">
+                <span className="pub-footer-heading">Pricing</span>
+                <button type="button" onClick={() => scrollToPublicSection("pricing")}>Personal pricing</button>
+                <button type="button" onClick={() => scrollToPublicSection("discord-pricing")}>Discord server plans</button>
+                <a href={`${APP_ORIGIN}/#/billing`}>Billing</a>
+              </div>
+              <div className="pub-footer-col">
+                <span className="pub-footer-heading">Account</span>
+                <a href={`${APP_ORIGIN}/#/signup`}>Create free account</a>
+                <a href={`${APP_ORIGIN}/#/login`}>Log in</a>
+                <a href={`${APP_ORIGIN}/#/discord-feed`}>Manage Server Feed</a>
+              </div>
+              <div className="pub-footer-col">
+                <span className="pub-footer-heading">Support &amp; legal</span>
+                <a href={DISCORD_INVITE_URL} target="_blank" rel="noreferrer">Discord</a>
+                <a href="mailto:support@eafc.live">support@eafc.live</a>
+                <Link to="/privacy">Privacy</Link>
+                <Link to="/terms">Terms</Link>
+              </div>
             </div>
           </div>
           <div className="pub-footer-bottom">
-            <span>© {new Date().getFullYear()} EAFC Live</span>
+            <div className="pub-container pub-footer-bottom-inner">
+              <span>© {new Date().getFullYear()} EAFC Live</span>
+              <span className="pub-footer-bottom-note">Not affiliated with EA Sports or FC. Trading involves risk — profit is never guaranteed.</span>
+            </div>
           </div>
         </footer>
       </div>
