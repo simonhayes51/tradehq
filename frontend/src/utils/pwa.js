@@ -39,8 +39,8 @@ export const requestNotificationPermission = async () => {
 export const sendNotification = (title, options = {}) => {
   if ("Notification" in window && Notification.permission === "granted") {
     new Notification(title, {
-      icon: "/icons/icon-192x192.png",
-      badge: "/icons/icon-72x72.png",
+      icon: "/icons/icon-192x192-v2.png",
+      badge: "/icons/icon-72x72-v2.png",
       ...options,
     });
   }

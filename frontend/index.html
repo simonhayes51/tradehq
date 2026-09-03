@@ -41,9 +41,18 @@
 
     <!-- PWA -->
     <link rel="manifest" href="/manifest.json" />
-    <!-- Optional icons (place actual files in /public/icons/) -->
-    <link rel="icon" href="/icons/icon-192x192.png" sizes="192x192" />
-    <link rel="apple-touch-icon" href="/icons/icon-192x192.png" />
+    <!-- Icons are versioned in the filename (-v2, -v3, ...), not just
+         replaced in place at the same path: browsers, iOS's own
+         apple-touch-icon cache and any CDN in front all cache a static
+         /public asset by URL, so overwriting the file's bytes at the
+         same URL (as happened live on 2026-09-03) leaves every client
+         that already saw the old icon showing it indefinitely - the
+         exact bug already hit and fixed for the Discord embed logo (see
+         discord_embeds.py's brand_author). Bump the suffix here (and in
+         manifest.json / src/utils/pwa.js / TradeShareCardArt.jsx /
+         TradeSummaryCardArt.jsx) next time the icon artwork changes. -->
+    <link rel="icon" href="/icons/icon-192x192-v2.png" sizes="192x192" />
+    <link rel="apple-touch-icon" href="/icons/icon-192x192-v2.png" />
 
     <!-- Fonts / styles you might need -->
     <!-- <link rel="preconnect" href="https://fonts.googleapis.com"> -->

@@ -171,7 +171,7 @@ function BestTradeThumb({ src, s }) {
 function Brand({ iconSize, textSize }) {
   return (
     <div style={{ position: "relative", display: "flex", alignItems: "center", gap: iconSize * 0.4 }}>
-      <img src="/icons/icon-72x72.png" alt="" style={{ width: iconSize, height: iconSize, borderRadius: iconSize * 0.22, display: "block" }} />
+      <img src="/icons/icon-72x72-v2.png" alt="" style={{ width: iconSize, height: iconSize, borderRadius: iconSize * 0.22, display: "block" }} />
       <span style={{ fontSize: textSize, fontWeight: 800, letterSpacing: "0.1em", color: MUTED }}>
         EAFC<span style={{ color: ACCENT }}>.LIVE</span>
       </span>
