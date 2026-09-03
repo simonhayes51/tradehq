@@ -221,6 +221,23 @@ def test_set_preferences_rejects_invalid_posting_window(monkeypatch):
         run(billing.set_preferences(guild_id="g1", admin_id="1", posting_window_start_hour=8))
 
 
+def test_set_preferences_refreshes_max_posts_per_day_from_the_plan(monkeypatch):
+    """max_posts_per_day is written once at /feed setup time and never
+    synced afterward except here - a plan's allowance changing in PLANS
+    (e.g. server_feed_plus 12 -> 15) must reach an already-subscribed
+    server the next time it saves any preference, not just brand new
+    signups. Regression test: this used to never update at all."""
+    conn = _FakeConn()
+    pool = _FakePool(conn)
+    monkeypatch.setattr(billing, "get_core_pool", AsyncMock(return_value=pool))
+    monkeypatch.setattr(billing, "get_guild_feed", AsyncMock(return_value={
+        "id": 1, "plan": "server_feed_plus", "budget_mix": "balanced",
+    }))
+    run(billing.set_preferences(guild_id="g1", admin_id="1", platform_scope="pc"))
+    query, args = next(qa for qa in conn.executed if "max_posts_per_day = $5" in qa[0])
+    assert args[-1] == billing.PLANS["server_feed_plus"]["max_posts_per_day"] == 15
+
+
 def test_set_preferences_persists_posting_window(monkeypatch):
     conn = _FakeConn()
     pool = _FakePool(conn)

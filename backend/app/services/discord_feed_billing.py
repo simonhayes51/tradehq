@@ -420,12 +420,22 @@ async def set_preferences(
                 platform = COALESCE($2, platform),
                 min_confidence = COALESCE($3, min_confidence),
                 min_expected_profit = COALESCE($4, min_expected_profit),
+                max_posts_per_day = $5,
                 updated_at = NOW()
             WHERE server_id = $1
             """,
             feed["id"],
             engine_platform_for(platform_scope) if platform_scope else None,
             min_confidence, min_expected_profit,
+            # Re-derived from PLANS on every call, not COALESCE'd like the
+            # fields above - this is what keeps an existing subscriber's
+            # allowance in sync with their plan. It's the only writer of
+            # max_posts_per_day other than /feed setup's initial INSERT,
+            # so without this a plan's allowance can only ever change for
+            # servers that run /feed setup again from scratch (confirmed
+            # live: server_feed_plus went from 12 to 15/day in PLANS and
+            # every already-subscribed server stayed on 12 until this).
+            PLANS[plan]["max_posts_per_day"],
         )
         await _audit(conn, feed["id"], admin_id, "feed_preferences_changed", {
             "platform_scope": platform_scope, "budget_mix": new_budget_mix,
