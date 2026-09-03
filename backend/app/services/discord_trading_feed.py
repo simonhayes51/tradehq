@@ -36,7 +36,7 @@ import logging
 import os
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Iterable, Optional
 
 from app.services import discord_embeds as embeds
@@ -164,6 +164,35 @@ async def get_server(conn, server_id: int) -> Optional[ServerRecord]:
         status=row["status"],
         expires_at=row["expires_at"],
     )
+
+
+def _dedup_amount(value: Optional[Decimal]) -> str:
+    """Stable string form of a coin amount for dedup hashing - rounds to
+    the whole coin (embeds never show fractional coins) so formatting
+    differences (Decimal("25000") vs Decimal("25000.00")) can't split one
+    opportunity into two dedup keys."""
+    if value is None:
+        return "none"
+    return str(int(Decimal(value).to_integral_value(rounding=ROUND_HALF_UP)))
+
+
+def _opportunity_dedup_key(source_card_id: Any, ci: Any) -> str:
+    """Identifies an opportunity by what the embed actually shows (buy,
+    sell target, expected profit), not by when the snapshot it was read
+    from was computed. futgg_market_snapshot is a materialized view whose
+    REFRESH bumps every row's snapshot_computed_at to now() on every
+    refresh cycle (~every 2 min) whether or not that card's numbers
+    changed, so keying on it meant the identical opportunity got a fresh
+    dedup_key - and got reposted - every time cooldown_minutes elapsed."""
+    buy_price = ci.current_executable_buy or ci.recommended_buy_max
+    return hashlib.sha256(
+        "{}:{}:{}:{}".format(
+            source_card_id,
+            _dedup_amount(buy_price),
+            _dedup_amount(ci.recommended_sell_target),
+            _dedup_amount(ci.expected_profit_after_tax),
+        ).encode()
+    ).hexdigest()[:40]
 
 
 async def _record_post(
@@ -725,10 +754,7 @@ async def publish_live_opportunities(pool, server: ServerRecord, client: Optiona
             band = classify_budget_band(float(price) if price is not None else None)
             if band_used[band] >= band_budget[band]:
                 continue  # this budget band's daily allocation is exhausted
-        snapshot_at = row.get("snapshot_computed_at")
-        dedup_key = hashlib.sha256(
-            f"{row['source_card_id']}:{snapshot_at}".encode()
-        ).hexdigest()[:40]
+        dedup_key = _opportunity_dedup_key(row["source_card_id"], ci)
         async with pool.acquire() as conn:
             post_id = await _record_post(
                 conn, server.id, "opportunity", dedup_key,
