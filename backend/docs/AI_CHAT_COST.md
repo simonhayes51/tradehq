@@ -48,9 +48,14 @@ them from the admin summary, not from this file.
 
 **No pricing existed anywhere in this repository.** The defaults in
 `app/services/ai_usage.py` are the published list rates for
-`gpt-4o-mini` at the time of writing — **$0.15 / 1M input, $0.60 / 1M
-output** — and have **not** been verified against this account's invoices.
-They are environment-overridable for exactly that reason:
+`gpt-4o-mini` — **$0.15 / 1M input, $0.60 / 1M output** — the model this
+deployment used *before* switching to `gpt-5.6-luna`. They were never
+verified against this account's invoices even for `gpt-4o-mini`, and are
+now the wrong model's rates outright: nobody has supplied real per-token
+pricing for `gpt-5.6-luna`, so every dollar figure below is computed
+against a different model's cost. They remain the configured defaults
+only because there is nothing else to put there yet, and are
+environment-overridable for exactly that reason:
 
 ```
 AI_CHAT_PRICE_PER_1M_INPUT=0.15
@@ -58,8 +63,12 @@ AI_CHAT_PRICE_PER_1M_OUTPUT=0.60
 AI_CHAT_PRICE_CURRENCY=USD
 ```
 
-**Action required before launch:** check one real invoice against
-`GET /api/v2/admin/ai-usage` and correct these if they differ.
+**Action required before launch:** get `gpt-5.6-luna`'s real published
+per-token price into `AI_CHAT_PRICE_PER_1M_INPUT`/`_OUTPUT`, re-run the
+tables below with that number, then check one real invoice against
+`GET /api/v2/admin/ai-usage` and correct again if it differs. Until then
+every £ figure in this document is priced as `gpt-4o-mini`, not the model
+actually being called.
 
 At those rates, converting at £1 = $1.27:
 
@@ -126,7 +135,10 @@ handful of questions in a session.
 
 ## Questions the objective asked, answered
 
-- **Which model?** `gpt-4o-mini`, via `OPENAI_CHAT_MODEL`.
+- **Which model?** `gpt-5.6-luna`, via `OPENAI_CHAT_MODEL` — the only
+  model the endpoint calls. On a model-call failure (`except Exception`
+  around the `client.chat.completions.create` loop) the request fails
+  with a 503; there is no retry against a different model.
 - **Model calls per customer message?** Up to 3 (`_MAX_TOOL_ROUNDS`).
 - **Do failed requests consume quota?** The rate windows, yes — a request
   that reached the provider spent money whether or not it produced an

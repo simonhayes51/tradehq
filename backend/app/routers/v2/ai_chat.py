@@ -47,7 +47,7 @@ log = logging.getLogger("ai_chat")
 
 router = APIRouter(prefix="/ai", tags=["v2-ai-chat"])
 
-OPENAI_MODEL = os.getenv("OPENAI_CHAT_MODEL", "gpt-4o-mini")
+OPENAI_MODEL = os.getenv("OPENAI_CHAT_MODEL", "gpt-5.6-luna")
 # One customer message is at most this many model calls: the model asks
 # for a tool, we answer, it asks again, and the last round produces the
 # reply. Every round resends the whole conversation plus the tool schema,
