@@ -16,7 +16,6 @@ BRAND_COLOR = 0x22C55E
 BRAND_COLOR_WARN = 0xEAB308
 BRAND_COLOR_DANGER = 0xEF4444
 BRAND_COLOR_NEUTRAL = 0x64748B
-LOGO_PATH = "/icons/icon-192x192.png"
 
 LINK_BUTTON_STYLE = 5  # Discord message component: link button (needs url, no custom_id)
 ACTION_ROW = 1
@@ -28,8 +27,11 @@ def _app_url(app_url: str) -> str:
 
 
 def brand_author(app_url: str) -> dict[str, str]:
-    base = _app_url(app_url)
-    return {"name": BRAND_NAME, "icon_url": base + LOGO_PATH, "url": base}
+    # No icon_url: Discord caches an author icon per URL indefinitely, so
+    # a logo change never actually reaches users who've already seen an
+    # embed from that URL - it just keeps serving the old cached image
+    # forever. Dropping the icon avoids ever showing a stale logo again.
+    return {"name": BRAND_NAME, "url": _app_url(app_url)}
 
 
 def _footer() -> dict[str, str]:
