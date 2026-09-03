@@ -126,6 +126,15 @@ STRATEGY_DEFINITIONS: Dict[str, StrategyDefinition] = {
         description="The strongest currently actionable balance of confidence, profit, ROI, liquidity and risk.",
         sort_by="best_opportunity",
         require_executable=True,
+        # Same hole this module's own docstring documents fixing for "Big
+        # profit" - "best_opportunity" sorts on confidence/ROI%/liquidity/
+        # risk, none of which is absolute profit, so a cheap, highly
+        # liquid card (tight spread, deep sales history -> high
+        # confidence and liquidity) could top the tab on a trivial coin
+        # move. "Best overall" is the one tab whose whole promise is "the
+        # strongest opportunity" - it needs this floor more than any
+        # other, not less.
+        meaningful_profit=True,
         why_template="Ranks high on confidence ({confidence_pct}%) and expected return ({roi_pct}% ROI) together, not just one metric alone.",
     ),
     "quick_flips": StrategyDefinition(

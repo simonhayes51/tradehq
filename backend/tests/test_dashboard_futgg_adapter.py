@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict
 
-from app.routers.v2.dashboard import _compute_live_market_regime, _futgg_to_recommendation
+from app.routers.v2.dashboard import _compute_live_market_regime, _filter_meaningful_profit, _futgg_to_recommendation
 from app.services.futgg_intelligence import CardIntelligence
 
 AS_OF = datetime(2026, 8, 5, 12, 0, tzinfo=timezone.utc)
@@ -372,3 +372,33 @@ def test_a_buy_reports_ceiling_and_executable_entry_separately():
     assert d["entryPrice"] == 52_000        # what you would pay today
     assert d["recommendedBuyMax"] == 56_500  # the most you should pay
     assert d["recommendedSellTarget"] == 64_500
+
+
+class TestMeaningfulProfitFloor:
+    """Live-reported bug: a silver rare topped Home's "current best buy"
+    despite a trivial coin profit, because buy_scored sorted purely by
+    confidence-then-profit with no absolute floor - a cheap, highly
+    liquid card can out-confidence an expensive one on tight spread and
+    deep sales history alone. Mirrors futgg_market.py's already-fixed
+    "Big profit" bug (see strategy_definitions.py's module docstring)."""
+
+    def test_a_trivial_coin_profit_is_excluded_even_with_high_confidence(self):
+        cheap_row = _row(source_card_id=90, current_bin=3_000)
+        cheap_ci = _ci(
+            card_id=90, confidence_score=0.95,
+            expected_profit_after_tax=Decimal("120"),  # below max(300, 1.5% of 3,000)
+        )
+        assert _filter_meaningful_profit([(cheap_row, cheap_ci)]) == []
+
+    def test_the_floor_is_relative_to_price_not_a_flat_number(self):
+        # A 2,500-coin profit is a real number, but it's under 1.5% of a
+        # 200,000-coin card's price - the same absolute figure that would
+        # clear the floor on a cheap card must not clear it here.
+        expensive_row = _row(source_card_id=91, current_bin=200_000)
+        expensive_ci = _ci(card_id=91, expected_profit_after_tax=Decimal("2500"))
+        assert _filter_meaningful_profit([(expensive_row, expensive_ci)]) == []
+
+    def test_a_genuinely_meaningful_profit_survives_the_filter(self):
+        row = _row(source_card_id=92, current_bin=3_000)
+        ci = _ci(card_id=92, expected_profit_after_tax=Decimal("350"))  # clears the 300 abs floor
+        assert _filter_meaningful_profit([(row, ci)]) == [(row, ci)]

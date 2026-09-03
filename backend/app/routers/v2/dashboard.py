@@ -28,6 +28,7 @@ from fastapi import APIRouter, Depends, Request
 from app.auth.access import Viewer, get_viewer, serialise_dashboard_feed
 from app.db import get_core_pool, get_player_pool, get_watchlist_pool
 from app.routers.v2.futgg_market import (
+    _meaningful_profit_floor,
     _score_and_filter,
     _sales_for_rows,
     _segmented_candidates,
@@ -586,6 +587,29 @@ async def _scores_by_card(conn, card_ids: List[int]) -> Dict[int, Dict[str, floa
     return out
 
 
+def _filter_meaningful_profit(scored: List[Any]) -> List[Any]:
+    """Drop (row, CardIntelligence) pairs whose expected profit doesn't
+    clear futgg_market's meaningful-profit floor.
+
+    Same gap this codebase already found and fixed once for Strategy
+    Finder's "Big profit" tab (see strategy_definitions.py's module
+    docstring): sorting by confidence-then-profit with no profit FLOOR
+    lets a cheap, highly-liquid card (tight spread, deep sales history ->
+    high confidence) rank as Home's top pick on a trivial coin move,
+    ahead of a genuinely profitable trade that scored slightly lower on
+    confidence alone. Live symptom: a silver rare topping "current best
+    buy". Same floor, same helper, same reasoning as futgg_market.py's
+    meaningful_profit filter - relative to price, not one flat number, so
+    a 200-coin card clearing 3% ROI (~6 coins) can't compete with a
+    50,000-coin card clearing the same 3%.
+    """
+    return [
+        (row, ci) for row, ci in scored
+        if ci.expected_profit_after_tax is not None
+        and float(ci.expected_profit_after_tax) >= _meaningful_profit_floor(row.get("current_bin"))
+    ]
+
+
 @router.get("/dashboard")
 async def get_dashboard(
     request: Request,
@@ -641,7 +665,9 @@ async def get_dashboard(
     # segmented scan's own row order, or a live sales_count changing by
     # one), which is what made Home's Top Card look random with no
     # underlying data change - not a random pick, an unstable sort.
-    buy_scored = _score_and_filter(candidate_rows, signals={"strong_buy", "buy"}, sales_by_card=sales_by_card)
+    buy_scored = _filter_meaningful_profit(
+        _score_and_filter(candidate_rows, signals={"strong_buy", "buy"}, sales_by_card=sales_by_card)
+    )
     buy_scored.sort(
         key=lambda pair: (
             -(pair[1].confidence_score or 0.0),
