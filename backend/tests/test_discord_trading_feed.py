@@ -189,6 +189,12 @@ def test_opportunity_post_embed_includes_required_fields():
     # Branded and links back to the card in the app.
     assert embed["author"]["name"] == "EAFC.Live"
     assert components and components[0]["components"][0]["url"]
+    # ?src=discord_feed - PlayerPage.jsx's signed-out preview reads this
+    # to acknowledge the visitor already saw this trade's numbers here,
+    # rather than presenting a generic "sign up to see what it's worth"
+    # wall for numbers that were just given away for free.
+    link_url = components[0]["components"][0]["url"]
+    assert link_url.endswith("/#/players/12345?src=discord_feed")
 
 
 def test_the_buy_field_shows_the_price_profit_was_actually_computed_from():

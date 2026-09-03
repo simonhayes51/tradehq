@@ -26,7 +26,7 @@ const WHAT_AN_ACCOUNT_ADDS = [
   `A watchlist of up to ${FREE_LIMITS.watchlist} cards and ${FREE_LIMITS.alerts} price alerts`,
 ];
 
-export default function PublicCardPreview({ card, cardId, onBack, backLabel }) {
+export default function PublicCardPreview({ card, cardId, onBack, backLabel, fromDiscordFeed = false }) {
   const name = card.display_name || card.name || "This card";
 
   useEffect(() => {
@@ -84,13 +84,15 @@ export default function PublicCardPreview({ card, cardId, onBack, backLabel }) {
             </div>
           </dl>
           <p className="public-card-approx-note">
-            Approximate. The exact live price is on the free account.
+            {fromDiscordFeed
+              ? "You already got the live buy/sell numbers for this trade in Discord — a free account keeps tracking this card, and every trade after it, automatically."
+              : "Approximate. The exact live price is on the free account."}
           </p>
         </div>
       </section>
 
       <section className="public-card-cta">
-        <h2>See what this card is really worth</h2>
+        <h2>{fromDiscordFeed ? "Save this card and get the next one free" : "See what this card is really worth"}</h2>
         <ul>
           {WHAT_AN_ACCOUNT_ADDS.map((line) => <li key={line}>{line}</li>)}
         </ul>
@@ -101,7 +103,9 @@ export default function PublicCardPreview({ card, cardId, onBack, backLabel }) {
           Create free account <ArrowRight size={16} />
         </Link>
         <p className="public-card-reassure">
-          Free permanently. No card required. You&apos;ll come straight back to this player.
+          {fromDiscordFeed
+            ? "Free permanently. No card required. You'll come straight back to this player, with daily trade ideas like the one you just saw in Discord."
+            : "Free permanently. No card required. You'll come straight back to this player."}
         </p>
       </section>
     </main>
