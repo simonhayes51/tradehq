@@ -831,6 +831,7 @@ async def publish_opportunity_updates(pool, server: ServerRecord, client: Option
     Never fabricates an outcome."""
     if not feed_globally_enabled() or not server.is_postable or not server.feed_channel_id:
         return 0
+    from app.services import trading_math as tm
     from app.services.futgg_outcome_grader import HORIZONS, grade_recommendation
 
     client = client or DiscordClient()
@@ -889,7 +890,30 @@ async def publish_opportunity_updates(pool, server: ServerRecord, client: Option
                 window_elapsed and grade.outcome_status in ("loss_unrealised", "downside_hit")
             ):
                 continue  # not yet a reportable result - keep watching
-            outcome = {"outcome_status": grade.outcome_status, "net_profit_after_tax": grade.net_profit_after_tax}
+            if grade.target_hit:
+                # grade.net_profit_after_tax is computed from grade.entry_
+                # price/realised_sell_price - the grader's OWN "first
+                # observation at or below buy_price" / "first at or above
+                # sell_target" chronological walk. That's the right way
+                # to answer "was this call ever executable" in aggregate
+                # (see futgg_outcome_grader.py), but for a single public
+                # result post it means one bad futgg_bin_history row (an
+                # 89-rated card briefly showing a few-hundred-coin listing
+                # is a data glitch, not a real fill - the exact class of
+                # thing EA_MIN_PRICE already guards the low end of, just
+                # not at every price tier) makes the reported profit
+                # nothing like what was promised: confirmed live, a BUY
+                # 5,000 / SELL TARGET 9,600 post whose own embed said
+                # "+4,120 expected" got reported as "TARGET HIT +8,605" -
+                # implying an ~515-coin entry nobody was ever offered.
+                # A confirmed target hit has a fully determined profit
+                # (buy at the advertised price, sell at the advertised
+                # target) - report THAT, not a re-derived figure that can
+                # be thrown off by a single noisy observation.
+                net_profit_after_tax = tm.net_profit(Decimal(str(sell_target)), Decimal(str(buy_price)))
+            else:
+                net_profit_after_tax = grade.net_profit_after_tax
+            outcome = {"outcome_status": grade.outcome_status, "net_profit_after_tax": net_profit_after_tax}
             update_post_id = await _record_post(conn, server.id, "opportunity_update", row["dedup_key"], outcome)
             if update_post_id is None:
                 continue
