@@ -149,6 +149,13 @@ export default function DiscordFeed() {
     );
   }
 
+  function changeSellChannel(channelId) {
+    runAction(
+      () => api.patch(`/api/v2/discord-feed/${selectedGuildId}/sell-channel`, { channel_id: channelId || null }),
+      channelId ? "Sell-time channel updated." : "Sell-time channel cleared - results will post in your main feed channel again."
+    );
+  }
+
   async function goToBilling() {
     try {
       const { data } = await api.get(`/api/v2/discord-feed/${selectedGuildId}/billing-url`);
@@ -259,6 +266,26 @@ export default function DiscordFeed() {
                 onChange={(e) => changeChannel(e.target.value)}
               >
                 <option value="" disabled>Choose a channel</option>
+                {channels.map((c) => (
+                  <option key={c.id} value={c.id}>#{c.name}</option>
+                ))}
+              </select>
+            )}
+          </SectionCard>
+
+          <SectionCard
+            title="Sell-time channel"
+            subtitle="Where TARGET HIT / result posts go. Leave as “Same as posting channel” to keep results in your main feed."
+          >
+            {channels === null ? (
+              <p>Loading channels…</p>
+            ) : (
+              <select
+                value={feedState.feed.sell_channel_id || ""}
+                disabled={busy}
+                onChange={(e) => changeSellChannel(e.target.value)}
+              >
+                <option value="">Same as posting channel</option>
                 {channels.map((c) => (
                   <option key={c.id} value={c.id}>#{c.name}</option>
                 ))}

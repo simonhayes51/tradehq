@@ -4,6 +4,7 @@ from decimal import Decimal
 
 import pytest
 
+from app.services import trading_math as tm
 from app.services.discord_trading_feed import (
     ServerRecord,
     _TEST_OUTCOMES,
@@ -610,6 +611,61 @@ def test_publish_opportunity_updates_grades_the_posts_own_prices(monkeypatch):
     # other, unrelated recommendation's much lower entry.
     assert "TARGET HIT" in embed["title"]
     assert result_field["value"] != "n/a"
+    expected = tm.net_profit(Decimal("9600"), Decimal("5500"))
+    assert result_field["value"] == f"{expected:+,.0f} coins"
+
+
+def test_publish_opportunity_updates_reports_the_advertised_profit_not_a_glitched_entry(monkeypatch):
+    """A confirmed target_hit's reported profit must equal what the
+    original post promised (buy_price -> sell_target), never grade_
+    recommendation()'s own realised entry/exit prices - those come from
+    whatever futgg_bin_history actually recorded, and its "entry = first
+    observation at or below buy_price" rule means one bad/glitched row
+    (an 89-rated card briefly showing a few-hundred-coin price is not a
+    real fill) silently inflates the reported result far past what was
+    ever advertised. Regression test for a BUY 5,000 / SELL TARGET 9,600
+    post - "+4,120 expected" in its own embed - reported as "TARGET HIT
+    +8,605" (implying an entry near 515) after this exact fix shipped."""
+    monkeypatch.setenv("DISCORD_TRADING_FEED_ENABLED", "1")
+    import app.services.discord_trading_feed as feed_module
+
+    now = datetime(2026, 8, 20, 12, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(feed_module, "_now", lambda: now)
+    sent_at = now - timedelta(hours=2)
+
+    card_id = 999
+    conn = _FakeUpdatesConn(
+        pending=[_pending_post(
+            payload={"source_card_id": card_id, "name": "Mariona", "buy_price": 5000.0, "sell_target": 9600.0},
+            sent_at=sent_at,
+        )],
+        bin_history={
+            card_id: [
+                # A glitched near-worthless reading, at or below buy_price
+                # so the raw grader would lock onto it as "entry" - not a
+                # real listing for an 89-rated card.
+                {"lowest_bin": 515, "captured_at": sent_at + timedelta(minutes=2)},
+                {"lowest_bin": 9700, "captured_at": sent_at + timedelta(minutes=30)},
+            ],
+        },
+    )
+    fake_client = MagicMock()
+    fake_client.post_embed = AsyncMock(return_value=(200, {"id": "msg1"}))
+    server = ServerRecord(
+        id=1, guild_id="g1", name="Test", access_level="paid_partner", feed_channel_id="chan1",
+        proof_channel_id=None, status="active", expires_at=None,
+    )
+
+    from app.services.discord_trading_feed import publish_opportunity_updates
+
+    updated = asyncio.run(publish_opportunity_updates(conn, server, fake_client))
+    assert updated == 1
+    embed = fake_client.post_embed.call_args.args[1]
+    result_field = next(f for f in embed["fields"] if f["name"] == "RESULT")
+    expected = tm.net_profit(Decimal("9600"), Decimal("5000"))  # matches the original post's "+4,120 expected"
+    assert result_field["value"] == f"{expected:+,.0f} coins"
+    # The bad reading would have implied roughly an 8,605 result - never that.
+    assert "8,605" not in result_field["value"]
 
 
 def test_publish_opportunity_updates_posts_to_the_feed_channel_by_default(monkeypatch):
