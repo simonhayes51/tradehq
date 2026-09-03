@@ -120,7 +120,12 @@ function DiscordServerPlansSection() {
   }, []);
 
   return (
-    <SectionCard title="Discord server plans" subtitle="Billed separately from your personal plan above, per Discord server.">
+    <SectionCard
+      title="Discord server plans"
+      subtitle="A separate product, billed per Discord server — not part of your personal plan above."
+      className="billing-v2-discord-section"
+    >
+      <div className="billing-v2-discord-section-tag"><Hash size={12} /> SERVER PRODUCT</div>
       <div className="billing-v2-server-plans">
         {SERVER_PLANS.map((plan) => (
           <div key={plan.key} className="billing-v2-server-plan">
