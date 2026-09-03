@@ -86,7 +86,21 @@ class PriorityEngineConfig:
     rule_critical_volatility_min: float = field(default_factory=lambda: _env_float("PRIORITY_RULE_CRITICAL_VOLATILITY_MIN", 0.6))
     rule_critical_opportunity_min: float = field(default_factory=lambda: _env_float("PRIORITY_RULE_CRITICAL_OPPORTUNITY_MIN", 0.6))
     rule_high_liquidity_min: float = field(default_factory=lambda: _env_float("PRIORITY_RULE_HIGH_LIQUIDITY_MIN", 0.45))
-    rule_high_card_type_min: float = field(default_factory=lambda: _env_float("PRIORITY_RULE_HIGH_CARD_TYPE_MIN", 0.85))
+    # 0.85 required icon/hero/tots/totw/fut birthday liquidity-independent
+    # HIGH-tier promotion (card_type_scores below) but excluded "special"
+    # (0.75) - the catch-all bucket for promo cards that aren't one of
+    # those named types. A promo card is low-print-run by nature, so it
+    # rarely clears rule_high_liquidity_min on trading volume alone
+    # either, and fell through to NORMAL/LOW/DORMANT - refreshed every
+    # 24h/48h/~67h instead of HIGH's 12h. Once actual sales data crosses
+    # reject_sales_older_than_minutes (72h, futgg_config.py), confidence
+    # zeroes outright (futgg_intelligence._compute_confidence), so those
+    # cards silently stopped clearing evaluation at all - live symptom:
+    # the Opportunities feed skewing almost entirely gold/silver with
+    # very few promo/special cards surfacing. 0.75 is a precise line
+    # between "special" and the next-highest score (gold_rare at 0.5),
+    # so this brings only "special" cards in, not gold/silver commons.
+    rule_high_card_type_min: float = field(default_factory=lambda: _env_float("PRIORITY_RULE_HIGH_CARD_TYPE_MIN", 0.75))
     rule_normal_liquidity_min: float = field(default_factory=lambda: _env_float("PRIORITY_RULE_NORMAL_LIQUIDITY_MIN", 0.15))
     rule_normal_min_sales_count: int = field(default_factory=lambda: _env_int("PRIORITY_RULE_NORMAL_MIN_SALES_COUNT", 3))
     rule_low_min_sales_count: int = field(default_factory=lambda: _env_int("PRIORITY_RULE_LOW_MIN_SALES_COUNT", 1))
