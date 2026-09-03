@@ -65,6 +65,7 @@ class RegisterServer(BaseModel):
 class SetChannel(BaseModel):
     feed_channel_id: Optional[str] = None
     proof_channel_id: Optional[str] = None
+    sell_channel_id: Optional[str] = None
 
 
 class SetAccessLevel(BaseModel):
@@ -129,12 +130,14 @@ async def set_channel(server_id: int, body: SetChannel, admin=Depends(require_ad
         UPDATE discord_servers
         SET feed_channel_id = COALESCE($2, feed_channel_id),
             proof_channel_id = COALESCE($3, proof_channel_id),
+            sell_channel_id = COALESCE($4, sell_channel_id),
             updated_at = NOW()
         WHERE id=$1
         """,
         server_id,
         body.feed_channel_id,
         body.proof_channel_id,
+        body.sell_channel_id,
     )
     await _audit(conn, admin["user_id"], server_id, "set_channel", body.model_dump())
     return {"ok": True}

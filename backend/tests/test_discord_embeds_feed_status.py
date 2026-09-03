@@ -30,3 +30,16 @@ def test_feed_status_embed_defaults_missing_timezone_label_to_utc():
     embed = feed_status_embed(feed, posts_used=0, channel_ok=True, channel_problem=None)
     field = next(f for f in embed["fields"] if f["name"] == "POSTING WINDOW")
     assert field["value"] == "08:00–23:00 (UTC)"
+
+
+def test_feed_status_embed_shows_same_as_channel_when_no_sell_channel_set():
+    embed = feed_status_embed(_base_feed(), posts_used=0, channel_ok=True, channel_problem=None)
+    field = next(f for f in embed["fields"] if f["name"] == "SELL-TIME CHANNEL")
+    assert field["value"] == "Same as CHANNEL"
+
+
+def test_feed_status_embed_shows_the_configured_sell_channel():
+    feed = _base_feed(sell_channel_id="999")
+    embed = feed_status_embed(feed, posts_used=0, channel_ok=True, channel_problem=None)
+    field = next(f for f in embed["fields"] if f["name"] == "SELL-TIME CHANNEL")
+    assert field["value"] == "<#999>"

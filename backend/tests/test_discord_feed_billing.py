@@ -16,7 +16,7 @@ def run(coro):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("plan,expected_total", [("server_feed", 6), ("server_feed_plus", 12)])
+@pytest.mark.parametrize("plan,expected_total", [("server_feed", 6), ("server_feed_plus", 15)])
 def test_every_budget_mix_sums_to_the_plan_daily_allowance(plan, expected_total):
     for mix, (low, medium, high) in billing.BUDGET_ALLOCATIONS[plan].items():
         assert low + medium + high == expected_total, f"{plan}/{mix} sums to {low+medium+high}, expected {expected_total}"
@@ -30,17 +30,17 @@ def test_server_feed_balanced_allocation_matches_spec():
 
 
 def test_server_feed_plus_balanced_allocation_matches_spec():
-    assert billing.BUDGET_ALLOCATIONS["server_feed_plus"]["balanced"] == (4, 4, 4)
-    assert billing.BUDGET_ALLOCATIONS["server_feed_plus"]["mostly_low"] == (8, 4, 0)
-    assert billing.BUDGET_ALLOCATIONS["server_feed_plus"]["mostly_medium"] == (2, 8, 2)
-    assert billing.BUDGET_ALLOCATIONS["server_feed_plus"]["mostly_high"] == (0, 4, 8)
+    assert billing.BUDGET_ALLOCATIONS["server_feed_plus"]["balanced"] == (5, 5, 5)
+    assert billing.BUDGET_ALLOCATIONS["server_feed_plus"]["mostly_low"] == (10, 5, 0)
+    assert billing.BUDGET_ALLOCATIONS["server_feed_plus"]["mostly_medium"] == (2, 11, 2)
+    assert billing.BUDGET_ALLOCATIONS["server_feed_plus"]["mostly_high"] == (0, 5, 10)
 
 
 def test_plan_prices_and_daily_caps():
     assert billing.PLANS["server_feed"]["price_gbp"] == 9.99
     assert billing.PLANS["server_feed"]["max_posts_per_day"] == 6
     assert billing.PLANS["server_feed_plus"]["price_gbp"] == 19.99
-    assert billing.PLANS["server_feed_plus"]["max_posts_per_day"] == 12
+    assert billing.PLANS["server_feed_plus"]["max_posts_per_day"] == 15
 
 
 def test_validate_budget_allocation_rejects_over_allowance():
@@ -246,6 +246,53 @@ def test_set_preferences_clears_posting_window(monkeypatch):
     run(billing.set_preferences(guild_id="g1", admin_id="1", clear_posting_window=True))
     server_update = next(q for q, a in conn.executed if "posting_window_start_hour = NULL" in q)
     assert server_update
+
+
+# ---------------------------------------------------------------------------
+# Sell-time channel: a server may route opportunity_update ("TARGET HIT" /
+# result) posts to a separate channel from its main buy feed. None clears
+# it back to the default (post results in the main feed channel).
+# ---------------------------------------------------------------------------
+
+
+def test_set_sell_channel_requires_setup_first(monkeypatch):
+    monkeypatch.setattr(billing, "get_guild_feed", AsyncMock(return_value=None))
+    with pytest.raises(billing.FeedError):
+        run(billing.set_sell_channel(guild_id="g1", admin_id="1", channel_id="chan-sell"))
+
+
+def test_set_sell_channel_verifies_bot_access_before_saving(monkeypatch):
+    monkeypatch.setattr(billing, "get_guild_feed", AsyncMock(return_value={"id": 1}))
+    monkeypatch.setattr(billing, "confirm_channel_access", AsyncMock(return_value=(False, "missing_permissions")))
+    with pytest.raises(billing.FeedError):
+        run(billing.set_sell_channel(guild_id="g1", admin_id="1", channel_id="chan-sell"))
+
+
+def test_set_sell_channel_persists_the_channel(monkeypatch):
+    conn = _FakeConn()
+    pool = _FakePool(conn)
+    monkeypatch.setattr(billing, "get_core_pool", AsyncMock(return_value=pool))
+    monkeypatch.setattr(billing, "get_guild_feed", AsyncMock(return_value={"id": 1}))
+    monkeypatch.setattr(billing, "confirm_channel_access", AsyncMock(return_value=(True, None)))
+    run(billing.set_sell_channel(guild_id="g1", admin_id="1", channel_id="chan-sell"))
+    query, args = next(qa for qa in conn.executed if "sell_channel_id" in qa[0])
+    assert args == ("g1", "chan-sell")
+
+
+def test_set_sell_channel_none_clears_it_without_checking_access(monkeypatch):
+    """channel_id=None means 'go back to the main feed channel' - there is
+    no channel to verify bot access to, so confirm_channel_access must
+    never be called."""
+    conn = _FakeConn()
+    pool = _FakePool(conn)
+    monkeypatch.setattr(billing, "get_core_pool", AsyncMock(return_value=pool))
+    monkeypatch.setattr(billing, "get_guild_feed", AsyncMock(return_value={"id": 1}))
+    confirm = AsyncMock(return_value=(True, None))
+    monkeypatch.setattr(billing, "confirm_channel_access", confirm)
+    run(billing.set_sell_channel(guild_id="g1", admin_id="1", channel_id=None))
+    confirm.assert_not_awaited()
+    query, args = next(qa for qa in conn.executed if "sell_channel_id" in qa[0])
+    assert args == ("g1", None)
 
 
 # ---------------------------------------------------------------------------

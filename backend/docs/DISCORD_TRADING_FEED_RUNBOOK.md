@@ -97,7 +97,7 @@ INFO:discord_command_sync:🔄 Discord command sync: loading command extensions.
 INFO:discord_commands:📦 Loaded command extension app.services.discord_commands.core (7 command(s): /price, /fairvalue, /watchlist, /alerts, /results, /account, /help)
 INFO:discord_commands:📦 Loaded command extension app.services.discord_commands.feed (1 command(s): /feed)
 INFO:discord_commands:📦 All 2 command extension(s) loaded: 8 command(s) total
-INFO:discord_commands:✅ /feed group present with 10 subcommand(s): /feed activate, /feed billing, /feed channel, /feed help, /feed pause, /feed preferences, /feed resume, /feed setup, /feed status, /feed test
+INFO:discord_commands:✅ /feed group present with 11 subcommand(s): /feed activate, /feed billing, /feed channel, /feed help, /feed pause, /feed preferences, /feed resume, /feed sell_channel, /feed setup, /feed status, /feed test
 INFO:discord_command_sync:🤖 Discord command sync: authenticated as application 'EAFC.Live' (application_id=1408193521986437251)
 INFO:discord_command_sync:✅ Discord command sync: token confirmed for expected application_id=1408193521986437251
 INFO:discord_command_sync:🌍 Discord command sync: 8 global command(s) synced: /price, /fairvalue, /watchlist, /alerts, /results, /account, /help, /feed
@@ -205,10 +205,15 @@ requirement.
 As an alternative to the admin API above, a server owner with the
 **Manage Server** permission can set up and manage their own paid feed
 entirely from Discord via `/feed setup`, `/feed test`, `/feed activate`,
-`/feed status`, `/feed channel`, `/feed preferences`, `/feed pause`,
-`/feed resume`, `/feed billing`, and `/feed help`. This is billing-backed
+`/feed status`, `/feed channel`, `/feed sell_channel`, `/feed preferences`,
+`/feed pause`, `/feed resume`, `/feed billing`, and `/feed help`.
+`/feed sell_channel` (run with no channel to clear) routes
+`opportunity_update` ("TARGET HIT" / result) posts to a separate channel
+from the main buy feed — `discord_servers.sell_channel_id`, NULL by
+default (post results into the same channel as the original opportunity).
+This is billing-backed
 (Stripe subscriptions: "Server Feed" £9.99/mo up to 6 posts/day, "Server
-Feed+" £19.99/mo up to 12/day) and fully independent of the admin flow
+Feed+" £19.99/mo up to 15/day) and fully independent of the admin flow
 above — either can register/manage a `discord_servers` row for a given
 guild, but a guild only ever has one row.
 

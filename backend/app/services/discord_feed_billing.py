@@ -39,7 +39,7 @@ PLANS: dict[str, dict[str, Any]] = {
     "server_feed_plus": {
         "label": "Server Feed+",
         "price_gbp": 19.99,
-        "max_posts_per_day": 12,
+        "max_posts_per_day": 15,
         "price_env": "STRIPE_SERVER_FEED_PLUS_PRICE_ID",
     },
 }
@@ -52,10 +52,10 @@ BUDGET_ALLOCATIONS: dict[str, dict[str, tuple[int, int, int]]] = {
         "mostly_high": (0, 2, 4),
     },
     "server_feed_plus": {
-        "balanced": (4, 4, 4),
-        "mostly_low": (8, 4, 0),
-        "mostly_medium": (2, 8, 2),
-        "mostly_high": (0, 4, 8),
+        "balanced": (5, 5, 5),
+        "mostly_low": (10, 5, 0),
+        "mostly_medium": (2, 11, 2),
+        "mostly_high": (0, 5, 10),
     },
 }
 
@@ -305,6 +305,29 @@ async def set_channel(*, guild_id: str, admin_id: str, channel_id: str) -> dict[
             guild_id, channel_id,
         )
         await _audit(conn, feed["id"], admin_id, "feed_channel_changed", {"channel_id": channel_id})
+    return await get_guild_feed(guild_id)
+
+
+async def set_sell_channel(*, guild_id: str, admin_id: str, channel_id: Optional[str]) -> dict[str, Any]:
+    """Sets (or, with channel_id=None, clears) the separate channel
+    opportunity_update ("TARGET HIT" / result) posts go to - most servers
+    have their own dedicated sell-time / results channel distinct from
+    the live buy feed. Clearing it reverts to the default: results post
+    into the same channel as the original opportunity."""
+    feed = await get_guild_feed(guild_id)
+    if not feed:
+        raise FeedError("Run /feed setup first.")
+    if channel_id is not None:
+        ok, reason = await confirm_channel_access(guild_id, channel_id)
+        if not ok:
+            raise FeedError(CHANNEL_ACCESS_MESSAGES.get(reason, "Couldn't verify that channel."))
+    pool = await get_core_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE discord_servers SET sell_channel_id=$2, updated_at=NOW() WHERE guild_id=$1",
+            guild_id, channel_id,
+        )
+        await _audit(conn, feed["id"], admin_id, "feed_sell_channel_changed", {"channel_id": channel_id})
     return await get_guild_feed(guild_id)
 
 

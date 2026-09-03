@@ -94,6 +94,11 @@ class ServerRecord:
     proof_channel_id: Optional[str]
     status: str
     expires_at: Optional[datetime]
+    # Where opportunity_update ("TARGET HIT" / result) posts go. NULL (the
+    # default) means "same channel as the original opportunity" - the
+    # pre-existing behavior. Lets a server route sell-time results into a
+    # separate channel from its live buy feed.
+    sell_channel_id: Optional[str] = None
 
     @property
     def is_postable(self) -> bool:
@@ -114,6 +119,7 @@ def server_record_from_feed(feed: dict[str, Any], guild_id: str, guild_name: str
         id=feed["id"], guild_id=guild_id, name=guild_name, access_level="paid_partner",
         feed_channel_id=feed.get("feed_channel_id"), proof_channel_id=None,
         status=feed["status"], expires_at=feed.get("current_period_end"),
+        sell_channel_id=feed.get("sell_channel_id"),
     )
 
 
@@ -163,6 +169,7 @@ async def get_server(conn, server_id: int) -> Optional[ServerRecord]:
         proof_channel_id=row["proof_channel_id"],
         status=row["status"],
         expires_at=row["expires_at"],
+        sell_channel_id=row["sell_channel_id"],
     )
 
 
@@ -755,10 +762,22 @@ async def publish_live_opportunities(pool, server: ServerRecord, client: Optiona
             if band_used[band] >= band_budget[band]:
                 continue  # this budget band's daily allocation is exhausted
         dedup_key = _opportunity_dedup_key(row["source_card_id"], ci)
+        # buy_price/sell_target are the exact numbers this embed shows the
+        # user - publish_opportunity_updates() grades THIS trade against
+        # THESE numbers later, not against some other, unrelated
+        # evaluation of the same card (see its docstring for why that
+        # used to produce results that couldn't have actually happened).
+        buy_price = ci.current_executable_buy or ci.recommended_buy_max
         async with pool.acquire() as conn:
             post_id = await _record_post(
                 conn, server.id, "opportunity", dedup_key,
-                {"source_card_id": row["source_card_id"], "name": row.get("name"), "budget_band": band},
+                {
+                    "source_card_id": row["source_card_id"],
+                    "name": row.get("name"),
+                    "budget_band": band,
+                    "buy_price": float(buy_price) if buy_price is not None else None,
+                    "sell_target": float(ci.recommended_sell_target) if ci.recommended_sell_target is not None else None,
+                },
             )
         if post_id is None:
             continue  # already posted this exact snapshot to this server
@@ -780,17 +799,44 @@ async def publish_live_opportunities(pool, server: ServerRecord, client: Optiona
     return posted
 
 
+#: How long after posting an opportunity we watch its own actual price
+#: history for a target-hit/loss before calling a negative/flat result.
+#: A target hit is always reported the moment it's observed, no matter
+#: how much of this window remains - only "it did NOT hit target" has to
+#: wait for the full window, so an early snapshot of a still-open
+#: position can never be reported as a loss.
+OPPORTUNITY_UPDATE_HORIZON = "24h"
+
+
 async def publish_opportunity_updates(pool, server: ServerRecord, client: Optional[DiscordClient] = None) -> int:
-    """Posts an update when a previously-posted opportunity's snapshot has
-    since graded (target_hit / expired / closed) in
-    futgg_recommendation_outcomes - never fabricates an outcome."""
+    """Posts an update once a previously-posted opportunity's OWN buy
+    price and sell target - the exact numbers that specific embed showed
+    users, taken from its payload - have chronologically graded to
+    target_hit/loss_unrealised/downside_hit against futgg_bin_history.
+
+    Deliberately does NOT read futgg_recommendation_outcomes: that table
+    is fed by a separate, independently-scheduled scanner
+    (futgg_scanner.py) that re-evaluates cards on its own cadence, so
+    "the latest graded outcome for this card_id" can be - and in
+    production was - a completely different recommendation (different
+    entry price, different target) from the one actually posted here.
+    Grading this post's own payload numbers directly is the only way the
+    reported result can be the result of the trade users actually saw.
+    Never fabricates an outcome."""
     if not feed_globally_enabled() or not server.is_postable or not server.feed_channel_id:
         return 0
+    from app.services.futgg_outcome_grader import HORIZONS, grade_recommendation
+
     client = client or DiscordClient()
+    window = HORIZONS[OPPORTUNITY_UPDATE_HORIZON]
+    # A server without its own sell-time channel configured keeps the
+    # original behavior: results post into the same channel as the buy
+    # feed.
+    target_channel_id = server.sell_channel_id or server.feed_channel_id
     async with pool.acquire() as conn:
         pending = await conn.fetch(
             """
-            SELECT p.id AS post_id, p.payload, p.dedup_key
+            SELECT p.id AS post_id, p.payload, p.dedup_key, p.sent_at
             FROM discord_server_posts p
             WHERE p.server_id=$1 AND p.kind='opportunity' AND p.status='sent'
               AND NOT EXISTS (
@@ -807,27 +853,43 @@ async def publish_opportunity_updates(pool, server: ServerRecord, client: Option
         for row in pending:
             payload = json.loads(row["payload"]) if isinstance(row["payload"], str) else dict(row["payload"])
             card_id = payload.get("source_card_id")
-            if card_id is None:
+            buy_price = payload.get("buy_price")
+            sell_target = payload.get("sell_target")
+            sent_at = row["sent_at"]
+            if card_id is None or buy_price is None or sell_target is None or sent_at is None:
+                # Older posts made before this payload carried buy_price/
+                # sell_target (or a test post) - nothing honest to grade
+                # against, so no update is ever posted for them.
                 continue
-            outcome = await conn.fetchrow(
+            sent_at = _aware(sent_at)
+            observations = await conn.fetch(
                 """
-                SELECT outcome_status, net_profit_after_tax
-                FROM futgg_recommendation_outcomes
-                WHERE source_card_id=$1 AND outcome_status IN ('target_hit', 'loss_unrealised', 'downside_hit')
-                ORDER BY graded_at DESC LIMIT 1
+                SELECT lowest_bin, captured_at
+                FROM futgg_bin_history
+                WHERE source_card_id=$1 AND captured_at > $2 AND captured_at <= $3
+                ORDER BY captured_at
                 """,
-                card_id,
+                card_id, sent_at, sent_at + window,
             )
-            if outcome is None:
-                continue
-            update_post_id = await _record_post(
-                conn, server.id, "opportunity_update", row["dedup_key"], dict(outcome)
+            grade = grade_recommendation(
+                horizon=OPPORTUNITY_UPDATE_HORIZON,
+                evaluated_at=sent_at,
+                buy_price=float(buy_price),
+                sell_target=float(sell_target),
+                observations=[(o["lowest_bin"], o["captured_at"]) for o in observations],
             )
+            window_elapsed = _now() >= grade.window_end
+            if not grade.target_hit and not (
+                window_elapsed and grade.outcome_status in ("loss_unrealised", "downside_hit")
+            ):
+                continue  # not yet a reportable result - keep watching
+            outcome = {"outcome_status": grade.outcome_status, "net_profit_after_tax": grade.net_profit_after_tax}
+            update_post_id = await _record_post(conn, server.id, "opportunity_update", row["dedup_key"], outcome)
             if update_post_id is None:
                 continue
-            embed = build_opportunity_update_embed({"name": payload.get("name")}, dict(outcome))
+            embed = build_opportunity_update_embed({"name": payload.get("name")}, outcome)
             status, body = await client.post_embed(
-                server.feed_channel_id, embed, nonce=row["dedup_key"][:25], enforce_nonce=True
+                target_channel_id, embed, nonce=row["dedup_key"][:25], enforce_nonce=True
             )
             ok = status in (200, 201)
             message_id = body.get("id") if ok and isinstance(body, dict) else None
