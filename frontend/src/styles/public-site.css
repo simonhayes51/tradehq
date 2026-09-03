@@ -38,7 +38,12 @@
 .pub-band-light { background: #f4f5f2; color: #0c0d0e; }
 .pub-band-accent { background: linear-gradient(120deg, #0c1b12 0%, #08090a 55%, #0c1b12 100%); border-top: 1px solid #1c2a1f; border-bottom: 1px solid #1c2a1f; }
 
-.pub-section { padding: 64px 32px; }
+/* One shared vertical rhythm for every full-width band's inner content -
+   matches .pub-midcta's own 56px below - rather than each section
+   carrying its own slightly-different padding number, which is what let
+   some (the light "why" grid, the pricing row) drift taller than their
+   content needed and read as unintentional dead space. */
+.pub-section { padding: 56px 32px; }
 .pub-section-head span { display: block; color: #8d8f95; font-size: 11px; font-weight: 900; letter-spacing: .1em; }
 .pub-section-head h2 { margin: 6px 0 0; font-size: 27px; letter-spacing: -.01em; line-height: 1.18; }
 .pub-section-head.light span { color: #6b6f63; }
@@ -61,6 +66,14 @@ button.pub-secondary { display: inline-flex; align-items: center; gap: 8px; min-
 button.pub-secondary:hover { border-color: #4a4b52; }
 .pub-hero-inline-link { display: inline-flex; align-items: center; gap: 4px; margin-top: 18px; padding: 0; border: none; background: transparent; color: #8d8f95; font-weight: 600; font-size: 12.5px; cursor: pointer; font-family: inherit; }
 .pub-hero-inline-link:hover { color: #c6c6ca; }
+
+/* Compact fact strip under the hero CTAs - see PublicSite.jsx's comment
+   at the callsite: fills the left column out to something closer to the
+   opportunities panel/hero card's height on the right instead of a bare
+   void, without inventing new copy. */
+.pub-hero-facts { list-style: none; margin: 26px 0 0; padding: 20px 0 0; border-top: 1px solid #1a1b1f; display: flex; flex-direction: column; gap: 12px; max-width: 460px; }
+.pub-hero-facts li { display: flex; align-items: center; gap: 9px; color: #c6c6ca; font-size: 12.5px; font-weight: 600; line-height: 1.3; }
+.pub-hero-facts svg { color: #39ff8a; flex: none; }
 
 .pub-hero-visual { display: flex; flex-direction: column; gap: 16px; }
 
@@ -224,7 +237,15 @@ button.pub-secondary:hover { border-color: #4a4b52; }
 .pub-band-light .pub-pricing-card li b { color: #0c0d0e; }
 .pub-pricing-card li span { color: #9a9aa0; }
 .pub-pricing-card li::before { content: "✓"; position: absolute; left: 0; color: #39ff8a; }
-.pub-pricing-card > a { margin-top: 10px; display: block; text-align: center; min-height: 44px; line-height: 44px; border-radius: 4px; border: 1px solid #39ff8a; background: #39ff8a; color: #06120a; font-weight: 900; font-size: 12.5px; text-decoration: none; }
+/* margin-top: auto (not the 10px the gap between every other pair of
+   children already gives) is deliberate: .pub-pricing-card is a column
+   flexbox stretched to the tallest card in its grid row (grid's default
+   align-items: stretch), so a shorter card - Free next to Elite's longer
+   feature list - would otherwise leave the CTA stranded under its own
+   content with dead space below it instead of anchored to the card's
+   actual bottom edge, and the row would read as two mismatched boxes
+   rather than a balanced pair. */
+.pub-pricing-card > a { margin-top: auto; display: block; text-align: center; min-height: 44px; line-height: 44px; border-radius: 4px; border: 1px solid #39ff8a; background: #39ff8a; color: #06120a; font-weight: 900; font-size: 12.5px; text-decoration: none; }
 .pub-pricing-card:not(.pub-featured) > a { background: transparent; color: #fff; }
 .pub-band-light .pub-pricing-card:not(.pub-featured) > a { color: #0c0d0e; }
 
@@ -339,6 +360,13 @@ a.pub-cta-outline { background: transparent; border: 1px solid #39ff8a; color: #
   .pub-why-grid { grid-template-columns: 1fr; }
   .pub-pricing-grid { grid-template-columns: 1fr; }
   .pub-demo-row { flex-direction: column; align-items: flex-start; }
+  /* .pub-demo-row-id's flex-basis (148px, sized for its width in the
+     desktop ROW layout) becomes a flex-basis on HEIGHT once the row above
+     switches to flex-direction: column - stretching every row to a
+     148px-tall block regardless of its actual (much shorter) content and
+     opening a large dead gap before pub-demo-row-figs. Reset it to its
+     natural content height here. */
+  .pub-demo-row-id { flex: 0 0 auto; min-width: 0; }
   .pub-demo-row-figs { width: 100%; justify-content: space-between; }
   .pub-footer-cols { grid-template-columns: 1fr 1fr; }
   .pub-midcta { padding: 40px 18px; }
