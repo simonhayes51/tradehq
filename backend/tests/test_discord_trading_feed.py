@@ -12,7 +12,9 @@ from app.services.discord_trading_feed import (
     build_opportunity_post_embed,
     build_opportunity_update_embed,
     feed_globally_enabled,
+    _dedup_amount,
     _liquidity_label,
+    _opportunity_dedup_key,
     _within_posting_window,
 )
 
@@ -308,6 +310,66 @@ def test_fixture_opportunity_update_embed_labels(status):
         assert "TARGET HIT" in embed["title"]
     else:
         assert "LOSS" in embed["title"]
+
+
+# ---------------------------------------------------------------------------
+# _opportunity_dedup_key must NOT change just because
+# futgg_market_snapshot's REFRESH MATERIALIZED VIEW bumped
+# snapshot_computed_at - otherwise the same unchanged opportunity gets a
+# fresh dedup_key every refresh and is reposted once cooldown_minutes
+# elapses. Regression test for identical embeds posted ~20 min apart in
+# production (same buy/sell/profit, different snapshot_computed_at).
+# ---------------------------------------------------------------------------
+
+
+class _CI:
+    def __init__(self, buy=15000, sell=20000, profit=5000, current_executable_buy=None):
+        self.recommended_buy_max = buy
+        self.current_executable_buy = current_executable_buy
+        self.recommended_sell_target = sell
+        self.expected_profit_after_tax = profit
+
+
+def test_dedup_key_is_stable_across_snapshot_refreshes():
+    """Same card, same buy/sell/profit - only snapshot_computed_at (not
+    passed to the key at all) differs between two MV refresh cycles."""
+    key_before = _opportunity_dedup_key(42, _CI())
+    key_after = _opportunity_dedup_key(42, _CI())
+    assert key_before == key_after
+
+
+def test_dedup_key_changes_when_the_opportunity_actually_changes():
+    key_a = _opportunity_dedup_key(42, _CI(sell=20000))
+    key_b = _opportunity_dedup_key(42, _CI(sell=21000))
+    assert key_a != key_b
+
+
+def test_dedup_key_differs_by_card():
+    key_a = _opportunity_dedup_key(42, _CI())
+    key_b = _opportunity_dedup_key(43, _CI())
+    assert key_a != key_b
+
+
+def test_dedup_key_prefers_current_executable_buy_over_ceiling():
+    key_ceiling_only = _opportunity_dedup_key(42, _CI(buy=15000, current_executable_buy=None))
+    key_lower_executable = _opportunity_dedup_key(42, _CI(buy=15000, current_executable_buy=13000))
+    assert key_ceiling_only != key_lower_executable
+
+
+@pytest.mark.parametrize(
+    "a, b",
+    [
+        (Decimal("25000"), Decimal("25000.00")),
+        (25000, Decimal("25000")),
+        (Decimal("25000.4"), Decimal("25000")),
+    ],
+)
+def test_dedup_amount_normalizes_equivalent_values(a, b):
+    assert _dedup_amount(a) == _dedup_amount(b)
+
+
+def test_dedup_amount_handles_none():
+    assert _dedup_amount(None) == "none"
 
 
 # ---------------------------------------------------------------------------
