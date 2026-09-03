@@ -167,7 +167,11 @@ button.pub-secondary:hover { border-color: #4a4b52; }
      there's no room for five links plus two CTAs on one row without
      them wrapping into an unreadable tangle. */
   .pub-nav { position: relative; flex-wrap: wrap; }
-  .pub-nav-links { display: none; }
+  /* Specificity note: the unscoped ".pub-nav nav { display: flex }" rule
+     above (0,1,1) otherwise beats a bare ".pub-nav-links { display: none }"
+     (0,1,0) regardless of media-query order, so this has to be scoped
+     under .pub-nav too to actually win. */
+  .pub-nav .pub-nav-links { display: none; }
   .pub-nav-toggle { display: inline-flex; }
   .pub-nav-drawer {
     display: flex; flex-direction: column; gap: 4px;
