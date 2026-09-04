@@ -46,17 +46,11 @@ function scrollToId(id) {
   document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
-function Brand({ compact = false }) {
+function Brand() {
   return (
-    <Link to="/" className={`pub-brand${compact ? " pub-brand-compact" : ""}`} aria-label="EAFC.Live home">
-      {compact ? (
-        <>
-          <img src="/icons/icon-192x192.png" alt="" width="38" height="38" />
-          <span>EAFC.<b>Live</b></span>
-        </>
-      ) : (
-        <img className="pub-brand-pill" src="/marketing/eafc-logo-pill.svg" alt="EAFC.Live" width="150" height="45" />
-      )}
+    <Link to="/" className="pub-brand" aria-label="EAFC.Live home">
+      <img src="/icons/icon-192x192.png" alt="" width="38" height="38" />
+      <span>EAFC.<b>Live</b></span>
     </Link>
   );
 }
@@ -123,7 +117,6 @@ function Hero() {
       <div className="pub-glow pub-glow-one" />
       <div className="pub-container pub-hero-inner">
         <div className="pub-hero-copy">
-          <img className="pub-hero-logo" src="/marketing/eafc-logo-pill.svg" alt="EAFC.Live" width="230" height="69" />
           <div className="pub-eyebrow"><span /> LIVE EA FC MARKET INTELLIGENCE</div>
           <h1>Know what to buy.<br /><em>Know when to sell.</em></h1>
           <p>
@@ -307,7 +300,6 @@ function DiscordSection() {
           </div>
         </div>
         <div className="pub-discord-showcase">
-          <div className="pub-discord-brand"><img src="/icons/icon-192x192.png" alt="" width="52" height="52" /><span>EAFC.Live bot preview</span></div>
           <ProductImage
             src="/marketing/eafc-discord.svg"
             alt="EAFC.Live Discord bot posting a live Daniel Muñoz trading opportunity"
@@ -448,7 +440,7 @@ function Footer() {
   return (
     <footer className="pub-footer">
       <div className="pub-container pub-footer-inner">
-        <div className="pub-footer-brand"><Brand compact /><p>Live EA FC market intelligence for traders and Discord communities.</p></div>
+        <div className="pub-footer-brand"><Brand /><p>Live EA FC market intelligence for traders and Discord communities.</p></div>
         <div><strong>Product</strong><button type="button" onClick={() => scrollToId("product")}>Features</button><button type="button" onClick={() => scrollToId("pricing")}>Pricing</button><a href={APP_SIGNUP}>Create account</a></div>
         <div><strong>Community</strong><a href={DISCORD_INVITE_URL} target="_blank" rel="noreferrer">Discord</a><button type="button" onClick={() => scrollToId("server-pricing")}>Server feeds</button><a href="mailto:support@eafc.live">Support</a></div>
         <div><strong>Legal</strong><Link to="/privacy">Privacy</Link><Link to="/terms">Terms</Link></div>
