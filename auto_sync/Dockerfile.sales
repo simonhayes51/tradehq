@@ -15,8 +15,8 @@
 # that single service use the intended two-stage data path, the entrypoint
 # also starts futgg_bulk_price_sync.py in the background by default. Bulk
 # prices come from FUT.GG's captured catalogue feed; signed per-card calls
-# are then capped and reserved for completed sales history instead of
-# trying to refresh price freshness for the whole catalogue.
+# are then capped and paced for completed sales history instead of trying
+# to refresh price freshness for the whole catalogue.
 #
 # Set FUTGG_RUN_BULK_WITH_SALES=false only if PriceSync is deployed as a
 # separate service from Dockerfile.price.
@@ -81,6 +81,8 @@ RUN chmod +x /app/docker-entrypoint-sales.sh
 
 ENV PLAYWRIGHT_HEADLESS=false
 ENV FUTGG_RUN_BULK_WITH_SALES=true
-ENV FUTGG_SALES_SELECT_LIMIT_MAX=80
+ENV FUTGG_SALES_SELECT_LIMIT_MAX=60
+ENV FUTGG_SALES_CYCLE_SLEEP_MIN=300
+ENV FUTGG_SALES_CYCLE_SLEEP_FORCE=true
 
 CMD ["/app/docker-entrypoint-sales.sh"]
