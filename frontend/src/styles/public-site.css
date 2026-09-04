@@ -201,14 +201,21 @@ button.pub-secondary:hover { border-color: #4a4b52; }
 .pub-why-item p { margin: 0; font-size: 14px; color: #55574f; line-height: 1.55; }
 
 /* ---------- Proof ---------- */
-.pub-proof-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-bottom: 8px; }
+/* auto-fit, not a fixed repeat(3, 1fr): the first stat only renders once
+   cardsTracked has loaded (see callsite), so this grid legitimately holds
+   2 or 3 cards depending on data/network timing. A fixed 3-column track
+   left a bare empty column - and a visible gap - whenever the count
+   hadn't arrived yet; auto-fit reflows evenly across however many cards
+   are actually present. */
+.pub-proof-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 20px; margin-bottom: 8px; }
 .pub-proof-stat { border: 1px solid #222327; border-radius: 10px; padding: 28px; background: #0d0e10; }
 .pub-proof-stat strong { display: block; font-size: 36px; font-weight: 900; color: #39ff8a; margin-bottom: 8px; letter-spacing: -.01em; }
 .pub-proof-stat span { font-size: 14px; color: #a7a7ac; }
 .pub-record-block { margin-top: 56px; }
 
 /* ---------- Simple -> advanced demo ---------- */
-.pub-demo { display: grid; gap: 0; margin-top: 32px; max-width: 460px; border: 1px solid #222327; border-radius: 10px; overflow: hidden; background: #111214; }
+.pub-simple-demo-grid { display: grid; grid-template-columns: 1fr .85fr; gap: 64px; align-items: center; }
+.pub-demo { display: grid; gap: 0; max-width: 460px; justify-self: end; width: 100%; border: 1px solid #222327; border-radius: 10px; overflow: hidden; background: #111214; }
 .pub-demo-simple { padding: 26px; }
 .pub-demo-simple p { margin: 12px 0 0; font-size: 15px; color: #e6e6e6; }
 .pub-demo-simple p b { color: #39ff8a; }
@@ -310,6 +317,8 @@ a.pub-cta-outline { background: transparent; border: 1px solid #39ff8a; color: #
   .pub-hero-split { grid-template-columns: 1fr; gap: 44px; padding-top: 44px; padding-bottom: 72px; }
   .pub-hero-visual { order: -1; }
   .pub-discord-demo { grid-template-columns: 1fr; }
+  .pub-simple-demo-grid { grid-template-columns: 1fr; gap: 32px; }
+  .pub-demo { justify-self: stretch; max-width: none; }
   .pub-paths { grid-template-columns: 1fr; gap: 20px; }
   .pub-path-connector { display: none; }
   .pub-midcta { grid-template-columns: 1fr; padding: 64px 32px; }

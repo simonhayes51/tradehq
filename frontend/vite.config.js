@@ -21,6 +21,13 @@ export default defineConfig({
   preview: {
     host: true,
     port: process.env.PORT ? parseInt(process.env.PORT) : 4173,
+    // Vite 5's preview server rejects any Host header it doesn't
+    // recognise ("Blocked request..."). Without this, `vite preview`
+    // can't be used to sanity-check the public marketing site locally at
+    // all - isPublicHost() (src/lib/domains.js) only renders PublicSite
+    // for these exact hostnames, and there's no way to reach that branch
+    // through a plain 127.0.0.1/localhost request.
+    allowedHosts: ["eafc.live", "www.eafc.live", "app.eafc.live"],
   },
   build: {
     outDir: "dist",
