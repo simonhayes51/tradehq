@@ -62,7 +62,7 @@ export default function Club() {
   return (
     <div className="club-page">
       <header className="club-hero">
-        <div><span>PORTFOLIO</span><h1>Your trades. Your results.</h1><p>Track every purchase, close sales properly and learn which EAFC Live calls actually make you coins.</p></div>
+        <div><span>PORTFOLIO</span><h1>Your trades. Your results.</h1><p>Track every purchase, close sales properly and learn which EAFC.Live calls actually make you coins.</p></div>
         <Link to="/opportunities" className="club-add"><Plus size={18} /> Find a trade</Link>
       </header>
 

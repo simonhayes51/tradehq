@@ -79,11 +79,11 @@
 //                         reliably treat this as an auto-updating script
 //                         rather than a one-off local file.
 export const METADATA_BLOCK = `// ==UserScript==
-// @name         EAFC Live Companion
+// @name         EAFC.Live Companion
 // @namespace    https://app.eafc.live/
 // @version      1.8.3
-// @description  Read-only EAFC Live trading intelligence overlay for the EA SPORTS FC 26 Web App Transfer Market. Never buys, bids, lists, or automates anything - observation only.
-// @author       EAFC Live
+// @description  Read-only EAFC.Live trading intelligence overlay for the EA SPORTS FC 26 Web App Transfer Market. Never buys, bids, lists, or automates anything - observation only.
+// @author       EAFC.Live
 // @match        https://www.ea.com/*/ea-sports-fc/ultimate-team/web-app/*
 // @match        https://www.ea.com/ea-sports-fc/ultimate-team/web-app/*
 // @connect      api.eafc.live

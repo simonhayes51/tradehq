@@ -40,11 +40,11 @@ const Login = () => {
           Continue with Discord
         </button>
         <p className="login-explain">
-          We'll create your free account if you're new. Discord is how EAFC Live signs
+          We'll create your free account if you're new. Discord is how EAFC.Live signs
           you in and identifies your membership — we never see or store your EA login.
         </p>
         <p className="login-signup">
-          New to EAFC Live? <Link to={`/signup${from ? `?from=${encodeURIComponent(from)}` : ""}`}>Create a free account</Link>
+          New to EAFC.Live? <Link to={`/signup${from ? `?from=${encodeURIComponent(from)}` : ""}`}>Create a free account</Link>
         </p>
         <p className="login-legal">
           By continuing you agree to our <Link to="/terms">Terms</Link> and{" "}

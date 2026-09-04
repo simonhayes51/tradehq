@@ -8,7 +8,7 @@
 // rationale).
 //
 // Everything here is read-only: it reacts to Transfer Market responses
-// the Web App already fetched, asks the EAFC Live backend for
+// the Web App already fetched, asks the EAFC.Live backend for
 // intelligence on the exact card id, combines that with the live
 // auctions, and renders a small panel. It never issues a request to EA
 // and never writes to the page's DOM outside of its own overlay panel.
@@ -21,7 +21,7 @@ import { installNavTab, getNavTabDiagnostic } from "./nav-tab.js";
 import { initLifecycle } from "./lifecycle.js";
 
 function log(...args) {
-  if (typeof window !== "undefined" && window.EAFC_LIVE_DEBUG) console.log("[EAFC Live]", ...args);
+  if (typeof window !== "undefined" && window.EAFC_LIVE_DEBUG) console.log("[EAFC.Live]", ...args);
 }
 
 // Statuses that mean "ask again later" rather than "here is the
@@ -137,7 +137,7 @@ function setup() {
   onCardDetected(handleDetection);
   installMarketObserver();
   pollForNavTab();
-  console.log("[EAFC Live] Companion userscript ready", { href: location.href });
+  console.log("[EAFC.Live] Companion userscript ready", { href: location.href });
 }
 
 initLifecycle(setup);

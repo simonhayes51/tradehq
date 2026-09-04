@@ -311,7 +311,7 @@ def build_free_overview_embed(stats: dict[str, Any], app_url: str) -> dict[str, 
         fields.append({"name": "BEST COMPLETED TRADES", "value": "\n".join(best_trades_lines), "inline": False})
     fields.append({"name": "EAFC.LIVE PREMIUM", "value": PROMO_MESSAGE, "inline": False})
     return {
-        "title": "EAFC LIVE — DAILY TRADING OVERVIEW",
+        "title": "EAFC.LIVE — DAILY TRADING OVERVIEW",
         "url": app_url.rstrip("/") + "/#/opportunities",
         "color": color,
         "fields": fields,

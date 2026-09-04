@@ -2,7 +2,7 @@
 //
 // Every claim here is either (a) sourced directly from this codebase -
 // see the delivery report for file:line citations - or (b) a value the
-// operator explicitly supplied. "EAFC Live" is the supplied operator
+// operator explicitly supplied. "EAFC.Live" is the supplied operator
 // name only - this page must not state or imply a specific legal
 // structure (company, partnership, sole trader, etc.) since neither the
 // repository nor the operator has confirmed one.
@@ -15,15 +15,15 @@ export default function Privacy() {
       <p className="legal-updated">Last updated: 20 August 2026</p>
 
       <p>
-        EAFC Live is operated by <strong>EAFC Live</strong>, of{" "}
+        EAFC.Live is operated by <strong>EAFC.Live</strong>, of{" "}
         <span className="legal-address">Collingwood Buildings, 38 Collingwood Street, Newcastle upon Tyne, NE1 1JF, United Kingdom</span>.
-        This policy explains what information we collect when you use EAFC Live and why. This
+        This policy explains what information we collect when you use EAFC.Live and why. This
         policy is governed by the law of England and Wales.
       </p>
 
       <h2>How you sign in</h2>
       <p>
-        EAFC Live uses Discord to sign you in (OAuth, <code>identify</code> scope). We receive
+        EAFC.Live uses Discord to sign you in (OAuth, <code>identify</code> scope). We receive
         and store: your Discord user ID, your Discord username, your Discord global/display
         name, and your Discord avatar image URL. We do not receive your email address or your
         Discord password through this process — Discord authenticates you, and we never see or
@@ -31,7 +31,7 @@ export default function Privacy() {
       </p>
 
       <h2>What you create in the app</h2>
-      <p>Signed-in use of EAFC Live can create the following data, tied to your account:</p>
+      <p>Signed-in use of EAFC.Live can create the following data, tied to your account:</p>
       <ul>
         <li>Your watchlist (cards you're tracking)</li>
         <li>Price alert rules you set</li>
@@ -45,21 +45,21 @@ export default function Privacy() {
       <p>
         If you use the AI Chat feature, the message you type is sent to OpenAI
         (model <code>gpt-5.6-luna</code>) to generate a reply. This only happens when you actively
-        use AI Chat — it does not apply to your general use of EAFC Live. We do not keep a stored
+        use AI Chat — it does not apply to your general use of EAFC.Live. We do not keep a stored
         transcript of your AI Chat conversations in our own database.
       </p>
 
       <h2>Payments</h2>
       <p>
         Premium subscriptions are handled by Stripe. When you subscribe, Stripe collects your
-        payment details directly — EAFC Live does not receive or store your card number. What we
+        payment details directly — EAFC.Live does not receive or store your card number. What we
         do store is your Stripe customer/subscription reference and your subscription status
         (active, cancelled, trial, etc.), so we can show you the correct plan and manage renewals.
       </p>
 
       <h2>Cookies and sessions</h2>
       <p>
-        EAFC Live uses a single session cookie to keep you signed in. It's a signed cookie (it
+        EAFC.Live uses a single session cookie to keep you signed in. It's a signed cookie (it
         can't be edited by you or anyone else without invalidating it), sent only over HTTPS in
         production, and lasts up to 14 days from when you last signed in, after which you'll need
         to sign in again. We don't use advertising or tracking cookies, and we don't run any
@@ -80,9 +80,9 @@ export default function Privacy() {
 
       <h2>Deleting your account</h2>
       <p>
-        You can delete your EAFC Live account from the Account page at any time. This removes
+        You can delete your EAFC.Live account from the Account page at any time. This removes
         your watchlist, alerts, trade history, portfolio and settings, and unlinks your Discord
-        profile from EAFC Live where that's possible. If you have ever had a Premium subscription,
+        profile from EAFC.Live where that's possible. If you have ever had a Premium subscription,
         we keep a minimal billing record (not your trading data) rather than deleting it outright,
         because we're required to be able to account for past payments — your profile display
         information is still cleared in that case. This action cannot be undone.

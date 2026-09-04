@@ -119,7 +119,7 @@ const DesktopSidebar = () => {
         </div>
         {!collapsed && (
           <h1 className="mt-2 text-lg font-bold text-white text-center">
-            EAFC Live
+            EAFC.Live
           </h1>
         )}
         <button

@@ -67,7 +67,7 @@ let verifyTimer = null;
 let lastRowDiagnostic = "no badge inserted yet";
 
 function log(...args) {
-  if (typeof window !== "undefined" && window.EAFC_LIVE_DEBUG) console.log("[EAFC Live]", ...args);
+  if (typeof window !== "undefined" && window.EAFC_LIVE_DEBUG) console.log("[EAFC.Live]", ...args);
 }
 
 /** Short diagnostic string describing the last row container a badge

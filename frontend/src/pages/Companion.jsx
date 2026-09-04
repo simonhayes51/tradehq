@@ -27,15 +27,15 @@ export default function Companion() {
   return (
     <div className="min-h-screen flex items-center justify-center bg-[var(--v2-bg,#0b0e14)] px-6 py-16">
       <div className="max-w-lg w-full text-center">
-        <div className="text-xs font-bold tracking-widest text-[#7fd8ff] mb-3">EAFC LIVE</div>
+        <div className="text-xs font-bold tracking-widest text-[#7fd8ff] mb-3">EAFC.LIVE</div>
         <h1 className="text-2xl sm:text-3xl font-semibold text-white mb-4">
-          EAFC LIVE COMPANION
+          EAFC.LIVE COMPANION
         </h1>
         <p className="text-sm text-[var(--v2-muted,#8a94a6)] mb-10 leading-relaxed">
-          A read-only overlay that shows EAFC Live trading intelligence directly
+          A read-only overlay that shows EAFC.Live trading intelligence directly
           inside the official EA SPORTS FC 26 Web App Transfer Market. Install
           the userscript once, then open the Web App as you always do &mdash;
-          EAFC Live never buys, bids, lists, or automates anything for you.
+          EAFC.Live never buys, bids, lists, or automates anything for you.
         </p>
 
         <div className="flex flex-col gap-3">

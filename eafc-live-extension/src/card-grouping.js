@@ -40,7 +40,7 @@
   try {
     Object.assign(root.EAFCLive, factory());
   } catch (err) {
-    console.error("[EAFC Live] card-grouping.js failed to initialize:", err);
+    console.error("[EAFC.Live] card-grouping.js failed to initialize:", err);
   }
 })(function () {
   "use strict";

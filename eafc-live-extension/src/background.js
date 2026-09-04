@@ -1,6 +1,6 @@
 // src/background.js
 // MV3 service worker - the ONLY place this extension makes a network
-// request to the EAFC Live backend.
+// request to the EAFC.Live backend.
 //
 // WHY THE FETCH LIVES HERE AND NOT IN THE CONTENT SCRIPT
 // -------------------------------------------------------------------
@@ -39,7 +39,7 @@ importScripts("debug-flag.js", "config.js", "intelligence-cache.js");
   const REQUEST_TIMEOUT_MS = cfg.REQUEST_TIMEOUT_MS || 6000;
 
   function log(...args) {
-    if (globalThis.EAFC_LIVE_DEBUG) console.log("[EAFC Live:bg]", ...args);
+    if (globalThis.EAFC_LIVE_DEBUG) console.log("[EAFC.Live:bg]", ...args);
   }
 
   // The companion token, minted by the app at app.eafc.live where the
@@ -112,7 +112,7 @@ importScripts("debug-flag.js", "config.js", "intelligence-cache.js");
       const res = await fetch(url, {
         method: "GET",
         signal: controller.signal,
-        // Sends the EAFC Live session cookie (never the EA session, which
+        // Sends the EAFC.Live session cookie (never the EA session, which
         // this worker has no access to regardless). It used to be
         // `credentials: "omit"`, which meant the overlay asked for the
         // trade plan anonymously - and got it, because the endpoint was

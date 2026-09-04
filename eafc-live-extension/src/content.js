@@ -31,7 +31,7 @@
   "use strict";
 
   function log(...args) {
-    if (globalThis.EAFC_LIVE_DEBUG) console.log("[EAFC Live]", ...args);
+    if (globalThis.EAFC_LIVE_DEBUG) console.log("[EAFC.Live]", ...args);
   }
 
   // Statuses that mean "ask again later" rather than "here is the
@@ -61,7 +61,7 @@
       // Still not ready by the time an actual response arrived (rather
       // than merely at load time) - now genuinely worth reporting,
       // rather than a load-order race we'd otherwise recover from.
-      console.warn("[EAFC Live] required modules still unavailable when a market response arrived", {
+      console.warn("[EAFC.Live] required modules still unavailable when a market response arrived", {
         href: location.href,
         missing,
         eafcLiveKeys: Object.keys(EAFCLive),
@@ -135,11 +135,11 @@
     const onCardDetected = window.EAFCLive && window.EAFCLive.onCardDetected;
     if (typeof onCardDetected === "function") {
       onCardDetected(handleDetection);
-      log("EAFC Live Companion content script ready");
+      log("EAFC.Live Companion content script ready");
       return;
     }
     if (attemptsLeft <= 0) {
-      console.warn("[EAFC Live] onCardDetected never became available; overlay disabled", {
+      console.warn("[EAFC.Live] onCardDetected never became available; overlay disabled", {
         href: location.href,
         eafcLiveKeys: window.EAFCLive ? Object.keys(window.EAFCLive) : null,
       });

@@ -28,7 +28,7 @@
 //     OWN wrapped fetch/XHR that never sees the page's real network
 //     traffic) - this file, injected as a <script> tag, always runs
 //     there regardless of manager.
-//   - Calling the EAFC Live backend needs GM_xmlhttpRequest/
+//   - Calling the EAFC.Live backend needs GM_xmlhttpRequest/
 //     GM.xmlHttpRequest, which is reliably available in a manager's
 //     DEFAULT (non-page-injected) context - main.js/api-client.js now
 //     run there instead (see metadata.js for the dropped @inject-into).
@@ -46,7 +46,7 @@ const TRANSFERMARKET_RE = /\/transfermarket(\/|$|\?)/;
 const EVENT_NAME = "eafc-live:transfermarket";
 
 function log(...args) {
-  if (window.EAFC_LIVE_DEBUG) console.log("[EAFC Live]", ...args);
+  if (window.EAFC_LIVE_DEBUG) console.log("[EAFC.Live]", ...args);
 }
 
 function dispatchSanitizedAuctions(url, bodyText) {
@@ -134,7 +134,7 @@ function dispatchSanitizedAuctions(url, bodyText) {
     };
   }
 
-  console.log("[EAFC Live] page hook installed - observing window.fetch/XHR for /ut/game/fc26 responses", {
+  console.log("[EAFC.Live] page hook installed - observing window.fetch/XHR for /ut/game/fc26 responses", {
     href: location.href,
     inIframe: window !== window.top,
   });

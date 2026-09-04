@@ -1,7 +1,7 @@
 // src/market-calc.js
 //
 // Pure logic: combine live EA auctions (from card-detector.js) with the
-// EAFC Live backend's intelligence object (from api-client.js) into the
+// EAFC.Live backend's intelligence object (from api-client.js) into the
 // numbers the overlay shows. No DOM, no network.
 //
 // Ported verbatim (logic unchanged) from
@@ -147,7 +147,7 @@ export function verdictLabel(reason, signal) {
     case "no_target_price":
       return { text: "NO BUY TARGET AVAILABLE", tone: "neutral" };
     case "no_intelligence":
-      return { text: "NO EAFC LIVE INTELLIGENCE", tone: "neutral" };
+      return { text: "NO EAFC.LIVE INTELLIGENCE", tone: "neutral" };
     case "no_buy_signal": {
       const label = signal ? String(signal).replace(/_/g, " ").toUpperCase() : null;
       return {

@@ -20,7 +20,7 @@
 // Rendered inside a closed Shadow DOM so its styles can never leak into
 // (or be overridden by) the EA Web App's own CSS, and vice versa - and
 // so nothing about it is selectable by, or visually mistakable for, an
-// official EA element. The badge is explicitly labelled "EAFC LIVE"
+// official EA element. The badge is explicitly labelled "EAFC.LIVE"
 // (never "EA" alone) and uses its own colour language, not FUT's
 // gold/rare card styling.
 import { verdictLabel } from "./market-calc.js";
@@ -218,7 +218,7 @@ export function render(state) {
   const panel = el("div", `eafc-live-panel${collapsed ? " collapsed" : ""}`);
 
   const header = el("div", "eafc-live-header");
-  header.appendChild(el("span", "eafc-live-brand", "EAFC LIVE"));
+  header.appendChild(el("span", "eafc-live-brand", "EAFC.LIVE"));
 
   const statusClass =
     state.kind === "result" ? "connected" : state.kind === "loading" || state.kind === "watching" ? "" : "error";

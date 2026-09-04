@@ -4,7 +4,7 @@
 // public CTA in the product points here.
 //
 // The previous version was a heading, three vague bullets ("Unlock more
-// EAFC Live features as you go") and a Discord button. It never said the
+// EAFC.Live features as you go") and a Discord button. It never said the
 // account was free, never said no card was needed, never said what you
 // actually get, and never showed what Elite adds - so the one decision
 // the page exists to support was the one thing it left out.
@@ -106,7 +106,7 @@ export default function Signup() {
 
         <h1>Create your free account</h1>
         <p className="signup-lede">
-          EAFC Live watches the EA FC transfer market and tells you which cards are worth
+          EAFC.Live watches the EA FC transfer market and tells you which cards are worth
           buying right now, at what price, and what you should make on them.
         </p>
 

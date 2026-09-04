@@ -2,16 +2,16 @@
 //
 // Static configuration consumed by the background service worker
 // (src/background.js, via importScripts - the only place that actually
-// talks to the EAFC Live backend, see that file's own header for why)
+// talks to the EAFC.Live backend, see that file's own header for why)
 // and, for reference, by the isolated-world content scripts.
 //
 // Nothing in this file is a secret and nothing here ever travels back
 // to EA - it only controls where THIS extension's background worker
-// talks to (the EAFC Live backend) and how long a response is cached
+// talks to (the EAFC.Live backend) and how long a response is cached
 // for. See src/debug-flag.js for the separate (and separately-loaded)
 // debug-logging toggle.
 globalThis.EAFC_LIVE_CONFIG = {
-  // Base URL of the EAFC Live backend's v2 API
+  // Base URL of the EAFC.Live backend's v2 API
   // (backend/app/routers/v2/companion.py mounts /companion/card/{id}
   // under this prefix). Confirmed working in production against
   // https://api.eafc.live/api/v2/companion/card/117672259 - this is the

@@ -52,7 +52,7 @@ export const PLAN_ROWS = [
     elite: "Every published call, every window, full ledger",
   },
   { label: "AI Chat", free: false, elite: "Ask about any card or budget" },
-  { label: "Members-only Discord", free: false, elite: "The Elite channel in the EAFC Live Discord" },
+  { label: "Members-only Discord", free: false, elite: "The Elite channel in the EAFC.Live Discord" },
 ];
 
 function Cell({ value }) {

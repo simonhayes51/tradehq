@@ -6,7 +6,7 @@
 // DOM so its styles can never leak into (or be overridden by) the EA
 // Web App's own CSS, and vice versa - and so nothing about it is
 // selectable by, or visually mistakable for, an official EA element.
-// The badge is explicitly labelled "EAFC LIVE" (never "EA" alone) and
+// The badge is explicitly labelled "EAFC.LIVE" (never "EA" alone) and
 // uses its own colour language, not FUT's gold/rare card styling.
 (function () {
   "use strict";
@@ -25,9 +25,9 @@
   }
 
   const ERROR_STATUS_TEXT = {
-    network_error: "EAFC Live backend unreachable right now.",
-    server_error: "EAFC Live backend returned an error.",
-    timeout: "EAFC Live backend timed out.",
+    network_error: "EAFC.Live backend unreachable right now.",
+    server_error: "EAFC.Live backend returned an error.",
+    timeout: "EAFC.Live backend timed out.",
   };
 
   const STYLES = `
@@ -179,7 +179,7 @@
     const panel = el("div", "eafc-live-panel");
 
     const header = el("div", "eafc-live-header");
-    header.appendChild(el("span", "eafc-live-brand", "EAFC LIVE"));
+    header.appendChild(el("span", "eafc-live-brand", "EAFC.LIVE"));
     const right = document.createElement("div");
     right.style.display = "flex";
     right.style.alignItems = "center";
@@ -201,7 +201,7 @@
     const body = el("div", "eafc-live-body");
 
     if (state.kind === "loading") {
-      body.appendChild(el("div", "eafc-live-muted", "Loading EAFC Live intelligence..."));
+      body.appendChild(el("div", "eafc-live-muted", "Loading EAFC.Live intelligence..."));
       panel.appendChild(body);
       root.appendChild(panel);
       return;
@@ -215,7 +215,7 @@
     }
 
     if (state.kind === "error") {
-      const message = ERROR_STATUS_TEXT[state.status] || "EAFC Live backend unavailable right now.";
+      const message = ERROR_STATUS_TEXT[state.status] || "EAFC.Live backend unavailable right now.";
       body.appendChild(el("div", "eafc-live-muted", message));
       body.appendChild(el("div", "eafc-live-muted", "Will retry automatically on the next market update."));
       panel.appendChild(body);
@@ -261,7 +261,7 @@
       el(
         "div",
         "eafc-live-muted",
-        "Reference data from EAFC Live · live listings read from this EA search"
+        "Reference data from EAFC.Live · live listings read from this EA search"
       )
     );
 

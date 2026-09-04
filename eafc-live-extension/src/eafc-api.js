@@ -2,7 +2,7 @@
 // Runs in the content script's ISOLATED world.
 //
 // Thin messaging shim to src/background.js, which is the ONLY place
-// this extension actually calls the EAFC Live backend - see that file's
+// this extension actually calls the EAFC.Live backend - see that file's
 // header for why the fetch itself lives there and not here (content-
 // script fetches are not a reliable way to bypass CORS the way an
 // extension page's fetch is).
@@ -14,7 +14,7 @@
   "use strict";
 
   function log(...args) {
-    if (globalThis.EAFC_LIVE_DEBUG) console.log("[EAFC Live]", ...args);
+    if (globalThis.EAFC_LIVE_DEBUG) console.log("[EAFC.Live]", ...args);
   }
 
   /**

@@ -1,6 +1,6 @@
 // src/nav-tab.js
 //
-// Adds a real "EAFC LIVE" tab to EA's own bottom navigation bar
+// Adds a real "EAFC.LIVE" tab to EA's own bottom navigation bar
 // (Home/Squads/SBC/Transfers/Store/Club), matching how third-party
 // userscripts like Paletools add their own extra tabs - requested
 // explicitly after the floating overlay/badges (list-badges.js,
@@ -55,7 +55,7 @@ function fmt(n) {
 }
 
 function log(...args) {
-  if (typeof window !== "undefined" && window.EAFC_LIVE_DEBUG) console.log("[EAFC Live]", ...args);
+  if (typeof window !== "undefined" && window.EAFC_LIVE_DEBUG) console.log("[EAFC.Live]", ...args);
 }
 
 // Same shape as api-client.js's describeGmError() - kept as a separate
@@ -414,7 +414,7 @@ async function openPanel() {
     if (barHeight > 0) panel.style.bottom = `${Math.round(barHeight)}px`;
   }
   const header = el("div", "eafc-live-full-header");
-  header.appendChild(el("span", "eafc-live-full-title", "EAFC LIVE OPPORTUNITIES"));
+  header.appendChild(el("span", "eafc-live-full-title", "EAFC.LIVE OPPORTUNITIES"));
   const closeBtn = el("span", "eafc-live-full-close", "×");
   closeBtn.addEventListener("click", closePanel);
   header.appendChild(closeBtn);
@@ -604,7 +604,7 @@ function equalizeTabWidths(navBar) {
   }
 }
 
-/** Best-effort: injects the "EAFC LIVE" tab as a genuine child of EA's
+/** Best-effort: injects the "EAFC.LIVE" tab as a genuine child of EA's
  * own nav bar once it can be found. Safe to call repeatedly (module-
  * level `injected` guard) - does nothing at all if the heuristic can't
  * confidently locate the nav bar, rather than inserting a broken tab. */
@@ -618,7 +618,7 @@ export function installNavTab() {
   const tab = document.createElement("div");
   tab.className = "eafc-live-nav-tab";
   tab.setAttribute("role", "button");
-  tab.setAttribute("aria-label", "EAFC Live opportunities");
+  tab.setAttribute("aria-label", "EAFC.Live opportunities");
   // Inline, not just the class rule below - inline style specificity
   // beats ANY selector-based CSS rule (short of !important), where the
   // class rule can still lose to something like a `.nav-bar > div`
@@ -720,6 +720,6 @@ export function installNavTab() {
   });
   keepTabPinned.observe(navBar, { childList: true });
 
-  log("EAFC LIVE nav tab installed");
+  log("EAFC.LIVE nav tab installed");
   return true;
 }

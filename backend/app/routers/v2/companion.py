@@ -136,7 +136,7 @@ async def get_companion_card(
     """
     row = await provider.get_player(source_card_id)
     if row is None:
-        raise HTTPException(404, "No EAFC Live intelligence for this card")
+        raise HTTPException(404, "No EAFC.Live intelligence for this card")
 
     try:
         sales = await provider.get_recent_sales(source_card_id)

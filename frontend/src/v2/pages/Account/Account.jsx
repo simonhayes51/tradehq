@@ -33,7 +33,7 @@ export default function Account() {
   // was set but whose feature list hadn't been read yet.
   const isElite = serverTier === "elite" || isAdmin;
   const tier = isElite ? PAID_PLAN_NAME.toUpperCase() : "FREE";
-  const name = user?.global_name || user?.username || "EAFC Live member";
+  const name = user?.global_name || user?.username || "EAFC.Live member";
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState(null);
@@ -243,7 +243,7 @@ export default function Account() {
             says you're not in the server. */}
         <dl>
           <div><dt>Connected as</dt><dd>{discord?.connected === false ? "Not linked" : (discord?.display_name || name)}</dd></div>
-          <div><dt>EAFC Live server</dt><dd>{discordActuallyJoined ? "Joined" : discord?.guild_membership === "not_joined" ? "Not joined" : "Status unavailable"}</dd></div>
+          <div><dt>EAFC.Live server</dt><dd>{discordActuallyJoined ? "Joined" : discord?.guild_membership === "not_joined" ? "Not joined" : "Status unavailable"}</dd></div>
           <div><dt>Discord role (entitled)</dt><dd>{discordEntitlement}</dd></div>
         </dl>
         {discord?.connected === false && isElite ? (
@@ -258,7 +258,7 @@ export default function Account() {
           </p>
         ) : null}
         <div className="v2-discord-actions">
-          <a href={discord?.invite_url || DISCORD_INVITE_URL} target="_blank" rel="noreferrer"><ExternalLink size={15}/> Join EAFC Live Discord</a>
+          <a href={discord?.invite_url || DISCORD_INVITE_URL} target="_blank" rel="noreferrer"><ExternalLink size={15}/> Join EAFC.Live Discord</a>
           <button type="button" onClick={refreshDiscordAccess} disabled={discordBusy}><RefreshCw size={15}/>{discordBusy ? "Refreshing..." : "Refresh Discord access"}</button>
         </div>
         {discordFeedback ? (
@@ -279,7 +279,7 @@ export default function Account() {
         <span>DANGER ZONE</span>
         {!confirmingDelete ? (
           <button className="v2-delete-account" onClick={() => setConfirmingDelete(true)}>
-            <Trash2 size={16}/> Delete EAFC Live account
+            <Trash2 size={16}/> Delete EAFC.Live account
           </button>
         ) : (
           <div className="v2-delete-confirm">
