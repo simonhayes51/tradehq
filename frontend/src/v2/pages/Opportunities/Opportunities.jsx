@@ -10,6 +10,7 @@ import { Link } from "react-router-dom";
 import { ArrowRight, Lock, RotateCcw, ShieldAlert, SlidersHorizontal, TrendingUp } from "lucide-react";
 import CoinValue from "../../components/CoinValue";
 import EmptyState from "../../components/EmptyState";
+import { SkeletonCards } from "../../components/Skeleton";
 import MarketFreshness from "../../components/MarketFreshness";
 import EmptyFeedReason from "../../components/EmptyFeedReason";
 import { useFutggOpportunities } from "../../hooks/useFutggMarket";
@@ -100,7 +101,7 @@ export default function Opportunities() {
       </div>
 
       {query.isLoading ? (
-        <EmptyState icon={<TrendingUp size={25} />} text="Checking the latest opportunities…" />
+        <SkeletonCards count={6} gridClassName="finder-grid opp-grid" cardClassName="opp-card" />
       ) : notDeployed ? (
         <EmptyState icon={<ShieldAlert size={25} />} error text="Opportunities aren't available right now. Please check back shortly." action={<button onClick={() => query.refetch()}>Try again</button>} />
       ) : query.isError ? (

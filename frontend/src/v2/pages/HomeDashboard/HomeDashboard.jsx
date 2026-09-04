@@ -15,6 +15,7 @@ import { addWatch } from "../../../api/watchlist";
 import ModalPriceChart from "./ModalPriceChart";
 import CoinValue from "../../components/CoinValue";
 import EmptyState from "../../components/EmptyState";
+import { SkeletonBlock, SkeletonLine } from "../../components/Skeleton";
 import EmptyFeedReason from "../../components/EmptyFeedReason";
 import MarketFreshness from "../../components/MarketFreshness";
 import TrackRecordSummary from "../../components/TrackRecordSummary";
@@ -377,7 +378,7 @@ export default function HomeDashboard(){
 
       {showOpportunities?<>
         <section className="queue-section" id="queue"><div className="section-head"><div><span>LIVE OPPORTUNITIES</span><h2>Next best moves</h2></div><Link to="/players">Find a player <ArrowRight size={15}/></Link></div><FreePicksNote meta={dashboard.freePicks} lockedPreviews={queue.filter(x=>x.locked).length}/><div className="queue-grid">{queue.length?queue.map((item,index)=><QueueCard key={item.cardId} item={item} rank={index+(lead?2:1)} onOpen={setSelected} onWatch={watchItem} watchState={watchStates[String(item.cardId)]}/>):<EmptyFeedReason noun="opportunities" filtersActive={false}/>}{dashboard.locked?.opportunityFeed&&dashboard.locked?.previewCount>0?<LockedPreviewCard count={dashboard.locked.previewCount} navigate={navigate}/>:null}</div></section>
-        <section className="strategy-section"><div className="section-head"><div><span>STRATEGY FINDER</span><h2>Find a different angle</h2></div></div><div className="strategy-tabs">{STRATEGIES.map(([key,label])=><button key={key} className={strategy===key?"active":""} onClick={()=>setStrategy(key)}>{label}</button>)}</div><p className="strategy-blurb">{STRATEGY_BLURBS[strategy]||strategyQuery.data?.description}</p><div className="strategy-grid">{strategyQuery.isLoading?<EmptyState compact text="Scanning this strategy…"/>:strategyItems.length?strategyItems.map(item=><StrategyCard key={item.cardId} item={item} onOpen={setSelected} onWatch={watchItem} watchState={watchStates[String(item.cardId)]}/>):<EmptyState compact text={STRATEGY_EMPTY_TEXT[strategy]||DEFAULT_STRATEGY_EMPTY_TEXT}/>}</div>
+        <section className="strategy-section"><div className="section-head"><div><span>STRATEGY FINDER</span><h2>Find a different angle</h2></div></div><div className="strategy-tabs">{STRATEGIES.map(([key,label])=><button key={key} className={strategy===key?"active":""} onClick={()=>setStrategy(key)}>{label}</button>)}</div><p className="strategy-blurb">{STRATEGY_BLURBS[strategy]||strategyQuery.data?.description}</p><div className="strategy-grid">{strategyQuery.isLoading?Array.from({length:4},(_,i)=><div className="v2-skel-card strategy-card-new" key={i} aria-hidden="true"><SkeletonBlock style={{height:60}}/><div><SkeletonLine width="70%"/><SkeletonLine width="45%"/></div></div>):strategyItems.length?strategyItems.map(item=><StrategyCard key={item.cardId} item={item} onOpen={setSelected} onWatch={watchItem} watchState={watchStates[String(item.cardId)]}/>):<EmptyState compact text={STRATEGY_EMPTY_TEXT[strategy]||DEFAULT_STRATEGY_EMPTY_TEXT}/>}</div>
           {!strategyQuery.isLoading&&watchItems.length?<div className="strategy-watch-section"><div className="strategy-watch-head"><span>NEAR ENTRY</span><p>Not yet actionable - within reach of entry, still profitable at today's price. Not a current recommendation.</p></div><div className="strategy-watch-grid">{visibleWatchItems.map(item=><WatchCard key={item.cardId} item={item} onOpen={setSelected} onWatch={watchItem} watchState={watchStates[String(item.cardId)]}/>)}</div>{watchItems.length>visibleWatchItems.length?<Link className="strategy-watch-more" to="/trade-finder">View {watchItems.length-visibleWatchItems.length} more near-entry cards <ArrowRight size={14}/></Link>:null}</div>:null}
         </section>
       </>:null}
@@ -623,7 +624,10 @@ export function FreePicksNote({meta,lockedPreviews=0}){
 // (see .lead-trade.is-pending in dashboard-v2.css) rather than stretching
 // to match the Market Pulse column beside it.
 export function TopCardPending({loading,lockedOnly,preview,freePicks,navigate}){
-  if(loading)return <div className="lead-pending"><p className="lead-pending-title">Checking today's picks…</p></div>;
+  // Matches .lead-layout's own shape (card art left, name + copy +
+  // three metrics right) rather than a bare "loading" line, so the
+  // dashboard's hero slot doesn't blank-flash before the top pick lands.
+  if(loading)return <div className="lead-layout" aria-busy="true"><SkeletonBlock style={{width:230,maxWidth:"100%",height:310,justifySelf:"center"}}/><div className="lead-copy"><SkeletonLine width="55%"/><SkeletonBlock style={{height:34,width:"75%",marginTop:8}}/><SkeletonLine width="95%" className="v2-skel-line" /><div style={{marginTop:10}}><SkeletonLine width="80%"/></div><div className="lead-numbers">{Array.from({length:3},(_,i)=>(<div className="metric" key={i}><SkeletonLine width="70%"/><SkeletonBlock style={{height:22,width:"60%",marginTop:8}}/></div>))}</div></div></div>;
 
   const nextAt=freePicks?.nextRefreshAt;
   // The refresh time is the server's own (18:00 UK, DST-correct, from

@@ -5,6 +5,7 @@ import { closeTrade, getOpenTrades, getProfitTimeline, getTradeHistory, getTradi
 import { copyImageToClipboard, copyText, downloadDataUrlAsFile, slugFilename } from "../../lib/shareCard";
 import CoinValue from "../../components/CoinValue";
 import EmptyState from "../../components/EmptyState";
+import { SkeletonBlock, SkeletonLine } from "../../components/Skeleton";
 import RecommendationBadge from "../../components/RecommendationBadge";
 import { versionLabel } from "../../lib/format";
 import { eaTax, evaluateOpenTrade, netProfit, MIN_WIN_RATE_SAMPLE, winRateDisplay } from "../../lib/tradeMath";
@@ -57,7 +58,28 @@ export default function Club() {
     [performance.wins, performance.closed_trades],
   );
 
-  if (loading) return <div className="club-page"><div className="club-loading">Loading your portfolio…</div></div>;
+  // Same grid classes the real page below renders into, so the skeleton
+  // reads as this page's actual shape loading in - not a blank flash or
+  // a bare spinner.
+  if (loading) return (
+    <div className="club-page" aria-busy="true">
+      <header className="club-hero">
+        <div><SkeletonLine width="70px" /><SkeletonBlock style={{ height: 34, width: 260, marginTop: 6 }} /></div>
+      </header>
+      <section className="club-kpis">
+        {Array.from({ length: 4 }, (_, i) => (
+          <div className="club-kpi" key={i}>
+            <SkeletonBlock style={{ width: 42, height: 42, flex: "0 0 auto" }} />
+            <div style={{ flex: 1 }}><SkeletonLine width="60%" /><SkeletonBlock style={{ height: 20, width: "45%", marginTop: 8 }} /></div>
+          </div>
+        ))}
+      </section>
+      <section className="club-summary-grid">
+        <div className="club-panel"><SkeletonBlock style={{ height: 220 }} /></div>
+        <div className="club-panel"><SkeletonLine width="90%" /><SkeletonLine width="75%" /><SkeletonLine width="85%" /><SkeletonLine width="60%" /></div>
+      </section>
+    </div>
+  );
 
   return (
     <div className="club-page">
@@ -439,7 +461,8 @@ function CloseModal({ trade, onCancel, onClosed }) {
   const tax = (eaTax(sell) ?? 0) * qty;
   const profit = netProfit(trade.buy, sell, qty);
   async function submit(event) { event.preventDefault(); setSaving(true); setError(""); try { await closeTrade(trade.trade_id, Number(sell)); await onClosed(); } catch (err) { setError(err.message || "Could not close trade."); setSaving(false); } }
-  return <div className="club-modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onCancel()}><section className="club-modal close-modal"><button className="club-modal-x" onClick={onCancel}><X size={20} /></button><form onSubmit={submit}><span className="eyebrow">COMPLETE SALE</span><h2>{trade.player}</h2><label><span>Sale price</span><input autoFocus type="number" min="1" required value={sell} onChange={(e) => setSell(e.target.value)} /></label><div className="close-breakdown"><Stat label="EA tax" value={<CoinValue value={tax} />} /><Stat label="Net profit" value={profit == null ? "—" : <CoinValue value={profit} signed />} tone={profit == null ? "" : profit >= 0 ? "positive" : "negative"} /></div>{error ? <p className="club-error">{error}</p> : null}<div className="club-modal-actions"><button type="button" className="secondary" onClick={onCancel}>Cancel</button><button disabled={saving}>{saving ? "Saving…" : "Complete sale"}</button></div></form></section></div>;
+  useEffect(() => { const onKey = (e) => e.key === "Escape" && onCancel(); document.addEventListener("keydown", onKey); return () => document.removeEventListener("keydown", onKey); }, [onCancel]);
+  return <div className="club-modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onCancel()}><section className="club-modal close-modal" role="dialog" aria-modal="true" aria-labelledby="close-modal-title"><button className="club-modal-x" onClick={onCancel} aria-label="Cancel and close"><X size={20} /></button><form onSubmit={submit}><span className="eyebrow">COMPLETE SALE</span><h2 id="close-modal-title">{trade.player}</h2><label><span>Sale price</span><input autoFocus type="number" min="1" required value={sell} onChange={(e) => setSell(e.target.value)} /></label><div className="close-breakdown"><Stat label="EA tax" value={<CoinValue value={tax} />} /><Stat label="Net profit" value={profit == null ? "—" : <CoinValue value={profit} signed />} tone={profit == null ? "" : profit >= 0 ? "positive" : "negative"} /></div>{error ? <p className="club-error">{error}</p> : null}<div className="club-modal-actions"><button type="button" className="secondary" onClick={onCancel}>Cancel</button><button disabled={saving}>{saving ? "Saving…" : "Complete sale"}</button></div></form></section></div>;
 }
 
 function ProfitChart({ items }) { const values = items.map((x) => Number(x.cumulative_profit || 0)); const min = Math.min(0, ...values), max = Math.max(1, ...values), range = max - min || 1; const points = values.map((value, index) => `${items.length <= 1 ? 0 : index / (items.length - 1) * 100},${90 - ((value - min) / range) * 75}`).join(" "); return <div className="profit-chart"><svg viewBox="0 0 100 100" preserveAspectRatio="none"><polyline points={points || "0,90 100,90"} fill="none" stroke="currentColor" strokeWidth="2" vectorEffect="non-scaling-stroke" /></svg><div><span>{items[0]?.day ? date(items[0].day) : "30 days ago"}</span><strong><CoinValue value={values.at(-1) || 0} signed /></strong><span>Today</span></div></div>; }
