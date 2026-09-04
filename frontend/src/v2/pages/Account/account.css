@@ -50,3 +50,54 @@
   color: var(--v2-text);
 }
 .v2-account-manage:hover { border-color: var(--v2-accent); color: var(--v2-accent); }
+.v2-account-billing-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.v2-account-manage.ghost { color: #b0b0b0; }
+.v2-account-manage.ghost:hover { border-color: #ff8792; color: #ff8792; }
+
+/* The identity strip: who's signed in, separate from the plan card so
+   the avatar reads as the member, not as the plan's own branding (it
+   used to sit inside the "Current plan" card). */
+.v2-account-identity {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+.v2-account-identity .v2-account-avatar {
+  display: grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  overflow: hidden;
+  border: 2px solid #39ff8a;
+  border-radius: 5px;
+  background: #13241c;
+  color: #39ff8a;
+  flex: 0 0 auto;
+}
+.v2-account-identity .v2-account-avatar img { width: 100%; height: 100%; object-fit: cover; }
+.v2-account-identity span { display: block; color: #909090; font-size: 10px; font-weight: 900; letter-spacing: .1em; }
+.v2-account-identity strong { display: block; margin-top: 2px; font-size: 17px; }
+
+/* Real billing facts on the plan card - price and renewal date, from
+   the same subscription endpoint Billing.jsx reads. */
+.v2-account-billing-facts { display: flex; gap: 22px; margin: 12px 0 0; padding: 0; }
+.v2-account-billing-facts dt { margin: 0; color: #909090; font-size: 10px; font-weight: 900; letter-spacing: .06em; text-transform: uppercase; }
+.v2-account-billing-facts dd { margin: 3px 0 0; font-weight: 800; font-size: 15px; }
+
+/* Section labels distinguishing "your stuff" (Watchlist, Portfolio)
+   from general Tools, so the two link grids aren't one undifferentiated
+   block. */
+.v2-account-section-label {
+  margin: 20px 0 0;
+  color: #909090;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.v2-account-section-label:first-of-type { margin-top: 16px; }
+
+.v2-discord-feedback { margin: 10px 0 0; font-size: 12.5px; }
+.v2-discord-feedback.ok { color: #6fe5ae; }
+.v2-discord-feedback.err { color: #ff8792; }

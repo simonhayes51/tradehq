@@ -75,11 +75,11 @@ export default function TrackRecordSummary() {
           <small>After EA's 5% tax</small>
         </div>
         <div>
-          <span>Combined result</span>
+          <span>Hypothetical total*</span>
           <strong className={Number(published.total_profit_after_tax) >= 0 ? "positive" : "negative"}>
             <CoinValue value={published.total_profit_after_tax} signed />
           </strong>
-          <small>One card per call</small>
+          <small>Sum of one card per call</small>
         </div>
         <div>
           <span>Calls graded</span>
@@ -88,8 +88,9 @@ export default function TrackRecordSummary() {
         </div>
       </div>
       <p className="track-record-strip-note">
-        Hypothetical results from real market prices for recommendations we actually sent. They are
-        not a record of what any individual made.
+        *Not real earnings. This adds up the result of buying one of each recommended card at the
+        price we published and selling at target - a measure of the calls, not a record of what any
+        individual made. No user bought every card, and results assume perfect execution.
       </p>
       <Link className="track-record-strip-link" to="/track-record">
         See every call and how this is measured <ArrowRight size={14} />

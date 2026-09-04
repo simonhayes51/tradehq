@@ -1,10 +1,14 @@
 import { useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { Navigate, useSearchParams, Link } from 'react-router-dom';
+import './login.css';
 
 // Return-visitor login. New-visitor framing (why bother creating an
 // account) lives in Signup.jsx instead - two separate, honest intents
-// rather than one page trying to be both.
+// rather than one page trying to be both. Both pages call the same
+// Discord OAuth flow, so the copy here says so explicitly instead of
+// letting "Continue with Discord" and "Create a free account" look like
+// two different mechanisms.
 const Login = () => {
   const { isAuthenticated, login, checkAuthStatus } = useAuth();
   const [searchParams] = useSearchParams();
@@ -21,22 +25,30 @@ const Login = () => {
   }
 
   return (
-    <div className="min-h-screen bg-black text-white flex items-center justify-center px-4">
-      <div className="w-full max-w-sm text-center">
-        <Link to="/" className="inline-block mb-8 text-sm font-bold text-[#91db32]">EAFC Live</Link>
-        <h1 className="text-3xl font-extrabold mb-2">Welcome back</h1>
-        <p className="text-gray-400 mb-8 text-sm">Log in to see your watchlist, trades and alerts.</p>
+    <div className="login-page">
+      <div className="login-card">
+        <Link to="/" className="login-brand">
+          <span className="brand-mark">EL</span>
+          <span>EAFC <b>Live</b></span>
+        </Link>
+        <h1>Welcome back</h1>
+        <p className="login-lede">Log in to see your watchlist, trades and alerts.</p>
         <button
           onClick={() => login(from)}
-          className="w-full bg-[#5865F2] hover:bg-[#4752c4] text-white font-bold py-3 px-6 rounded-lg transition-colors"
+          className="login-cta"
         >
           Continue with Discord
         </button>
-        <p className="text-xs text-gray-500 mt-4">
-          We only use Discord to create your EAFC Live account and identify your membership.
+        <p className="login-explain">
+          We'll create your free account if you're new. Discord is how EAFC Live signs
+          you in and identifies your membership — we never see or store your EA login.
         </p>
-        <p className="text-sm text-gray-400 mt-8">
-          New to EAFC Live? <Link to={`/signup${from ? `?from=${encodeURIComponent(from)}` : ""}`} className="text-[#91db32] font-semibold hover:underline">Create a free account</Link>
+        <p className="login-signup">
+          New to EAFC Live? <Link to={`/signup${from ? `?from=${encodeURIComponent(from)}` : ""}`}>Create a free account</Link>
+        </p>
+        <p className="login-legal">
+          By continuing you agree to our <Link to="/terms">Terms</Link> and{" "}
+          <Link to="/privacy">Privacy Policy</Link>.
         </p>
       </div>
     </div>

@@ -223,13 +223,20 @@ function OpportunityCard({ item }) {
   // rationale panel, matching the same split there.
   const sellingSpeed = sellingSpeedLabel(item.liquidity_score);
   const why = buildWhyText(item);
+  // Not hidden - the product wants low-budget moves kept available, just
+  // clearly told apart from a strong trade so a 90-coin flip doesn't read
+  // as an equally-recommended pick beside a 20,000-coin one. Absolute
+  // profit, not ROI%, since a small entry can post a huge percentage on
+  // a trivial coin amount.
+  const profitValue = item.expected_profit_after_tax != null ? Number(item.expected_profit_after_tax) : null;
+  const isLowBudget = profitValue != null && profitValue > 0 && profitValue < 500;
 
   return (
     <Link className="finder-card opp-card" to={`/players/${cardId}`} state={{ from: "opportunities" }}>
       <div className="finder-card-top">
         <img src={item.composited_image_url || item.image_url || "/img/card-placeholder.png"} alt="" />
         <div>
-          <h2>{item.name || "Unknown player"}</h2>
+          <h2>{item.name || "Unknown player"}{isLowBudget ? <span className="opp-budget-tag" title="A real, low-effort profit - small in absolute coins">Low-budget</span> : null}</h2>
           <div className="v2-meta-pills">
             <span>{item.rating ?? "—"} OVR</span>
             <span>{item.position || "—"}</span>

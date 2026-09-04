@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { Award, AlertTriangle, BarChart3, CheckCircle2, Clock3, Coins, Copy, Download, Loader2, Plus, Target, TrendingUp, Trophy, X } from "lucide-react";
+import { Award, AlertTriangle, BarChart3, CheckCircle2, Clock3, Coins, Copy, Download, Loader2, Plus, Search, Target, TrendingUp, Trophy, X } from "lucide-react";
 import { closeTrade, getOpenTrades, getProfitTimeline, getTradeHistory, getTradingPerformance, shareSummaryCard, shareTradeCard } from "../../api/trades";
 import { copyImageToClipboard, copyText, downloadDataUrlAsFile, slugFilename } from "../../lib/shareCard";
 import CoinValue from "../../components/CoinValue";
@@ -244,15 +244,65 @@ function OpenTradeCard({ trade, onClose }) {
   );
 }
 
+// Sort choices for a large portfolio - "most recent" isn't always what
+// someone's looking for once a list runs into the hundreds (see
+// PortfolioSearch below for the matching text filter).
+const OPEN_SORTS = {
+  recent: { label: "Most recent", fn: (a, b) => new Date(b.bought_at || 0) - new Date(a.bought_at || 0) },
+  player: { label: "Player A-Z", fn: (a, b) => String(a.player || "").localeCompare(String(b.player || "")) },
+  value: { label: "Highest coins invested", fn: (a, b) => (Number(b.buy || 0) * Number(b.quantity || 1)) - (Number(a.buy || 0) * Number(a.quantity || 1)) },
+};
+const HISTORY_SORTS = {
+  recent: { label: "Most recent", fn: (a, b) => new Date(b.sold_at || 0) - new Date(a.sold_at || 0) },
+  player: { label: "Player A-Z", fn: (a, b) => String(a.player || "").localeCompare(String(b.player || "")) },
+  profit: { label: "Highest profit", fn: (a, b) => Number(b.profit || 0) - Number(a.profit || 0) },
+};
+
+// Shared search + sort bar for a large portfolio. Pagination (ShowMore,
+// above) already exists for render cost; this is the separate problem
+// of FINDING a specific trade once there are dozens or hundreds of
+// them, which paging through 20 at a time doesn't solve.
+function PortfolioSearch({ query, onQuery, sort, onSort, sorts, resultCount, noun }) {
+  return (
+    <div className="portfolio-search">
+      <div className="portfolio-search-input">
+        <Search size={15} aria-hidden="true" />
+        <input
+          type="search"
+          value={query}
+          onChange={(event) => onQuery(event.target.value)}
+          placeholder={`Search ${noun} by player name…`}
+          aria-label={`Search ${noun} by player name`}
+        />
+      </div>
+      <select value={sort} onChange={(event) => onSort(event.target.value)} aria-label="Sort">
+        {Object.entries(sorts).map(([key, { label }]) => <option key={key} value={key}>{label}</option>)}
+      </select>
+      {query ? <span className="portfolio-search-count">{resultCount} matching</span> : null}
+    </div>
+  );
+}
+
 function OpenTrades({ trades, onClose }) {
   const [shown, setShown] = useState(PAGE_SIZE);
+  const [query, setQuery] = useState("");
+  const [sort, setSort] = useState("recent");
   if (!trades.length) return <EmptyState icon={<Target />} title="No open trades yet" text="Open a recommendation on the dashboard and press Log purchase. It will appear here instantly." action={<Link to="/opportunities">Browse recommendations</Link>} />;
-  const visible = trades.slice(0, shown);
+  const filtered = trades
+    .filter((trade) => !query.trim() || String(trade.player || "").toLowerCase().includes(query.trim().toLowerCase()))
+    .slice()
+    .sort(OPEN_SORTS[sort].fn);
+  const visible = filtered.slice(0, shown);
   return <>
-    <section className="trade-grid">
-      {visible.map((trade) => <OpenTradeCard key={trade.trade_id} trade={trade} onClose={onClose} />)}
-    </section>
-    <ShowMore total={trades.length} shown={visible.length} onMore={() => setShown((n) => n + PAGE_SIZE)} noun="open trades" />
+    <PortfolioSearch query={query} onQuery={(v) => { setQuery(v); setShown(PAGE_SIZE); }} sort={sort} onSort={setSort} sorts={OPEN_SORTS} resultCount={filtered.length} noun="open trades" />
+    {filtered.length ? (
+      <>
+        <section className="trade-grid">
+          {visible.map((trade) => <OpenTradeCard key={trade.trade_id} trade={trade} onClose={onClose} />)}
+        </section>
+        <ShowMore total={filtered.length} shown={visible.length} onMore={() => setShown((n) => n + PAGE_SIZE)} noun="open trades" />
+      </>
+    ) : <EmptyState icon={<Search />} title="No open trades match" text={`Nothing in your open trades matches "${query}".`} action={<button onClick={() => setQuery("")}>Clear search</button>} />}
   </>;
 }
 
@@ -276,6 +326,8 @@ function History({ trades }) {
   const [format, setFormat] = useState("wide");
   const [shareCache, setShareCache] = useState({}); // `${trade_id}:${format}` -> { image_data_url, caption }
   const [shown, setShown] = useState(PAGE_SIZE);
+  const [query, setQuery] = useState("");
+  const [sort, setSort] = useState("recent");
 
   async function fetchShare(trade) {
     const key = `${trade.trade_id}:${format}`;
@@ -305,7 +357,11 @@ function History({ trades }) {
   const copy = (trade) => withResult(trade, async ({ image_data_url }) => copyImageToClipboard(image_data_url));
 
   if (!trades.length) return <EmptyState icon={<CheckCircle2 />} title="No completed sales" text="When you close a trade, the result and EA tax will be stored here." />;
-  const visible = trades.slice(0, shown);
+  const filtered = trades
+    .filter((trade) => !query.trim() || String(trade.player || "").toLowerCase().includes(query.trim().toLowerCase()))
+    .slice()
+    .sort(HISTORY_SORTS[sort].fn);
+  const visible = filtered.slice(0, shown);
 
   // ONE list, rendered as a table on wide screens and as real cards on
   // narrow ones - not a table shrunk until it fits. The previous mobile
@@ -349,13 +405,18 @@ function History({ trades }) {
   return <>
     <div className="history-share-format"><span>Share image format:</span><FormatToggle value={format} onChange={setFormat} disabled={sharingId !== null} /></div>
     {shareError ? <p className="club-error">{shareError}</p> : null}
-    <div className="history-table">
-      <div className="history-head" aria-hidden="true">
-        <span>Player</span><span>Status</span><span>Bought</span><span>Sold</span><span>Net profit</span><span>Date</span><span />
-      </div>
-      {rows}
-    </div>
-    <ShowMore total={trades.length} shown={visible.length} onMore={() => setShown((n) => n + PAGE_SIZE)} noun="completed sales" />
+    <PortfolioSearch query={query} onQuery={(v) => { setQuery(v); setShown(PAGE_SIZE); }} sort={sort} onSort={setSort} sorts={HISTORY_SORTS} resultCount={filtered.length} noun="completed sales" />
+    {filtered.length ? (
+      <>
+        <div className="history-table">
+          <div className="history-head" aria-hidden="true">
+            <span>Player</span><span>Status</span><span>Bought</span><span>Sold</span><span>Net profit</span><span>Date</span><span />
+          </div>
+          {rows}
+        </div>
+        <ShowMore total={filtered.length} shown={visible.length} onMore={() => setShown((n) => n + PAGE_SIZE)} noun="completed sales" />
+      </>
+    ) : <EmptyState icon={<Search />} title="No completed sales match" text={`Nothing in your history matches "${query}".`} action={<button onClick={() => setQuery("")}>Clear search</button>} />}
   </>;
 }
 

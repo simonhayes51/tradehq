@@ -33,10 +33,10 @@ export default function AdvancedRationale({ item, defaultOpen = false }) {
     : null;
 
   return (
-    <details className="group" open={defaultOpen}>
-      <summary className="flex items-center gap-1.5 cursor-pointer select-none text-xs font-bold text-[var(--v2-accent)] py-1 list-none [&::-webkit-details-marker]:hidden">
+    <details className="group rounded-[var(--v2-radius)] border border-[var(--v2-border)] bg-[var(--v2-elevated)]/40 px-3 py-2.5" open={defaultOpen}>
+      <summary className="flex items-center gap-1.5 cursor-pointer select-none text-[13px] font-bold text-[var(--v2-accent)] list-none [&::-webkit-details-marker]:hidden">
         <span className="inline-block transition-transform group-open:rotate-90">▸</span>
-        Advanced rationale
+        Advanced rationale — the full numbers behind this call
       </summary>
       <div className="mt-3 flex flex-col gap-3">
         <div className="grid grid-cols-2 gap-2.5">

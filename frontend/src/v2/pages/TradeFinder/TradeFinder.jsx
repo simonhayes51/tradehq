@@ -19,11 +19,39 @@ import { PageHead } from "../Players/Players";
 import UpgradePrompt from "../../components/UpgradePrompt";
 import { GATED } from "../../lib/gatedFeatures";
 import { riskLabel, versionLabel } from "../../lib/format";
+import StatusLegend from "../../components/StatusLegend";
 import "./trade-finder.css";
 
 const DEFAULTS = {
   budget: "", min_profit: "", min_roi: "", risk: "", min_confidence: "",
   position: "", rarity: "", rating: "", min_liquidity: "", max_price_age: "", sort: "best",
+};
+
+// "Max price age (s)" made people do unit math in their head to use a
+// filter. These map directly to seconds server-side but are offered as
+// plain, understandable choices instead - what "fresh" means to a
+// trader, not a raw threshold.
+const FRESHNESS_OPTIONS = [
+  { value: "", label: "Any freshness" },
+  { value: "120", label: "Live — under 2 minutes old" },
+  { value: "600", label: "Recent — under 10 minutes old" },
+  { value: "1800", label: "Fairly fresh — under 30 minutes old" },
+  { value: "3600", label: "Within the last hour" },
+];
+
+// Human labels for the filter chips row - kept in sync with DEFAULTS by
+// key, so a chip never appears for a filter this page doesn't have.
+const FILTER_LABELS = {
+  budget: (v) => `Budget ≤ ${Number(v).toLocaleString()}`,
+  min_profit: (v) => `Min profit ${Number(v).toLocaleString()}`,
+  min_roi: (v) => `Min ROI ${v}%`,
+  risk: (v) => `${v[0].toUpperCase()}${v.slice(1)} risk`,
+  min_confidence: (v) => `Min confidence ${v}%`,
+  position: (v) => `Position ${v.toUpperCase()}`,
+  rarity: (v) => `Rarity ${v}`,
+  rating: (v) => `Rating ${v}`,
+  min_liquidity: (v) => `Min liquidity ${v}%`,
+  max_price_age: (v) => FRESHNESS_OPTIONS.find((o) => o.value === String(v))?.label || `Price under ${v}s old`,
 };
 
 const SORT_OPTIONS = [
@@ -131,9 +159,11 @@ export default function TradeFinder() {
         <small>Exact overall rating</small>
       </div>
       <div className="finder-control">
-        <label htmlFor="finder-age">Max price age (s)</label>
-        <input id="finder-age" type="number" min="0" placeholder="Any" value={filters.max_price_age} onChange={set("max_price_age")} />
-        <small>Exclude stale price data</small>
+        <label htmlFor="finder-age">Price freshness</label>
+        <select id="finder-age" value={filters.max_price_age} onChange={set("max_price_age")}>
+          {FRESHNESS_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+        </select>
+        <small>How recently the price must have been checked</small>
       </div>
       <div className="finder-control">
         <label htmlFor="finder-sort">Sort</label>
@@ -145,10 +175,25 @@ export default function TradeFinder() {
     </section>}
 
     {locked || signedOut ? null : (
-      <div className="finder-result-head">
-        <div><SlidersHorizontal size={16}/><strong>{query.isLoading ? "Scanning for trades…" : `${items.length} matching ${items.length === 1 ? "trade" : "trades"}`}</strong></div>
-        {filtersActive ? <button onClick={() => setFilters(DEFAULTS)}><RotateCcw size={14}/> Reset filters</button> : null}
-      </div>
+      <>
+        {/* Filters apply instantly (no submit step) - the chips row is
+            what makes "instantly" legible: every active filter is
+            visible and individually removable, right above the results
+            it's already affecting. */}
+        {filtersActive ? (
+          <div className="finder-chips" aria-label="Active filters">
+            {Object.keys(DEFAULTS).filter((key) => key !== "sort" && filters[key] !== DEFAULTS[key]).map((key) => (
+              <button key={key} className="finder-chip" onClick={() => setFilters((current) => ({ ...current, [key]: DEFAULTS[key] }))}>
+                {(FILTER_LABELS[key] || ((v) => v))(filters[key])} <span aria-hidden="true">×</span>
+              </button>
+            ))}
+          </div>
+        ) : null}
+        <div className="finder-result-head">
+          <div><SlidersHorizontal size={16}/><strong>{query.isLoading ? "Scanning for trades…" : `${items.length} matching ${items.length === 1 ? "trade" : "trades"}`}</strong></div>
+          {filtersActive ? <button onClick={() => setFilters(DEFAULTS)}><RotateCcw size={14}/> Reset filters</button> : null}
+        </div>
+      </>
     )}
 
     {locked || signedOut ? (
@@ -168,7 +213,7 @@ export default function TradeFinder() {
           return <Link className="finder-card" key={cardId} to={`/players/${cardId}`} state={{ from: "trade-finder" }}>
             <div className="finder-card-top">
               <img src={item.composited_image_url || item.image_url || "/img/card-placeholder.png"} alt="" />
-              <div><h2>{item.name || "Unknown player"}</h2><div className="v2-meta-pills"><span className={`finder-signal-pill signal-${item.signal || "unknown"}`}>{item.signal === "watch" ? "WATCH" : "BUY"}</span><span>{item.rating ?? "—"} OVR</span><span>{item.position || "—"}</span><span>{versionLabel(item.rarity)}</span></div><p>{buildWhyText(item)}</p></div>
+              <div><h2>{item.name || "Unknown player"}</h2><div className="v2-meta-pills"><span className={`finder-signal-pill signal-${item.signal || "unknown"}`}>{item.signal === "watch" ? "WATCH" : "BUY"}</span><StatusLegend/><span>{item.rating ?? "—"} OVR</span><span>{item.position || "—"}</span><span>{versionLabel(item.rarity)}</span></div><p className="finder-why">{buildWhyText(item)}</p></div>
               <span className="finder-confidence">{confidence == null ? "—" : `${confidence}%`}<small>CONFIDENCE</small></span>
             </div>
             <div className="finder-signals">

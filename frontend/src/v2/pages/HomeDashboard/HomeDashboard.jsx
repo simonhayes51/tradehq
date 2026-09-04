@@ -18,6 +18,7 @@ import EmptyState from "../../components/EmptyState";
 import EmptyFeedReason from "../../components/EmptyFeedReason";
 import MarketFreshness from "../../components/MarketFreshness";
 import TrackRecordSummary from "../../components/TrackRecordSummary";
+import StatusLegend from "../../components/StatusLegend";
 import NotificationsPanel from "../../components/NotificationsPanel";
 // The shared locked-state styles (.locked-figure, .locked-opportunity-note)
 // live with the other destination pages; Home renders the same locked
@@ -228,7 +229,14 @@ export default function HomeDashboard(){
   // visual weight. Cap what's shown up front; the rest are one tap away
   // via Trade Finder's own full, filterable feed.
   const visibleWatchItems=isMobile?watchItems.slice(0,3):watchItems;
-  const buyCount=futggItems.filter(x=>x.recommendation==="BUY").length;
+  const buyItems=futggItems.filter(x=>x.recommendation==="BUY");
+  const buyCount=buyItems.length;
+  // Separate "no live buy signals" from "signals exist but haven't priced
+  // a profit yet" - both used to render as an identical "+0", which read
+  // as a contradiction next to a positive buy-signal count (3 buy
+  // signals, 0 coin potential looks like a calculation bug even when it
+  // is really just missing per-card profit data on those rows).
+  const buyItemsWithProfit=buyItems.filter(x=>expectedProfit(x)!=null);
   const score=Math.round(Number(dashboard.marketRegime?.confidence||0));
   // "Unknown" is the backend's explicit "we are not calling this market",
   // not a low score - see the Market Pulse comment below.
@@ -237,7 +245,7 @@ export default function HomeDashboard(){
   // Prefer the backend's own expected_profit_after_tax (correct EA price-
   // increment rounding) over the generic profit() recompute, same reason
   // AnalysisModal's `gain`/`target` do below.
-  const potential=futggItems.filter(x=>x.recommendation==="BUY").reduce((sum,item)=>sum+Math.max(0,expectedProfit(item)||0),0);
+  const potential=buyItemsWithProfit.reduce((sum,item)=>sum+Math.max(0,expectedProfit(item)||0),0);
 
   // Removed: this auto-scrolled to the "Next best moves" queue when Home
   // was rendered at the Opportunities URL, back when /opportunities was a
@@ -314,7 +322,7 @@ export default function HomeDashboard(){
 
       {showOverview?<>
         <section className="decision-stage">
-          <div className={`lead-trade${lead?"":" is-pending"}`}><div className="lead-label"><Zap size={15}/> TOP CARD</div>{lead?<div className="lead-layout"><button className="lead-card player-open-button" onClick={()=>setSelected(lead)} aria-label={`Open ${nameOf(lead.player)} analysis`}><CardImage player={lead.player} featured/></button><div className="lead-copy"><div className="lead-head"><div><PlayerMeta player={lead.player} source={lead.source}/><h1>{nameOf(lead.player)}</h1></div><div className="lead-status"><b className={`call ${String(lead.recommendation).toLowerCase()}`}>{lead.recommendation}</b><ConfidenceRing value={lead.confidence}/></div></div>{lead.source==="futgg"?<MarketFreshness priceAgeSeconds={lead.priceAgeSeconds} capturedAt={lead.updatedAt}/>:null}<p>{reason(lead)}</p><div className="lead-numbers"><Metric label="Buy below" value={<CoinValue value={lead.entryPrice??lead.currentBin}/>} sub="Maximum entry" tone="entry"/><Metric label="Expected profit" value={<CoinValue value={expectedProfit(lead)} signed/>} sub="After EA tax" tone="positive"/><Metric label="Risk level" value={lead.risk||"Unknown"} sub={`${sellingSpeedLabel(lead.liquidityScore)} selling speed`}/></div><div className="lead-actions"><button onClick={()=>setSelected(lead)}>View move <ArrowRight size={17}/></button><button className="secondary" onClick={()=>watchItem(lead)} aria-label="Add top card to watchlist"><Star size={16} fill={watchStates[String(lead.cardId)]==="saved"?"currentColor":"none"}/>{watchStates[String(lead.cardId)]==="saved"?"Watching":"Watch"}</button></div></div></div>:<TopCardPending loading={feedLoading} lockedOnly={lockedOnly} preview={firstLocked} freePicks={dashboard.freePicks} navigate={navigate}/>}</div>
+          <div className={`lead-trade${lead?"":" is-pending"}`}><div className="lead-label"><Zap size={15}/> TOP CARD</div>{lead?<div className="lead-layout"><button className="lead-card player-open-button" onClick={()=>setSelected(lead)} aria-label={`Open ${nameOf(lead.player)} analysis`}><CardImage player={lead.player} featured/></button><div className="lead-copy"><div className="lead-head"><div><PlayerMeta player={lead.player} source={lead.source}/><h1>{nameOf(lead.player)}</h1></div><div className="lead-status"><b className={`call ${String(lead.recommendation).toLowerCase()}`}>{lead.recommendation}</b><StatusLegend/><ConfidenceRing value={lead.confidence}/></div></div>{lead.source==="futgg"?<MarketFreshness priceAgeSeconds={lead.priceAgeSeconds} capturedAt={lead.updatedAt}/>:null}<p>{reason(lead)}</p><div className="lead-numbers"><Metric label="Buy below" value={<CoinValue value={lead.entryPrice??lead.currentBin}/>} sub="Maximum entry" tone="entry"/><Metric label="Expected profit" value={<CoinValue value={expectedProfit(lead)} signed/>} sub="After EA tax" tone="positive"/><Metric label="Risk level" value={lead.risk||"Unknown"} sub={`${sellingSpeedLabel(lead.liquidityScore)} selling speed`}/></div><div className="lead-actions"><button onClick={()=>setSelected(lead)}>View move <ArrowRight size={17}/></button><button className="secondary" onClick={()=>watchItem(lead)} aria-label="Add top card to watchlist"><Star size={16} fill={watchStates[String(lead.cardId)]==="saved"?"currentColor":"none"}/>{watchStates[String(lead.cardId)]==="saved"?"Watching":"Watch"}</button></div></div></div>:<TopCardPending loading={feedLoading} lockedOnly={lockedOnly} preview={firstLocked} freePicks={dashboard.freePicks} navigate={navigate}/>}</div>
           {/* Two states, never blended. When the backend declines to
               characterise the market (too few cards valued - see
               _compute_live_market_regime), it returns label "Unknown" and
@@ -343,13 +351,21 @@ export default function HomeDashboard(){
             </div>}
             <div className="pulse-stats">
               <Metric label="Buy signals" value={buyCount} sub="Cards that passed the filters now"/>
-              <Metric label="Coin potential" value={<CoinValue value={potential} signed/>} sub="Combined, after EA tax"/>
+              <Metric
+                label="Coin potential"
+                value={buyCount>0&&buyItemsWithProfit.length===0?"—":<CoinValue value={potential} signed/>}
+                sub={buyCount>0&&buyItemsWithProfit.length===0
+                  ?"Profit not priced for these yet"
+                  :buyItemsWithProfit.length<buyCount
+                    ?`Combined, after EA tax · ${buyItemsWithProfit.length} of ${buyCount} priced`
+                    :"Combined, after EA tax"}
+              />
               {/* Two separate facts, shown as two separate facts. This
                   tile used to ADD the regime's candidate count to the
                   price-worker's priced-card count and present the sum as
                   "Tracked" - two different populations, double-counted
                   into one number that described neither. */}
-              <Metric label="Priced cards" value={count(freshnessQuery.data?.cards_priced)} sub={valuedCards!=null?`${count(valuedCards)} fresh enough to value`:"Live price coverage"}/>
+              <Metric label="Cards tracked" value={count(freshnessQuery.data?.cards_priced)} sub={valuedCards!=null?`${count(valuedCards)} have a fresh enough price to score`:"Live price coverage"}/>
             </div>
             <PulseFooter nextPromo={dashboard.nextPromo} sbcImpact={dashboard.latestSbcImpact}/>
           </aside>
@@ -380,7 +396,7 @@ export default function HomeDashboard(){
           this deployment does not compute today, so it is removed rather
           than restyled. See the audit notes for what building it properly
           would require. */}
-      {showMarket?<section className="activity-section"><div className="activity-feed"><div className="section-head compact"><div><span>YOUR FEED</span><h2>Alerts & content</h2></div><Link to="/watchlist">Manage alerts</Link></div>{feedRows.map((row,index)=><Link className="feed-row" key={row.key||index} to={row.href}><i/><div><strong>{row.title}</strong><span>{row.detail}</span></div></Link>)}{!feedRows.length?<EmptyState compact text={dashboard.watchedCount>0?"No price alerts yet. We'll let you know when a watched card hits one of your alert conditions.":"Nothing on your watchlist yet. Add a card and we'll track its price for you."}/>:null}</div></section>:null}
+      {showMarket?<section className="activity-section"><div className="activity-feed"><div className="section-head compact"><div><span>YOUR FEED</span><h2>Alerts & content</h2></div><Link to="/watchlist">Manage alerts</Link></div>{feedRows.map((row,index)=><Link className="feed-row" key={row.key||index} to={row.href}><i/><div><strong>{row.title}</strong><span>{row.detail}</span></div></Link>)}{!feedRows.length?<EmptyState compact text={dashboard.watchedCount>0?"No price alerts yet. We'll let you know when a watched card hits one of your alert conditions.":"Nothing on your watchlist yet. Add a card and we'll track its price for you."} action={dashboard.watchedCount>0?null:<button onClick={()=>navigate("/players")}>Find a player</button>}/>:null}</div></section>:null}
 
       <p className="fut-disclaimer">Recent sales and live listings are used to estimate opportunities. Profit is never guaranteed and EA charges 5% on sales.</p>
     </main>
@@ -497,7 +513,7 @@ export function AnalysisModal({item,onClose,navigate,onWatch,watchState,backLabe
         : <button className="dash-modal-close" onClick={onClose} aria-label="Close analysis"><X size={20}/></button>}
       <div className="dash-modal-card"><CardImage player={item.player} featured/></div>
       <div className="dash-modal-copy">
-        <div className="dash-modal-heading"><div><PlayerMeta player={item.player} source={item.source}/><h2>{nameOf(item.player)}</h2></div><b className={`call ${String(item.recommendation||"WATCH").toLowerCase()}`}>{item.recommendation||"WATCH"}</b></div>
+        <div className="dash-modal-heading"><div><PlayerMeta player={item.player} source={item.source}/><h2>{nameOf(item.player)}</h2></div><span className="dash-modal-call"><b className={`call ${String(item.recommendation||"WATCH").toLowerCase()}`}>{item.recommendation||"WATCH"}</b><StatusLegend/></span></div>
         {/* The ONE live-price freshness line on this surface. The market
             section below used to render a second one from the same
             fields, so the page told you twice how old the price was. */}
@@ -750,8 +766,13 @@ function Ticker({items,events}){
   // bare name next to an unexplained number. Card rows are labelled as
   // an expected return so they cannot be misread as a price change,
   // which is a different measurement entirely.
+  // A "0.0% expected return" ticker row next to an SBC headline reads as
+  // broken - it says nothing happened. Every item here already cleared
+  // the BUY bar server-side, so a genuinely near-zero return is the
+  // exception, not the rule; require a real, rounds-to-non-zero return
+  // before it's worth a scrolling headline.
   const cardRows=items.slice(0,6)
-    .filter(x=>Number.isFinite(Number(x.expectedRoi)))
+    .filter(x=>Number.isFinite(Number(x.expectedRoi))&&Math.abs(Number(x.expectedRoi))>=0.5)
     .map(x=>({
       label:`${nameOf(x.player)}${x.player?.rating?` (${x.player.rating})`:""}`,
       value:`${roi(x)} expected return`,

@@ -353,19 +353,27 @@
 .v2-market-row .needs-review { display: flex; align-items: center; justify-content: flex-end; gap: 5px; color: #f2c94c; font-size: 11px; }
 .v2-data-note { display: flex; align-items: center; gap: 8px; margin: 0 0 12px; padding: 10px 12px; border: 1px solid rgba(255,211,77,.25); border-radius:3px; background: rgba(255,211,77,.06); color: #c8b66d; font-size: 12px; }
 .v2-watch-grid { grid-template-columns: repeat(3,minmax(0,1fr)); gap: 12px; }
-.v2-watch-card { display: flex; flex-direction: column; min-height: 360px; padding: 16px; background: linear-gradient(145deg,#171717,#121212); }
+/* Was min-height:360px with 126px reserved just for the identity row -
+   more space than the actual content (a name, two price tiles, a
+   movement line, up to a couple of buttons) needs. Let content set the
+   height instead of reserving a fixed minimum. */
+.v2-watch-card { display: flex; flex-direction: column; padding: 14px; background: linear-gradient(145deg,#171717,#121212); }
 .v2-watch-top { font-size: 10px; font-weight: 900; letter-spacing: .08em; }
-.v2-watch-identity { display: grid; grid-template-columns: 86px minmax(0,1fr) auto; align-items: center; gap: 12px; min-height: 126px; margin-top: 8px; }
-.v2-watch-identity > img { width: 82px; height: 108px; object-fit: contain; filter: drop-shadow(0 10px 12px rgba(0,0,0,.38)); }
-.v2-watch-card .v2-watch-identity h2 { margin: 0; font-size: 19px; line-height: 1.15; }
+.v2-watch-identity { display: grid; grid-template-columns: 60px minmax(0,1fr) auto; align-items: center; gap: 10px; margin-top: 8px; }
+.v2-watch-identity > img { width: 56px; height: 74px; object-fit: contain; filter: drop-shadow(0 10px 12px rgba(0,0,0,.38)); }
+.v2-watch-card .v2-watch-identity h2 { margin: 0; font-size: 16px; line-height: 1.2; }
 .v2-watch-identity > svg { color: #767676; }
 .v2-watch-values { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
-.v2-watch-values > div { padding: 11px; border: 1px solid #343434; border-radius:3px; background: #151515; }
-.v2-watch-values span { display: block; margin-bottom: 5px; color: #868686; font-size: 9px; font-weight: 900; letter-spacing: .08em; }
-.v2-watch-values .coin-value { font-size: 17px; font-weight: 900; }
-.v2-watch-change { margin-top: 8px; }
-.v2-watch-actions { margin-top: auto; }
+.v2-watch-values > div { padding: 8px 10px; border: 1px solid #343434; border-radius:3px; background: #151515; }
+.v2-watch-values span { display: block; margin-bottom: 4px; color: #868686; font-size: 9px; font-weight: 900; letter-spacing: .06em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.v2-watch-values .coin-value { font-size: 15px; font-weight: 900; }
+.v2-watch-change { margin-top: 6px; }
+.v2-watch-alert-list { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 5px; }
+.v2-watch-alert-list li { display: inline-flex; align-items: center; gap: 4px; padding: 3px 7px; border: 1px solid rgba(242,201,76,.3); border-radius: 99px; background: rgba(242,201,76,.08); color: #e8c96a; font-size: 10px; font-weight: 700; }
+.v2-watch-actions { margin-top: 10px; }
 .v2-watch-actions button { flex: 1; justify-content: center; }
+.v2-watch-remove-quiet { flex: 0 0 auto !important; padding: 8px 10px !important; color: #8a8a8a !important; }
+.v2-watch-remove-quiet:hover { color: #ff8792 !important; border-color: #4a2c2c !important; }
 
 /* Alert UI: header toggle, panel, per-card modal - added onto v2's
    Watchlist page (already existed on v1's, backend already live). */
