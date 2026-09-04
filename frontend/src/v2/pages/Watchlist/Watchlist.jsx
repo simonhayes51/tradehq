@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { ArrowRight, Bell, RefreshCw, Star, Trash2 } from "lucide-react";
+import { ArrowRight, Bell, MoreVertical, RefreshCw, Star, Trash2 } from "lucide-react";
 import { useQueryClient, useQuery } from "@tanstack/react-query";
 import toast from "react-hot-toast";
 import { deleteWatch, refreshWatch, getAlerts, createAlert, deleteAlert } from "../../../api/watchlist";
@@ -21,6 +21,11 @@ export default function Watchlist() {
   // did not happen looked identical to one that did - the same class of
   // silent failure that made alerts feel broken. Each now reports.
   const [busyItem, setBusyItem] = useState(null);
+  // Remove used to sit as a full main action next to Alert/Refresh -
+  // one accidental tap and a tracked card was gone with no confirmation.
+  // Two-step in place instead of a modal: first click reveals a
+  // "Confirm remove" state, any other click on the card resets it.
+  const [confirmRemoveId, setConfirmRemoveId] = useState(null);
   async function remove(id, name) {
     setBusyItem(id);
     try {
@@ -31,6 +36,7 @@ export default function Watchlist() {
       toast.error("Couldn't remove that card. Try again.");
     } finally {
       setBusyItem(null);
+      setConfirmRemoveId(null);
     }
   }
   async function update(id) {
@@ -112,7 +118,7 @@ export default function Watchlist() {
       <PageHead
         eyebrow="YOUR WATCHLIST"
         title="Cards you’re tracking"
-        copy="Live prices and movement for the cards you care about."
+        copy="Prices update when you press Update price on a card - not automatically in the background."
         action={
           <div className="v2-watch-head-actions">
             <button type="button" className="v2-alerts-toggle" onClick={() => setAlertsOpen((v) => !v)}>
@@ -166,26 +172,49 @@ export default function Watchlist() {
 
       {query.isLoading ? <EmptyState icon={<Star size={28} />} text="Loading watchlist…" /> : query.error?.response?.status === 401 ? <EmptyState icon={<Star size={28} />} text="Sign in to view your watchlist." action={<Link to="/login">Sign in</Link>} /> : query.isError ? <EmptyState icon={<Star size={28} />} error text="Your watchlist could not be loaded." action={<button onClick={() => query.refetch()}>Try again</button>} /> : items.length ? (
         <section className="v2-watch-grid">
-          {items.map((item) => (
+          {items.map((item) => {
+            // Prices are last-checked, not live-polled - the list query
+            // has no refetchInterval, and the per-card price only moves
+            // when this card's own Refresh has been pressed (or a fresh
+            // read happened elsewhere). So Refresh is not redundant; it's
+            // the only thing that updates this row's price.
+            const itemAlerts = alerts.filter((a) => String(a.card_id) === String(item.card_id) && String(a.platform || "ps") === String(item.platform || "ps"));
+            const confirming = confirmRemoveId === item.id;
+            return (
             <article className="v2-watch-card" key={item.id}>
               <div className="v2-watch-top"><Star size={17} fill="currentColor"/><span>WATCHING</span><small>{String(item.platform || "ps").toUpperCase()}</small></div>
-              <Link className="v2-watch-identity" to={`/players/${item.card_id}`}>
+              <Link className="v2-watch-identity" to={`/players/${item.card_id}`} aria-label={`Open ${item.player_name || "card"} details`}>
                 <img src={item.generated_card_url || item.composited_image_url || item.image_url || "/img/card-placeholder.png"} alt="" />
                 <div><h2>{item.player_name}</h2><div className="v2-meta-pills"><span>{item.rating || "—"} OVR</span><span>{versionLabel(item.version)}</span></div></div>
-                <ArrowRight size={18}/>
+                <ArrowRight size={18} aria-hidden="true"/>
               </Link>
               <div className="v2-watch-values">
                 <div><span>NOW</span><CoinValue value={item.current_price} /></div>
-                <div><span>WHEN ADDED</span><CoinValue value={item.started_price} /></div>
+                <div><span>ADDED {item.started_at ? new Date(item.started_at).toLocaleDateString(undefined, { day: "numeric", month: "short" }) : ""}</span><CoinValue value={item.started_price} /></div>
               </div>
               <div className="v2-watch-change"><span>Movement since added</span><b className={item.change_pct == null ? "" : Number(item.change_pct) >= 0 ? "positive" : "negative"}>{item.change_pct == null ? "—" : `${Number(item.change_pct) > 0 ? "+" : ""}${Number(item.change_pct).toFixed(1)}%`}</b></div>
+              {itemAlerts.length ? (
+                <ul className="v2-watch-alert-list">
+                  {itemAlerts.map((a) => (
+                    <li key={a.id}><Bell size={11}/> {a.metric === "liquidity" ? "Sales activity" : "Price"} ±{Number(a.rise_pct).toFixed(0)}%/{Number(a.fall_pct).toFixed(0)}%</li>
+                  ))}
+                </ul>
+              ) : null}
               <div className="v2-watch-actions">
                 <button onClick={() => openAlertModal(item)} title="Set price/liquidity alert"><Bell size={15} /> Alert</button>
-                <button onClick={() => update(item.id)} disabled={busyItem === item.id}><RefreshCw size={15} /> Refresh</button>
-                <button className="danger" onClick={() => remove(item.id, item.player_name)} disabled={busyItem === item.id}><Trash2 size={15} /> Remove</button>
+                <button onClick={() => update(item.id)} disabled={busyItem === item.id} title="This card's price only updates when you refresh it"><RefreshCw size={15} /> Update price</button>
+                {confirming ? (
+                  <button className="danger" onClick={() => remove(item.id, item.player_name)} disabled={busyItem === item.id} autoFocus onBlur={() => setConfirmRemoveId(null)}>
+                    <Trash2 size={15} /> Confirm remove
+                  </button>
+                ) : (
+                  <button className="v2-watch-remove-quiet" onClick={() => setConfirmRemoveId(item.id)} aria-label={`Remove ${item.player_name || "card"} from watchlist`} title="Remove">
+                    <MoreVertical size={15} />
+                  </button>
+                )}
               </div>
             </article>
-          ))}
+          );})}
         </section>
       ) : <EmptyState icon={<Star size={28} />} text="Your watchlist is empty." action={<Link to="/players">Find a player</Link>} />}
 
