@@ -87,9 +87,43 @@ else
     echo "WARNING: Xvfb socket ${SOCKET} not seen after 2s - continuing anyway; the worker's own browser-launch timeout will fail loudly if this is fatal"
 fi
 
-# exec, not a bare call: futgg_sales_sync.py's own process replaces this
-# shell (PID 1 stays a single process), so SIGTERM/SIGINT from Coolify
-# still reach it directly for the graceful-shutdown handling already
-# built into run_forever() - no wrapper process sitting in between to
-# swallow or delay the signal.
-exec python futgg_sales_sync.py
+# Railway currently deploys only Dockerfile.sales. Start the bulk price
+# worker here as well so current BIN data comes from FUT.GG's captured
+# catalogue feed instead of forcing the signed sales worker to carry
+# pricing freshness one card at a time.
+RUN_BULK_WITH_SALES="${FUTGG_RUN_BULK_WITH_SALES:-true}"
+BULK_PID=""
+if [ "${RUN_BULK_WITH_SALES,,}" != "false" ] && [ "${RUN_BULK_WITH_SALES}" != "0" ]; then
+    echo "Starting bundled bulk price sync..."
+    PLAYWRIGHT_HEADLESS=true FUTGG_BULK_APPLY="${FUTGG_BULK_APPLY:-true}" python futgg_bulk_price_sync.py &
+    BULK_PID=$!
+fi
+
+# Old Railway deployments carried FUTGG_SALES_SELECT_LIMIT=400, which is
+# above the live signed-endpoint ceiling and repeatedly trips FUT.GG's
+# 429 limit. Keep an escape hatch, but cap the signed path by default now
+# that bulk prices are supplied separately.
+SALES_SELECT_LIMIT_MAX="${FUTGG_SALES_SELECT_LIMIT_MAX:-80}"
+if [ -n "${FUTGG_SALES_SELECT_LIMIT:-}" ]; then
+    if [ "${FUTGG_SALES_SELECT_LIMIT}" -gt "${SALES_SELECT_LIMIT_MAX}" ] 2>/dev/null; then
+        echo "Capping FUTGG_SALES_SELECT_LIMIT from ${FUTGG_SALES_SELECT_LIMIT} to ${SALES_SELECT_LIMIT_MAX}"
+        export FUTGG_SALES_SELECT_LIMIT="${SALES_SELECT_LIMIT_MAX}"
+    fi
+else
+    export FUTGG_SALES_SELECT_LIMIT="${SALES_SELECT_LIMIT_MAX}"
+fi
+
+cleanup() {
+    if [ -n "$BULK_PID" ] && kill -0 "$BULK_PID" 2>/dev/null; then
+        echo "Stopping bundled bulk price sync..."
+        kill "$BULK_PID" 2>/dev/null || true
+        wait "$BULK_PID" 2>/dev/null || true
+    fi
+    if kill -0 "$XVFB_PID" 2>/dev/null; then
+        kill "$XVFB_PID" 2>/dev/null || true
+        wait "$XVFB_PID" 2>/dev/null || true
+    fi
+}
+trap cleanup EXIT INT TERM
+
+python futgg_sales_sync.py
