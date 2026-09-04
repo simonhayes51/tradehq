@@ -150,7 +150,7 @@ function Hero() {
             <div><strong>EAFC.<b>Live</b></strong><span>LIVE MARKET INTELLIGENCE</span></div>
             <em><i /> SCANNING</em>
           </div>
-          <img src="/marketing/eafc-mobile-home.svg" alt="EAFC.Live showing a live trade with buy price, expected profit and confidence" />
+          <img src="/marketing/eafc-dashboard.svg" alt="EAFC.Live showing a live trade with buy price, expected profit and confidence" />
         </div>
       </div>
       <div className="pub-container pub-signal-strip" aria-label="Product highlights">
