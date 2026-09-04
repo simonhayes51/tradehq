@@ -598,7 +598,7 @@
    --------------------------------------------------------------------- */
 .track-record-strip {
   margin-top: 16px;
-  padding: 20px 22px;
+  padding: 16px 20px;
   border: 1px solid var(--line, #333);
   border-radius: 4px;
   background: linear-gradient(180deg, #171717, #141414);
@@ -610,19 +610,19 @@
   font-weight: 900;
   letter-spacing: 0.1em;
 }
-.track-record-strip-head h2 { margin: 0; font-size: 22px; }
+.track-record-strip-head h2 { margin: 0; font-size: 19px; }
 .track-record-strip-head small { margin-left: auto; color: #8e8e8e; font-size: 11px; }
 .track-record-strip-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 1px;
-  margin-top: 16px;
+  margin-top: 12px;
   background: var(--line, #333);
   border: 1px solid var(--line, #333);
   border-radius: 3px;
   overflow: hidden;
 }
-.track-record-strip-grid > div { padding: 14px 15px; background: #141414; }
+.track-record-strip-grid > div { padding: 10px 14px; background: #141414; }
 .track-record-strip-grid span {
   display: block;
   color: #909090;
@@ -631,19 +631,26 @@
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
-.track-record-strip-grid strong { display: block; margin-top: 8px; font-size: 24px; }
+.track-record-strip-grid strong { display: block; margin-top: 6px; font-size: 20px; }
 .track-record-strip-grid strong.positive { color: var(--green, #39ff8a); }
 .track-record-strip-grid strong.negative { color: var(--red, #ff5c5c); }
-.track-record-strip-grid small { display: block; margin-top: 4px; color: #9a9a9a; font-size: 11px; }
-.track-record-strip-note { margin: 14px 0 0; color: #9a9a9a; font-size: 11px; line-height: 1.5; }
+.track-record-strip-grid small { display: block; margin-top: 3px; color: #9a9a9a; font-size: 11px; }
+.track-record-strip-note { margin: 10px 0 0; color: #9a9a9a; font-size: 11px; line-height: 1.5; }
 .track-record-strip-link {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   margin-top: 12px;
-  color: #b2b2b2;
+  padding: 7px 12px;
+  border: 1px solid rgba(57, 255, 138, 0.35);
+  border-radius: 99px;
+  color: var(--green, #39ff8a);
+  font-weight: 700;
   font-size: 12px;
+  text-decoration: none;
+  width: fit-content;
 }
+.track-record-strip-link:hover { background: rgba(57, 255, 138, 0.1); }
 .activity-section { margin-top: 16px; }
 .pulse-head.no-verdict h2 { font-size: 22px; color: #d6d6d6; }
 
