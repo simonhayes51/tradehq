@@ -19,6 +19,7 @@ import { GATED } from "../../lib/gatedFeatures";
 import RecommendationBadge from "../../components/RecommendationBadge";
 import CoinValue from "../../components/CoinValue";
 import { useAiChat } from "../../hooks/useAiChat";
+import { useEntitlements } from "../../../context/EntitlementsContext";
 import "../../styles/v2-destinations.css";
 import "./chat.css";
 
@@ -35,6 +36,8 @@ const CAPABILITIES = [
 
 export default function Chat() {
   const { messages, sending, error, locked, unavailable, send } = useAiChat();
+  const { tier, isAdmin, loading: entitlementsLoading } = useEntitlements();
+  const isElite = tier === "elite" || isAdmin;
   const [draft, setDraft] = useState("");
 
   function submit(event) {
@@ -60,7 +63,9 @@ export default function Chat() {
             ? unavailable
             : "This part of EAFC.Live isn't switched on yet. Everything else - Opportunities, Trade Finder and player pages - works as normal."}
         />
-      ) : locked ? (
+      ) : entitlementsLoading ? (
+        <div className="v2-page-state" role="status">Checking your plan…</div>
+      ) : !isElite || locked ? (
         // A Free member sees what the assistant can do, with real example
         // questions, WITHOUT a model request being made on their behalf.
         // The demo is the copy in GATED.ai_chat, not a fake conversation:
