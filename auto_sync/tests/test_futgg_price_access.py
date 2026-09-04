@@ -484,6 +484,67 @@ class TestInputValidation:
             await mod.fetch_player_price_detail(0)
 
 
+class TestSignOnlyRevealPath:
+    """sign_player_price_url() - the debug-only function backing the
+    CLI's --show-signed-url flag. Must be opt-in (default scripts never
+    trigger it) and must never fetch the data endpoint."""
+
+    @run_async
+    async def test_reveals_the_signed_url_without_fetching_data(self):
+        from playwright.async_api import async_playwright
+
+        async with async_playwright() as pw:
+            router = MockRouter()
+            router.queue(
+                SIGN_URL_RE, status=200,
+                body={"data": {"url": "https://www.fut.gg/api/fut/player-prices/26/1/?verify=revealme", "expiresIn": 120}},
+            )
+            # Deliberately NOT queuing a DATA_URL_RE response - if
+            # sign_player_price_url() ever fetches the data endpoint,
+            # the unmocked-request fulfil (599) would surface as an
+            # error the test doesn't expect, catching the regression.
+            browser, page = await _open_page(pw, router)
+            try:
+                signed_url, expires_in = await mod.sign_player_price_url(1, page=page)
+                assert "verify=revealme" in signed_url
+                assert expires_in == 120
+            finally:
+                await browser.close()
+
+    @run_async
+    async def test_solves_a_structured_challenge_before_revealing(self):
+        from playwright.async_api import async_playwright
+
+        subject = "reveal-subject"
+        difficulty = 8
+        nonce = _find_nonce(subject, difficulty)
+
+        async with async_playwright() as pw:
+            router = MockRouter()
+            router.queue(
+                SIGN_URL_RE, status=403,
+                body={"data": {"challengeRequired": True, "challenge": {
+                    "algorithm": "sha256-prefix-v1", "subject": subject, "difficulty": difficulty,
+                    "issuedAt": 1, "salt": "s", "token": "t",
+                }}},
+            )
+            router.queue(
+                SIGN_URL_RE, status=200,
+                body={"data": {"url": "https://www.fut.gg/api/fut/player-prices/26/1/?verify=afterpow", "expiresIn": 120}},
+            )
+            browser, page = await _open_page(pw, router)
+            try:
+                signed_url, _ = await mod.sign_player_price_url(1, page=page)
+                assert "verify=afterpow" in signed_url
+            finally:
+                await browser.close()
+
+    def test_normal_scripts_never_pass_the_reveal_flag(self):
+        assert "priceAccessSignAndFetch(eaId, gameYear, platform, diagnostic, true)" not in mod.DETAIL_FETCH_SCRIPT
+        assert "priceAccessSignAndFetch(eaId, gameYear, platform, diagnostic, true)" not in mod.build_batch_script()
+        assert "priceAccessSignAndFetch(eaId, gameYear, platform, diagnostic, true)" in mod.REVEAL_SIGNED_URL_SCRIPT
+
+
 class TestNoSecondSigningImplementation:
     def test_the_batch_script_and_the_single_card_script_share_the_same_core(self):
         assert mod.PRICE_ACCESS_CORE_JS in mod.DETAIL_FETCH_SCRIPT
@@ -491,8 +552,28 @@ class TestNoSecondSigningImplementation:
 
     def test_fetch_script_never_returns_the_full_signed_url(self):
         """Mirrors futgg_sales_sync.py's own guard on _FETCH_SCRIPT -
-        applied here to the canonical core every script is built from."""
-        return_blocks = re.findall(r"return\s*\{[^}]*\}", mod.PRICE_ACCESS_CORE_JS)
+        applied here to the canonical core every script is built from.
+
+        Strengthened, not weakened, for revealSignedUrl (see
+        sign_player_price_url()'s debug-only reveal path): the ONE
+        return block allowed to reference the bare signedUrl identifier
+        must also be gated on `revealSignedUrl` in the same block - any
+        OTHER return block referencing it fails the test outright, and
+        if the guarded one stops mentioning revealSignedUrl (e.g. the
+        gate is accidentally removed) this test fails too."""
+        source = mod.PRICE_ACCESS_CORE_JS
+        return_blocks = re.findall(r"return\s*\{[^}]*\}", source)
         assert return_blocks, "expected at least one return {...} in the core script"
-        for block in return_blocks:
-            assert not re.search(r"\bsignedUrl\b", block), block
+        signed_url_blocks = [b for b in return_blocks if re.search(r"\bsignedUrl\b", b)]
+        assert len(signed_url_blocks) == 1, (
+            f"expected exactly one return block to reference signedUrl "
+            f"(the guarded reveal path), found {len(signed_url_blocks)}: {signed_url_blocks}"
+        )
+        only_block = signed_url_blocks[0]
+        position = source.index(only_block)
+        preceding_context = source[max(0, position - 300):position]
+        assert "if (revealSignedUrl)" in preceding_context, (
+            "the one return block that references signedUrl must be reachable "
+            f"only through an immediately-preceding `if (revealSignedUrl)` guard - "
+            f"preceding context was: {preceding_context!r}"
+        )

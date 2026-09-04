@@ -731,13 +731,35 @@ def test_fetch_script_never_returns_the_full_signed_url():
     (signedUrlOrigin/signedUrlPath/signedUrlIsAbsolute/...) may appear.
     `signedUrl` legitimately appears elsewhere as a function argument
     (new URL(signedUrl, ...), fetch(signedUrl, ...)) - this only checks
-    the returned result objects themselves."""
+    the returned result objects themselves.
+
+    _FETCH_SCRIPT is now built from futgg_price_access.PRICE_ACCESS_CORE_JS
+    (build_batch_script()), which carries exactly one deliberate,
+    explicitly-guarded exception for the CLI probe's --show-signed-url
+    debug path (see that module's own test_fetch_script_never_returns_
+    the_full_signed_url for the full reasoning) - this batch script never
+    triggers it (the per-item mapper always omits the 5th argument), but
+    the guarded source text is still embedded since there is exactly one
+    canonical implementation, not a per-caller copy. Strengthened, not
+    weakened: any OTHER return block referencing signedUrl still fails
+    this test outright."""
     import re
     script = mod._FETCH_SCRIPT
     return_blocks = re.findall(r"return\s*\{[^}]*\}", script)
     assert return_blocks, "expected at least one return {...} in the fetch script"
-    for block in return_blocks:
-        assert not re.search(r"\bsignedUrl\b", block), block
+    signed_url_blocks = [b for b in return_blocks if re.search(r"\bsignedUrl\b", b)]
+    assert len(signed_url_blocks) == 1, (
+        f"expected exactly one return block to reference signedUrl "
+        f"(the guarded reveal path), found {len(signed_url_blocks)}: {signed_url_blocks}"
+    )
+    only_block = signed_url_blocks[0]
+    position = script.index(only_block)
+    preceding_context = script[max(0, position - 300):position]
+    assert "if (revealSignedUrl)" in preceding_context, (
+        "the one return block that references signedUrl must be reachable "
+        f"only through an immediately-preceding `if (revealSignedUrl)` guard - "
+        f"preceding context was: {preceding_context!r}"
+    )
     assert "parsed.origin" in script
     assert "parsed.pathname" in script
 

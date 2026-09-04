@@ -306,7 +306,13 @@ class SignedUrlCache:
 # otherwise have to be escaped throughout - substituting two uniquely-
 # named tokens is far less error-prone than doubling every `{`/`}`.
 _CORE_JS_TEMPLATE = r"""
-async function priceAccessSignAndFetch(eaId, gameYear, platform, diagnostic) {
+async function priceAccessSignAndFetch(eaId, gameYear, platform, diagnostic, revealSignedUrl) {
+    // revealSignedUrl: the ONE deliberate exception to "never return the
+    // signed URL" - opt-in only, used solely by the CLI probe's
+    // --show-signed-url debug flag (see sign_player_price_url() in
+    // futgg_price_access.py), never by fetch_player_price_detail()'s
+    // normal path or by futgg_sales_sync.py's batch script, both of
+    // which always pass this as falsy/omitted.
     const diag = {};
     const path = `/api/fut/player-prices/${gameYear}/${eaId}/`;
     const target = `${path}?platform=${platform}`;
@@ -467,6 +473,13 @@ async function priceAccessSignAndFetch(eaId, gameYear, platform, diagnostic) {
     diag.expiresIn = expiresIn;
     Object.assign(diag, signedUrlShapeDiag(signedUrl));
 
+    if (revealSignedUrl) {
+        // The one deliberate, opt-in exception - see the parameter
+        // comment above. Stops here: never fetches, never solves
+        // anything further, just hands back what signing produced.
+        return { eaId, signedUrl, expiresIn, challengeSolved, challengeAttempts, ...diag };
+    }
+
     let dataRes;
     try {
         dataRes = await fetch(signedUrl, { headers: { 'accept': 'application/json' }, credentials: 'same-origin' });
@@ -545,6 +558,19 @@ DETAIL_FETCH_SCRIPT = f"""
 async ({{ eaId, gameYear, platform, diagnostic }}) => {{
 {PRICE_ACCESS_CORE_JS}
     return await priceAccessSignAndFetch(eaId, gameYear, platform, diagnostic);
+}}
+"""
+
+# Debug-only variant: stops after signing (never fetches the data
+# endpoint) and reveals the signed URL - the single, explicit,
+# opt-in exception to this module's "never return the signed URL" rule.
+# Used only by sign_player_price_url() below, itself used only by the
+# CLI probe's --show-signed-url flag. Never used by the production
+# collector or by fetch_player_price_detail()'s normal path.
+REVEAL_SIGNED_URL_SCRIPT = f"""
+async ({{ eaId, gameYear, platform, diagnostic }}) => {{
+{PRICE_ACCESS_CORE_JS}
+    return await priceAccessSignAndFetch(eaId, gameYear, platform, diagnostic, true);
 }}
 """
 
@@ -758,6 +784,67 @@ async def fetch_player_price_detail(
         challenge_attempts=result.get("challengeAttempts"),
         signed_url_expires_in=result.get("expiresIn"),
     )
+
+
+async def sign_player_price_url(
+    ea_id: int,
+    game_year: int = DEFAULT_GAME_YEAR,
+    platform: str = DEFAULT_PLATFORM,
+    *,
+    page=None,
+    anchor_url: str = DEFAULT_ANCHOR_URL,
+    headless: bool = True,
+    user_agent: Optional[str] = None,
+    timeout_ms: int = 45_000,
+) -> tuple[str, Optional[float]]:
+    """Debug-only: sign a card's price-access URL (solving a structured
+    proof-of-work challenge if one is returned) and hand back the raw
+    signed URL and its advertised expiresIn, WITHOUT fetching the data
+    endpoint. This is the one function in this module that returns an
+    actual signed URL to its caller - it exists solely for the CLI
+    probe's --show-signed-url flag, which has an explicit, informed-
+    consent reason to display it. Callers must not log the returned URL
+    at anything other than a level the operator explicitly asked for,
+    and must never persist it - it is valid for a very short window
+    (see PRICE_ACCESS_SIGN_CACHE_MAX_TTL_MS) and is worthless afterward
+    regardless.
+    """
+    if not isinstance(ea_id, int) or isinstance(ea_id, bool) or ea_id <= 0:
+        raise InvalidEaIdError(f"ea_id must be a positive integer, got {ea_id!r}")
+
+    owns_page = page is None
+    playwright_handle = browser_handle = None
+    if owns_page:
+        playwright_handle, browser_handle, page = await _open_diagnostic_page(
+            anchor_url,
+            headless=headless,
+            user_agent=user_agent or _DEFAULT_USER_AGENT,
+            timeout_ms=timeout_ms,
+        )
+
+    try:
+        result = await page.evaluate(
+            REVEAL_SIGNED_URL_SCRIPT,
+            {"eaId": ea_id, "gameYear": game_year, "platform": platform, "diagnostic": False},
+        )
+    finally:
+        if owns_page:
+            try:
+                await browser_handle.close()
+            finally:
+                await playwright_handle.stop()
+
+    if result.get("error"):
+        log.warning(
+            "sign-only request failed ea_id=%s error=%s signStatus=%s",
+            ea_id, result.get("error"), result.get("signStatus"),
+        )
+        _raise_for_error(ea_id, result)
+
+    signed_url = result.get("signedUrl")
+    if not signed_url:
+        raise InvalidResponseSchemaError(f"ea_id={ea_id}: signing succeeded but no signedUrl was returned.")
+    return signed_url, result.get("expiresIn")
 
 
 _DEFAULT_USER_AGENT = (
