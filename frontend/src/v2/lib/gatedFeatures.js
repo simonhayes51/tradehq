@@ -42,7 +42,7 @@ export const GATED = {
   },
   ai_chat: {
     feature: "ai_chat",
-    title: "The trading assistant is part of Elite",
+    title: "AI Chat is part of Elite",
     what:
       "Ask about any card or budget in plain English and get an answer built from live market " +
       "data — never invented, and never a prediction.",

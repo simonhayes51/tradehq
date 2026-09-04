@@ -51,7 +51,7 @@ export const PLAN_ROWS = [
     free: `Last ${FREE_LIMITS.trackRecordDays} days, headline results`,
     elite: "Every published call, every window, full ledger",
   },
-  { label: "AI trading assistant", free: false, elite: "Ask about any card or budget" },
+  { label: "AI Chat", free: false, elite: "Ask about any card or budget" },
   { label: "Members-only Discord", free: false, elite: "The Elite channel in the EAFC Live Discord" },
 ];
 
