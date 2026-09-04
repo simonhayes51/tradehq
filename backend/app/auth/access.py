@@ -381,6 +381,8 @@ def public_card_preview(item: Dict[str, Any]) -> Dict[str, Any]:
     out["requires_account"] = True
     # Freshness is safe and useful: it tells someone whether the product
     # is actually live without telling them what the number is.
+    out["current_bin_checked_at"] = item.get("current_bin_checked_at")
+    out["current_bin_captured_at"] = item.get("current_bin_captured_at")
     out["price_age_seconds"] = item.get("price_age_seconds")
     return out
 
