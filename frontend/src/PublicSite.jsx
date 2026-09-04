@@ -575,19 +575,31 @@ function PublicHome() {
       {/* ============ SIMPLE TO ADVANCED — full-width, black ============ */}
       <section className="pub-band pub-band-black">
         <div className="pub-container pub-section">
-          <div className="pub-section-head"><span>SIMPLE TO ADVANCED</span><h2>Easy for casual trades, deep enough for serious ones</h2></div>
-          <p className="pub-section-lead">Every call starts simple. The full evidence is always one tap away, for anyone who wants it.</p>
-          <div className="pub-demo">
-            <div className="pub-demo-simple">
-              <span className="pub-verdict pub-verdict-buy">BUY</span>
-              <p>Buy around <b>76,000</b> · profit around <b>4,000</b> after tax</p>
-              <span className="pub-demo-speed">Selling speed: Good</span>
-              <p className="pub-demo-note">This card has recently been selling above its current asking price.</p>
+          {/* Two-column, matching the Discord-feed section below it -
+              text left, evidence right - rather than stacking the demo
+              card under the lead paragraph. Stacked, the card (fixed
+              max-width, sized to its own compact content) left a huge
+              bare void filling the rest of the 1280px container on a
+              wide screen; side by side, the copy's own width fills the
+              left column and the card anchors the right at a size that
+              matches its content instead of stretching to match. */}
+          <div className="pub-simple-demo-grid">
+            <div>
+              <div className="pub-section-head"><span>SIMPLE TO ADVANCED</span><h2>Easy for casual trades, deep enough for serious ones</h2></div>
+              <p className="pub-section-lead">Every call starts simple. The full evidence is always one tap away, for anyone who wants it.</p>
             </div>
-            <button type="button" className="pub-demo-advanced" disabled aria-disabled="true">
-              <span><ChevronRight size={14} /> Advanced rationale</span>
-              <span className="pub-demo-advanced-hint">Exact price, what it&apos;s worth, recent sales, confidence and risk — on the free account</span>
-            </button>
+            <div className="pub-demo">
+              <div className="pub-demo-simple">
+                <span className="pub-verdict pub-verdict-buy">BUY</span>
+                <p>Buy around <b>76,000</b> · profit around <b>4,000</b> after tax</p>
+                <span className="pub-demo-speed">Selling speed: Good</span>
+                <p className="pub-demo-note">This card has recently been selling above its current asking price.</p>
+              </div>
+              <button type="button" className="pub-demo-advanced" disabled aria-disabled="true">
+                <span><ChevronRight size={14} /> Advanced rationale</span>
+                <span className="pub-demo-advanced-hint">Exact price, what it&apos;s worth, recent sales, confidence and risk — on the free account</span>
+              </button>
+            </div>
           </div>
         </div>
       </section>
