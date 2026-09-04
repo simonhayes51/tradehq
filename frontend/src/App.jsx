@@ -1,6 +1,6 @@
 // src/App.jsx
 
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, useEffect } from "react";
 import { HashRouter as Router, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { Toaster } from "react-hot-toast";
 import { AuthProvider } from "./context/AuthContext";
@@ -89,6 +89,18 @@ function App() {
   }
 
   return (
+    <>
+    {/* index.css's base theme is LIGHT (`body { background-color: rgb(255
+        255 255) }`, and its `.dark :root` override is a selector that can
+        never match, since :root IS the html element). The app shell below
+        paints itself black, but a background on <body> propagates to the
+        document canvas, so every pixel the shell's own box does not cover
+        stayed white: overscroll/rubber-banding at the top and bottom of a
+        long page, and the gutters beside a max-width container. On the
+        Player Page - the longest scroll in the app - that read as white
+        leaking outside the dark app container. Set once, at the document
+        level, rather than patching each page's min-height. */}
+    <DarkDocumentCanvas />
     <AuthProvider>
       <EntitlementsProvider>
         <Router>
@@ -305,7 +317,21 @@ function App() {
         </Router>
       </EntitlementsProvider>
     </AuthProvider>
+    </>
   );
+}
+
+// Paints the document canvas (html + body) dark for the app host, and
+// puts it back on unmount so nothing else that renders in this build
+// inherits it. See the comment at the call site.
+function DarkDocumentCanvas() {
+  useEffect(() => {
+    const targets = [document.documentElement, document.body];
+    const previous = targets.map((el) => el.style.backgroundColor);
+    targets.forEach((el) => { el.style.backgroundColor = "#000000"; });
+    return () => targets.forEach((el, i) => { el.style.backgroundColor = previous[i]; });
+  }, []);
+  return null;
 }
 
 // ErrorBoundary sits INSIDE the Router so it can see navigation. It used

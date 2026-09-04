@@ -316,8 +316,50 @@
   white-space: nowrap;
   border: 0;
 }
+/* A locked nav item is a real link. Stated explicitly so a future
+   `pointer-events: none` on a "disabled-looking" style can't quietly
+   turn the only route to the upgrade page into a dead label. */
+.v2-global-nav .nav-locked { pointer-events: auto; }
+
+/* The one persistent Free -> Elite entry point (Sidebar.jsx). Sits just
+   above the account chip on the desktop rail. Restrained on purpose: an
+   accent border and the accent word, not a filled green block competing
+   with every primary action on the page beside it. */
+.v2-global-nav .nav-upgrade {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: auto;
+  margin-bottom: 8px;
+  min-height: 46px;
+  padding: 0 12px;
+  border: 1px solid rgba(57, 255, 138, 0.45);
+  border-radius: 4px;
+  background: rgba(57, 255, 138, 0.08);
+  color: var(--v2-accent, #39ff8a);
+  font-weight: 800;
+  font-size: 13px;
+  text-decoration: none;
+}
+.v2-global-nav .nav-upgrade:hover,
+.v2-global-nav .nav-upgrade.active {
+  border-color: var(--v2-accent, #39ff8a);
+  background: rgba(57, 255, 138, 0.16);
+}
+.v2-global-nav .nav-upgrade .nav-upgrade-arrow { margin-left: auto; flex: 0 0 auto; }
+.v2-global-nav .nav-upgrade .nav-short-label { display: none; }
+/* .account-chip carries its own `margin-top: auto`; with two auto
+   margins the spare space is split between them and the upgrade entry
+   floats into the middle of the rail instead of sitting on the chip. */
+.v2-global-nav .nav-upgrade + .account-chip { margin-top: 0; }
+
 @media (max-width: 800px) {
   /* No room for a lock in a 5-across bottom bar; the page itself
      explains. */
   .v2-global-nav .nav-lock { display: none; }
+  /* The bottom tab bar is already full at five items and `margin-top:
+     auto` means nothing in a row. The upgrade route stays reachable on
+     mobile through Account -> "Upgrade to Elite", which is a full-width
+     row rather than a sixth 44px tab nobody can read. */
+  .v2-global-nav .nav-upgrade { display: none; }
 }

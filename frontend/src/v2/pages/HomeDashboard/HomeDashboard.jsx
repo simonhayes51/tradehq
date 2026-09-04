@@ -206,6 +206,19 @@ export default function HomeDashboard(){
   // have not resolved yet gets no lead rather than a hero card with
   // every figure blanked out.
   const lead=opportunities.find(x=>!x.locked)??null;
+  // The three states Top Card can be in when there is no lead, kept
+  // apart deliberately. This panel used to render one EmptyState whose
+  // copy ("Today's picks haven't landed yet - the cards below are ready
+  // when they do") directly contradicted the numbered locked previews
+  // sitting underneath it: those cards HAD landed, they were simply not
+  // this viewer's to see. And because .decision-stage is a two-column
+  // grid, an ~80px empty state next to the full-height Market Pulse
+  // column stretched into an enormous empty rectangle.
+  const feedLoading=dashboardQuery.isLoading||futggOppsQuery.isLoading;
+  const firstLocked=opportunities.find(x=>x.locked)??null;
+  // "Locked, not absent": the day HAS produced picks, this viewer's
+  // free allowance just doesn't cover them.
+  const lockedOnly=!feedLoading&&!lead&&opportunities.length>0;
   const queue=opportunities.filter(x=>String(x.cardId)!==String(lead?.cardId)).slice(0,6);
   const shown=new Set([lead,...queue].filter(Boolean).map(x=>String(x.cardId)));
   const strategyItems=strategyRaw.map(hydrate).filter(x=>!shown.has(String(x.cardId))).slice(0,8);
@@ -301,7 +314,7 @@ export default function HomeDashboard(){
 
       {showOverview?<>
         <section className="decision-stage">
-          <div className="lead-trade"><div className="lead-label"><Zap size={15}/> TOP CARD</div>{lead?<div className="lead-layout"><button className="lead-card player-open-button" onClick={()=>setSelected(lead)} aria-label={`Open ${nameOf(lead.player)} analysis`}><CardImage player={lead.player} featured/></button><div className="lead-copy"><div className="lead-head"><div><PlayerMeta player={lead.player} source={lead.source}/><h1>{nameOf(lead.player)}</h1></div><div className="lead-status"><b className={`call ${String(lead.recommendation).toLowerCase()}`}>{lead.recommendation}</b><ConfidenceRing value={lead.confidence}/></div></div>{lead.source==="futgg"?<MarketFreshness priceAgeSeconds={lead.priceAgeSeconds} capturedAt={lead.updatedAt}/>:null}<p>{reason(lead)}</p><div className="lead-numbers"><Metric label="Buy below" value={<CoinValue value={lead.entryPrice??lead.currentBin}/>} sub="Maximum entry" tone="entry"/><Metric label="Expected profit" value={<CoinValue value={expectedProfit(lead)} signed/>} sub="After EA tax" tone="positive"/><Metric label="Risk level" value={lead.risk||"Unknown"} sub={`${sellingSpeedLabel(lead.liquidityScore)} selling speed`}/></div><div className="lead-actions"><button onClick={()=>setSelected(lead)}>View move <ArrowRight size={17}/></button><button className="secondary" onClick={()=>watchItem(lead)} aria-label="Add top card to watchlist"><Star size={16} fill={watchStates[String(lead.cardId)]==="saved"?"currentColor":"none"}/>{watchStates[String(lead.cardId)]==="saved"?"Watching":"Watch"}</button></div></div></div>:<EmptyState compact text={opportunities.length?"Today's picks haven't landed yet — the cards below are ready when they do.":"No clean trade has passed the filters yet."}/>}</div>
+          <div className={`lead-trade${lead?"":" is-pending"}`}><div className="lead-label"><Zap size={15}/> TOP CARD</div>{lead?<div className="lead-layout"><button className="lead-card player-open-button" onClick={()=>setSelected(lead)} aria-label={`Open ${nameOf(lead.player)} analysis`}><CardImage player={lead.player} featured/></button><div className="lead-copy"><div className="lead-head"><div><PlayerMeta player={lead.player} source={lead.source}/><h1>{nameOf(lead.player)}</h1></div><div className="lead-status"><b className={`call ${String(lead.recommendation).toLowerCase()}`}>{lead.recommendation}</b><ConfidenceRing value={lead.confidence}/></div></div>{lead.source==="futgg"?<MarketFreshness priceAgeSeconds={lead.priceAgeSeconds} capturedAt={lead.updatedAt}/>:null}<p>{reason(lead)}</p><div className="lead-numbers"><Metric label="Buy below" value={<CoinValue value={lead.entryPrice??lead.currentBin}/>} sub="Maximum entry" tone="entry"/><Metric label="Expected profit" value={<CoinValue value={expectedProfit(lead)} signed/>} sub="After EA tax" tone="positive"/><Metric label="Risk level" value={lead.risk||"Unknown"} sub={`${sellingSpeedLabel(lead.liquidityScore)} selling speed`}/></div><div className="lead-actions"><button onClick={()=>setSelected(lead)}>View move <ArrowRight size={17}/></button><button className="secondary" onClick={()=>watchItem(lead)} aria-label="Add top card to watchlist"><Star size={16} fill={watchStates[String(lead.cardId)]==="saved"?"currentColor":"none"}/>{watchStates[String(lead.cardId)]==="saved"?"Watching":"Watch"}</button></div></div></div>:<TopCardPending loading={feedLoading} lockedOnly={lockedOnly} preview={firstLocked} freePicks={dashboard.freePicks} navigate={navigate}/>}</div>
           {/* Two states, never blended. When the backend declines to
               characterise the market (too few cards valued - see
               _compute_live_market_regime), it returns label "Unknown" and
@@ -347,7 +360,7 @@ export default function HomeDashboard(){
       {showTrackRecord?<TrackRecordSummary/>:null}
 
       {showOpportunities?<>
-        <section className="queue-section" id="queue"><div className="section-head"><div><span>LIVE OPPORTUNITIES</span><h2>Next best moves</h2></div><Link to="/players">Find a player <ArrowRight size={15}/></Link></div><FreePicksNote meta={dashboard.freePicks}/><div className="queue-grid">{queue.length?queue.map((item,index)=><QueueCard key={item.cardId} item={item} rank={index+2} onOpen={setSelected} onWatch={watchItem} watchState={watchStates[String(item.cardId)]}/>):<EmptyFeedReason noun="opportunities" filtersActive={false}/>}{dashboard.locked?.opportunityFeed&&dashboard.locked?.previewCount>0?<LockedPreviewCard count={dashboard.locked.previewCount} navigate={navigate}/>:null}</div></section>
+        <section className="queue-section" id="queue"><div className="section-head"><div><span>LIVE OPPORTUNITIES</span><h2>Next best moves</h2></div><Link to="/players">Find a player <ArrowRight size={15}/></Link></div><FreePicksNote meta={dashboard.freePicks} lockedPreviews={queue.filter(x=>x.locked).length}/><div className="queue-grid">{queue.length?queue.map((item,index)=><QueueCard key={item.cardId} item={item} rank={index+(lead?2:1)} onOpen={setSelected} onWatch={watchItem} watchState={watchStates[String(item.cardId)]}/>):<EmptyFeedReason noun="opportunities" filtersActive={false}/>}{dashboard.locked?.opportunityFeed&&dashboard.locked?.previewCount>0?<LockedPreviewCard count={dashboard.locked.previewCount} navigate={navigate}/>:null}</div></section>
         <section className="strategy-section"><div className="section-head"><div><span>STRATEGY FINDER</span><h2>Find a different angle</h2></div></div><div className="strategy-tabs">{STRATEGIES.map(([key,label])=><button key={key} className={strategy===key?"active":""} onClick={()=>setStrategy(key)}>{label}</button>)}</div><p className="strategy-blurb">{STRATEGY_BLURBS[strategy]||strategyQuery.data?.description}</p><div className="strategy-grid">{strategyQuery.isLoading?<EmptyState compact text="Scanning this strategy…"/>:strategyItems.length?strategyItems.map(item=><StrategyCard key={item.cardId} item={item} onOpen={setSelected} onWatch={watchItem} watchState={watchStates[String(item.cardId)]}/>):<EmptyState compact text={STRATEGY_EMPTY_TEXT[strategy]||DEFAULT_STRATEGY_EMPTY_TEXT}/>}</div>
           {!strategyQuery.isLoading&&watchItems.length?<div className="strategy-watch-section"><div className="strategy-watch-head"><span>NEAR ENTRY</span><p>Not yet actionable - within reach of entry, still profitable at today's price. Not a current recommendation.</p></div><div className="strategy-watch-grid">{visibleWatchItems.map(item=><WatchCard key={item.cardId} item={item} onOpen={setSelected} onWatch={watchItem} watchState={watchStates[String(item.cardId)]}/>)}</div>{watchItems.length>visibleWatchItems.length?<Link className="strategy-watch-more" to="/trade-finder">View {watchItems.length-visibleWatchItems.length} more near-entry cards <ArrowRight size={14}/></Link>:null}</div>:null}
         </section>
@@ -439,7 +452,69 @@ export function AnalysisModal({item,onClose,navigate,onWatch,watchState,backLabe
   // half of the AVOID-card contradiction (an Erling Haaland avoid read
   // "sell above 690,000 just to cover tax" when 690,000 was actually
   // the full-profit target; the true break-even was ~637,000).
-  const target=(!negativeCall&&isFutgg&&item.recommendedSellTarget!=null)?Number(item.recommendedSellTarget):modalTarget(item,entry,gain);const confidence=item.confidence==null?null:Math.max(0,Math.min(100,Math.round(Number(item.confidence))));const fair=Number(item.fairValue)||0;const reasons=[fair>entry?`${percent((fair-entry)/entry*100)} below recent value`:reason(item),negativeCall?"The recommendation is to avoid this card at the current price - the figures above are hypothetical, not a target":(gain>0?<><CoinValue value={gain} signed/> estimated after EA tax</>:`Current price does not leave enough margin`),`${item.risk||"Unknown"} risk · ${sellingSpeedLabel(item.liquidityScore)} selling speed`];return <div className={isPage?"dash-page-shell":"dash-analysis-backdrop"} onMouseDown={isPage?undefined:(event)=>event.target===event.currentTarget&&onClose()}><section className={`dash-analysis-modal${extra?" has-extra":""}${isPage?" page-mode":""}`} role={isPage?undefined:"dialog"} aria-modal={isPage?undefined:"true"} aria-label={isPage?undefined:`${nameOf(item.player)} quick analysis`}>{backLabel?<button className="dash-modal-back" onClick={onClose}><ArrowRight size={16}/>{backLabel}</button>:null}<button className="dash-modal-close" onClick={onClose} aria-label="Close analysis"><X size={20}/></button><div className="dash-modal-card"><CardImage player={item.player} featured/></div><div className="dash-modal-copy"><div className="dash-modal-heading"><div><PlayerMeta player={item.player} source={item.source}/><h2>{nameOf(item.player)}</h2></div><b className={`call ${String(item.recommendation||"WATCH").toLowerCase()}`}>{item.recommendation||"WATCH"}</b></div>{isFutgg?<MarketFreshness priceAgeSeconds={item.priceAgeSeconds} capturedAt={item.updatedAt} className="dash-modal-freshness"/>:null}<ModalVerdict item={item} entry={entry} realEntry={realEntry} target={target}/><div className="dash-modal-numbers"><Metric label={negativeCall?"Current price":(showCeiling?"Buy now":"Buy below")} value={<CoinValue value={negativeCall?entry:buyPrice}/>} sub={negativeCall?"Current market entry":(buyPrice==null?"Not enough data to set one":(showCeiling?<>Pay up to <CoinValue value={ceiling}/></>:"Maximum entry"))} tone="entry"/><Metric label={negativeCall?"Return after tax":"Expected profit"} value={<CoinValue value={gain} signed/>} sub={negativeCall?"Hypothetical - not a recommendation":"After EA tax"} tone={negativeCall?"":(gain==null?"":gain>=0?"positive":"negative")}/><Metric label={negativeCall?"Break-even sale":"Sell target"} value={<CoinValue value={target}/>} sub={negativeCall?"Minimum sale to cover tax":"List around this price"} tone="target"/></div><div className="dash-modal-lower"><ModalPriceChart cardId={item.cardId} entryPrice={negativeCall?entry:realEntry} targetPrice={target} fairValue={fair} source={item.source}/><div className="dash-modal-summary"><div className={`dash-confidence${confidence==null?" no-data":""}`}><div><span>Confidence</span><strong>{confidence==null?"—":`${confidence}%`}</strong></div><i><b style={{width:`${confidence??0}%`}}/></i></div>{item.popularity!=null?<div className="dash-confidence"><div><span>In-game popularity</span><strong>{item.popularity}%</strong></div><i><b style={{width:`${item.popularity}%`}}/></i></div>:null}{item.psPcBinGapPct!=null?<p className="ps-pc-gap">{item.psPcBinGapPct>0?`${Math.abs(item.psPcBinGapPct).toFixed(1)}% cheaper listed on PS`:`${Math.abs(item.psPcBinGapPct).toFixed(1)}% cheaper listed on PC`}</p>:null}<ul>{reasons.map((text,index)=><li key={index}><span>✓</span><span className="reason-copy">{text}</span></li>)}</ul>{item.raw?<div className="dash-modal-advanced"><AdvancedRationale item={item.raw}/></div>:null}<div className="dash-modal-actions"><button onClick={()=>negativeCall?navigate("/trade-finder"):navigate(`/portfolio?card_id=${item.cardId}&buy=${entry}&sell=${target}&quantity=1&player=${encodeURIComponent(nameOf(item.player))}`)}><Target size={17}/>{negativeCall?"Find a better trade":"Log trade"}</button><button className="secondary watch-action" onClick={()=>onWatch(item)}><Star size={17} fill={watchState==="saved"?"currentColor":"none"}/>{watchState==="saved"?"Watching":"Add to watchlist"}</button></div></div></div>{extra?<div className="dash-modal-extra">{extra}</div>:null}</div></section></div>}
+  const target=(!negativeCall&&isFutgg&&item.recommendedSellTarget!=null)?Number(item.recommendedSellTarget):modalTarget(item,entry,gain);const confidence=item.confidence==null?null:Math.max(0,Math.min(100,Math.round(Number(item.confidence))));const fair=Number(item.fairValue)||0;const reasons=[fair>entry?`${percent((fair-entry)/entry*100)} below recent value`:reason(item),negativeCall?"The recommendation is to avoid this card at the current price - the figures above are hypothetical, not a target":(gain>0?<><CoinValue value={gain} signed/> estimated after EA tax</>:`Current price does not leave enough margin`),`${item.risk||"Unknown"} risk · ${sellingSpeedLabel(item.liquidityScore)} selling speed`];
+
+  // One navigation model per surface. The page variant previously
+  // rendered BOTH a circular X in the corner AND a "Back to player
+  // search" link, which are two different mental models of where you
+  // are (an overlay you dismiss vs a page you navigate away from) shown
+  // at the same time. A page gets the back link; an overlay gets the X.
+  const isWait=String(item.recommendation||"").toUpperCase()==="WAIT";
+  const logTradeHref=`/portfolio?card_id=${item.cardId}&buy=${entry}&sell=${target}&quantity=1&player=${encodeURIComponent(nameOf(item.player))}`;
+  const watchButton=(className)=><button className={className} onClick={()=>onWatch(item)}><Star size={17} fill={watchState==="saved"?"currentColor":"none"}/>{watchState==="saved"?(isWait?"Watching for entry":"Watching"):(isWait?"Watch for entry":"Add to watchlist")}</button>;
+  // The primary action must not contradict the verdict. A large bright
+  // "LOG TRADE" beside a WAIT recommendation tells the reader to do the
+  // exact thing the page just advised against; logging a purchase they
+  // have ALREADY made is still a legitimate thing to want, so it stays -
+  // as the secondary action, labelled as what it is.
+  const actions=negativeCall
+    ? <><button onClick={()=>navigate("/trade-finder")}><Target size={17}/>Find a better trade</button>{watchButton("secondary watch-action")}</>
+    : isWait
+      ? <>{watchButton("watch-action")}<button className="secondary" onClick={()=>navigate(logTradeHref)}><Target size={17}/>I already bought this — log it</button></>
+      : <><button onClick={()=>navigate(logTradeHref)}><Target size={17}/>Log trade</button>{watchButton("secondary watch-action")}</>;
+
+  // The chart + summary block. On the standalone page it is rendered as
+  // a full-width row BELOW both columns rather than inside the right-
+  // hand copy column: the card-art column is short and the copy column
+  // is very long, so everything under the card image sat beside a tall
+  // empty left-hand gutter. On the popup it stays where it was.
+  const lower=<div className="dash-modal-lower">
+    <ModalPriceChart cardId={item.cardId} entryPrice={negativeCall?entry:realEntry} targetPrice={target} fairValue={fair} source={item.source}/>
+    <div className="dash-modal-summary">
+      <div className={`dash-confidence${confidence==null?" no-data":""}`}><div><span>Confidence</span><strong>{confidence==null?"—":`${confidence}%`}</strong></div><i><b style={{width:`${confidence??0}%`}}/></i></div>
+      {item.popularity!=null?<div className="dash-confidence"><div><span>In-game popularity</span><strong>{item.popularity}%</strong></div><i><b style={{width:`${item.popularity}%`}}/></i></div>:null}
+      {item.psPcBinGapPct!=null?<p className="ps-pc-gap">{item.psPcBinGapPct>0?`${Math.abs(item.psPcBinGapPct).toFixed(1)}% cheaper listed on PS`:`${Math.abs(item.psPcBinGapPct).toFixed(1)}% cheaper listed on PC`}</p>:null}
+      <ul>{reasons.map((text,index)=><li key={index}><span>✓</span><span className="reason-copy">{text}</span></li>)}</ul>
+      {item.raw?<div className="dash-modal-advanced"><AdvancedRationale item={item.raw}/></div>:null}
+      <div className="dash-modal-actions">{actions}</div>
+    </div>
+  </div>;
+
+  return <div className={isPage?"dash-page-shell":"dash-analysis-backdrop"} onMouseDown={isPage?undefined:(event)=>event.target===event.currentTarget&&onClose()}>
+    <section className={`dash-analysis-modal${extra?" has-extra":""}${isPage?" page-mode":""}`} role={isPage?undefined:"dialog"} aria-modal={isPage?undefined:"true"} aria-label={isPage?undefined:`${nameOf(item.player)} quick analysis`}>
+      {isPage
+        ? (backLabel?<button className="dash-modal-back" onClick={onClose}><ArrowRight size={16}/>{backLabel}</button>:null)
+        : <button className="dash-modal-close" onClick={onClose} aria-label="Close analysis"><X size={20}/></button>}
+      <div className="dash-modal-card"><CardImage player={item.player} featured/></div>
+      <div className="dash-modal-copy">
+        <div className="dash-modal-heading"><div><PlayerMeta player={item.player} source={item.source}/><h2>{nameOf(item.player)}</h2></div><b className={`call ${String(item.recommendation||"WATCH").toLowerCase()}`}>{item.recommendation||"WATCH"}</b></div>
+        {/* The ONE live-price freshness line on this surface. The market
+            section below used to render a second one from the same
+            fields, so the page told you twice how old the price was. */}
+        {isFutgg?<MarketFreshness priceAgeSeconds={item.priceAgeSeconds} capturedAt={item.updatedAt} className="dash-modal-freshness"/>:null}
+        <ModalVerdict item={item} entry={entry} realEntry={realEntry} target={target}/>
+        <div className="dash-modal-numbers">
+          <Metric label={negativeCall?"Current price":(showCeiling?"Buy now":"Buy below")} value={<CoinValue value={negativeCall?entry:buyPrice}/>} sub={negativeCall?"Current market entry":(buyPrice==null?"Not enough data to set one":(showCeiling?<>Pay up to <CoinValue value={ceiling}/></>:"Maximum entry"))} tone="entry"/>
+          <Metric label={negativeCall?"Return after tax":"Expected profit"} value={<CoinValue value={gain} signed/>} sub={negativeCall?"Hypothetical - not a recommendation":"After EA tax"} tone={negativeCall?"":(gain==null?"":gain>=0?"positive":"negative")}/>
+          <Metric label={negativeCall?"Break-even sale":"Sell target"} value={<CoinValue value={target}/>} sub={negativeCall?"Minimum sale to cover tax":"List around this price"} tone="target"/>
+        </div>
+        {isPage?null:lower}
+      </div>
+      {isPage?<div className="dash-modal-wide">{lower}</div>:null}
+      {extra?<div className="dash-modal-extra">{extra}</div>:null}
+    </section>
+  </div>;
+}
 function ModalVerdict({item,entry,realEntry,target}){if(isNegativeCall(item))return <p className="dash-modal-verdict">Avoid at <CoinValue value={entry}/>. It needs to sell above <CoinValue value={target}/> just to cover EA tax.</p>;
   // realEntry (not entry) below: entry silently falls back to the live
   // ask, which read as "wait for a better price than the price it's
@@ -471,12 +546,107 @@ function PulseFooter({nextPromo,sbcImpact}){
 }
 function Metric({label,value,sub,tone}){return <div className={`metric ${tone||""}`}><span>{label}</span><strong>{value}</strong>{sub?<small>{sub}</small>:null}</div>}
 function ConfidenceRing({value,compact=false}){const score=value==null?null:Math.max(0,Math.min(100,Math.round(Number(value))));return <div className={`confidence-ring ${compact?"compact":""}${score==null?" no-data":""}`} style={{"--confidence":`${(score??0)*3.6}deg`}}><span>{score==null?"—":score}{score==null?null:<small>%</small>}</span></div>}
-function LockedQueueCard({item,rank}){return <Link className="queue-card locked-opportunity" to={`/players/${item.cardId}`} state={{from:"home"}}><span className="rank">#{rank}</span><div className="queue-art"><CardImage player={item.player} compact/></div><div className="queue-name"><strong>{nameOf(item.player)}</strong><PlayerMeta player={item.player} source={item.source}/><small>{item.currentBin!=null?`Around ${count(item.currentBin)} coins`:"Price unavailable"}</small></div><div className="queue-reason"><b>WHY THIS MOVE</b><span>{item.reasoning||"Market signal"}</span></div><div className="queue-signals"><div className="entry"><span>BUY BELOW</span><i className="locked-figure" aria-hidden="true"/></div><div className="profit"><span>EXPECTED PROFIT</span><i className="locked-figure" aria-hidden="true"/></div></div><span className="locked-opportunity-note"><Lock size={12}/> Exact prices on Elite</span><ChevronRight className="queue-arrow" size={18}/></Link>}
+// A locked opportunity preview.
+//
+// Rebuilt as its own component with its own layout instead of being
+// squeezed through the unlocked card's 7-column grid, which it never
+// fitted: it renders six children where that grid expects seven, and
+// `.queue-card.locked-opportunity { display: flex }` then abandoned the
+// grid altogether, so the name, the reason, the two placeholder figures
+// and the "Exact prices on Elite" note all competed for one flex row and
+// overlapped, clipped and compressed into each other.
+//
+// The content rule is unchanged and still enforced server-side: the
+// premium fields were never sent, so there is nothing here to blur. What
+// changes is that the card now says plainly WHAT is withheld and offers
+// one action, instead of showing two striped rectangles under labels.
+function LockedQueueCard({item,rank}){
+  return <Link className="queue-card locked-opportunity" to={`/players/${item.cardId}`} state={{from:"home"}}>
+    <span className="rank">#{rank}</span>
+    <div className="queue-art"><CardImage player={item.player} compact/></div>
+    <div className="locked-body">
+      <strong className="locked-name">{nameOf(item.player)}</strong>
+      <PlayerMeta player={item.player} source={item.source}/>
+      <p className="locked-reason">{item.reasoning||"Market signal"}</p>
+      <p className="locked-price">{item.currentBin!=null?`Around ${count(item.currentBin)} coins right now`:"Price unavailable"}</p>
+    </div>
+    <div className="locked-panel">
+      <span className="locked-panel-title"><Lock size={12}/> Elite only</span>
+      <ul className="locked-panel-list">
+        <li>Exact buy price</li>
+        <li>Sell target</li>
+        <li>Expected profit</li>
+      </ul>
+      <span className="locked-panel-cta">Unlock <ChevronRight size={14}/></span>
+    </div>
+  </Link>;
+}
 
 // What a Free member is told about their allowance on Home. Same numbers
 // and the same refresh time as the Opportunities page, because they are
 // the same picks - both read the server's own free_picks block.
-function FreePicksNote({meta}){if(!meta)return null;const unlocked=Number(meta.unlocked)||0;return <p className="home-free-picks">{unlocked>0?`Your ${unlocked} free ${unlocked===1?"pick is":"picks are"} unlocked below.`:"No free pick has cleared our bar yet today."}{meta.nextRefreshAt?<> Next picks in <b>{formatCountdown(meta.nextRefreshAt)}</b>, at 6pm UK time.</>:null}</p>}
+//
+// `lockedPreviews` exists because the old copy could say "No free pick
+// has cleared our bar yet today" directly above six numbered preview
+// cards. Both halves were true and together they read as a bug: picks
+// existed, none of them were this viewer's. The note now says which.
+export function FreePicksNote({meta,lockedPreviews=0}){
+  if(!meta)return null;
+  const unlocked=Number(meta.unlocked)||0;
+  let lead;
+  if(unlocked>0)lead=`Your ${unlocked} free ${unlocked===1?"pick is":"picks are"} unlocked below.`;
+  else if(lockedPreviews>0)lead="No free pick has cleared our bar yet today. The cards below are previews of Elite picks - the player and the reason are real, the entry and target prices are not included.";
+  else lead="No free pick has cleared our bar yet today.";
+  return <p className="home-free-picks">{lead}{meta.nextRefreshAt?<> Next picks in <b>{formatCountdown(meta.nextRefreshAt)}</b>, at 6pm UK time.</>:null}</p>;
+}
+
+// The Top Card panel when there is no lead to show.
+//
+// One purposeful state per real cause, instead of one empty state whose
+// copy could contradict the cards below it. Collapsed to its own height
+// (see .lead-trade.is-pending in dashboard-v2.css) rather than stretching
+// to match the Market Pulse column beside it.
+export function TopCardPending({loading,lockedOnly,preview,freePicks,navigate}){
+  if(loading)return <div className="lead-pending"><p className="lead-pending-title">Checking today's picks…</p></div>;
+
+  const nextAt=freePicks?.nextRefreshAt;
+  // The refresh time is the server's own (18:00 UK, DST-correct, from
+  // the free_picks block) - never a guessed schedule.
+  const nextLine=nextAt
+    ? <p className="lead-pending-when">Next picks in <b>{formatCountdown(nextAt)}</b>, at 6pm UK time.</p>
+    : null;
+
+  if(lockedOnly){
+    return <div className="lead-pending">
+      <p className="lead-pending-eyebrow"><Lock size={13}/> TODAY'S PICKS ARE ELITE</p>
+      <p className="lead-pending-title">
+        {preview?<>Today's top call is <b>{nameOf(preview.player)}</b>.</>:"Today's calls have landed."}
+      </p>
+      <p className="lead-pending-copy">
+        The player and the reason are shown below. The exact buy price, sell target and expected
+        profit are part of Elite.
+      </p>
+      {nextLine}
+      <div className="lead-pending-actions">
+        <button onClick={()=>navigate(`/billing?unlock=${encodeURIComponent("today's picks")}`)}>Unlock exact buy and sell prices <ArrowRight size={16}/></button>
+        <button className="secondary" onClick={()=>navigate("/opportunities")}>See the previews</button>
+      </div>
+    </div>;
+  }
+
+  // Nothing has cleared the bar. Not a failure - the product's own rule
+  // is that an honest empty section beats a weakened one - so say that,
+  // and say when to come back.
+  return <div className="lead-pending">
+    <p className="lead-pending-eyebrow">NO PICK YET</p>
+    <p className="lead-pending-title">No trade has cleared our bar today.</p>
+    <p className="lead-pending-copy">We would rather show you nothing than a call we don't believe in.</p>
+    {nextLine}
+    <div className="lead-pending-actions">
+      <button className="secondary" onClick={()=>navigate("/players")}>Search a player <ArrowRight size={16}/></button>
+    </div>
+  </div>;
+}
 
 function LockedPreviewCard({count,navigate}){return <button className="queue-card locked-preview" onClick={()=>navigate(`/billing?unlock=${encodeURIComponent("the full Opportunities feed")}`)}><div className="locked-preview-copy"><strong>{count} more {count===1?"opportunity":"opportunities"} today</strong><span>Upgrade to see the full live feed, updated as the market moves.</span></div><ChevronRight className="queue-arrow" size={18}/></button>}
 function QueueCard({item,rank,onOpen,onWatch,watchState}){

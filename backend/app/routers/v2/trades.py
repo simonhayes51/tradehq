@@ -147,7 +147,17 @@ async def close_trade(trade_id: int, request: Request, body: CloseTrade):
             economics.profit,
             economics.ea_tax,
         )
-    return {"ok": True, "trade_id": trade_id, "status": "closed", "profit": profit}
+    # `profit` (a bare local that was never assigned in this function) -
+    # a NameError raised AFTER the UPDATE had already committed, so
+    # closing a trade persisted correctly and then returned a 500. The
+    # value the caller wants is the one that was just written.
+    return {
+        "ok": True,
+        "trade_id": trade_id,
+        "status": "closed",
+        "profit": economics.profit,
+        "ea_tax": economics.ea_tax,
+    }
 
 
 @router.get("/open")

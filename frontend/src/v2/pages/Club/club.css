@@ -506,13 +506,6 @@
   .achievement-grid {
     grid-template-columns: 1fr;
   }
-  .history-table {
-    overflow: auto;
-  }
-  .history-head,
-  .history-row {
-    min-width: 720px;
-  }
   .club-form-grid {
     grid-template-columns: 1fr;
   }
@@ -618,4 +611,224 @@
   margin-bottom: 10px;
   font-size: 13px;
   color: var(--v2-muted);
+}
+
+/* ---------------------------------------------------------------------
+   Portfolio correction pass
+   ---------------------------------------------------------------------
+   The mobile portfolio was a desktop table with `min-width: 720px` inside
+   a horizontal scroller: a phone got a sideways-scrolling spreadsheet
+   whose columns were each too narrow to read. That rule is gone; below
+   700px the same rows render as real cards instead, with the six columns
+   becoming labelled key/value lines. One list, two presentations - not a
+   second component to drift out of sync.
+*/
+
+/* Break-even credibility (see src/v2/lib/tradeMath.js) */
+.trade-card-warn {
+  border-color: rgba(242, 201, 76, 0.55);
+}
+.trade-card[data-target-status="loss"] {
+  border-color: rgba(255, 107, 115, 0.6);
+}
+.trade-breakeven-warning {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(242, 201, 76, 0.4);
+  border-radius: 4px;
+  background: rgba(242, 201, 76, 0.08);
+  color: #f2c94c;
+  font-size: 12px;
+  line-height: 1.45;
+}
+.trade-card[data-target-status="loss"] .trade-breakeven-warning {
+  border-color: rgba(255, 107, 115, 0.45);
+  background: rgba(255, 107, 115, 0.09);
+  color: #ff8f95;
+}
+.trade-breakeven-warning svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+.club-stat small {
+  display: block;
+  margin-top: 3px;
+  color: var(--v2-muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+.club-stat.tone-positive strong { color: #55d99b; }
+.club-stat.tone-negative strong { color: #ff6b73; }
+/* Deliberately amber, not green: a positive number that is only
+   positive because of rounding must not be coloured like a win. */
+.club-stat.tone-warn strong { color: #f2c94c; }
+.club-kpi-note {
+  display: block;
+  margin-top: 4px;
+  color: var(--v2-muted);
+  font-size: 11px;
+  font-style: normal;
+  line-height: 1.35;
+}
+
+/* Incremental rendering controls */
+.club-show-more {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 16px;
+}
+.club-show-more button {
+  min-height: 44px;
+  padding: 0 18px;
+  border: 1px solid var(--v2-border);
+  border-radius: 3px;
+  background: var(--v2-card);
+  color: var(--v2-text);
+  font-weight: 800;
+  cursor: pointer;
+}
+.club-show-more button:hover { border-color: var(--v2-accent); color: var(--v2-accent); }
+.club-show-more span,
+.club-list-count {
+  color: var(--v2-muted);
+  font-size: 12px;
+}
+.club-list-count { margin: 14px 0 0; }
+
+/* History rows: the extra Status column, plus a status pill */
+.history-head,
+.history-row {
+  grid-template-columns: minmax(0, 2fr) 76px repeat(4, minmax(0, 1fr)) 78px;
+}
+.history-cell {
+  min-width: 0;
+}
+.history-player strong {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.history-status {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 8px;
+  border: 1px solid var(--v2-border);
+  border-radius: 999px;
+  color: var(--v2-muted);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+}
+/* Touch targets: 32px share buttons are below the 44px minimum on a
+   phone, and they sit next to each other. */
+@media (pointer: coarse) {
+  .history-share { width: 44px; height: 44px; }
+  .club-tabs button { min-height: 44px; }
+}
+
+/* Tabs: a horizontally scrollable strip that cannot collide or overflow
+   the page. `overflow: auto` alone still let the buttons shrink. */
+.club-tabs {
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: 2px;
+}
+.club-tabs::-webkit-scrollbar { display: none; }
+.club-tabs button {
+  flex: 0 0 auto;
+  cursor: pointer;
+}
+
+/* The mobile card treatment. Everything the brief requires to stay
+   visible stays visible: player, status, buy, sold, net profit and the
+   primary action. */
+@media (max-width: 700px) {
+  .club-page {
+    overflow-x: hidden;
+  }
+  .history-table {
+    background: transparent;
+    border: 0;
+    display: grid;
+    gap: 10px;
+  }
+  .history-head {
+    display: none;
+  }
+  .history-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 6px 12px;
+    padding: 14px;
+    background: var(--v2-card);
+    border: 1px solid var(--v2-border);
+    border-radius: 4px;
+  }
+  .history-row .history-player {
+    grid-column: 1;
+  }
+  .history-row .history-player strong {
+    font-size: 16px;
+    white-space: normal;
+  }
+  /* Status sits beside the name, like the OPEN pill on a trade card. */
+  .history-row .history-cell[data-label="Status"] {
+    grid-column: 2;
+    grid-row: 1;
+    justify-self: end;
+  }
+  .history-row .history-cell[data-label]:not([data-label="Status"]) {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    padding-top: 6px;
+    border-top: 1px solid var(--v2-border);
+    font-variant-numeric: tabular-nums;
+  }
+  .history-row .history-cell[data-label]:not([data-label="Status"])::before {
+    content: attr(data-label);
+    color: var(--v2-muted);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+  .history-actions-cell {
+    grid-column: 1 / -1;
+    padding-top: 10px;
+  }
+  .history-share-actions {
+    justify-content: flex-start;
+  }
+  .trade-numbers {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+  }
+  .club-show-more {
+    flex-direction: column;
+    align-items: stretch;
+    text-align: center;
+  }
+}
+
+/* 320px is a real device width (iPhone SE 1st gen, and any phone with
+   display zoom on). Two KPI columns still fit; two stat columns do not. */
+@media (max-width: 380px) {
+  .club-page {
+    padding: 18px 12px 90px;
+  }
+  .club-hero h1 { font-size: 26px; }
+  .trade-numbers {
+    grid-template-columns: 1fr;
+  }
+  .summary-share-controls > * {
+    flex: 1 1 auto;
+  }
 }

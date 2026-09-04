@@ -30,14 +30,12 @@
 //
 // age_text is kept as a title-attribute detail (it is what the source
 // actually said) but never as the displayed age.
-import { useState } from "react";
+import { useMemo } from "react";
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip } from "recharts";
-import { ShieldCheck, Star } from "lucide-react";
 import SectionCard from "../../../components/SectionCard";
 import CoinValue from "../../../components/CoinValue";
-import MarketFreshness, { formatAge } from "../../../components/MarketFreshness";
-import { addWatch } from "../../../../api/watchlist";
-import { riskLabel, versionLabel } from "../../../lib/format";
+import { formatAge } from "../../../components/MarketFreshness";
+import { compactCoins, evenTicks, humaniseSpan, tickFormatterForSpan } from "../../../lib/chartFormat";
 import {
   useFutggPlayer,
   useFutggPlayerPrices,
@@ -75,34 +73,51 @@ export default function FutggMarketSection({ cardId }) {
   const playerQuery = useFutggPlayer(cardId);
   const pricesQuery = useFutggPlayerPrices(cardId);
   const salesQuery = useFutggPlayerSales(cardId);
-  const [watchState, setWatchState] = useState("");
+  // 404 (not built yet, or no FUT.GG row for this card) - either way an
+  // honest empty state, never invented data.
+  const notDeployedOrMissing = playerQuery.isError;
 
-  const card = playerQuery.data;
-  const notDeployedOrMissing = playerQuery.isError; // 404 (not built yet, or no FUT.GG row for this card) - either way, honest empty state, no fake data
+  const priceData = pricesQuery.data;
+  // The BIN chart was drawing an ordinal (category) X axis whose every
+  // value was a full `toLocaleString()` datetime - "04/09/2026, 14:32:11"
+  // - one label per snapshot. recharts renders every category label on
+  // an ordinal axis, so a few dozen points overprinted into one
+  // continuous string of digits along the bottom, which is what made the
+  // chart look empty: the plot was there, the axis had eaten it.
+  //
+  // It also plotted the rows in the order the API returned them, which
+  // is newest-first (get_price_history ORDERs DESC), so the series ran
+  // right-to-left - i.e. a rise read as a fall.
+  const chartData = useMemo(() => (
+    (Array.isArray(priceData) ? priceData : priceData?.items || [])
+      .map((p) => ({
+        time: p.captured_at ? new Date(p.captured_at).getTime() : NaN,
+        bin: Number(p.lowest_bin),
+      }))
+      .filter((point) => Number.isFinite(point.time) && Number.isFinite(point.bin) && point.bin > 0)
+      .sort((a, b) => a.time - b.time)
+  ), [priceData]);
 
-  async function watchThisCard() {
-    if (!card || watchState === "saving" || watchState === "saved") return;
-    setWatchState("saving");
-    try {
-      // Canonical id for a FUT.GG card is source_card_id, per the
-      // migration contract - falls back to card_id if the backend
-      // response doesn't distinguish them. Existing legacy watchlist
-      // rows (keyed off the old FUTBIN card_id) are untouched by this -
-      // this only affects new watch entries created from here.
-      await addWatch({
-        player_name: card.name,
-        card_id: String(card.source_card_id ?? card.card_id ?? cardId),
-        version: card.rarity ? versionLabel(card.rarity) : null,
-        platform: "ps",
-        source: "futgg",
-      });
-      setWatchState("saved");
-    } catch (err) {
-      if (err?.response?.status === 409) setWatchState("saved");
-      else setWatchState("error");
-    }
-  }
+  // A fixed, small number of evenly spaced ticks cannot overcrowd,
+  // however the snapshots happen to be distributed in time.
+  const priceTicks = useMemo(() => evenTicks(chartData), [chartData]);
 
+  const priceSpanMs = chartData.length > 1 ? chartData[chartData.length - 1].time - chartData[0].time : 0;
+  // Same rule as the sales chart: label by the span the data actually
+  // covers, not by a nominal range. A whole window inside one day drawn
+  // with day labels prints the same string five times.
+  const formatPriceTick = tickFormatterForSpan(priceSpanMs);
+
+  const allSales = Array.isArray(salesQuery.data) ? salesQuery.data : salesQuery.data?.items || [];
+  // The endpoint serves up to MAX_CHART_SALES (500) rows because the chart
+  // needs them. A table does not: past a couple of dozen rows it is an
+  // unreadable wall that pushes the rest of the page off-screen, and every
+  // row beyond the first few tells the user nothing new.
+  const sales = allSales.slice(0, RECENT_SALES_ROWS);
+
+  // Early returns AFTER every hook - the useMemo calls above must run on
+  // every render or React's hook order breaks between the loading and
+  // loaded states.
   if (playerQuery.isLoading) {
     return (
       <SectionCard title="Live market" subtitle="Loading price and sales data…">
@@ -123,72 +138,76 @@ export default function FutggMarketSection({ cardId }) {
     );
   }
 
-  const priceHistory = Array.isArray(pricesQuery.data) ? pricesQuery.data : pricesQuery.data?.items || [];
-  const chartData = priceHistory.map((p) => ({
-    time: p.captured_at ? new Date(p.captured_at).toLocaleString() : "",
-    bin: p.lowest_bin,
-  }));
-
-  const allSales = Array.isArray(salesQuery.data) ? salesQuery.data : salesQuery.data?.items || [];
-  // The endpoint serves up to MAX_CHART_SALES (500) rows because the chart
-  // needs them. A table does not: past a couple of dozen rows it is an
-  // unreadable wall that pushes the rest of the page off-screen, and every
-  // row beyond the first few tells the user nothing new.
-  const sales = allSales.slice(0, RECENT_SALES_ROWS);
-
   return (
     <div className="grid grid-cols-1 gap-4">
-      <SectionCard title="Live market" subtitle="Card and price data">
-        {/* The numbers behind this card (fair value, confidence, liquidity,
-            sales median, recent movement...) live in the Advanced
-            rationale panel above (AnalysisModal, via AdvancedRationale) -
-            duplicating that same 8-stat grid here just repeated it a
-            second time on the same page. This section keeps only what's
-            unique to it: freshness, the risk/signal badges, watching,
-            and the chart/table evidence below. */}
-        <div className="mb-4"><MarketFreshness priceAgeSeconds={card.price_age_seconds} capturedAt={card.current_bin_captured_at} /></div>
-
-        <div className="flex items-center gap-3 flex-wrap mb-4">
-          <span className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-bold border ${riskBadgeClasses(card.risk_level)}`}>
-            <ShieldCheck size={13} /> {riskLabel(card.risk_level)}
-          </span>
-          {card.signal ? (
-            <span className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-bold uppercase border ${signalBadgeClasses(card.signal)}`}>
-              {String(card.signal).replace(/_/g, " ")}
-            </span>
-          ) : null}
-          <button
-            type="button"
-            onClick={watchThisCard}
-            disabled={watchState === "saving" || watchState === "saved"}
-            className="inline-flex items-center gap-1.5 rounded-full border border-[var(--v2-border)] px-3 py-1 text-xs font-bold text-[var(--v2-text)] hover:border-[var(--v2-accent)] hover:text-[var(--v2-accent)] disabled:opacity-60"
-          >
-            <Star size={13} fill={watchState === "saved" ? "currentColor" : "none"} />
-            {watchState === "saved" ? "Watching" : watchState === "saving" ? "Saving…" : "Add to watchlist"}
-          </button>
-        </div>
-      </SectionCard>
-
+      {/* The "Live market" card that used to sit here is gone. Every
+          part of it was a second copy of something the analysis panel
+          directly above renders from the same fields: the price
+          freshness line, the risk badge, the signal badge (which is
+          where the second "WATCH" came from, beside the verdict pill),
+          and a second "Add to watchlist" button. Duplication removed
+          structurally - the elements no longer exist here - rather than
+          hidden with CSS, so there is one recommendation-and-action
+          area on this page and one place each fact is stated. */}
       <SectionCard title="BIN price history" subtitle="Live lowest-BIN snapshots">
         {pricesQuery.isLoading ? (
           <p className="text-xs text-[var(--v2-muted)]">Loading…</p>
+        ) : pricesQuery.isError ? (
+          <p className="text-xs text-[var(--v2-muted)]">Price history could not be loaded right now.</p>
         ) : chartData.length === 0 ? (
-          <p className="text-xs text-[var(--v2-muted)]">No price history for this card yet.</p>
+          <p className="text-xs text-[var(--v2-muted)]">
+            We haven&apos;t recorded any BIN snapshots for this card yet. Prices are collected on a
+            per-card schedule, so a quiet card can go a while between readings.
+          </p>
+        ) : chartData.length === 1 ? (
+          // A single point is not a history. Drawing it as an area chart
+          // produced a flat line across the full width, which reads as
+          // "this price has not moved in the window" - a claim we cannot
+          // make from one reading.
+          <p className="text-xs text-[var(--v2-muted)]">
+            One BIN snapshot so far, <CoinValue value={chartData[0].bin} /> at{" "}
+            {new Date(chartData[0].time).toLocaleString("en-GB")}. A trend needs at least two.
+          </p>
         ) : (
-          <ResponsiveContainer width="100%" height={220}>
-            <AreaChart data={chartData}>
-              <defs>
-                <linearGradient id="futggBinFill" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="var(--v2-accent)" stopOpacity={0.35} />
-                  <stop offset="100%" stopColor="var(--v2-accent)" stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              <XAxis dataKey="time" tick={{ fontSize: 10 }} stroke="var(--v2-muted)" />
-              <YAxis tick={{ fontSize: 10 }} stroke="var(--v2-muted)" />
-              <Tooltip contentStyle={{ background: "var(--v2-elevated)", border: "1px solid var(--v2-border)" }} />
-              <Area type="monotone" dataKey="bin" stroke="var(--v2-accent)" strokeWidth={2} fill="url(#futggBinFill)" dot={false} />
-            </AreaChart>
-          </ResponsiveContainer>
+          <>
+            <ResponsiveContainer width="100%" height={220}>
+              <AreaChart data={chartData} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+                <defs>
+                  <linearGradient id="futggBinFill" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="var(--v2-accent)" stopOpacity={0.35} />
+                    <stop offset="100%" stopColor="var(--v2-accent)" stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <XAxis
+                  dataKey="time"
+                  type="number"
+                  scale="time"
+                  domain={["dataMin", "dataMax"]}
+                  ticks={priceTicks}
+                  tickFormatter={formatPriceTick}
+                  tick={{ fontSize: 10 }}
+                  stroke="var(--v2-muted)"
+                  tickMargin={8}
+                />
+                <YAxis
+                  tick={{ fontSize: 10 }}
+                  stroke="var(--v2-muted)"
+                  width={58}
+                  domain={["auto", "auto"]}
+                  tickFormatter={compactCoins}
+                />
+                <Tooltip
+                  contentStyle={{ background: "var(--v2-elevated)", border: "1px solid var(--v2-border)" }}
+                  labelFormatter={(value) => new Date(value).toLocaleString("en-GB")}
+                  formatter={(value) => [Number(value).toLocaleString("en-GB"), "Lowest BIN"]}
+                />
+                <Area type="monotone" dataKey="bin" stroke="var(--v2-accent)" strokeWidth={2} fill="url(#futggBinFill)" dot={false} />
+              </AreaChart>
+            </ResponsiveContainer>
+            <p className="pt-2 text-[11px] text-[var(--v2-muted)]">
+              {chartData.length} snapshots over {humaniseSpan(priceSpanMs)}.
+            </p>
+          </>
         )}
       </SectionCard>
 
@@ -234,23 +253,4 @@ export default function FutggMarketSection({ cardId }) {
       </p>
     </div>
   );
-}
-
-// Plain rgba() literals rather than Tailwind's arbitrary-value opacity
-// modifier (bg-[var(--x)]/10) - that modifier needs the referenced
-// custom property to hold a raw color channel triple, not the hex
-// strings tokens.css actually defines, so it wouldn't apply correctly.
-function riskBadgeClasses(riskLevel) {
-  const level = String(riskLevel || "unknown").toLowerCase();
-  if (level === "low") return "border-[rgba(57,255,138,0.4)] bg-[rgba(57,255,138,0.1)] text-[var(--v2-accent)]";
-  if (level === "medium") return "border-[rgba(242,201,76,0.4)] bg-[rgba(242,201,76,0.1)] text-[var(--v2-warning)]";
-  if (level === "high") return "border-[rgba(255,92,92,0.4)] bg-[rgba(255,92,92,0.1)] text-[var(--v2-negative)]";
-  return "border-[var(--v2-border)] bg-[var(--v2-elevated)] text-[var(--v2-muted)]";
-}
-
-function signalBadgeClasses(signal) {
-  const s = String(signal || "").toLowerCase();
-  if (s === "strong_buy" || s === "buy") return "border-[rgba(57,255,138,0.4)] bg-[rgba(57,255,138,0.1)] text-[var(--v2-accent)]";
-  if (s === "sell" || s === "avoid") return "border-[rgba(255,92,92,0.4)] bg-[rgba(255,92,92,0.1)] text-[var(--v2-negative)]";
-  return "border-[var(--v2-border)] bg-[var(--v2-elevated)] text-[var(--v2-muted)]";
 }

@@ -1,5 +1,5 @@
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { Briefcase, Home, Lock, SlidersHorizontal, Sparkles, Star, TrendingUp, User, Users } from "lucide-react";
+import { ArrowUpRight, Briefcase, Home, Lock, SlidersHorizontal, Sparkles, Star, TrendingUp, User, Users } from "lucide-react";
 import { useEntitlements } from "../../context/EntitlementsContext";
 import { useAuth } from "../../context/AuthContext";
 import { useAiChatAvailability } from "../hooks/useAiChatAvailability";
@@ -40,7 +40,8 @@ export default function Sidebar() {
   // Two states, one name for each. This used to render "PREMIUM" for a
   // paying customer and "ELITE" for an admin, which is the same
   // vocabulary split the billing page had.
-  const tierLabel = plan === "elite" || isAdmin ? "ELITE" : "FREE";
+  const isElite = plan === "elite" || isAdmin;
+  const tierLabel = isElite ? "ELITE" : "FREE";
   const aiChat = useAiChatAvailability();
   const items = ITEMS.filter(
     (item) =>
@@ -64,6 +65,13 @@ export default function Sidebar() {
           to={item.to}
           aria-current={active ? "page" : undefined}
           className={`${active ? "active" : ""}${item.desktopOnly ? " desktop-only-nav" : ""}${item.mobileOnly ? " mobile-only-nav" : ""}${locked ? " nav-locked" : ""}`}
+          // A locked item is a working link, not an inert label: it goes
+          // to the feature's own page, which renders the UpgradePrompt
+          // written for THAT feature (what it does, why it's paid, what
+          // you get, what it costs). Sending every lock to a generic
+          // /billing page instead would lose the thing that makes the
+          // prompt worth reading.
+          title={locked ? `${item.label} is part of Elite - see what it includes` : undefined}
         >
           <Icon/>
           <span className="nav-full-label">{item.label}</span>
@@ -76,6 +84,24 @@ export default function Sidebar() {
         </Link>;
       })}
     </nav>
+    {/* THE persistent upgrade entry point for a Free account.
+        Before this there was none: /billing existed as a route but
+        nothing in the signed-in app linked to it. A Free member could
+        only reach it by hitting a lock somewhere and clicking the
+        contextual prompt - so anyone who never happened to open Trade
+        Finder or run out of watchlist slots had no way to pay us.
+        Deliberately ONE entry, pinned above the account chip, rather
+        than a banner on every page: the contextual prompts already
+        cover the moments where the limit is actually felt. Hidden for
+        Elite and for admins, who have nothing to upgrade to. */}
+    {isAuthenticated && !isElite
+      ? <Link className={`nav-upgrade ${pathname.startsWith("/billing") ? "active" : ""}`} to="/billing?unlock=elite">
+          <Sparkles size={16}/>
+          <span className="nav-full-label">Upgrade to Elite</span>
+          <span className="nav-short-label">Elite</span>
+          <ArrowUpRight size={14} className="nav-upgrade-arrow" aria-hidden="true"/>
+        </Link>
+      : null}
     {isAuthenticated
       ? <button className={`account-chip ${pathname.startsWith("/account") ? "active" : ""}`} onClick={() => navigate("/account")}><User size={16}/><b>{tierLabel}</b><span>Account</span></button>
       : <div className="account-chip auth-chip-pair">

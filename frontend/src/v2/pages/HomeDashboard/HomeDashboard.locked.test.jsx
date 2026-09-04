@@ -105,7 +105,12 @@ describe("Home, free member", () => {
     const card = container.querySelector(".queue-card.locked-opportunity");
     expect(card.textContent).toContain("Erling Haaland");
     expect(card.textContent).toContain("Trading below its recent median");
-    expect(card.textContent).toContain("Exact prices on Elite");
+    // The locked panel names what is withheld rather than showing two
+    // striped rectangles under "BUY BELOW"/"EXPECTED PROFIT" labels.
+    expect(card.textContent).toContain("Elite only");
+    expect(card.textContent).toContain("Exact buy price");
+    expect(card.textContent).toContain("Sell target");
+    expect(card.textContent).toContain("Expected profit");
   });
 
   it("leads with a card the viewer is entitled to, never a blanked-out hero", () => {
@@ -122,18 +127,66 @@ describe("Home, free member", () => {
   });
 });
 
-describe("Home, no pick resolved yet", () => {
-  it("says the picks haven't landed rather than showing a hero with every figure blank", () => {
+// The Top Card panel and the feed below it used to be able to state
+// opposite things at once: "Today's picks haven't landed yet" over
+// numbered preview cards that had, in fact, landed. Each of the three
+// real causes now has one state, and the copy underneath agrees with it.
+describe("Home, picks exist but none are this viewer's", () => {
+  beforeEach(() => {
     useDashboard.mockReturnValue({
       data: { ...BASE_DASHBOARD, freePicks: { ...FREE_PICKS, unlocked: 0 } },
       isLoading: false,
     });
     useFutggOpportunities.mockReturnValue({ data: { items: [LOCKED] }, isLoading: false });
+  });
+
+  it("says the picks are locked, not missing, and never both", () => {
     renderHome();
-    // The section heading stays - what changes is that nothing fills it.
-    expect(screen.getByText(/Today's picks haven't landed yet/)).toBeInTheDocument();
+    expect(screen.getByText(/TODAY'S PICKS ARE ELITE/)).toBeInTheDocument();
+    expect(screen.queryByText(/landed yet/)).not.toBeInTheDocument();
+    // No blanked-out hero.
     expect(screen.queryByText("Buy below")).not.toBeInTheDocument();
-    expect(screen.getByText(/No free pick has cleared our bar yet today/)).toBeInTheDocument();
+  });
+
+  it("offers the contextual upgrade action at the point of value", () => {
+    renderHome();
+    expect(screen.getByRole("button", { name: /Unlock exact buy and sell prices/i })).toBeInTheDocument();
+  });
+
+  it("reconciles the allowance note with the previews below it", () => {
+    renderHome();
+    expect(screen.getByText(/previews of Elite picks/)).toBeInTheDocument();
+    // Both the Top Card pending panel and the allowance note carry the
+    // same server-supplied refresh time, and they agree.
+    expect(screen.getAllByText(/at 6pm UK time/).length).toBeGreaterThan(0);
+  });
+
+  it("numbers the previews from #1 when there is no lead card above them", () => {
+    const { container } = renderHome();
+    expect(container.querySelector(".queue-card.locked-opportunity .rank").textContent).toBe("#1");
+  });
+});
+
+describe("Home, nothing cleared the bar at all", () => {
+  it("says so plainly, with no contradicting preview cards", () => {
+    useDashboard.mockReturnValue({
+      data: { ...BASE_DASHBOARD, freePicks: { ...FREE_PICKS, unlocked: 0 } },
+      isLoading: false,
+    });
+    useFutggOpportunities.mockReturnValue({ data: { items: [] }, isLoading: false });
+    renderHome();
+    expect(screen.getByText(/No trade has cleared our bar today/)).toBeInTheDocument();
+    expect(screen.queryByText(/TODAY'S PICKS ARE ELITE/)).not.toBeInTheDocument();
+  });
+});
+
+describe("Home, still loading", () => {
+  it("says it is checking rather than asserting an empty market", () => {
+    useDashboard.mockReturnValue({ data: undefined, isLoading: true });
+    useFutggOpportunities.mockReturnValue({ data: undefined, isLoading: true });
+    renderHome();
+    expect(screen.getByText(/Checking today's picks/)).toBeInTheDocument();
+    expect(screen.queryByText(/No trade has cleared our bar today/)).not.toBeInTheDocument();
   });
 });
 

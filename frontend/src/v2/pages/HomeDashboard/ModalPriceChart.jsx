@@ -1,9 +1,10 @@
-import { useMemo, useState } from "react";
-import { Area, AreaChart, CartesianGrid, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { useEffect, useMemo, useState } from "react";
+import { Area, AreaChart, CartesianGrid, ReferenceArea, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { useSalesCandles } from "../../hooks/useSalesCandles";
 import { useFutggPlayerSales } from "../../hooks/useFutggMarket";
 import CoinValue from "../../components/CoinValue";
 import { formatAge } from "../../components/MarketFreshness";
+import { compactCoins, evenTicks, humaniseSpan, salesStats, tickFormatterForSpan } from "../../lib/chartFormat";
 
 // No "30d": futgg_market_snapshot's sales window stops at 14 days and the
 // sales endpoint caps there too, so a 30d button could only ever redraw
@@ -28,12 +29,22 @@ const RANGES = {
 // single response that was always the newest 50 sales - a few hours on a
 // liquid card - so 24h, 7d and 30d all drew the identical few hours and
 // the toggle appeared to do nothing at all.
+const MAX_RANGE_DAYS = 14;
+
 export default function ModalPriceChart({ cardId, entryPrice, targetPrice, fairValue, source }) {
   const [range, setRange] = useState("7d");
   const config = RANGES[range];
   const isFutgg = source === "futgg";
   const legacyQuery = useSalesCandles(cardId, config, { enabled: !isFutgg });
   const futggQuery = useFutggPlayerSales(isFutgg ? cardId : undefined, config.days);
+  // The widest window, fetched once, purely to answer "does this card
+  // have enough history for the 7d and 14d buttons to mean anything?".
+  // Cheap: react-query shares the cache entry with the 14d selection, so
+  // choosing 14d costs nothing extra. Without it a card holding three
+  // days of sales still offered a 7d and a 14d button that silently drew
+  // the same three days - or nothing at all - which reads as a broken
+  // toggle rather than as a limit of the data.
+  const coverageQuery = useFutggPlayerSales(isFutgg ? cardId : undefined, MAX_RANGE_DAYS);
   const isLoading = isFutgg ? futggQuery.isLoading : legacyQuery.isLoading;
   const isError = isFutgg ? futggQuery.isError : legacyQuery.isError;
   // The FUT.GG response carries coverage metadata alongside the rows -
@@ -60,25 +71,55 @@ export default function ModalPriceChart({ cardId, entryPrice, targetPrice, fairV
   // inside one day, so a dozen identical labels overprinted each other
   // into an unreadable smear.
   const spanMs = points.length > 1 ? points[points.length - 1].time - points[0].time : 0;
-  const formatTick = spanMs > 0 && spanMs < 36 * 3600 * 1000 ? formatClock : formatDay;
-  // Explicit tick positions rather than trusting recharts'
-  // interval="preserveStartEnd" + minTickGap to thin a dense, irregularly-
-  // spaced completed-sales series on its own: on a card with sales
-  // bursty enough (many points within a short span, e.g. a cluster of 40
-  // sales in ten minutes), that combination still emitted far more labels
-  // than minTickGap should have allowed, overprinting into an unreadable
-  // wall of digits - the same failure shape the "Thu 6" comment above
-  // already fixed once for a different cause. A fixed, small number of
-  // evenly-spaced ticks can't overcrowd regardless of how the underlying
-  // points are distributed.
-  const axisTicks = useMemo(() => {
-    if (points.length < 2) return undefined;
-    const first = points[0].time;
-    const last = points[points.length - 1].time;
-    if (first === last) return [first];
-    const TICK_COUNT = 5;
-    return Array.from({ length: TICK_COUNT }, (_, i) => Math.round(first + ((last - first) * i) / (TICK_COUNT - 1)));
-  }, [points]);
+  const formatTick = tickFormatterForSpan(spanMs);
+  const axisTicks = useMemo(() => evenTicks(points), [points]);
+
+  // Robust scaling and a typical-range indicator.
+  //
+  // The chart previously scaled to the raw data min/max, so ONE outlier
+  // print - a panic sale far below the market, or a single listing
+  // bought at several times the going rate - flattened every real sale
+  // into a band a few pixels tall against the bottom of the frame. The
+  // domain is now the 5th-95th percentile (never tighter than the
+  // interquartile range, never wider than the real data), with the
+  // median drawn as a reference line and the interquartile range as a
+  // shaded band. Outlying points are still plotted, clipped to the edge,
+  // and counted in the note below the chart - disclosed, not hidden.
+  const stats = useMemo(() => salesStats(points.map((p) => p.price)), [points]);
+
+  // Which range buttons can actually be answered for this card. Derived
+  // from the widest window's own data, not guessed.
+  const availableSpanMs = useMemo(() => {
+    const rows = coverageQuery.data?.items || [];
+    if (rows.length < 2) return 0;
+    const times = rows
+      .map((s) => new Date(s.approximate_sold_at).getTime())
+      .filter((t) => Number.isFinite(t));
+    if (times.length < 2) return 0;
+    return Math.max(...times) - Math.min(...times);
+  }, [coverageQuery.data]);
+  const coverageKnown = isFutgg && !coverageQuery.isLoading && !coverageQuery.isError;
+  // A range is supported when we hold sales older than its start. The
+  // 60% allowance keeps a range that is nearly covered usable rather
+  // than disabling it on a few missing hours.
+  const rangeSupported = (key) => {
+    if (!coverageKnown) return true;
+    // The narrowest range is always offered: it is the best view of
+    // whatever we do hold, and disabling every button would leave no way
+    // to see the chart at all.
+    if (key === "24h") return true;
+    return availableSpanMs >= RANGES[key].days * 24 * 3600 * 1000 * 0.6;
+  };
+
+  // If the selected range turns out to be unsupported, fall back to the
+  // widest one that is, rather than leaving the reader on an empty chart
+  // they cannot get out of.
+  useEffect(() => {
+    if (!coverageKnown || rangeSupported(range)) return;
+    const fallback = Object.keys(RANGES).filter(rangeSupported).pop();
+    if (fallback && fallback !== range) setRange(fallback);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [coverageKnown, availableSpanMs, range]);
 
   // "7d selected but the card only has six hours of history" is a real,
   // common state that otherwise reads as a broken toggle.
@@ -120,7 +161,18 @@ export default function ModalPriceChart({ cardId, entryPrice, targetPrice, fairV
     <div className="dash-price-chart-head">
       <div><strong>Completed sales</strong>{isFutgg?<small className="dash-chart-approx"> (approximate times)</small>:null}</div>
       <div className="dash-chart-ranges" aria-label="Chart range">
-        {Object.keys(RANGES).map(key => <button key={key} className={range === key ? "active" : ""} aria-pressed={range === key} onClick={() => setRange(key)}>{key}</button>)}
+        {Object.keys(RANGES).map(key => {
+          const supported = rangeSupported(key);
+          return <button
+            key={key}
+            className={`${range === key ? "active" : ""}${supported ? "" : " unsupported"}`}
+            aria-pressed={range === key}
+            disabled={!supported}
+            // A disabled control must say why, or it is just broken.
+            title={supported ? undefined : `We only hold ${humaniseSpan(availableSpanMs)} of completed sales for this card`}
+            onClick={() => setRange(key)}
+          >{key}</button>;
+        })}
       </div>
     </div>
     <div className="dash-chart-frame">
@@ -139,7 +191,13 @@ export default function ModalPriceChart({ cardId, entryPrice, targetPrice, fairV
               axisLine={false} tickLine={false}
               tickMargin={8}
             />
-            <YAxis domain={["auto", "auto"]} width={55} tickFormatter={compactCoins} tick={{ fill: "#909090", fontSize: 10 }} axisLine={false} tickLine={false}/>
+            <YAxis domain={stats ? stats.domain : ["auto", "auto"]} allowDataOverflow={Boolean(stats)} width={55} tickFormatter={compactCoins} tick={{ fill: "#909090", fontSize: 10 }} axisLine={false} tickLine={false}/>
+            {/* The middle half of sales - what a typical sale actually
+                went for - drawn behind the series so an outlier spike
+                cannot be mistaken for the going rate. */}
+            {stats && stats.q3 > stats.q1
+              ? <ReferenceArea y1={stats.q1} y2={stats.q3} fill="#ffffff" fillOpacity={0.045} stroke="none" ifOverflow="hidden"/>
+              : null}
             <Tooltip
               content={<PriceTooltip/>}
               cursor={{ stroke: "#e0e0e0", strokeWidth: 1 }}
@@ -152,10 +210,18 @@ export default function ModalPriceChart({ cardId, entryPrice, targetPrice, fairV
             {entryPrice > 0 && <ReferenceLine y={entryPrice} stroke="#ffd34d" strokeDasharray="5 4" label={{ value: "BUY", fill: "#ffd34d", fontSize: 10, position: "insideBottomRight" }}/>}
             {fairValue > 0 && <ReferenceLine y={fairValue} stroke="#65c7ff" strokeDasharray="3 4" label={{ value: "FAIR", fill: "#65c7ff", fontSize: 10, position: "insideTopLeft" }}/>}
             {targetPrice > 0 && <ReferenceLine y={targetPrice} stroke="#3bffa4" strokeDasharray="5 4" label={{ value: "SELL", fill: "#3bffa4", fontSize: 10, position: "insideTopRight" }}/>}
+            {stats
+              ? <ReferenceLine y={stats.median} stroke="#c9c9c9" strokeDasharray="2 3" label={{ value: "MEDIAN", fill: "#c9c9c9", fontSize: 10, position: "insideBottomLeft" }} ifOverflow="extendDomain"/>
+              : null}
             <Area type="monotone" dataKey="price" stroke="#3bffa4" strokeWidth={3} fill={`url(#modalPriceFill-${cardId})`} activeDot={{ r: 5 }} dot={false}/>
           </AreaChart>
         </ResponsiveContainer>}
     </div>
+    {stats ? <p className="dash-chart-typical">
+      Typical sale <b>{Math.round(stats.median).toLocaleString("en-GB")}</b> · middle half between{" "}
+      {Math.round(stats.q1).toLocaleString("en-GB")} and {Math.round(stats.q3).toLocaleString("en-GB")}
+      {stats.outliers ? ` · ${stats.outliers} outlying ${stats.outliers === 1 ? "sale is" : "sales are"} off the top or bottom of this scale` : ""}
+    </p> : null}
     {coverageNote ? <p className="dash-chart-coverage">{coverageNote}</p> : null}
   </div>;
 }
@@ -164,13 +230,4 @@ function PriceTooltip({ active, payload }) {
   if (!active || !payload?.length) return null;
   const point = payload[0].payload;
   return <div className="dash-chart-tooltip"><small>SALE PRICE{point.approximate?" (approx. time)":""}</small><strong><CoinValue value={point.price}/></strong><span>{new Date(point.time).toLocaleString("en-GB", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</span></div>;
-}
-function formatDay(value) { return new Date(value).toLocaleDateString("en-GB", { weekday: "short", day: "numeric" }); }
-function formatClock(value) { return new Date(value).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }); }
-function compactCoins(value) { const n=Number(value); return Number.isFinite(n) ? (n>=1000?`${Math.round(n/1000)}k`:String(Math.round(n))) : ""; }
-function humaniseSpan(ms) {
-  const hours = ms / 3600000;
-  if (hours < 1) return `${Math.max(1, Math.round(ms / 60000))} minutes`;
-  if (hours < 36) return `${Math.round(hours)} hours`;
-  return `${Math.round(hours / 24)} days`;
 }
