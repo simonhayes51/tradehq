@@ -55,14 +55,22 @@ describe("TrackRecordPanel", () => {
     useRecentOutcomes.mockReturnValue(recentOutcomesResult([]));
   });
 
-  it("renders nothing while loading or on error", () => {
+  it("renders an explicit loading state", () => {
     useTrackRecord.mockReturnValue({ isLoading: true, isError: false, data: undefined });
-    const { container: loadingContainer } = render(<TrackRecordPanel />);
-    expect(loadingContainer.firstChild).toBeNull();
+    render(<TrackRecordPanel />);
+    expect(screen.getByRole("status")).toHaveTextContent(/loading published results/i);
+  });
 
-    useTrackRecord.mockReturnValue({ isLoading: false, isError: true, data: undefined });
-    const { container: errorContainer } = render(<TrackRecordPanel />);
-    expect(errorContainer.firstChild).toBeNull();
+  it("renders a recoverable error instead of a blank page", () => {
+    useTrackRecord.mockReturnValue({
+      isLoading: false,
+      isError: true,
+      data: undefined,
+      refetch: vi.fn(),
+    });
+    render(<TrackRecordPanel />);
+    expect(screen.getByText(/track record could not be loaded/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /try again/i })).toBeInTheDocument();
   });
 
   it("never conflates published recommendations with internal model signals", () => {
