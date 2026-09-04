@@ -32,6 +32,18 @@ const BUDGET_MIX_OPTIONS = [
 const MIN_CONFIDENCE_OPTIONS = [0.5, 0.6, 0.7, 0.8];
 const MIN_PROFIT_OPTIONS = [1000, 2500, 5000, 10000, 25000];
 
+// Same billing states Billing.jsx's SERVER_STATUS_LABEL humanizes - kept
+// in sync so a server's subscription reads the same plain-language way
+// on both pages instead of leaking the raw Stripe status here.
+const SUBSCRIPTION_STATUS_LABEL = {
+  active: "Active",
+  trialing: "Trial",
+  past_due: "Payment failed",
+  checkout_pending: "Checkout not finished",
+  unpaid: "Not paid",
+  canceled: "Cancelled",
+};
+
 const HOURS = Array.from({ length: 24 }, (_, h) => h);
 
 function hourLabel(h) {
@@ -228,7 +240,7 @@ export default function DiscordFeed() {
           <SectionCard title="Status">
             <dl className="discord-feed-status-grid">
               <div><dt>Plan</dt><dd>{feedState.feed.plan === "server_feed_plus" ? "Server Feed+" : "Server Feed"}</dd></div>
-              <div><dt>Subscription</dt><dd>{feedState.feed.subscription_status || "Unknown"}</dd></div>
+              <div><dt>Subscription</dt><dd>{SUBSCRIPTION_STATUS_LABEL[feedState.feed.subscription_status] || feedState.feed.subscription_status || "Unknown"}</dd></div>
               <div><dt>State</dt><dd>{feedState.feed.status === "active" ? "Active" : "Paused"}</dd></div>
               <div><dt>Posts today</dt><dd>{feedState.posts_used_today} of up to {feedState.feed.max_posts_per_day ?? "-"}</dd></div>
             </dl>
