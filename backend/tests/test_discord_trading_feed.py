@@ -395,7 +395,8 @@ class _FakeAcquireConn:
     """A minimal asyncpg-shaped fake: fetchrow/fetchval/execute all
     configurable, pool.acquire() yields the same conn every time."""
 
-    def __init__(self, *, settings_row, posts_sent_today=0, last_post_at=None, budget_row=None):
+    def __init__(self, *, settings_row, posts_sent_today=0, last_post_at=None, budget_row=None,
+                 recently_posted_card_ids=()):
         self._settings_row = settings_row
         self._posts_sent_today = posts_sent_today
         self._last_post_at = last_post_at
@@ -403,6 +404,7 @@ class _FakeAcquireConn:
             "budget_low": None, "budget_medium": None, "budget_high": None,
             "posting_window_start_hour": None, "posting_window_end_hour": None, "posting_timezone": None,
         }
+        self._recently_posted_card_ids = set(recently_posted_card_ids)
         self.record_calls = 0
 
     def acquire(self):
@@ -413,6 +415,11 @@ class _FakeAcquireConn:
 
     async def __aexit__(self, *a):
         return False
+
+    async def fetch(self, query, *args):
+        if "source_card_id" in query and "discord_server_posts" in query:
+            return [{"card_id": cid} for cid in self._recently_posted_card_ids]
+        return []
 
     async def fetchrow(self, query, *args):
         if "discord_server_settings" in query:
@@ -482,6 +489,57 @@ def test_publish_live_opportunities_posts_only_one_per_call(monkeypatch):
     posted = asyncio.run(publish_live_opportunities(conn, server, fake_client))
     assert posted == 1
     assert fake_client.post_embed.await_count == 1
+
+
+def test_publish_live_opportunities_skips_a_card_posted_too_recently(monkeypatch):
+    """Regression test: the same card (e.g. Marcelo) qualifying again a
+    few minutes later with a slightly different current_executable_buy
+    must NOT repost - a price wobble mints a new dedup_key but isn't a
+    new opportunity. Confirmed live: BUY 75,500 at 18:15, then BUY 77,000
+    for the identical card at 18:36."""
+    monkeypatch.setenv("DISCORD_TRADING_FEED_ENABLED", "1")
+    import app.routers.v2.futgg_market as futgg_market
+    import app.db as db
+
+    conn = _FakeAcquireConn(
+        settings_row={"max_posts_per_day": 12, "min_confidence": 0.5, "min_expected_profit": 1000,
+                      "cooldown_minutes": 15, "platform": "ps", "live_opportunities_enabled": True},
+        posts_sent_today=0,
+        last_post_at=None,
+        recently_posted_card_ids={1},
+    )
+
+    class CI:
+        def __init__(self):
+            self.confidence_score = 0.9
+            self.expected_profit_after_tax = 5000.0
+            self.recommended_sell_target = 20000
+            self.recommended_buy_max = 15000
+            self.current_executable_buy = 15500  # moved slightly since the earlier post
+            self.risk_level = "low"
+            self.liquidity_score = 0.8
+
+    rows = [{"source_card_id": 1, "name": "Marcelo", "current_executable_buy": 15500, "snapshot_computed_at": None}]
+    scored = [(rows[0], CI())]
+
+    monkeypatch.setattr(futgg_market, "_segmented_candidates", AsyncMock(return_value=rows))
+    monkeypatch.setattr(futgg_market, "_sales_for_rows", AsyncMock(return_value={}))
+    monkeypatch.setattr(futgg_market, "_score_and_filter", MagicMock(return_value=scored))
+    monkeypatch.setattr(db, "get_core_pool", AsyncMock(return_value=object()))
+
+    fake_client = MagicMock()
+    fake_client.post_embed = AsyncMock(return_value=(200, {"id": "msg1"}))
+
+    server = ServerRecord(
+        id=1, guild_id="g1", name="Test", access_level="paid_partner", feed_channel_id="chan1",
+        proof_channel_id=None, status="active", expires_at=None,
+    )
+
+    from app.services.discord_trading_feed import publish_live_opportunities
+
+    posted = asyncio.run(publish_live_opportunities(conn, server, fake_client))
+    assert posted == 0
+    assert fake_client.post_embed.await_count == 0
 
 
 def test_publish_live_opportunities_skips_outside_posting_window(monkeypatch):
