@@ -204,7 +204,7 @@ _INSERT_PICK = """
 async def stored_pick_ids(pool, day_key: date) -> List[int]:
     async with pool.acquire() as conn:
         rows = await conn.fetch(_SELECT_DAY, day_key)
-    return [int(r["source_card_id"]) for r in rows]
+    return [int(r["source_card_id"]) for r in rows[:FREE_DAILY_PICKS]]
 
 
 async def _materialise(candidates: "Callable[[], Any]") -> Sequence[Dict[str, Any]]:
