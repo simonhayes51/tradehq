@@ -748,7 +748,7 @@ async def fetch_player_price_detail(
         playwright_handle, browser_handle, page = await _open_diagnostic_page(
             anchor_url,
             headless=headless,
-            user_agent=user_agent or _DEFAULT_USER_AGENT,
+            user_agent=user_agent or DEFAULT_USER_AGENT,
             timeout_ms=timeout_ms,
         )
 
@@ -818,7 +818,7 @@ async def sign_player_price_url(
         playwright_handle, browser_handle, page = await _open_diagnostic_page(
             anchor_url,
             headless=headless,
-            user_agent=user_agent or _DEFAULT_USER_AGENT,
+            user_agent=user_agent or DEFAULT_USER_AGENT,
             timeout_ms=timeout_ms,
         )
 
@@ -847,7 +847,7 @@ async def sign_player_price_url(
     return signed_url, result.get("expiresIn")
 
 
-_DEFAULT_USER_AGENT = (
+DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/150.0.0.0 Safari/537.36"

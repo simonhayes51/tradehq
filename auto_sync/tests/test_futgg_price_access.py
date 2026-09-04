@@ -105,7 +105,7 @@ async def _open_page(playwright, router: MockRouter):
     if chromium_path:
         launch_kwargs["executable_path"] = chromium_path
     browser = await playwright.chromium.launch(**launch_kwargs)
-    context = await browser.new_context(user_agent=mod._DEFAULT_USER_AGENT, locale="en-GB")
+    context = await browser.new_context(user_agent=mod.DEFAULT_USER_AGENT, locale="en-GB")
     page = await context.new_page()
     await page.route("**/*", router.handle)
     await page.goto(ANCHOR_URL, wait_until="domcontentloaded", timeout=15_000)
