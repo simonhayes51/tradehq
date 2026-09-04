@@ -2047,21 +2047,117 @@ def log_failure_sample(card_id: int, result: dict[str, Any], transport: str = "s
     )
 
 
+#: Playwright error text meaning the page's own renderer process died -
+#: as opposed to a normal HTTP-level failure (429/403/5xx/timeout) that
+#: page.evaluate() would otherwise raise for. Matched as a substring
+#: against str(exc): Playwright's own wording for this is stable
+#: ("Target crashed") but not documented as a typed exception, so this
+#: is the same "match on the message" approach the rest of this file
+#: already uses for HTTP-shaped errors (see _THROTTLE_ERROR_MARKERS).
+_CRASHED_PAGE_ERROR_MARKERS = ("Target crashed", "has been closed")
+
+
+def is_crashed_page_error(exc: BaseException) -> bool:
+    """True for an exception meaning the page itself is gone/dead, not
+    merely that one request failed.
+
+    THE BUG THIS FIXES. signed_fetch reuses ONE page for the entire
+    process lifetime (see this module's own docstring) - a real
+    efficiency win while the page is healthy, but a crashed page NEVER
+    recovers on its own: every subsequent page.evaluate() call against
+    it raises the exact same error forever. Before this existed,
+    process_batch's except-block treated a crash identically to an
+    ordinary throttled batch (see SignedPageHandle.recreate's own
+    docstring for the production evidence) - backing off and retrying
+    against a page that backing off can never fix, escalating the
+    circuit-breaker's backoff toward its cap while producing zero
+    sales, cycle after cycle, until something external (a container
+    restart) happened to replace it.
+    """
+    text = str(exc)
+    return any(marker in text for marker in _CRASHED_PAGE_ERROR_MARKERS)
+
+
+class SignedPageHandle:
+    """Mutable holder for signed_fetch's reused anchor page.
+
+    A plain Page reference can't be transparently replaced: Python
+    passes it by value, so a page recreated inside process_batch would
+    never be seen by run_forever's own `signed_page` variable, or by
+    the next call into process_batch on the following batch. Wrapping
+    it in one shared, mutable object lets process_batch recreate the
+    page in place - every caller reads `self.page` fresh each time
+    rather than holding a stale reference.
+    """
+
+    def __init__(self, page, context, anchor: str) -> None:
+        self.page = page
+        self.context = context
+        self.anchor = anchor
+
+    async def recreate(self) -> None:
+        """Best-effort: replace a crashed/closed page with a fresh one
+        navigated back to the same anchor.
+
+        Production evidence (2026-09-04): the same "Target crashed"
+        error recurred on the same anchor page every cycle for at least
+        six minutes, each recurrence escalating the circuit breaker's
+        backoff (300s -> 600s, toward its 1800s cap) while attempting
+        (and failing) only a handful of cards each time - the page was
+        permanently dead, and nothing before this existed ever created
+        a new one.
+
+        A failure here is logged, not raised: the caller (process_batch)
+        must still be able to record this batch as failed and return -
+        a failed recreation just means the NEXT batch tries again
+        against whatever `self.page` currently is, which the same crash
+        detection catches again.
+        """
+        old_page = self.page
+        try:
+            new_page = await self.context.new_page()
+            await new_page.goto(
+                self.anchor, wait_until="domcontentloaded", timeout=TIMEOUT_MS
+            )
+        except Exception:
+            log.warning(
+                "failed to recreate signed_fetch anchor page after a crash - "
+                "still using the old (crashed) page for now",
+                exc_info=True,
+            )
+            return
+        self.page = new_page
+        log.warning("signed_fetch anchor page recreated after a crash: %s", self.anchor)
+        try:
+            if not old_page.is_closed():
+                await old_page.close()
+        except Exception:
+            pass
+
+
 async def process_batch(
-    page, pool: asyncpg.Pool, rows, stats, timers, throttle, diagnostic: bool = False
+    page_handle: "SignedPageHandle", pool: asyncpg.Pool, rows, stats, timers, throttle,
+    diagnostic: bool = False,
 ) -> None:
     ids = [int(r["source_card_id"]) for r in rows]
 
     with timers.track("fetch_batch"):
         try:
-            results = await page.evaluate(
+            results = await page_handle.page.evaluate(
                 _FETCH_SCRIPT,
                 {"ids": ids, "gameYear": GAME_YEAR, "platform": PLATFORM, "diagnostic": diagnostic},
             )
-        except Exception:
+        except Exception as exc:
             log.warning("batch fetch failed", exc_info=True)
             stats["batch_errors"] += 1
             throttle.record(len(ids), len(ids))
+            crashed = is_crashed_page_error(exc)
+            try:
+                crashed = crashed or page_handle.page.is_closed()
+            except Exception:
+                pass
+            if crashed:
+                await page_handle.recreate()
             return
 
     await apply_batch_results(pool, rows, results, stats, timers, throttle)
@@ -2429,7 +2525,7 @@ def note_signed_fetch_recovered() -> None:
 
 
 async def _reprobe_signed_fetch(
-    signed_page, pool: asyncpg.Pool, sample: list
+    signed_page_handle: "SignedPageHandle", pool: asyncpg.Pool, sample: list
 ) -> None:
     """A small, cheap signed_fetch sample while parked on page_capture
     (auto mode only) - not the full due queue, so a still-blocked
@@ -2444,7 +2540,7 @@ async def _reprobe_signed_fetch(
     )
     probe_stats = {"ok": 0, "failed": 0, "sales_seen": 0, "batch_errors": 0}
     probe_throttle = AdaptiveThrottle(len(sample), 0.5)
-    await process_batch(signed_page, pool, sample, probe_stats, StageTimers(), probe_throttle)
+    await process_batch(signed_page_handle, pool, sample, probe_stats, StageTimers(), probe_throttle)
 
     attempted = probe_stats["ok"] + probe_stats["failed"]
     failure_ratio = (probe_stats["failed"] / attempted) if attempted else 0.0
@@ -2648,13 +2744,18 @@ async def run_forever() -> None:
         try:
             context = await browser.new_context(user_agent=USER_AGENT, locale="en-GB")
 
-            signed_page = None
+            signed_page_handle = None
             if need_signed:
                 signed_page = await context.new_page()
                 # ONE navigation for the entire process lifetime. Everything
                 # after this is fetch() from within the already-loaded page.
                 await signed_page.goto(anchor, wait_until="domcontentloaded", timeout=TIMEOUT_MS)
                 log.info("anchor page loaded (signed_fetch transport): %s", anchor)
+                # Wrapped so process_batch can transparently recreate this
+                # page in place after a crash (see SignedPageHandle) - a
+                # raw Page reference can't be replaced from inside a
+                # function call the way this shared, mutable handle can.
+                signed_page_handle = SignedPageHandle(signed_page, context, anchor)
 
             capture_pages: list = []
             if need_page_capture:
@@ -2792,9 +2893,9 @@ async def run_forever() -> None:
                         break
                     continue
 
-                if signed_reprobe_due() and signed_page is not None:
+                if signed_reprobe_due() and signed_page_handle is not None:
                     sample, due = due[:SIGNED_REPROBE_SAMPLE], due[SIGNED_REPROBE_SAMPLE:]
-                    await _reprobe_signed_fetch(signed_page, pool, sample)
+                    await _reprobe_signed_fetch(signed_page_handle, pool, sample)
                     if not due:
                         await sleep_or_shutdown(CYCLE_SLEEP, shutdown_event)
                         continue
@@ -2822,7 +2923,7 @@ async def run_forever() -> None:
                         # the next cycle.
                         size = throttle.batch_size
                         await process_batch(
-                            signed_page, pool, due[offset: offset + size], stats, timers, throttle
+                            signed_page_handle, pool, due[offset: offset + size], stats, timers, throttle
                         )
                         offset += size
 
