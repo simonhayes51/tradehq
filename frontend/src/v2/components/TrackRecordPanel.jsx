@@ -194,13 +194,40 @@ export default function TrackRecordPanel() {
   // fetching/rendering an unbounded list up front, per the mobile
   // rebuild's list-limiting requirement.
   const [ledgerLimit, setLedgerLimit] = useState(5);
-  const { data, isLoading, isError } = useTrackRecord(window);
+  const trackRecordQuery = useTrackRecord(window);
+  const { data, isLoading, isError } = trackRecordQuery;
   const recentQuery = useRecentOutcomes(window, resultFilter, ledgerLimit, { enabled: ledgerOpen });
 
-  if (isLoading || isError) return null;
+  if (isLoading) {
+    return (
+      <section className="track-record-panel">
+        <div className="v2-page-state" role="status">Loading published results…</div>
+      </section>
+    );
+  }
+
+  if (isError) {
+    return (
+      <section className="track-record-panel">
+        <EmptyState
+          compact
+          error
+          title="The track record could not be loaded"
+          text="Your other market tools are still available. Try loading the published results again."
+          action={<button type="button" onClick={() => trackRecordQuery.refetch()}>Try again</button>}
+        />
+      </section>
+    );
+  }
 
   const published = data?.published;
-  if (!published) return null;
+  if (!published) {
+    return (
+      <section className="track-record-panel">
+        <PublishedEmptyState published={null} />
+      </section>
+    );
+  }
 
   const trackedDays = daysSince(published.tracking_since);
   const windowNarrowerThanHistory = trackedDays != null && trackedDays < WINDOW_DAYS[window];
