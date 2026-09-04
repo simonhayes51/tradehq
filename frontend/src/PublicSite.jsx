@@ -20,6 +20,7 @@ import { PAID_PLAN_NAME, FREE_LIMITS } from "./v2/lib/limits";
 import { APP_ORIGIN, DISCORD_INVITE_URL } from "./lib/domains";
 import Privacy from "./pages/Privacy";
 import Terms from "./pages/Terms";
+import { DiscordCommandsGuide, DiscordServerFeedGuide, GettingStartedGuide, GuidesHome } from "./pages/Guides";
 import api from "./axios";
 import "./v2/styles/tokens.css";
 import "./styles/public-site.css";
@@ -77,6 +78,7 @@ function PublicNav() {
           {links.map(([label, id]) => (
             <button key={id} type="button" onClick={() => go(id)}>{label}</button>
           ))}
+          <Link to="/guides" className="pub-login">Guides</Link>
           <a href={APP_LOGIN} className="pub-login">Log in</a>
           <a href={APP_SIGNUP} className="pub-button pub-button-small">Start free</a>
         </nav>
@@ -95,6 +97,7 @@ function PublicNav() {
           {links.map(([label, id]) => (
             <button key={id} type="button" onClick={() => go(id)}>{label}</button>
           ))}
+          <Link to="/guides">Guides</Link>
           <a href={APP_LOGIN}>Log in</a>
           <a href={APP_SIGNUP} className="pub-button">Start free</a>
         </div>
@@ -296,6 +299,7 @@ function DiscordSection() {
             <a href={DISCORD_INVITE_URL} target="_blank" rel="noreferrer" className="pub-button">
               Add to Discord <ArrowRight size={16} />
             </a>
+            <Link className="pub-text-link" to="/guides/discord-server-feed">Setup guide</Link>
             <button type="button" className="pub-text-link" onClick={() => scrollToId("server-pricing")}>See server pricing</button>
           </div>
         </div>
@@ -441,7 +445,7 @@ function Footer() {
     <footer className="pub-footer">
       <div className="pub-container pub-footer-inner">
         <div className="pub-footer-brand"><Brand /><p>Live EA FC market intelligence for traders and Discord communities.</p></div>
-        <div><strong>Product</strong><button type="button" onClick={() => scrollToId("product")}>Features</button><button type="button" onClick={() => scrollToId("pricing")}>Pricing</button><a href={APP_SIGNUP}>Create account</a></div>
+        <div><strong>Product</strong><button type="button" onClick={() => scrollToId("product")}>Features</button><button type="button" onClick={() => scrollToId("pricing")}>Pricing</button><Link to="/guides">Guides</Link><a href={APP_SIGNUP}>Create account</a></div>
         <div><strong>Community</strong><a href={DISCORD_INVITE_URL} target="_blank" rel="noreferrer">Discord</a><button type="button" onClick={() => scrollToId("server-pricing")}>Server feeds</button><a href="mailto:support@eafc.live">Support</a></div>
         <div><strong>Legal</strong><Link to="/privacy">Privacy</Link><Link to="/terms">Terms</Link></div>
       </div>
@@ -465,6 +469,10 @@ export default function PublicSite() {
         <PublicNav />
         <Routes>
           <Route index element={<PublicHome />} />
+          <Route path="/guides" element={<GuidesHome />} />
+          <Route path="/guides/getting-started" element={<GettingStartedGuide />} />
+          <Route path="/guides/discord-server-feed" element={<DiscordServerFeedGuide />} />
+          <Route path="/guides/discord-commands" element={<DiscordCommandsGuide />} />
           <Route path="/privacy" element={<Privacy />} />
           <Route path="/terms" element={<Terms />} />
           <Route path="*" element={<ForwardToApp />} />

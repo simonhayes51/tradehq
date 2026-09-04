@@ -84,6 +84,35 @@ describe("public homepage navigation", () => {
   });
 });
 
+describe("public guides", () => {
+  beforeEach(() => {
+    Element.prototype.scrollIntoView = vi.fn();
+    trackRecord.value = { data: undefined };
+    billingPlans.value = { data: undefined };
+  });
+
+  it("links to the guide hub from the public navigation", () => {
+    window.location.hash = "#/";
+    renderSite();
+    expect(screen.getAllByRole("link", { name: "Guides" })[0]).toHaveAttribute("href", "#/guides");
+  });
+
+  it("renders the guide hub as a real public route", () => {
+    window.location.hash = "#/guides";
+    renderSite();
+    expect(screen.getByRole("heading", { name: "Get set up without the guesswork." })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Set up the Discord Server Feed/ })).toHaveAttribute("href", "#/guides/discord-server-feed");
+  });
+
+  it("renders the full Discord setup walkthrough", () => {
+    window.location.hash = "#/guides/discord-server-feed";
+    renderSite();
+    expect(screen.getByRole("heading", { name: "Set up automatic trading posts in your server." })).toBeInTheDocument();
+    expect(screen.getAllByText("/feed test").length).toBeGreaterThan(0);
+    expect(screen.getByText(/Server Feed\+ is up to 15/)).toBeInTheDocument();
+  });
+});
+
 describe("public pricing", () => {
   beforeEach(() => {
     window.location.hash = "#/";

@@ -195,3 +195,14 @@
 @keyframes discord-feed-spin {
   to { transform: rotate(360deg); }
 }
+
+.discord-feed-guide-link {
+  display: inline-flex;
+  align-items: center;
+  margin-top: 8px;
+  color: var(--v2-accent, #39f58a);
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.discord-feed-guide-link:hover { text-decoration: underline; }

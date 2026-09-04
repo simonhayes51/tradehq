@@ -196,6 +196,9 @@ export default function DiscordFeed() {
         <SectionCard>
           <p>You don't currently have Manage Server in any Discord server with a Server Feed set up.</p>
           <p>Run <code>/feed setup</code> in your server (you'll need Manage Server there) to get started.</p>
+          <a className="discord-feed-guide-link" href="https://eafc.live/#/guides/discord-server-feed" target="_blank" rel="noreferrer">
+            Open the setup guide
+          </a>
         </SectionCard>
       ) : null}
 

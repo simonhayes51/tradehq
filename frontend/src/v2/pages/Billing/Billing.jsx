@@ -89,7 +89,7 @@ const UNLOCK_COPY = {
 // not grant the member's own account Elite.
 const SERVER_PLANS = [
   { key: "server_feed", label: "Server Feed", price: "£9.99/month", postsPerDay: 6 },
-  { key: "server_feed_plus", label: "Server Feed+", price: "£19.99/month", postsPerDay: 12 },
+  { key: "server_feed_plus", label: "Server Feed+", price: "£19.99/month", postsPerDay: 15 },
 ];
 
 const SERVER_STATUS_LABEL = {
