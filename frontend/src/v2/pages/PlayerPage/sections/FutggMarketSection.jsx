@@ -211,7 +211,23 @@ export default function FutggMarketSection({ cardId }) {
         )}
       </SectionCard>
 
-      <SectionCard title="Recent sales" subtitle="Completed sales — sale times are approximate">
+      <SectionCard
+        title={
+          <span className="inline-flex items-center gap-1.5">
+            Recent completed sales
+            <span
+              className="inline-flex h-[15px] w-[15px] items-center justify-center rounded-full border border-[var(--v2-border)] text-[9px] text-[var(--v2-muted)] cursor-help"
+              tabIndex={0}
+              role="img"
+              aria-label="Where this data comes from"
+              title="Sourced from FUT.GG's public sale listings, not EA's own trade history. Sale times aren't exact - they're recorded as a relative age (e.g. '2h ago') at the moment we captured them, then converted to an approximate timestamp. Treat times as roughly right, not to-the-minute."
+            >
+              i
+            </span>
+          </span>
+        }
+        subtitle="Real completed sales, but sale times are approximate — see the (i) for why"
+      >
         {salesQuery.isLoading ? (
           <p className="text-xs text-[var(--v2-muted)]">Loading…</p>
         ) : sales.length === 0 ? (
