@@ -126,7 +126,7 @@ export default function Watchlist() {
       <PageHead
         eyebrow="YOUR WATCHLIST"
         title="Cards you’re tracking"
-        copy="Prices update when you press Update price on a card - not automatically in the background."
+        copy="Live prices are checked automatically. Use Update price whenever you want an immediate refresh."
         action={
           <div className="v2-watch-head-actions">
             <button type="button" className="v2-alerts-toggle" onClick={() => setAlertsOpen((v) => !v)}>
