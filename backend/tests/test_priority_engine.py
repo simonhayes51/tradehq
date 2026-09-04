@@ -78,28 +78,18 @@ def test_icon_card_type_gets_at_least_high_even_with_low_liquidity():
     assert "PREMIUM_CARD_TYPE" in "".join(result.reason_codes) or "CRITICAL" in result.baseline_tier
 
 
-def test_special_promo_card_type_also_gets_at_least_high_with_low_liquidity():
-    # A low-print-run promo ("special", card_type_scores=0.75) is
-    # low-print-run by nature and rarely clears rule_high_liquidity_min
-    # on trading volume alone - before this, only icon/hero/tots/totw/
-    # fut birthday (>=0.85) cleared the card-type floor, so "special"
-    # fell to NORMAL/LOW/DORMANT and its sales data went stale often
-    # enough to zero evaluation confidence outright, structurally
-    # excluding it from the Opportunities feed regardless of the
-    # underlying economics. rule_high_card_type_min now sits exactly at
-    # 0.75 so this class clears it on card type alone, same as icon does.
+def test_special_promo_card_type_does_not_get_the_card_type_floor_promotion():
+    # REVERTED (4 September) - "special" briefly got the same
+    # liquidity-independent HIGH floor as icon/hero/tots/totw/fut
+    # birthday (rule_high_card_type_min lowered 0.85 -> 0.75), but live
+    # evidence showed it made overall sales-data freshness worse, not
+    # better (see priority_config.py's rule_high_card_type_min comment
+    # for the numbers): pulling "special" into HIGH grew HIGH's due
+    # backlog, which claimed more of select_due()'s shared overflow pool
+    # at NORMAL's direct expense (NORMAL's stale count nearly tripled).
+    # Reverted to 0.85, so "special" (0.75) falls through to
+    # liquidity-based classification like any other illiquid card again.
     result = compute_priority(_row(rarity="special", sales_count=0, sales_dispersion_ratio=None), as_of=AS_OF)
-    assert result.baseline_tier in ("HIGH", "CRITICAL")
-    assert "PREMIUM_CARD_TYPE" in "".join(result.reason_codes) or "CRITICAL" in result.baseline_tier
-
-
-def test_gold_rare_does_not_get_the_card_type_floor_promotion():
-    # The fix must not overshoot into ordinary gold/silver commons -
-    # gold_rare scores 0.5, well below the 0.75 floor, so an illiquid one
-    # should still fall through to liquidity-based classification (NORMAL
-    # or below here), not get swept up by the same rule that now catches
-    # "special".
-    result = compute_priority(_row(rarity="gold_rare", sales_count=0, sales_dispersion_ratio=None), as_of=AS_OF)
     assert result.baseline_tier not in ("HIGH", "CRITICAL")
     assert "PREMIUM_CARD_TYPE" not in "".join(result.reason_codes)
 

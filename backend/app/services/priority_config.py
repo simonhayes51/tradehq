@@ -86,21 +86,33 @@ class PriorityEngineConfig:
     rule_critical_volatility_min: float = field(default_factory=lambda: _env_float("PRIORITY_RULE_CRITICAL_VOLATILITY_MIN", 0.6))
     rule_critical_opportunity_min: float = field(default_factory=lambda: _env_float("PRIORITY_RULE_CRITICAL_OPPORTUNITY_MIN", 0.6))
     rule_high_liquidity_min: float = field(default_factory=lambda: _env_float("PRIORITY_RULE_HIGH_LIQUIDITY_MIN", 0.45))
-    # 0.85 required icon/hero/tots/totw/fut birthday liquidity-independent
-    # HIGH-tier promotion (card_type_scores below) but excluded "special"
-    # (0.75) - the catch-all bucket for promo cards that aren't one of
-    # those named types. A promo card is low-print-run by nature, so it
-    # rarely clears rule_high_liquidity_min on trading volume alone
-    # either, and fell through to NORMAL/LOW/DORMANT - refreshed every
-    # 24h/48h/~67h instead of HIGH's 12h. Once actual sales data crosses
-    # reject_sales_older_than_minutes (72h, futgg_config.py), confidence
-    # zeroes outright (futgg_intelligence._compute_confidence), so those
-    # cards silently stopped clearing evaluation at all - live symptom:
-    # the Opportunities feed skewing almost entirely gold/silver with
-    # very few promo/special cards surfacing. 0.75 is a precise line
-    # between "special" and the next-highest score (gold_rare at 0.5),
-    # so this brings only "special" cards in, not gold/silver commons.
-    rule_high_card_type_min: float = field(default_factory=lambda: _env_float("PRIORITY_RULE_HIGH_CARD_TYPE_MIN", 0.75))
+    # REVERTED (4 September, ~2h after deploy) - lowering this to 0.75 to
+    # give "special" cards a liquidity-independent HIGH floor made things
+    # worse, not better, and the live evidence is unambiguous:
+    # stale_sales_by_priority_tier before/after -
+    #   CRITICAL 1299->1780 (+37%), HIGH 4026->3814 (-5%),
+    #   NORMAL 865->2563 (+196%), DORMANT 1550->2091 (+35%),
+    #   total 7749->10275 (+33%, i.e. WORSE overall).
+    # select_due() (auto_sync/futgg_sales_sync.py) gives CRITICAL/HIGH a
+    # fixed 25%-each floor of every cycle's batch, then fills the
+    # remaining budget in strict priority order - CRITICAL, HIGH, NORMAL,
+    # LOW, DORMANT. Pulling "special" cards into HIGH grew HIGH's due
+    # backlog, so HIGH claimed more of that shared overflow pool -
+    # directly at NORMAL's expense, since NORMAL sits right below HIGH in
+    # that same queue. HIGH's own stale count barely moved (-5%) while
+    # NORMAL's nearly tripled: a small, unconfirmed win (no per-rarity
+    # breakdown exists to show "special" cards specifically got fresher)
+    # bought with a large, measured regression for the far bigger
+    # population of ordinary cards in NORMAL. CRITICAL and DORMANT also
+    # got worse despite being untouched by this change - the collector's
+    # real throughput ceiling (FUT.GG rate limiting, see
+    # auto_sync/futgg_sales_sync.py's circuit-breaker machinery) is the
+    # actual constraint here, and no internal reallocation of a fixed,
+    # insufficient budget can fix that - it can only move which tier pays
+    # for the shortfall. Left at 0.85 (icon/hero/tots/totw/fut birthday
+    # only) until real collector throughput improves; see this file's
+    # git history for the abandoned 0.75 attempt and its numbers.
+    rule_high_card_type_min: float = field(default_factory=lambda: _env_float("PRIORITY_RULE_HIGH_CARD_TYPE_MIN", 0.85))
     rule_normal_liquidity_min: float = field(default_factory=lambda: _env_float("PRIORITY_RULE_NORMAL_LIQUIDITY_MIN", 0.15))
     rule_normal_min_sales_count: int = field(default_factory=lambda: _env_int("PRIORITY_RULE_NORMAL_MIN_SALES_COUNT", 3))
     rule_low_min_sales_count: int = field(default_factory=lambda: _env_int("PRIORITY_RULE_LOW_MIN_SALES_COUNT", 1))
