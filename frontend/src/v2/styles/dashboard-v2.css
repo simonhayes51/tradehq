@@ -663,7 +663,216 @@
 
 /* Home's copy of the locked/free-pick treatment. The card itself reuses
    .queue-card, so only the anchor reset and the allowance note are new. */
-.queue-card.locked-opportunity { text-decoration: none; color: inherit; display: flex; }
-.queue-card.locked-opportunity .locked-opportunity-note { margin-left: auto; }
 .home-free-picks { margin: 0 0 12px; font-size: 12.5px; color: #9a9aa0; }
 .home-free-picks b { color: #f2f2f4; font-variant-numeric: tabular-nums; }
+
+/* ---------------------------------------------------------------------
+   Free Home correction pass
+   ---------------------------------------------------------------------
+   1. The locked opportunity preview.
+
+   It used to render through .queue-card's 7-column grid while carrying
+   only six children, and then `display: flex` threw the grid away
+   entirely - so the name, the reason, two striped placeholder figures
+   and the "Exact prices on Elite" note were all laid out in a single
+   flex row at whatever width was left, overlapping and clipping. It now
+   has its own layout: card, copy, and one deliberate locked panel that
+   names what is withheld.
+*/
+.queue-card.locked-opportunity {
+  /* !important: mobile-polish.css sets .queue-card's columns with
+     !important for the unlocked card, which has a different child set. */
+  display: grid !important;
+  grid-template-columns: 26px 72px minmax(0, 1fr) minmax(132px, 172px) !important;
+  align-items: center;
+  gap: 12px;
+  text-decoration: none;
+  color: inherit;
+}
+.locked-body {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+.locked-body .locked-name {
+  font-size: 15px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.locked-reason,
+.locked-price {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.locked-reason {
+  margin-top: 6px;
+  color: #b0b0b0;
+  font-size: 11px;
+  line-height: 1.35;
+}
+.locked-price {
+  margin-top: 4px;
+  color: #8e8e8e;
+  font-size: 11px;
+  -webkit-line-clamp: 1;
+}
+.locked-panel {
+  display: grid;
+  gap: 5px;
+  align-self: stretch;
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px dashed rgba(57, 255, 138, 0.35);
+  border-radius: 3px;
+  background: rgba(57, 255, 138, 0.05);
+}
+.locked-panel-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #39ff8a;
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 0.09em;
+}
+.locked-panel-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 2px;
+}
+.locked-panel-list li {
+  color: #b6b6b6;
+  font-size: 10.5px;
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.locked-panel-list li::before {
+  content: "· ";
+  color: #6d6d6d;
+}
+.locked-panel-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-top: 2px;
+  color: #39ff8a;
+  font-size: 11px;
+  font-weight: 900;
+}
+.queue-card.locked-opportunity:hover .locked-panel {
+  border-style: solid;
+  background: rgba(57, 255, 138, 0.1);
+}
+
+/*
+   2. Top Card with no lead.
+
+   .decision-stage is a two-column grid, so a short empty state in the
+   left column stretched to the full height of the Market Pulse column
+   beside it - the "enormous empty rectangle". It now sizes to its own
+   content and says one true thing about why there is no card.
+*/
+.lead-trade.is-pending {
+  align-self: start;
+}
+.lead-pending {
+  display: grid;
+  gap: 8px;
+  padding: 18px 2px 4px;
+  max-width: 560px;
+}
+.lead-pending-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: #f2c94c;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.1em;
+}
+.lead-pending-title {
+  margin: 0;
+  font-size: 22px;
+  line-height: 1.25;
+  color: #f8f8f8;
+}
+.lead-pending-title b { color: #39ff8a; }
+.lead-pending-copy,
+.lead-pending-when {
+  margin: 0;
+  color: #a4a4a4;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.lead-pending-when b {
+  color: #f2f2f4;
+  font-variant-numeric: tabular-nums;
+}
+.lead-pending-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 6px;
+}
+.lead-pending-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 16px;
+  border: 1px solid #39ff8a;
+  border-radius: 3px;
+  background: #39ff8a;
+  color: #101010;
+  font-weight: 900;
+  cursor: pointer;
+}
+.lead-pending-actions .secondary {
+  border-color: #333333;
+  background: #1c1c1c;
+  color: #fff;
+}
+
+@media (max-width: 700px) {
+  .queue-card.locked-opportunity {
+    grid-template-columns: 22px 56px minmax(0, 1fr) !important;
+    align-items: start;
+  }
+  .locked-panel {
+    grid-column: 1 / -1;
+    grid-auto-flow: column;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+  }
+  .locked-panel-list {
+    grid-auto-flow: column;
+    gap: 8px;
+  }
+  .locked-panel-list li { font-size: 10px; }
+  .locked-panel-list li::before { content: ""; }
+  .lead-pending-title { font-size: 19px; }
+  .lead-pending-actions button { width: 100%; justify-content: center; }
+}
+
+@media (max-width: 420px) {
+  .locked-panel-list {
+    grid-auto-flow: row;
+    gap: 2px;
+  }
+  .locked-panel {
+    grid-auto-flow: row;
+    justify-content: stretch;
+  }
+}

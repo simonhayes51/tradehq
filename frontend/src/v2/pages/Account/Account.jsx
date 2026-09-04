@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { Briefcase, Calculator, ExternalLink, Gift, Layers, LogOut, MessageCircle, RefreshCw, Star, Trash2, Trophy, User, Users, Wrench } from "lucide-react";
+import { ArrowUpRight, Briefcase, Calculator, ExternalLink, Gift, Layers, LogOut, MessageCircle, RefreshCw, Star, Trash2, Trophy, User, Users, Wrench } from "lucide-react";
 import api from "../../../axios";
 import { DISCORD_INVITE_URL } from "../../../lib/domains";
 import { useAuth } from "../../../context/AuthContext";
@@ -107,7 +107,21 @@ export default function Account() {
             member neither what they have nor what they are missing. */}
         <div><span>CURRENT PLAN</span><h2>{tier}</h2><p>{isElite
           ? "The full opportunities feed, Trade Finder, the trading assistant and the complete track record."
-          : `${FREE_LIMITS.dailyOpportunities} complete picks a day, ${FREE_LIMITS.watchlist} watchlist cards, ${FREE_LIMITS.alerts} price alerts. Free permanently.`}</p></div>
+          : `${FREE_LIMITS.dailyOpportunities} complete picks a day, ${FREE_LIMITS.watchlist} watchlist cards, ${FREE_LIMITS.alerts} price alerts. Free permanently.`}</p>
+          {/* The upgrade route from a Free account. /billing existed but
+              nothing on this page linked to it - so the page that
+              literally shows "CURRENT PLAN: FREE" had no way to change
+              it. This is also the mobile path to billing, since the
+              sidebar's upgrade entry has no room in the bottom tab bar
+              (see tokens.css). */}
+          {!isElite ? (
+            <Link className="v2-account-upgrade" to="/billing?unlock=elite">
+              Upgrade to {PAID_PLAN_NAME} <ArrowUpRight size={15} />
+            </Link>
+          ) : (
+            <Link className="v2-account-manage" to="/billing">Manage subscription</Link>
+          )}
+        </div>
       </article>
       <article className="v2-account-panel">
         <span>ACCOUNT DETAILS</span>

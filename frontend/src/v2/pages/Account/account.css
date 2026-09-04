@@ -20,3 +20,33 @@
   font-size: 12px;
   line-height: 1.5;
 }
+
+/* The Free -> Elite call to action on the plan card. One button, on the
+   card that states the plan, rather than a banner repeated down the
+   page. Also the mobile route to /billing - the sidebar's upgrade entry
+   is hidden in the bottom tab bar. */
+.v2-account-upgrade,
+.v2-account-manage {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 14px;
+  min-height: 44px;
+  padding: 0 16px;
+  border-radius: 4px;
+  font-weight: 800;
+  font-size: 13px;
+  text-decoration: none;
+}
+.v2-account-upgrade {
+  border: 1px solid var(--v2-accent);
+  background: var(--v2-accent);
+  color: #07120d;
+}
+.v2-account-upgrade:hover { opacity: 0.9; }
+.v2-account-manage {
+  border: 1px solid var(--v2-border);
+  background: transparent;
+  color: var(--v2-text);
+}
+.v2-account-manage:hover { border-color: var(--v2-accent); color: var(--v2-accent); }
