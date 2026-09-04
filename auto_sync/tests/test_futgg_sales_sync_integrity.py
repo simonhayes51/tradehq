@@ -473,7 +473,11 @@ def test_run_forever_logs_the_wall_clock_resume_time_on_a_trip():
 
     source = inspect.getsource(mod.run_forever)
     trip_streak_update = source.index("consecutive_cycle_trips += 1")
-    last_sleep_call = source.rindex("await sleep_or_shutdown(")
+    # The cycle-end backoff sleep now routes through sleep_within_budget
+    # (deadline-aware - see runtime_budget_exhausted's docstring), not
+    # the plain sleep_or_shutdown every earlier idle/reprobe/inter-batch
+    # sleep in this function still uses.
+    last_sleep_call = source.rindex("sleep_within_budget(")
     between = source[trip_streak_update:last_sleep_call]
     assert "if breaker_tripped:" in between
     assert "next cycle expected around" in between
@@ -488,10 +492,10 @@ def test_run_forever_uses_the_escalating_backoff_not_the_flat_constant():
 
     source = inspect.getsource(mod.run_forever)
     trip_streak_update = source.index("consecutive_cycle_trips += 1")
-    # The LAST sleep_or_shutdown call in the function is the cycle-end
+    # The LAST sleep_within_budget call in the function is the cycle-end
     # backoff decision (earlier ones are the idle/reprobe/inter-batch
     # sleeps, which are irrelevant here).
-    last_sleep_call = source.rindex("await sleep_or_shutdown(")
+    last_sleep_call = source.rindex("sleep_within_budget(")
     assert last_sleep_call >= trip_streak_update
     between = source[trip_streak_update:last_sleep_call]
     assert "next_backoff_seconds(consecutive_cycle_trips)" in between
