@@ -1,0 +1,25 @@
+<svg width="1200" height="360" viewBox="0 0 1200 360" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">EAFC.Live</title>
+  <desc id="desc">Long EAFC.Live pill logo in black, white and green.</desc>
+  <defs>
+    <linearGradient id="green" x1="790" y1="62" x2="1160" y2="302" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#6DFF28"/>
+      <stop offset="1" stop-color="#19F778"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="31" y1="48" x2="1168" y2="314" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#73FF25"/>
+      <stop offset=".45" stop-color="#1DFF74"/>
+      <stop offset="1" stop-color="#35F58A"/>
+    </linearGradient>
+    <filter id="glow" x="-4%" y="-12%" width="108%" height="124%" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="0" stdDeviation="10" flood-color="#39F58A" flood-opacity=".42"/>
+      <feDropShadow dx="0" dy="18" stdDeviation="22" flood-color="#000" flood-opacity=".55"/>
+    </filter>
+  </defs>
+  <rect x="25" y="54" width="1150" height="252" rx="126" fill="#050807" stroke="url(#rim)" stroke-width="17" filter="url(#glow)"/>
+  <path d="M39 180c0-62 50-112 112-112h650c-54 30-93 82-110 125-24 60-69 93-139 93H151c-62 0-112-50-112-112v6Z" fill="#111514" opacity=".86"/>
+  <path d="M116 236V121h248v46H181v20h157v42H181v7h191v46H116Zm277 0 85-115h84l85 115h-76l-13-20h-78l-13 20h-74Zm113-57h26l-13-22-13 22Zm170 57V121h261v46H743v27h170v46H743v42h-67Zm292 4c-42 0-76-12-101-36-24-24-36-53-36-88s12-64 36-88c25-24 59-36 101-36h92v51h-84c-23 0-41 7-54 20-12 13-18 31-18 53s6 40 18 53c13 13 31 20 54 20h84v51h-92Z" fill="white"/>
+  <path d="M765 62h278c73 0 132 59 132 132v0c0 73-59 132-132 132H765c-73 0-132-59-132-132v0c0-73 59-132 132-132Z" fill="url(#green)"/>
+  <circle cx="777" cy="194" r="36" fill="#040605"/>
+  <path d="M856 240V148h34v63h74v29H856Zm137 0V148h35v92h-35Zm89 0-57-92h40l37 62 38-62h40l-58 92h-40Zm110 0V148h130v28h-95v8h82v25h-82v4h98v27h-133Z" fill="#050706"/>
+</svg>
