@@ -121,6 +121,8 @@ class TestThePublicCardPreview:
         assert preview["current_bin_approx"] != 420_431
 
     @pytest.mark.parametrize("price,expected", [
+        (200, 200),             # low-price previews must never say 0 coins
+        (350, 350),
         (3_240, 3_000),          # cheap cards keep useful resolution
         (9_900, 10_000),
         (42_300, 40_000),
