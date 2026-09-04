@@ -81,8 +81,20 @@ RUN chmod +x /app/docker-entrypoint-sales.sh
 
 ENV PLAYWRIGHT_HEADLESS=false
 ENV FUTGG_RUN_BULK_WITH_SALES=true
-ENV FUTGG_SALES_SELECT_LIMIT_MAX=60
-ENV FUTGG_SALES_CYCLE_SLEEP_MIN=300
+# 120/90 (was 60/300) - see docker-entrypoint-sales.sh's own comments for
+# the 2026-09-04 root-cause math: 60 selected cards + a forced 300s
+# inter-cycle sleep created a hard ~709-720 cards/hour ceiling even at a
+# fully healthy throttle, against a ~1,327/hour steady-state requirement
+# derived from the effective-tier population and cadence. Neither number
+# was ever checked against that demand - both were sized only to avoid
+# 429s. AdaptiveThrottle (futgg_sales_sync.py) already reacts to real
+# 429 pressure per batch and, since its rolling-window recovery fix
+# (same date), no longer needs a large static safety margin on top of
+# it to stay stable - these are a conservative first step toward a
+# ceiling actually sized against demand, not a jump straight to that
+# module's own code-level defaults.
+ENV FUTGG_SALES_SELECT_LIMIT_MAX=120
+ENV FUTGG_SALES_CYCLE_SLEEP_MIN=90
 ENV FUTGG_SALES_CYCLE_SLEEP_FORCE=true
 
 CMD ["/app/docker-entrypoint-sales.sh"]
