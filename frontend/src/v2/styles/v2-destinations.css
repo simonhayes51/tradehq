@@ -186,7 +186,7 @@
   object-fit: contain;
 }
 .v2-market-rank {
-  color: #767676;
+  color: #868686;
   font-size: 12px;
   font-weight: 900;
 }
@@ -229,7 +229,7 @@
 }
 .v2-watch-top small {
   margin-left: auto;
-  color: #767676;
+  color: #868686;
 }
 .v2-watch-card a {
   color: #fff;
@@ -340,10 +340,10 @@
 .v2-meta-pills > span { display: inline-flex !important; width: auto !important; margin: 0 !important; padding: 4px 7px; border: 1px solid #424242; border-radius:999px; background: #1e1e1e; color: #bbbbbb !important; font-size: 9px !important; font-weight: 850; line-height: 1; white-space: nowrap; }
 .v2-meta-pills > span:first-child { border-color: rgba(156,255,59,.32); background: rgba(156,255,59,.08); color: #7bffc1 !important; }
 .v2-result-price { text-align: right; }
-.v2-result-price > small { display: block; margin-bottom: 6px; color: #767676; font-size: 9px; font-weight: 900; letter-spacing: .08em; }
+.v2-result-price > small { display: block; margin-bottom: 6px; color: #868686; font-size: 9px; font-weight: 900; letter-spacing: .08em; }
 .v2-result-price > .coin-value { font-size: 18px; font-weight: 900; }
 .v2-market-head, .v2-market-row { grid-template-columns: 42px 64px minmax(0,1fr) 150px 110px; }
-.v2-market-head { display: grid; align-items: center; gap: 14px; padding: 10px 18px; border-bottom: 1px solid #343434; color: #767676; font-size: 9px; font-weight: 900; letter-spacing: .09em; text-transform: uppercase; }
+.v2-market-head { display: grid; align-items: center; gap: 14px; padding: 10px 18px; border-bottom: 1px solid #343434; color: #868686; font-size: 9px; font-weight: 900; letter-spacing: .09em; text-transform: uppercase; }
 .v2-market-head span:nth-child(4), .v2-market-head span:nth-child(5) { text-align: right; }
 .v2-market-row { min-height: 98px; }
 .v2-market-row > img { width: 62px; height: 76px; filter: drop-shadow(0 8px 9px rgba(0,0,0,.35)); }
