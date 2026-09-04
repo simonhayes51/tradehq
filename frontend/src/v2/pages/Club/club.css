@@ -674,6 +674,55 @@
   line-height: 1.35;
 }
 
+/* Search + sort bar for a large portfolio, above the open/history lists.
+   Pagination (Show more, below) keeps render cost down; this is the
+   separate problem of finding one specific trade among dozens. */
+.portfolio-search {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 14px 0;
+}
+.portfolio-search-input {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 220px;
+  min-width: 0;
+  height: 42px;
+  padding: 0 12px;
+  border: 1px solid var(--v2-border);
+  border-radius: 4px;
+  background: var(--v2-card);
+  color: var(--v2-muted);
+}
+.portfolio-search-input input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--v2-text);
+  font-size: 14px;
+}
+.portfolio-search-input input::placeholder { color: var(--v2-muted); }
+.portfolio-search > select {
+  height: 42px;
+  padding: 0 10px;
+  border: 1px solid var(--v2-border);
+  border-radius: 4px;
+  background: var(--v2-card);
+  color: var(--v2-text);
+  font-size: 13px;
+  font-weight: 700;
+}
+.portfolio-search-count {
+  color: var(--v2-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 /* Incremental rendering controls */
 .club-show-more {
   display: flex;
