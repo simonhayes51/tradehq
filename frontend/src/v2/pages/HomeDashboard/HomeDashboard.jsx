@@ -452,7 +452,69 @@ export function AnalysisModal({item,onClose,navigate,onWatch,watchState,backLabe
   // half of the AVOID-card contradiction (an Erling Haaland avoid read
   // "sell above 690,000 just to cover tax" when 690,000 was actually
   // the full-profit target; the true break-even was ~637,000).
-  const target=(!negativeCall&&isFutgg&&item.recommendedSellTarget!=null)?Number(item.recommendedSellTarget):modalTarget(item,entry,gain);const confidence=item.confidence==null?null:Math.max(0,Math.min(100,Math.round(Number(item.confidence))));const fair=Number(item.fairValue)||0;const reasons=[fair>entry?`${percent((fair-entry)/entry*100)} below recent value`:reason(item),negativeCall?"The recommendation is to avoid this card at the current price - the figures above are hypothetical, not a target":(gain>0?<><CoinValue value={gain} signed/> estimated after EA tax</>:`Current price does not leave enough margin`),`${item.risk||"Unknown"} risk · ${sellingSpeedLabel(item.liquidityScore)} selling speed`];return <div className={isPage?"dash-page-shell":"dash-analysis-backdrop"} onMouseDown={isPage?undefined:(event)=>event.target===event.currentTarget&&onClose()}><section className={`dash-analysis-modal${extra?" has-extra":""}${isPage?" page-mode":""}`} role={isPage?undefined:"dialog"} aria-modal={isPage?undefined:"true"} aria-label={isPage?undefined:`${nameOf(item.player)} quick analysis`}>{backLabel?<button className="dash-modal-back" onClick={onClose}><ArrowRight size={16}/>{backLabel}</button>:null}<button className="dash-modal-close" onClick={onClose} aria-label="Close analysis"><X size={20}/></button><div className="dash-modal-card"><CardImage player={item.player} featured/></div><div className="dash-modal-copy"><div className="dash-modal-heading"><div><PlayerMeta player={item.player} source={item.source}/><h2>{nameOf(item.player)}</h2></div><b className={`call ${String(item.recommendation||"WATCH").toLowerCase()}`}>{item.recommendation||"WATCH"}</b></div>{isFutgg?<MarketFreshness priceAgeSeconds={item.priceAgeSeconds} capturedAt={item.updatedAt} className="dash-modal-freshness"/>:null}<ModalVerdict item={item} entry={entry} realEntry={realEntry} target={target}/><div className="dash-modal-numbers"><Metric label={negativeCall?"Current price":(showCeiling?"Buy now":"Buy below")} value={<CoinValue value={negativeCall?entry:buyPrice}/>} sub={negativeCall?"Current market entry":(buyPrice==null?"Not enough data to set one":(showCeiling?<>Pay up to <CoinValue value={ceiling}/></>:"Maximum entry"))} tone="entry"/><Metric label={negativeCall?"Return after tax":"Expected profit"} value={<CoinValue value={gain} signed/>} sub={negativeCall?"Hypothetical - not a recommendation":"After EA tax"} tone={negativeCall?"":(gain==null?"":gain>=0?"positive":"negative")}/><Metric label={negativeCall?"Break-even sale":"Sell target"} value={<CoinValue value={target}/>} sub={negativeCall?"Minimum sale to cover tax":"List around this price"} tone="target"/></div><div className="dash-modal-lower"><ModalPriceChart cardId={item.cardId} entryPrice={negativeCall?entry:realEntry} targetPrice={target} fairValue={fair} source={item.source}/><div className="dash-modal-summary"><div className={`dash-confidence${confidence==null?" no-data":""}`}><div><span>Confidence</span><strong>{confidence==null?"—":`${confidence}%`}</strong></div><i><b style={{width:`${confidence??0}%`}}/></i></div>{item.popularity!=null?<div className="dash-confidence"><div><span>In-game popularity</span><strong>{item.popularity}%</strong></div><i><b style={{width:`${item.popularity}%`}}/></i></div>:null}{item.psPcBinGapPct!=null?<p className="ps-pc-gap">{item.psPcBinGapPct>0?`${Math.abs(item.psPcBinGapPct).toFixed(1)}% cheaper listed on PS`:`${Math.abs(item.psPcBinGapPct).toFixed(1)}% cheaper listed on PC`}</p>:null}<ul>{reasons.map((text,index)=><li key={index}><span>✓</span><span className="reason-copy">{text}</span></li>)}</ul>{item.raw?<div className="dash-modal-advanced"><AdvancedRationale item={item.raw}/></div>:null}<div className="dash-modal-actions"><button onClick={()=>negativeCall?navigate("/trade-finder"):navigate(`/portfolio?card_id=${item.cardId}&buy=${entry}&sell=${target}&quantity=1&player=${encodeURIComponent(nameOf(item.player))}`)}><Target size={17}/>{negativeCall?"Find a better trade":"Log trade"}</button><button className="secondary watch-action" onClick={()=>onWatch(item)}><Star size={17} fill={watchState==="saved"?"currentColor":"none"}/>{watchState==="saved"?"Watching":"Add to watchlist"}</button></div></div></div>{extra?<div className="dash-modal-extra">{extra}</div>:null}</div></section></div>}
+  const target=(!negativeCall&&isFutgg&&item.recommendedSellTarget!=null)?Number(item.recommendedSellTarget):modalTarget(item,entry,gain);const confidence=item.confidence==null?null:Math.max(0,Math.min(100,Math.round(Number(item.confidence))));const fair=Number(item.fairValue)||0;const reasons=[fair>entry?`${percent((fair-entry)/entry*100)} below recent value`:reason(item),negativeCall?"The recommendation is to avoid this card at the current price - the figures above are hypothetical, not a target":(gain>0?<><CoinValue value={gain} signed/> estimated after EA tax</>:`Current price does not leave enough margin`),`${item.risk||"Unknown"} risk · ${sellingSpeedLabel(item.liquidityScore)} selling speed`];
+
+  // One navigation model per surface. The page variant previously
+  // rendered BOTH a circular X in the corner AND a "Back to player
+  // search" link, which are two different mental models of where you
+  // are (an overlay you dismiss vs a page you navigate away from) shown
+  // at the same time. A page gets the back link; an overlay gets the X.
+  const isWait=String(item.recommendation||"").toUpperCase()==="WAIT";
+  const logTradeHref=`/portfolio?card_id=${item.cardId}&buy=${entry}&sell=${target}&quantity=1&player=${encodeURIComponent(nameOf(item.player))}`;
+  const watchButton=(className)=><button className={className} onClick={()=>onWatch(item)}><Star size={17} fill={watchState==="saved"?"currentColor":"none"}/>{watchState==="saved"?(isWait?"Watching for entry":"Watching"):(isWait?"Watch for entry":"Add to watchlist")}</button>;
+  // The primary action must not contradict the verdict. A large bright
+  // "LOG TRADE" beside a WAIT recommendation tells the reader to do the
+  // exact thing the page just advised against; logging a purchase they
+  // have ALREADY made is still a legitimate thing to want, so it stays -
+  // as the secondary action, labelled as what it is.
+  const actions=negativeCall
+    ? <><button onClick={()=>navigate("/trade-finder")}><Target size={17}/>Find a better trade</button>{watchButton("secondary watch-action")}</>
+    : isWait
+      ? <>{watchButton("watch-action")}<button className="secondary" onClick={()=>navigate(logTradeHref)}><Target size={17}/>I already bought this — log it</button></>
+      : <><button onClick={()=>navigate(logTradeHref)}><Target size={17}/>Log trade</button>{watchButton("secondary watch-action")}</>;
+
+  // The chart + summary block. On the standalone page it is rendered as
+  // a full-width row BELOW both columns rather than inside the right-
+  // hand copy column: the card-art column is short and the copy column
+  // is very long, so everything under the card image sat beside a tall
+  // empty left-hand gutter. On the popup it stays where it was.
+  const lower=<div className="dash-modal-lower">
+    <ModalPriceChart cardId={item.cardId} entryPrice={negativeCall?entry:realEntry} targetPrice={target} fairValue={fair} source={item.source}/>
+    <div className="dash-modal-summary">
+      <div className={`dash-confidence${confidence==null?" no-data":""}`}><div><span>Confidence</span><strong>{confidence==null?"—":`${confidence}%`}</strong></div><i><b style={{width:`${confidence??0}%`}}/></i></div>
+      {item.popularity!=null?<div className="dash-confidence"><div><span>In-game popularity</span><strong>{item.popularity}%</strong></div><i><b style={{width:`${item.popularity}%`}}/></i></div>:null}
+      {item.psPcBinGapPct!=null?<p className="ps-pc-gap">{item.psPcBinGapPct>0?`${Math.abs(item.psPcBinGapPct).toFixed(1)}% cheaper listed on PS`:`${Math.abs(item.psPcBinGapPct).toFixed(1)}% cheaper listed on PC`}</p>:null}
+      <ul>{reasons.map((text,index)=><li key={index}><span>✓</span><span className="reason-copy">{text}</span></li>)}</ul>
+      {item.raw?<div className="dash-modal-advanced"><AdvancedRationale item={item.raw}/></div>:null}
+      <div className="dash-modal-actions">{actions}</div>
+    </div>
+  </div>;
+
+  return <div className={isPage?"dash-page-shell":"dash-analysis-backdrop"} onMouseDown={isPage?undefined:(event)=>event.target===event.currentTarget&&onClose()}>
+    <section className={`dash-analysis-modal${extra?" has-extra":""}${isPage?" page-mode":""}`} role={isPage?undefined:"dialog"} aria-modal={isPage?undefined:"true"} aria-label={isPage?undefined:`${nameOf(item.player)} quick analysis`}>
+      {isPage
+        ? (backLabel?<button className="dash-modal-back" onClick={onClose}><ArrowRight size={16}/>{backLabel}</button>:null)
+        : <button className="dash-modal-close" onClick={onClose} aria-label="Close analysis"><X size={20}/></button>}
+      <div className="dash-modal-card"><CardImage player={item.player} featured/></div>
+      <div className="dash-modal-copy">
+        <div className="dash-modal-heading"><div><PlayerMeta player={item.player} source={item.source}/><h2>{nameOf(item.player)}</h2></div><b className={`call ${String(item.recommendation||"WATCH").toLowerCase()}`}>{item.recommendation||"WATCH"}</b></div>
+        {/* The ONE live-price freshness line on this surface. The market
+            section below used to render a second one from the same
+            fields, so the page told you twice how old the price was. */}
+        {isFutgg?<MarketFreshness priceAgeSeconds={item.priceAgeSeconds} capturedAt={item.updatedAt} className="dash-modal-freshness"/>:null}
+        <ModalVerdict item={item} entry={entry} realEntry={realEntry} target={target}/>
+        <div className="dash-modal-numbers">
+          <Metric label={negativeCall?"Current price":(showCeiling?"Buy now":"Buy below")} value={<CoinValue value={negativeCall?entry:buyPrice}/>} sub={negativeCall?"Current market entry":(buyPrice==null?"Not enough data to set one":(showCeiling?<>Pay up to <CoinValue value={ceiling}/></>:"Maximum entry"))} tone="entry"/>
+          <Metric label={negativeCall?"Return after tax":"Expected profit"} value={<CoinValue value={gain} signed/>} sub={negativeCall?"Hypothetical - not a recommendation":"After EA tax"} tone={negativeCall?"":(gain==null?"":gain>=0?"positive":"negative")}/>
+          <Metric label={negativeCall?"Break-even sale":"Sell target"} value={<CoinValue value={target}/>} sub={negativeCall?"Minimum sale to cover tax":"List around this price"} tone="target"/>
+        </div>
+        {isPage?null:lower}
+      </div>
+      {isPage?<div className="dash-modal-wide">{lower}</div>:null}
+      {extra?<div className="dash-modal-extra">{extra}</div>:null}
+    </section>
+  </div>;
+}
 function ModalVerdict({item,entry,realEntry,target}){if(isNegativeCall(item))return <p className="dash-modal-verdict">Avoid at <CoinValue value={entry}/>. It needs to sell above <CoinValue value={target}/> just to cover EA tax.</p>;
   // realEntry (not entry) below: entry silently falls back to the live
   // ask, which read as "wait for a better price than the price it's

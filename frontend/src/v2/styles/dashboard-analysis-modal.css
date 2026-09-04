@@ -81,3 +81,42 @@
    case) would silently make position:sticky inert. */
 .dash-analysis-modal.has-extra.page-mode{overflow:visible}
 .dash-modal-extra{grid-column:1/-1;margin-top:18px}
+
+
+/* ---------------------------------------------------------------------
+   Player Detail correction pass
+   --------------------------------------------------------------------- */
+
+/* On the standalone page the chart + summary block is a full-width row
+   under BOTH columns, not the tail of the right-hand copy column. The
+   card-art column is short and the copy column is very long, so
+   everything below the card image used to sit beside a tall empty
+   left-hand gutter. */
+.dash-modal-wide { grid-column: 1 / -1; }
+
+/* Typical-sale readout under the completed-sales chart. */
+.dash-chart-typical {
+  margin: 8px 0 0;
+  color: #b4b4b4;
+  font-size: 11px;
+  line-height: 1.45;
+}
+.dash-chart-typical b {
+  color: #f2f2f4;
+  font-variant-numeric: tabular-nums;
+}
+
+/* A range with no data behind it is disabled and says why on hover,
+   rather than silently redrawing a window it cannot cover. */
+.dash-chart-ranges button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+  text-decoration: line-through;
+}
+
+@media (max-width: 700px) {
+  /* The chart range buttons and the "Completed sales" title collided on
+     narrow screens; let them wrap instead. */
+  .dash-price-chart-head { flex-wrap: wrap; gap: 8px; }
+  .dash-chart-ranges button { min-width: 44px; min-height: 34px; }
+}
