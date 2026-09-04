@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { HashRouter, Link, Route, Routes } from "react-router-dom";
+import { HashRouter, Link, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import {
   Activity,
   ArrowRight,
@@ -58,6 +58,8 @@ function Brand() {
 
 function PublicNav() {
   const [open, setOpen] = useState(false);
+  const location = useLocation();
+  const navigate = useNavigate();
   const links = [
     ["Product", "product"],
     ["How it works", "how"],
@@ -67,7 +69,11 @@ function PublicNav() {
 
   const go = (id) => {
     setOpen(false);
-    scrollToId(id);
+    if (location.pathname === "/") {
+      scrollToId(id);
+      return;
+    }
+    navigate("/", { state: { scrollTo: id } });
   };
 
   return (
@@ -432,6 +438,11 @@ function FinalCTA() {
 }
 
 function PublicHome() {
+  const location = useLocation();
+  useEffect(() => {
+    if (!location.state?.scrollTo) return;
+    requestAnimationFrame(() => scrollToId(location.state.scrollTo));
+  }, [location.state]);
   return <main><Hero /><ProofBand /><FeatureIntro /><MobileProduct /><HowItWorks /><DiscordSection /><Pricing /><FAQ /><FinalCTA /></main>;
 }
 

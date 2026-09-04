@@ -111,6 +111,13 @@ describe("public guides", () => {
     expect(screen.getAllByText("/feed test").length).toBeGreaterThan(0);
     expect(screen.getByText(/Server Feed\+ is up to 15/)).toBeInTheDocument();
   });
+
+  it("returns to the homepage before using an in-page navigation link", () => {
+    window.location.hash = "#/guides";
+    renderSite();
+    fireEvent.click(screen.getAllByRole("button", { name: "Product" })[0]);
+    expect(window.location.hash).toBe("#/");
+  });
 });
 
 describe("public pricing", () => {
