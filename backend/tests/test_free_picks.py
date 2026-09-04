@@ -190,6 +190,28 @@ class TestTheCandidateBuilderMayBeAsync:
 
         assert asyncio.run(_materialise(lambda: [{"source_card_id": 2}])) == [{"source_card_id": 2}]
 
+    def test_stored_rows_are_capped_when_the_allowance_is_reduced(self, monkeypatch):
+        import asyncio
+
+        monkeypatch.setattr(fp, "FREE_DAILY_PICKS", 2)
+
+        class Conn:
+            async def fetch(self, *_args):
+                return [{"source_card_id": 111}, {"source_card_id": 222}, {"source_card_id": 333}]
+
+        class Acquire:
+            async def __aenter__(self):
+                return Conn()
+
+            async def __aexit__(self, *_args):
+                return None
+
+        class Pool:
+            def acquire(self):
+                return Acquire()
+
+        assert asyncio.run(fp.stored_pick_ids(Pool(), DAY)) == [111, 222]
+
     def test_the_builder_is_not_called_when_the_day_is_already_decided(self):
         # The pool is a full market scan. Running it on every request of
         # the day, only to throw the result away because the picks are
