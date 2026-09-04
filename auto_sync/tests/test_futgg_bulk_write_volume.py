@@ -76,6 +76,55 @@ class TestChangeOnlyWrites:
         assert len(recs) == 1 and hb == 0
 
 
+class TestPriceChangeDetail:
+    """_last_price_changes - what a future triggered-detailed-sales
+    consumer (Part 5) reads to learn WHICH cards changed price this
+    cycle, not just how many. Exposed alongside select_rows_to_write()'s
+    long-established (records, changed, heartbeat) return rather than
+    widening it - see that function's own comment."""
+
+    def test_a_genuine_change_is_captured_with_old_and_new_price(self):
+        bulk.select_rows_to_write([(1, 10000)], NOW)
+        bulk.select_rows_to_write([(1, 12500)], NOW + timedelta(minutes=5))
+        assert bulk._last_price_changes == [(1, 10000, 12500)]
+
+    def test_a_first_observation_is_not_treated_as_a_price_change(self):
+        # There is no PREVIOUS price to compare against - this is a card
+        # being seen for the first time, not one whose price moved.
+        bulk.select_rows_to_write([(1, 10000)], NOW)
+        assert bulk._last_price_changes == []
+
+    def test_a_heartbeat_rewrite_is_not_a_price_change(self):
+        bulk.select_rows_to_write([(1, 10000)], NOW)
+        later = NOW + timedelta(minutes=bulk._heartbeat_minutes_for(1) + 1)
+        bulk.select_rows_to_write([(1, 10000)], later)
+        assert bulk._last_price_changes == []
+
+    def test_an_unchanged_price_leaves_no_stale_change_from_a_prior_call(self):
+        # Each call must refresh the list, not accumulate across cycles -
+        # a caller reading it after an unchanged cycle must not see a
+        # change from two cycles ago.
+        bulk.select_rows_to_write([(1, 10000)], NOW)
+        bulk.select_rows_to_write([(1, 12500)], NOW + timedelta(minutes=5))
+        assert bulk._last_price_changes  # sanity: the change above was captured
+        bulk.select_rows_to_write([(1, 12500)], NOW + timedelta(minutes=6))
+        assert bulk._last_price_changes == []
+
+    def test_multiple_genuine_changes_in_one_cycle_are_all_captured(self):
+        bulk.select_rows_to_write([(1, 10000), (2, 20000)], NOW)
+        bulk.select_rows_to_write(
+            [(1, 11000), (2, 20000), (3, 30000)], NOW + timedelta(minutes=5),
+        )
+        # card 1 changed, card 2 unchanged, card 3 is a first observation.
+        assert bulk._last_price_changes == [(1, 10000, 11000)]
+
+    def test_disabling_change_only_writes_reports_no_price_changes(self, monkeypatch):
+        monkeypatch.setattr(bulk, "CHANGE_ONLY_WRITES", False)
+        bulk.select_rows_to_write([(1, 10000)], NOW)
+        bulk.select_rows_to_write([(1, 11000)], NOW + timedelta(minutes=5))
+        assert bulk._last_price_changes == []
+
+
 class TestHeartbeatsAreStaggered:
     def test_cards_do_not_all_heartbeat_on_the_same_cycle(self):
         """A single shared interval turns the removed writes back into one
