@@ -1,4 +1,11 @@
-.opportunities-page .opp-controls { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+/* Flex-wrap, not a fixed 3/2/1 column grid: with exactly 3 filter
+   fields, a hard-coded 2-column step at 1050px stranded the third field
+   alone in its own row with an empty cell beside it. A wrapping flex
+   row lets each field grow to fill whatever space is left on its own
+   row, so a field that wraps alone still spans the full width instead
+   of leaving a gap. */
+.opportunities-page .opp-controls { display: flex; flex-wrap: wrap; }
+.opportunities-page .opp-controls .finder-control { flex: 1 1 200px; }
 .opp-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .opp-targets {
   display: grid;
@@ -46,12 +53,24 @@
   line-height: 1.5;
 }
 .finder-card-foot .v2-market-freshness { margin-left: 10px; }
+.opp-budget-tag {
+  display: inline-block;
+  margin-left: 7px;
+  padding: 2px 7px;
+  border: 1px solid #4a4a2c;
+  border-radius: 99px;
+  background: rgba(242, 201, 76, .12);
+  color: #f2c94c;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: .03em;
+  text-transform: uppercase;
+  vertical-align: middle;
+}
 @media (max-width: 1050px) {
-  .opportunities-page .opp-controls { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .opp-grid { grid-template-columns: 1fr; }
 }
 @media (max-width: 700px) {
-  .opportunities-page .opp-controls { grid-template-columns: 1fr; }
   .opp-targets { grid-template-columns: 1fr 1fr; }
   .finder-card-foot { flex-wrap: wrap; gap: 8px; }
 }
