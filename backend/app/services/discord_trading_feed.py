@@ -260,6 +260,43 @@ async def _last_opportunity_post_at(conn, server_id: int) -> Optional[datetime]:
     )
 
 
+# _opportunity_dedup_key() only recognises two posts as "the same
+# opportunity" when its buy/sell/profit numbers are byte-for-byte equal
+# (see test_dedup_key_changes_when_the_opportunity_actually_changes -
+# that's deliberate, so a real price move gets reported). But the live
+# candidate scan re-evaluates the same card's current_executable_buy every
+# poll cycle, and that price wobbles by a small amount run to run even
+# when nothing about the opportunity materially changed - each wobble
+# mints a fresh dedup_key, so once cooldown_minutes elapses the SAME card
+# reposts again with a near-identical price (confirmed live: Marcelo
+# Vieira da Silva posted at 18:15 with BUY 75,500, then again at 18:36 -
+# 21 minutes later, past a 15-minute cooldown - with BUY 77,000). This is
+# a separate guard from that per-server cooldown: it stops any one card
+# from reoccupying the feed until enough time has passed that a repeat
+# posting is actually useful, regardless of how many times its price
+# ticked in between.
+CARD_REPOST_COOLDOWN_MINUTES = 240
+
+
+async def _recently_posted_card_ids(conn, server_id: int, card_ids: Iterable[Any]) -> set[int]:
+    ids = [int(c) for c in card_ids if c is not None]
+    if not ids:
+        return set()
+    rows = await conn.fetch(
+        """
+        SELECT DISTINCT (payload->>'source_card_id')::bigint AS card_id
+        FROM discord_server_posts
+        WHERE server_id=$1 AND kind='opportunity' AND status='sent'
+          AND sent_at > NOW() - ($2 || ' minutes')::interval
+          AND (payload->>'source_card_id')::bigint = ANY($3::bigint[])
+        """,
+        server_id,
+        str(CARD_REPOST_COOLDOWN_MINUTES),
+        ids,
+    )
+    return {row["card_id"] for row in rows}
+
+
 # ---------------------------------------------------------------------------
 # FREE — daily overview
 # ---------------------------------------------------------------------------
@@ -751,9 +788,15 @@ async def publish_live_opportunities(pool, server: ServerRecord, client: Optiona
     # in a batch.
     posted = 0
     budget = settings["max_posts_per_day"] - already
+    async with pool.acquire() as conn:
+        recent_card_ids = await _recently_posted_card_ids(
+            conn, server.id, (row["source_card_id"] for row, _ci in scored)
+        )
     for row, ci in scored:
         if posted >= budget or posted >= 1:
             break
+        if row.get("source_card_id") is not None and int(row["source_card_id"]) in recent_card_ids:
+            continue  # same card posted too recently - a fresh price alone isn't a new opportunity
         band = None
         if band_budget is not None:
             from app.services.discord_feed_billing import classify_budget_band
