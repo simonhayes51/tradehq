@@ -28,17 +28,17 @@ const APP_SIGNUP = `${APP_ORIGIN}/#/signup`;
 const APP_LOGIN = `${APP_ORIGIN}/#/login`;
 
 const personalFeatures = [
-  "Live opportunities with clear buy targets",
-  "Expected profit after EA tax",
-  "Confidence, risk and selling speed",
-  "Trade Finder filters for your budget",
+  "Live trades with clear buy prices",
+  "Profit shown after EA tax",
+  "Confidence, risk and expected selling speed",
+  "Trade Finder filters to match your budget",
   "Watchlists, alerts and portfolio tracking",
 ];
 
 const serverFeatures = [
-  "Automatic branded opportunities",
-  "Choose the posting channel",
-  "Set platform and budget preferences",
+  "Branded trade posts sent automatically",
+  "Choose which channel they appear in",
+  "Set your platform and budget",
   "Owner-only setup and billing controls",
 ];
 
@@ -120,17 +120,17 @@ function Hero() {
           <div className="pub-eyebrow"><span /> LIVE EA FC MARKET INTELLIGENCE</div>
           <h1>Know what to buy.<br /><em>Know when to sell.</em></h1>
           <p>
-            EAFC.Live turns live prices and completed sales into clear trading opportunities.
-            See the buy price, expected profit, risk and reasoning before you spend your coins.
+            EAFC.Live uses live prices and completed sales to find potential trades.
+            See what to pay, what you could make after tax and how risky it looks before spending your coins.
           </p>
           <div className="pub-hero-actions">
             <a href={APP_SIGNUP} className="pub-button">Create free account <ArrowRight size={17} /></a>
             <button type="button" className="pub-button pub-button-ghost" onClick={() => scrollToId("product")}>
-              See the product
+              See how it works
             </button>
           </div>
           <div className="pub-hero-note">
-            <Check size={15} /> Free permanently
+            <Check size={15} /> Free forever
             <span />
             <Check size={15} /> No card required
           </div>
@@ -151,9 +151,9 @@ function Hero() {
 
 function ProofBand() {
   const proof = [
-    { icon: Search, title: "Not guesswork", text: "Calls are checked against recent completed sales and fair value before they surface." },
-    { icon: Activity, title: "Actionable numbers", text: "Every move shows maximum buy, expected profit after EA tax, risk and confidence." },
-    { icon: Bot, title: "Built beyond the app", text: "Server feeds can post the best opportunities straight into a Discord trading community." },
+    { icon: Search, title: "Based on real sales", text: "Prices are checked against recent completed sales instead of relying on inflated listings." },
+    { icon: Activity, title: "Know your numbers", text: "Every trade shows the maximum buy price, expected profit after EA tax, risk and confidence." },
+    { icon: Bot, title: "Made for Discord too", text: "Server feeds can send selected trades straight into your Discord community." },
   ];
 
   return (
@@ -162,8 +162,8 @@ function ProofBand() {
         <div className="pub-proof-lead">
           <img src="/icons/icon-192x192.png" alt="" width="62" height="62" />
           <div>
-            <span>WHY IT FEELS DIFFERENT</span>
-            <h2>Actual market evidence, turned into a clear move.</h2>
+            <span>WHY TRADERS USE IT</span>
+            <h2>Real sales data. Useful numbers. Better decisions.</h2>
           </div>
         </div>
         <div className="pub-proof-grid">
@@ -182,10 +182,10 @@ function ProofBand() {
 
 function FeatureIntro() {
   const cards = [
-    { icon: Activity, title: "Real sale data", text: "Recommendations use completed sales, not inflated asking prices." },
-    { icon: BarChart3, title: "Clear numbers", text: "See the maximum entry, sell target and expected return after EA tax." },
-    { icon: ShieldCheck, title: "Risk explained", text: "Every opportunity includes confidence, risk and selling speed." },
-    { icon: Bell, title: "Always watching", text: "Track cards and get alerts when the market reaches your price." },
+    { icon: Activity, title: "Real sale data", text: "Trade suggestions use completed sales, not inflated asking prices." },
+    { icon: BarChart3, title: "The numbers that matter", text: "See the maximum buy price, sell target and expected return after EA tax." },
+    { icon: ShieldCheck, title: "Risk explained", text: "Each trade includes a confidence score, risk level and expected selling speed." },
+    { icon: Bell, title: "Price alerts", text: "Track cards and get an alert when the market reaches your chosen price." },
   ];
 
   return (
@@ -193,8 +193,8 @@ function FeatureIntro() {
       <div className="pub-container">
         <div className="pub-section-heading pub-section-heading-center">
           <span>THE PRODUCT</span>
-          <h2>Trading decisions without the guesswork</h2>
-          <p>Everything is built to answer three questions: what to buy, what to pay and what you could make.</p>
+          <h2>Find trades without doing all the digging</h2>
+          <p>Quickly see what to buy, what to pay and how much profit could be available.</p>
         </div>
         <div className="pub-feature-grid">
           {cards.map(({ icon: Icon, title, text }) => (
@@ -230,18 +230,18 @@ function MobileProduct() {
         </div>
         <div className="pub-split-copy">
           <div className="pub-eyebrow"><Smartphone size={14} /> BUILT FOR THE WAY YOU TRADE</div>
-          <h2>Your next move, clear at a glance</h2>
+          <h2>All the key numbers in one place</h2>
           <p>
             Open EAFC.Live on any device and see the opportunity, entry price, expected profit and
-            confidence in one place. No spreadsheets and no digging through price pages.
+            confidence in one place. No spreadsheets. No jumping between price pages.
           </p>
           <ul className="pub-check-list">
-            <li><Check size={16} /> Top opportunities surfaced automatically</li>
-            <li><Check size={16} /> Trade Finder sorted around your budget</li>
-            <li><Check size={16} /> Live data age shown on every call</li>
-            <li><Check size={16} /> Watch or act in a couple of taps</li>
+            <li><Check size={16} /> Best current trades shown first</li>
+            <li><Check size={16} /> Trade Finder matched to your budget</li>
+            <li><Check size={16} /> See how fresh the data is on every trade</li>
+            <li><Check size={16} /> Add to your watchlist or act in a few taps</li>
           </ul>
-          <a href={APP_SIGNUP} className="pub-text-link">Start finding trades <ArrowRight size={16} /></a>
+          <a href={APP_SIGNUP} className="pub-text-link">Find your next trade <ArrowRight size={16} /></a>
         </div>
       </div>
     </section>
@@ -250,9 +250,9 @@ function MobileProduct() {
 
 function HowItWorks() {
   const steps = [
-    { icon: Search, number: "01", title: "We watch the market", text: "Live prices are compared against recent completed sales and calculated fair value." },
-    { icon: Zap, number: "02", title: "The engine finds the edge", text: "Cards are checked for realistic profit, confidence, demand and selling risk." },
-    { icon: BarChart3, number: "03", title: "You get the move", text: "See a maximum buy price, expected return and clear explanation of the opportunity." },
+    { icon: Search, number: "01", title: "We track live prices", text: "Current prices are compared with recent completed sales and calculated fair value." },
+    { icon: Zap, number: "02", title: "We look for value", text: "Each card is checked for realistic profit, confidence, demand and selling risk." },
+    { icon: BarChart3, number: "03", title: "You see the trade", text: "You get a maximum buy price, expected return and a simple explanation of why it stands out." },
   ];
 
   return (
@@ -260,8 +260,8 @@ function HowItWorks() {
       <div className="pub-container pub-how-inner">
         <div className="pub-section-heading">
           <span>HOW IT WORKS</span>
-          <h2>From market noise to one clear move</h2>
-          <p>EAFC.Live does the boring market checks, then gives you the part that matters.</p>
+          <h2>We check the market. You see what stands out.</h2>
+          <p>EAFC.Live handles the price checking and gives you the information you actually need.</p>
         </div>
         <div className="pub-steps">
           {steps.map(({ icon: Icon, number, title, text }) => (
@@ -284,10 +284,10 @@ function DiscordSection() {
       <div className="pub-container pub-split pub-discord-inner">
         <div className="pub-split-copy">
           <div className="pub-eyebrow"><Bot size={14} /> DISCORD SERVER FEEDS</div>
-          <h2>Give your community useful trading content automatically</h2>
+          <h2>Put useful trading posts straight into your Discord</h2>
           <p>
-            Add the EAFC.Live bot, choose a channel and set your preferences. The best matching
-            opportunities are posted straight into your server without anyone babysitting the feed.
+            Add the EAFC.Live bot, choose a channel and set your preferences. EAFC.Live then sends
+            the best matching trades straight into your server automatically.
           </p>
           <ul className="pub-check-list">
             {serverFeatures.map((feature) => <li key={feature}><Check size={16} /> {feature}</li>)}
@@ -336,8 +336,8 @@ function Pricing() {
       <div className="pub-container">
         <div className="pub-section-heading pub-section-heading-center">
           <span>PRICING</span>
-          <h2>Start free. Upgrade when it earns its place.</h2>
-          <p>Personal plans and Discord server feeds are separate. Pick only what you need.</p>
+          <h2>Start free. Upgrade when you need more.</h2>
+          <p>Personal plans and Discord server feeds are separate, so you only pay for what you need.</p>
         </div>
         <div className="pub-pricing-group pub-personal-pricing">
           <div className="pub-pricing-title"><Smartphone size={18} /><div><h3>For your own trading</h3><p>Your personal EAFC.Live account.</p></div></div>
@@ -346,9 +346,9 @@ function Pricing() {
               name="Free"
               price="£0"
               suffix="forever"
-              description="Try real opportunities and the core tools without entering card details."
+              description="Try the core tools and see real trades without entering any card details."
               features={[
-                `${FREE_LIMITS.dailyOpportunities} complete opportunities each day`,
+                `${FREE_LIMITS.dailyOpportunities} full trade suggestions each day`,
                 `${FREE_LIMITS.watchlist}-card watchlist`,
                 "Player search and market data",
                 "Basic results history",
@@ -360,8 +360,8 @@ function Pricing() {
               name={PAID_PLAN_NAME}
               price={monthly}
               suffix={season ? `or ${season}` : null}
-              description="For traders who want the full live feed and every tool unlocked."
-              features={["Full live opportunities feed", ...personalFeatures.slice(1)]}
+              description="Get the full live feed, higher limits and access to every trading tool."
+              features={["Full live trade feed", ...personalFeatures.slice(1)]}
               action={`Get ${PAID_PLAN_NAME}`}
               href={`${APP_ORIGIN}/#/billing`}
               featured
@@ -375,7 +375,7 @@ function Pricing() {
               name="Server Feed"
               price="£9.99"
               suffix="per server / month"
-              description="A steady feed for smaller or casual trading communities."
+              description="Up to six selected trades each day for smaller or casual trading communities."
               features={["Up to 6 posts per day", ...serverFeatures.slice(1)]}
               action="Set up server feed"
               href={DISCORD_INVITE_URL}
@@ -384,8 +384,8 @@ function Pricing() {
               name="Server Feed+"
               price="£19.99"
               suffix="per server / month"
-              description="More daily opportunities for larger and more active servers."
-              features={["Up to 12 posts per day", ...serverFeatures.slice(1)]}
+              description="More daily trade posts for larger and more active Discord servers."
+              features={["Up to 15 posts per day", ...serverFeatures.slice(1)]}
               action="Set up Server Feed+"
               href={DISCORD_INVITE_URL}
               featured
@@ -399,8 +399,8 @@ function Pricing() {
 
 function FAQ() {
   const items = [
-    ["Is profit guaranteed?", "No. EAFC.Live uses live market evidence to find potential opportunities, but prices can always move. Expected profit already accounts for EA's 5% sale tax."],
-    ["What do I get for free?", `Free accounts get ${FREE_LIMITS.dailyOpportunities} complete opportunities per day, player search, a ${FREE_LIMITS.watchlist}-card watchlist and core market tools.`],
+    ["Is profit guaranteed?", "No. EAFC.Live uses live prices and recent completed sales to find potential trades, but the market can always move. Expected profit already accounts for EA's 5% sale tax."],
+    ["What do I get for free?", `Free accounts get ${FREE_LIMITS.dailyOpportunities} full trade suggestions per day, player search, a ${FREE_LIMITS.watchlist}-card watchlist and core market tools.`],
     ["Does Elite include a Discord server feed?", "No. Elite is for your personal account. Server feeds are separate because they post into a whole Discord community."],
     ["Which markets are supported?", "Console and PC are tracked separately. PlayStation and Xbox share the console transfer market."],
   ];
@@ -420,7 +420,7 @@ function FinalCTA() {
   return (
     <section className="pub-final">
       <div className="pub-container pub-final-inner">
-        <div><span>READY WHEN YOU ARE</span><h2>Make your next trade with better information.</h2></div>
+        <div><span>READY WHEN YOU ARE</span><h2>Make your next trade with the numbers in front of you.</h2></div>
         <a href={APP_SIGNUP} className="pub-button pub-button-light">Create free account <ArrowRight size={17} /></a>
       </div>
     </section>
