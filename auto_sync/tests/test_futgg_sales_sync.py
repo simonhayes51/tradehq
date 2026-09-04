@@ -182,13 +182,17 @@ class TestAdaptiveThrottle:
         assert t.delay > 0.5                  # but still slows down
 
     def test_recovers_only_after_sustained_success(self):
+        # Streak threshold is THROTTLE_RECOVERY_STREAK (3 by default,
+        # lowered from the original hardcoded 5 - see that constant's
+        # own comment for the production incident behind the change).
+        import futgg_sales_sync as sales
         t = AdaptiveThrottle(8, 0.5)
         t.record(8, 8)
         slowed, shrunk = t.delay, t.batch_size
-        for _ in range(4):
+        for _ in range(sales.THROTTLE_RECOVERY_STREAK - 1):
             t.record(8, 0)
         assert t.delay == slowed and t.batch_size == shrunk  # not yet
-        t.record(8, 0)                                        # fifth
+        t.record(8, 0)                                        # last one
         assert t.delay < slowed and t.batch_size > shrunk
 
     def test_never_exceeds_starting_limits(self):
@@ -234,6 +238,87 @@ class TestAdaptiveThrottle:
         t.record(8, 0)
         t.record(8, 8)
         assert t.consecutive_fully_throttled_batches == 1
+
+
+class TestAdaptiveThrottleRollingRecovery:
+    """Recovery used to require THROTTLE_RECOVERY_STREAK (was hardcoded
+    5) perfectly clean batches in a row - a single throttled request,
+    however isolated, reset the count to zero. Production evidence
+    (2026-09-03/04) showed a real throttle collapse took ~20 hours of
+    wall-clock time to recover under that rule, because a persistent
+    low-rate trickle of 429s from the low-priority tail kept resetting
+    the streak before it ever reached 5. These tests exercise the
+    rolling-window replacement: an isolated throttled batch inside an
+    otherwise healthy window is forgiven (streak untouched, not reset),
+    while a genuinely elevated ratio, or too little history to judge,
+    still resets it exactly as before."""
+
+    def test_isolated_429_does_not_reset_an_otherwise_healthy_streak(self):
+        t = AdaptiveThrottle(8, 0.5)
+        # Build up enough rolling history for the window to be judged
+        # (THROTTLE_ROLLING_MIN_ATTEMPTED attempted) with a healthy
+        # ratio, stopping one short of THROTTLE_RECOVERY_STREAK so a
+        # recovery step hasn't fired yet.
+        for _ in range(sales_module().THROTTLE_RECOVERY_STREAK - 1):
+            t.record(8, 0)
+        streak_before = t._clean_streak
+        assert streak_before > 0
+        # One isolated throttled batch - well within
+        # THROTTLE_ROLLING_TOLERANCE against the window built above.
+        t.record(8, 1)
+        assert t._clean_streak == streak_before  # forgiven, not reset
+        # This batch's OWN backoff still applied - a 429 is never
+        # ignored, only forgiven for recovery bookkeeping.
+        assert t.delay > 0.5
+
+    def test_sustained_429s_still_reset_recovery_progress(self):
+        t = AdaptiveThrottle(8, 0.5)
+        for _ in range(3):
+            t.record(8, 0)
+        # Every batch throttled from here - ratio stays high, so
+        # forgiveness must not apply.
+        for _ in range(sales_module().THROTTLE_ROLLING_WINDOW_BATCHES):
+            t.record(8, 8)
+        assert t._clean_streak == 0
+
+    def test_too_little_history_falls_back_to_the_strict_rule(self):
+        # A small batch size means few requests accumulate per record()
+        # call - two batches of 4 is only 8 attempted, below
+        # THROTTLE_ROLLING_MIN_ATTEMPTED (16 by default), so there isn't
+        # yet enough history to judge the window as healthy. The
+        # throttled batch must fall back to the original zero-tolerance
+        # behaviour (reset) rather than being forgiven.
+        t = AdaptiveThrottle(4, 0.5)
+        t.record(4, 0)
+        t.record(4, 1)
+        assert t._clean_streak == 0
+
+    def test_recovery_is_materially_faster_under_mostly_clean_traffic(self):
+        # A realistic noisy-but-mostly-healthy stream (occasional
+        # isolated 429s, none of them sustained) must still converge to
+        # full recovery in a bounded number of batches. Under the
+        # ORIGINAL zero-tolerance streak-of-5, every one of these
+        # isolated throttles would reset progress back to zero, and
+        # production evidence (2026-09-03/04) showed that pattern took
+        # ~20 hours of wall-clock time to recover; this asserts the
+        # rolling-window replacement instead reaches full recovery
+        # within a small, fixed number of batches.
+        t = AdaptiveThrottle(8, 0.5, resume_batch_size=1, resume_delay=20.0)
+        batches = 0
+        while (t.batch_size < 8 or t.delay > 0.5) and batches < 200:
+            batches += 1
+            # Roughly 1 in 12 batches sees an isolated, low-severity
+            # throttle - noisy, not a sustained wall.
+            throttled = 1 if batches % 12 == 0 else 0
+            t.record(8, throttled)
+        assert t.batch_size == 8
+        assert abs(t.delay - 0.5) < 1e-9
+        assert batches < 200
+
+
+def sales_module():
+    import futgg_sales_sync as sales
+    return sales
 
 
 class TestAdaptiveThrottleResume:

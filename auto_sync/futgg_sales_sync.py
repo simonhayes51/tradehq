@@ -87,6 +87,7 @@ import re
 import signal
 import sys
 import time
+from collections import deque
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -348,6 +349,50 @@ CIRCUIT_BREAKER_MAX_BACKOFF_SECONDS = env_float(
 )
 CONSECUTIVE_FULL_THROTTLE_BATCHES = env_int(
     "FUTGG_SALES_FULL_THROTTLE_BATCHES_BEFORE_BREAKER", 2, minimum=1
+)
+
+#: AdaptiveThrottle recovery tuning (see AdaptiveThrottle.record()).
+#:
+#: THE PROBLEM THIS FIXES. Recovery originally required
+#: THROTTLE_RECOVERY_STREAK (was hardcoded 5) *consecutive*,
+#: zero-tolerance clean batches - any single throttled request, however
+#: isolated, reset that count to zero. Production evidence (2026-09-03
+#: 21:00 UTC through 2026-09-04) showed this is not survivable against
+#: real traffic: throughput collapsed to ~2-3 cards/hour and took
+#: roughly 20 hours of wall-clock time to climb back to a healthy
+#: batch=8, because a persistent low-rate trickle of 429s from the
+#: low-priority tail kept resetting the streak before it could reach 5,
+#: even while the great majority of requests were succeeding cleanly.
+#:
+#: THE FIX. A rolling window of the last THROTTLE_ROLLING_WINDOW_BATCHES
+#: record() calls tracks (attempted, throttled) totals. A throttled
+#: batch only resets the recovery streak if the window's aggregate
+#: ratio is ALREADY unhealthy (> THROTTLE_ROLLING_TOLERANCE) or there
+#: isn't yet enough history to judge (< THROTTLE_ROLLING_MIN_ATTEMPTED
+#: attempted) - otherwise it is forgiven as an isolated blip and the
+#: streak is left alone (not reset, not advanced). The streak threshold
+#: itself also drops to THROTTLE_RECOVERY_STREAK (3): still a real
+#: sustained-health requirement, just not one that needs to be perfect.
+#:
+#: What does NOT change: the instant per-batch backoff (delay increase,
+#: batch shrink above 25% severity) still fires on every single
+#: throttled batch exactly as before - a genuine 429 is never ignored,
+#: only forgiven for the purpose of recovery bookkeeping. Sustained
+#: throttling (ratio above tolerance) still fully blocks recovery, same
+#: as today. No new concurrency, no change to max_delay/min_batch
+#: bounds, no change to the recovery step's own magnitude (0.8x delay,
+#: +1 batch).
+THROTTLE_ROLLING_WINDOW_BATCHES = env_int(
+    "FUTGG_SALES_THROTTLE_ROLLING_WINDOW_BATCHES", 8, minimum=1
+)
+THROTTLE_ROLLING_MIN_ATTEMPTED = env_int(
+    "FUTGG_SALES_THROTTLE_ROLLING_MIN_ATTEMPTED", 16, minimum=1
+)
+THROTTLE_ROLLING_TOLERANCE = env_float(
+    "FUTGG_SALES_THROTTLE_ROLLING_TOLERANCE", 0.10, minimum=0.0
+)
+THROTTLE_RECOVERY_STREAK = env_int(
+    "FUTGG_SALES_THROTTLE_RECOVERY_STREAK", 3, minimum=1
 )
 DB_WRITE_MAX_ATTEMPTS = env_int("FUTGG_SALES_DB_WRITE_MAX_ATTEMPTS", 4, minimum=1)
 DB_WRITE_RETRY_BASE_SECONDS = env_float(
@@ -618,27 +663,50 @@ class AdaptiveThrottle:
         )
         self._clean_streak = 0
         self.consecutive_fully_throttled_batches = 0
+        # Rolling (attempted, throttled) history - see
+        # THROTTLE_ROLLING_WINDOW_BATCHES's own comment for why this
+        # exists: a single isolated throttled batch inside an otherwise
+        # healthy window must not wipe out recovery progress the way a
+        # zero-tolerance streak did.
+        self._recent_batches: "deque[tuple[int, int]]" = deque(
+            maxlen=THROTTLE_ROLLING_WINDOW_BATCHES
+        )
 
     def record(self, attempted: int, throttled: int) -> None:
         if attempted > 0 and throttled >= attempted:
             self.consecutive_fully_throttled_batches += 1
         else:
             self.consecutive_fully_throttled_batches = 0
+
+        self._recent_batches.append((attempted, throttled))
+
         if throttled:
-            self._clean_streak = 0
             # Proportional to how badly we overshot: a batch that was
             # entirely rejected deserves a harder cut than one that lost a
-            # single request.
+            # single request. Unconditional - a genuine 429 is never
+            # forgiven for THIS batch's own backoff, only for whether it
+            # resets the recovery streak below.
             severity = throttled / max(attempted, 1)
             self.delay = min(self.max_delay, max(self.delay, 0.25) * (1.0 + 2.0 * severity))
             if severity > 0.25:
                 self.batch_size = max(self.min_batch, self.batch_size - 1)
+
+            window_attempted = sum(a for a, _ in self._recent_batches)
+            window_throttled = sum(t for _, t in self._recent_batches)
+            window_ratio = (window_throttled / window_attempted) if window_attempted else 1.0
+            forgivable = (
+                window_attempted >= THROTTLE_ROLLING_MIN_ATTEMPTED
+                and window_ratio <= THROTTLE_ROLLING_TOLERANCE
+            )
+            if not forgivable:
+                self._clean_streak = 0
             return
 
         self._clean_streak += 1
-        # Ease back in slowly, and only after sustained success - the
-        # limiter is likely windowed, so one clean batch proves little.
-        if self._clean_streak >= 5:
+        # Ease back in slowly, and only after sustained-or-forgiven
+        # success - the limiter is likely windowed, so one clean batch
+        # proves little.
+        if self._clean_streak >= THROTTLE_RECOVERY_STREAK:
             self._clean_streak = 0
             self.delay = max(self.min_delay, self.delay * 0.8)
             self.batch_size = min(self.max_batch, self.batch_size + 1)
@@ -1494,6 +1562,40 @@ async def write_heartbeat(
             await heartbeat(conn, HEARTBEAT_WORKER, ok=ok, detail=" ".join(parts))
     except Exception as e:
         log.warning("heartbeat write failed: %s", e)
+
+
+async def write_lock_skipped_heartbeat(pool: asyncpg.Pool, *, waited_seconds: float) -> None:
+    """Record that this invocation did NOT run at all - the advisory
+    lock was still held by another instance after waiting the full
+    retry window.
+
+    THE GAP THIS FIXES. The old code just logged a warning and exited.
+    A scheduled invocation that skips this way looks, from the outside,
+    identical to one that simply never fired - no pipeline_heartbeats
+    row is written either way, so a previous instance stuck for hours
+    (see runtime_budget_exhausted's own docstring for how that can
+    happen) can silently cancel one or more of the NEXT scheduled
+    invocations too, with nothing anywhere recording that it happened.
+    Reuses the existing pipeline_heartbeats mechanism (monitoring.py) -
+    no new table, no new alerting channel - `ok=False` and
+    "skipped_due_to_lock" in `detail` are enough for the same freshness/
+    readiness checks that already read this table to notice.
+    """
+    try:
+        from monitoring import heartbeat
+    except Exception as e:  # pragma: no cover - import environment only
+        log.warning("heartbeat unavailable: %s", e)
+        return
+    detail = (
+        f"skipped_due_to_lock lock_key={SALES_SYNC_ADVISORY_LOCK_KEY} "
+        f"waited_seconds={waited_seconds:.0f} "
+        f"at={datetime.now(timezone.utc).isoformat()}"
+    )
+    try:
+        async with pool.acquire() as conn:
+            await heartbeat(conn, HEARTBEAT_WORKER, ok=False, detail=detail)
+    except Exception as e:
+        log.warning("lock-skip heartbeat write failed: %s", e)
 
 
 #: How long a DDL statement in ensure_schema() may wait for its lock
@@ -2369,6 +2471,67 @@ async def sleep_or_shutdown(seconds: float, shutdown_event: asyncio.Event) -> bo
         return shutdown_event.is_set()
 
 
+def runtime_deadline(started_at: float) -> float | None:
+    """Monotonic deadline for a bounded run, or None if unbounded
+    (MAX_RUNTIME_MINUTES == 0). Computed once, from run_forever's own
+    `run_started_at`, so every later check compares against a fixed
+    point in time rather than re-deriving "how much is left" from a
+    moving now()."""
+    if not MAX_RUNTIME_MINUTES:
+        return None
+    return started_at + MAX_RUNTIME_MINUTES * 60
+
+
+def runtime_budget_exhausted(deadline: float | None, *, now: float | None = None) -> bool:
+    """True once a bounded run's deadline has passed. Always False for
+    an unbounded run (deadline is None).
+
+    THE BUG THIS FIXES. run_forever's MAX_RUNTIME_MINUTES check used to
+    live only at the top of the outer per-cycle while loop - a cycle
+    already in flight, including every batch inside select_due()'s up-
+    to-SELECT_LIMIT due list, ran to completion regardless of how long
+    that took. At a degraded throttle (batch=1, delay=20s observed in
+    production), a single cycle selecting SELECT_LIMIT=400 cards could
+    take on the order of 400 * ~20s = ~8000s (over two hours) - many
+    times the configured 45-minute bound - with nothing in the process
+    itself able to stop it early. This (and its sibling check at every
+    batch-dispatch site in run_forever) closes that gap: called before
+    every batch, not just every cycle.
+    """
+    if deadline is None:
+        return False
+    return (now if now is not None else time.monotonic()) >= deadline
+
+
+async def sleep_within_budget(
+    seconds: float,
+    shutdown_event: asyncio.Event,
+    deadline: float | None,
+    *,
+    now: float | None = None,
+) -> tuple[bool, bool]:
+    """Sleep up to `seconds` via sleep_or_shutdown, but never past a
+    bounded run's deadline. Returns (shutdown_requested, budget_exhausted).
+
+    If the deadline has already passed, or sleeping the full `seconds`
+    would cross it, this returns immediately with budget_exhausted=True
+    and never calls sleep_or_shutdown at all - "finish the run cleanly"
+    rather than "sleep out however much of the budget is left and then
+    discover the deadline at the next check" (a circuit-breaker backoff
+    of up to CIRCUIT_BREAKER_MAX_BACKOFF_SECONDS=1800s is exactly the
+    case this matters for: sleeping 20 of the last 25 remaining minutes
+    of a 45-minute bounded run for a backoff that then has no time left
+    to be useful is strictly worse than ending the run now).
+    """
+    if deadline is not None:
+        current = now if now is not None else time.monotonic()
+        remaining = deadline - current
+        if remaining <= 0 or seconds >= remaining:
+            return False, True
+    shutdown = await sleep_or_shutdown(seconds, shutdown_event)
+    return shutdown, False
+
+
 def _install_shutdown_handlers(shutdown_event: asyncio.Event) -> None:
     """SIGTERM/SIGINT both request a graceful stop: the current step
     (one navigation, one batch) finishes - bounded by PAGE_TIMEOUT_MS/
@@ -2440,6 +2603,7 @@ async def run_forever() -> None:
             "another SalesSync still owns advisory lock %d after %.0fs - exiting cleanly",
             SALES_SYNC_ADVISORY_LOCK_KEY, LOCK_ACQUIRE_RETRY_SECONDS,
         )
+        await write_lock_skipped_heartbeat(pool, waited_seconds=LOCK_ACQUIRE_RETRY_SECONDS)
         await pool.release(lock_conn)
         await pool.close()
         return
@@ -2519,7 +2683,36 @@ async def run_forever() -> None:
                     throttle.describe(), BATCH_SIZE, BATCH_DELAY,
                 )
 
+            # Run-level summary counters (item D) - a small, fixed set of
+            # running totals logged once at shutdown, not a metrics
+            # framework: every field here already exists per-cycle
+            # (stats/breaker_tripped/throttle.describe()), this just adds
+            # them up across the whole invocation so a bounded run's one
+            # log line answers "was this run healthy overall" without
+            # having to reconstruct it from N per-cycle lines by hand.
+            run_start_throttle_desc = throttle.describe()
+            run_totals = {
+                "ok": 0, "failed": 0, "sales_seen": 0,
+                "throttle_errors": 0, "breaker_trips": 0,
+                "breaker_sleep_seconds": 0.0,
+            }
+            # True once any runtime-budget check (top-of-loop, mid-cycle
+            # batch dispatch, or a backoff/throttle-delay sleep that
+            # would have crossed the deadline) is the reason this run
+            # ended, as opposed to MAX_CYCLES, an empty due queue, or a
+            # shutdown signal.
+            run_ended_by_runtime_budget = False
+
             run_started_at = time.monotonic()
+            # Fixed point in time, computed once - see runtime_deadline()
+            # and runtime_budget_exhausted()'s own docstrings. Every
+            # runtime-budget check in this loop (outer per-cycle check
+            # below, every batch dispatch inside a cycle, every backoff/
+            # throttle-delay sleep) compares against this SAME deadline,
+            # so a bounded run's total wall-clock time is bounded no
+            # matter which of those checks ends up being the one that
+            # fires.
+            deadline = runtime_deadline(run_started_at)
             cycles_done = 0
             # Consecutive breaker trips with no clean cycle in between -
             # see next_backoff_seconds(). Reset the moment a cycle
@@ -2527,14 +2720,14 @@ async def run_forever() -> None:
             consecutive_cycle_trips = 0
 
             while not shutdown_event.is_set():
-                # Bounded-run check, at the TOP of the loop so a cycle
-                # already in flight always finishes rather than being torn
-                # off mid-batch (a half-written batch would leave cards
-                # marked due-again and waste the next run's budget on
-                # repeating them).
-                if MAX_RUNTIME_MINUTES and (
-                    (time.monotonic() - run_started_at) >= MAX_RUNTIME_MINUTES * 60
-                ):
+                # Bounded-run check, at the TOP of the loop - this alone
+                # is NOT sufficient (see runtime_budget_exhausted's
+                # docstring: a cycle already in flight used to run to
+                # completion regardless of how long that took), but it's
+                # still the cheap, common-case exit for the normal case
+                # where the previous cycle finished promptly.
+                if runtime_budget_exhausted(deadline):
+                    run_ended_by_runtime_budget = True
                     log.info(
                         "bounded run complete: %d minute limit reached after %d cycle(s) "
                         "- exiting cleanly (FUTGG_SALES_MAX_RUNTIME_MINUTES)",
@@ -2548,6 +2741,14 @@ async def run_forever() -> None:
                     )
                     break
                 cycles_done += 1
+                # Set inside a cycle's batch loop (either transport) or
+                # its closing backoff/CYCLE_SLEEP sleep if the runtime
+                # budget runs out before either finishes - checked once
+                # after this cycle's normal finalization (log/heartbeat/
+                # throttle-state save) to exit the OUTER loop immediately
+                # rather than starting select_due() on a new cycle with
+                # no time left to do anything with it.
+                cycle_runtime_exhausted = False
 
                 timers = StageTimers()
                 stats = {"ok": 0, "failed": 0, "sales_seen": 0, "batch_errors": 0}
@@ -2604,6 +2805,18 @@ async def run_forever() -> None:
                 if transport == "signed_fetch":
                     offset = 0
                     while offset < len(due) and not shutdown_event.is_set():
+                        if runtime_budget_exhausted(deadline):
+                            cycle_runtime_exhausted = True
+                            run_ended_by_runtime_budget = True
+                            log.warning(
+                                "runtime budget exhausted mid-cycle on signed_fetch: "
+                                "processed %d/%d selected cards this cycle (ok=%d "
+                                "failed=%d) - stopping before the next batch "
+                                "(FUTGG_SALES_MAX_RUNTIME_MINUTES=%d)",
+                                offset, len(due), stats["ok"], stats["failed"],
+                                MAX_RUNTIME_MINUTES,
+                            )
+                            break
                         # Size is read per iteration, so a mid-cycle
                         # backoff takes effect immediately rather than at
                         # the next cycle.
@@ -2666,7 +2879,22 @@ async def run_forever() -> None:
                             break
 
                         if throttle.delay:
-                            if await sleep_or_shutdown(throttle.delay, shutdown_event):
+                            shutdown, exhausted = await sleep_within_budget(
+                                throttle.delay, shutdown_event, deadline
+                            )
+                            if exhausted:
+                                cycle_runtime_exhausted = True
+                                run_ended_by_runtime_budget = True
+                                log.warning(
+                                    "runtime budget exhausted during throttle delay on "
+                                    "signed_fetch: processed %d/%d selected cards this "
+                                    "cycle (ok=%d failed=%d) - stopping "
+                                    "(FUTGG_SALES_MAX_RUNTIME_MINUTES=%d)",
+                                    offset, len(due), stats["ok"], stats["failed"],
+                                    MAX_RUNTIME_MINUTES,
+                                )
+                                break
+                            if shutdown:
                                 break
                 else:
                     # page_capture - chunked the same way, so the circuit
@@ -2677,6 +2905,18 @@ async def run_forever() -> None:
                     chunk_size = max(PAGE_CONCURRENCY, min(CIRCUIT_BREAKER_MIN_SAMPLE, len(due)))
                     offset = 0
                     while offset < len(due) and not shutdown_event.is_set():
+                        if runtime_budget_exhausted(deadline):
+                            cycle_runtime_exhausted = True
+                            run_ended_by_runtime_budget = True
+                            log.warning(
+                                "runtime budget exhausted mid-cycle on page_capture: "
+                                "processed %d/%d selected cards this cycle (ok=%d "
+                                "failed=%d) - stopping before the next batch "
+                                "(FUTGG_SALES_MAX_RUNTIME_MINUTES=%d)",
+                                offset, len(due), stats["ok"], stats["failed"],
+                                MAX_RUNTIME_MINUTES,
+                            )
+                            break
                         chunk = due[offset: offset + chunk_size]
                         await process_batch_page_capture(
                             capture_pages, pool, chunk, stats, timers,
@@ -2726,6 +2966,16 @@ async def run_forever() -> None:
                 )
                 for line in timers.format_lines():
                     log.info(line)
+
+                run_totals["ok"] += stats["ok"]
+                run_totals["failed"] += stats["failed"]
+                run_totals["sales_seen"] += stats["sales_seen"]
+                run_totals["throttle_errors"] += sum(
+                    count for error, count in (stats.get("errors") or {}).items()
+                    if is_throttle_signal(error)
+                )
+                if breaker_tripped:
+                    run_totals["breaker_trips"] += 1
 
                 await write_heartbeat(
                     pool,
@@ -2803,10 +3053,29 @@ async def run_forever() -> None:
 
                 if shutdown_event.is_set():
                     break
+                if cycle_runtime_exhausted:
+                    # Already logged the specific mid-cycle reason above;
+                    # this cycle's normal finalization (log/heartbeat/
+                    # save_throttle_state) already ran, exactly as if the
+                    # cycle had finished normally, so there is nothing
+                    # left to do but stop - starting select_due() on
+                    # another cycle, or sleeping out a backoff, with no
+                    # runtime budget left would just be discovered at the
+                    # top of the next iteration anyway (see
+                    # runtime_budget_exhausted's docstring for why that
+                    # alone isn't enough to rely on).
+                    log.info(
+                        "bounded run complete: runtime budget exhausted mid-cycle "
+                        "after %d cycle(s) - exiting cleanly "
+                        "(FUTGG_SALES_MAX_RUNTIME_MINUTES=%d)",
+                        cycles_done, MAX_RUNTIME_MINUTES,
+                    )
+                    break
                 backoff_seconds = (
                     next_backoff_seconds(consecutive_cycle_trips) if breaker_tripped else CYCLE_SLEEP
                 )
                 if breaker_tripped:
+                    run_totals["breaker_sleep_seconds"] += backoff_seconds
                     # An escalated backoff can now run up to
                     # CIRCUIT_BREAKER_MAX_BACKOFF_SECONDS (30 min default),
                     # long enough that a silent log stream reads as a
@@ -2823,7 +3092,36 @@ async def run_forever() -> None:
                         backoff_seconds, consecutive_cycle_trips,
                         resume_at.strftime("%H:%M:%S"),
                     )
-                await sleep_or_shutdown(backoff_seconds, shutdown_event)
+                _shutdown, _exhausted = await sleep_within_budget(
+                    backoff_seconds, shutdown_event, deadline
+                )
+                if _exhausted:
+                    run_ended_by_runtime_budget = True
+                    log.info(
+                        "bounded run complete: not enough runtime remaining for "
+                        "another useful cycle after a %.0fs backoff - exiting "
+                        "cleanly instead of sleeping past the deadline "
+                        "(FUTGG_SALES_MAX_RUNTIME_MINUTES=%d)",
+                        backoff_seconds, MAX_RUNTIME_MINUTES,
+                    )
+                    break
+
+            run_wall_seconds = time.monotonic() - run_started_at
+            run_attempted = run_totals["ok"] + run_totals["failed"]
+            run_throttle_rate = (
+                run_totals["throttle_errors"] / run_attempted if run_attempted else 0.0
+            )
+            log.info(
+                "run summary: duration=%.0fs cycles=%d attempted=%d ok=%d failed=%d "
+                "sales=%d throttle_errors=%d (%.1f%% of attempted) breaker_trips=%d "
+                "breaker_sleep_seconds=%.0f throttle[start=%s end=%s] "
+                "runtime_budget_exhausted=%s",
+                run_wall_seconds, cycles_done, run_attempted, run_totals["ok"],
+                run_totals["failed"], run_totals["sales_seen"],
+                run_totals["throttle_errors"], 100.0 * run_throttle_rate,
+                run_totals["breaker_trips"], run_totals["breaker_sleep_seconds"],
+                run_start_throttle_desc, throttle.describe(), run_ended_by_runtime_budget,
+            )
         finally:
             log.info("shutting down: closing browser and database pool")
             await browser.close()
