@@ -104,13 +104,13 @@ test("a throwing factory is reported via console.error, not silently swallowed",
       try {
         Object.assign(root.EAFCLive, factory());
       } catch (err) {
-        console.error("[EAFC Live] test-module.js failed to initialize:", err);
+        console.error("[EAFC.Live] test-module.js failed to initialize:", err);
       }
     })(function () { throw new Error("boom"); });`,
     sandbox
   );
   assert.equal(messages.length, 1);
-  assert.equal(messages[0][0], "[EAFC Live] test-module.js failed to initialize:");
+  assert.equal(messages[0][0], "[EAFC.Live] test-module.js failed to initialize:");
   assert.equal(messages[0][1].message, "boom");
   // And the page must be entirely unaffected - EAFCLive still exists,
   // just empty, exactly like every other graceful-failure path here.

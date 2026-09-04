@@ -95,7 +95,7 @@
   // for live debugging: confirms this exact file instance actually ran
   // in this world, distinguishing "the file never executed here at all"
   // from "it ran but something about the attachment itself is wrong".
-  console.log("[EAFC Live] card-detector.js executing", {
+  console.log("[EAFC.Live] card-detector.js executing", {
     href: typeof location !== "undefined" ? location.href : null,
     isBrowserLike,
     rootIsWindow: root === (typeof window !== "undefined" ? window : undefined),
@@ -104,7 +104,7 @@
   try {
     const exported = factory();
     Object.assign(root.EAFCLive, exported);
-    console.log("[EAFC Live] card-detector.js attached", {
+    console.log("[EAFC.Live] card-detector.js attached", {
       exportedKeys: Object.keys(exported),
       eafcLiveAfterAttach: Object.keys(root.EAFCLive),
       sameObjectAsRootEAFCLive: root.EAFCLive === (typeof window !== "undefined" ? window.EAFCLive : globalThis.EAFCLive),
@@ -116,7 +116,7 @@
     // report "card-detector unavailable" with no way to say why. Loud
     // now on purpose - this is exactly the class of failure that was
     // otherwise invisible during live testing against the real EA page.
-    console.error("[EAFC Live] card-detector.js failed to initialize:", err);
+    console.error("[EAFC.Live] card-detector.js failed to initialize:", err);
   }
 })(function () {
   "use strict";

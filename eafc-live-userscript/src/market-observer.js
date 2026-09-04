@@ -22,7 +22,7 @@ import PAGE_HOOK_SOURCE from "virtual:page-hook-source";
 const EVENT_NAME = "eafc-live:transfermarket";
 
 function log(...args) {
-  if (typeof window !== "undefined" && window.EAFC_LIVE_DEBUG) console.log("[EAFC Live]", ...args);
+  if (typeof window !== "undefined" && window.EAFC_LIVE_DEBUG) console.log("[EAFC.Live]", ...args);
 }
 
 let onDetected = null;
@@ -86,6 +86,6 @@ export function installMarketObserver() {
     (document.head || document.documentElement).appendChild(script);
     script.remove();
   } catch (err) {
-    console.error("[EAFC Live] failed to inject page hook - market observation disabled:", err);
+    console.error("[EAFC.Live] failed to inject page hook - market observation disabled:", err);
   }
 }

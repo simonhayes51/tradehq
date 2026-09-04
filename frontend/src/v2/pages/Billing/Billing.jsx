@@ -50,7 +50,7 @@ const ELITE_FEATURES = [
   { icon: Check, title: `${FREE_LIMITS.eliteAlerts} price alerts`, desc: `Up to ${FREE_LIMITS.eliteAlerts} active alerts, against ${FREE_LIMITS.alerts} on Free.` },
   { icon: Check, title: "Full portfolio and history", desc: "Unlimited open trades and your complete history, not the last 30 days." },
   { icon: Check, title: "Complete track record", desc: "Every published call and every window, not just the recent summary." },
-  { icon: MessageCircle, title: "Members-only Discord", desc: "The Elite channel in the EAFC Live Discord." },
+  { icon: MessageCircle, title: "Members-only Discord", desc: "The Elite channel in the EAFC.Live Discord." },
 ];
 
 // ?unlock=<feature> says which limit sent them here, so the page can open
@@ -143,7 +143,7 @@ function DiscordServerPlansSection() {
       ) : guilds.length === 0 ? (
         <div className="billing-v2-server-empty">
           <p>No Discord server is set up with a feed under your account yet.</p>
-          <p>Invite the EAFC Live bot to your server, then run <code>/feed setup</code> there (you'll need Manage Server) to pick a plan and posting channel.</p>
+          <p>Invite the EAFC.Live bot to your server, then run <code>/feed setup</code> there (you'll need Manage Server) to pick a plan and posting channel.</p>
           <a href={DISCORD_INVITE_URL} target="_blank" rel="noreferrer" className="billing-v2-btn secondary">
             Join our Discord for setup help <ExternalLink size={13} />
           </a>
@@ -398,7 +398,7 @@ export default function Billing() {
 
   const contextSentence =
     (unlockContext && UNLOCK_COPY[unlockContext.toLowerCase()]) ||
-    "Get the full EAFC Live trading toolkit.";
+    "Get the full EAFC.Live trading toolkit.";
 
   if (user === null) {
     return (
@@ -485,8 +485,8 @@ export default function Billing() {
           <>
             <header className="billing-v2-head">
               {unlockContext ? <span className="billing-v2-context">{contextSentence}</span> : null}
-              <h1>Upgrade to EAFC Live Elite</h1>
-              <p>{unlockContext ? contextSentence : "Get the full EAFC Live trading toolkit."}</p>
+              <h1>Upgrade to EAFC.Live Elite</h1>
+              <p>{unlockContext ? contextSentence : "Get the full EAFC.Live trading toolkit."}</p>
             </header>
 
             {success ? <div className="billing-v2-msg ok">{success}</div> : null}

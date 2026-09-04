@@ -219,7 +219,7 @@ def test_daily_embed_uses_review_language_and_disclaimer():
     )
     embed = build_daily_proof_embed(report, "https://app.eafc.live")
     all_text = " ".join(field["name"] + " " + field["value"] for field in embed["fields"])
-    assert embed["title"] == "EAFC LIVE - DAILY TRADING REVIEW"
+    assert embed["title"] == "EAFC.LIVE - DAILY TRADING REVIEW"
     assert "COMBINED AFTER-TAX OPPORTUNITY RESULT" in all_text
     assert "not an actual user portfolio" in all_text
     assert "Total profit earned" not in all_text

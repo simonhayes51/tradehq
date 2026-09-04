@@ -1,9 +1,9 @@
 // ==UserScript==
-// @name         EAFC Live Companion
+// @name         EAFC.Live Companion
 // @namespace    https://app.eafc.live/
 // @version      1.8.3
-// @description  Read-only EAFC Live trading intelligence overlay for the EA SPORTS FC 26 Web App Transfer Market. Never buys, bids, lists, or automates anything - observation only.
-// @author       EAFC Live
+// @description  Read-only EAFC.Live trading intelligence overlay for the EA SPORTS FC 26 Web App Transfer Market. Never buys, bids, lists, or automates anything - observation only.
+// @author       EAFC.Live
 // @match        https://www.ea.com/*/ea-sports-fc/ultimate-team/web-app/*
 // @match        https://www.ea.com/ea-sports-fc/ultimate-team/web-app/*
 // @connect      api.eafc.live
@@ -29,12 +29,12 @@
   }
 
   // page-hook-source-ns:virtual:page-hook-source
-  var virtual_page_hook_source_default = '(() => {\n  // src/card-detector.js\n  function toPositiveInt(value) {\n    const n = Number(value);\n    return Number.isFinite(n) && n > 0 ? Math.trunc(n) : null;\n  }\n  function extractExactCardId(itemData) {\n    if (!itemData || typeof itemData !== "object") return null;\n    return toPositiveInt(itemData.resourceId) || toPositiveInt(itemData.definitionId) || null;\n  }\n  function normalizeAuction(entry) {\n    if (!entry || typeof entry !== "object") return null;\n    const item = entry.itemData || entry.item || {};\n    const sourceCardId = extractExactCardId(item);\n    if (sourceCardId === null) return null;\n    return {\n      sourceCardId,\n      tradeId: toPositiveInt(entry.tradeId ?? item.id) ?? null,\n      rating: Number.isFinite(Number(item.rating)) ? Number(item.rating) : null,\n      buyNowPrice: toPositiveInt(entry.buyNowPrice) ?? 0,\n      currentBid: toPositiveInt(entry.currentBid) ?? 0,\n      startingBid: toPositiveInt(entry.startingBid) ?? 0,\n      // Seconds remaining, as EA reports it. 0/undefined is treated as\n      // "unknown", never as "expired now".\n      expires: toPositiveInt(entry.expires),\n      tradeState: typeof entry.tradeState === "string" ? entry.tradeState : null\n    };\n  }\n  function extractAuctionsFromResponse(body) {\n    if (!body || typeof body !== "object") return [];\n    let rawList;\n    if (Array.isArray(body.auctionInfo)) {\n      rawList = body.auctionInfo;\n    } else if (Array.isArray(body)) {\n      rawList = body;\n    } else if (body.itemData || body.buyNowPrice !== void 0) {\n      rawList = [body];\n    } else {\n      rawList = [];\n    }\n    const out = [];\n    for (const entry of rawList) {\n      const normalized = normalizeAuction(entry);\n      if (normalized) out.push(normalized);\n    }\n    return out;\n  }\n\n  // src/page-hook.js\n  var FC26_RE = /\\/ut\\/game\\/fc26(\\/|$)/;\n  var TRANSFERMARKET_RE = /\\/transfermarket(\\/|$|\\?)/;\n  var EVENT_NAME = "eafc-live:transfermarket";\n  function log(...args) {\n    if (window.EAFC_LIVE_DEBUG) console.log("[EAFC Live]", ...args);\n  }\n  function dispatchSanitizedAuctions(url, bodyText) {\n    let body = null;\n    try {\n      body = bodyText ? JSON.parse(bodyText) : null;\n    } catch (_err) {\n      return;\n    }\n    let auctions;\n    try {\n      auctions = extractAuctionsFromResponse(body);\n    } catch (err) {\n      log("card extraction failed in page context, dropping response:", err && err.message);\n      return;\n    }\n    if (!auctions || auctions.length === 0) return;\n    try {\n      window.dispatchEvent(new CustomEvent(EVENT_NAME, { detail: { url, auctions } }));\n    } catch (err) {\n      log("failed to dispatch sanitized market event:", err && err.message);\n    }\n  }\n  (function installPageHook() {\n    const originalFetch = window.fetch;\n    if (typeof originalFetch === "function") {\n      window.fetch = function eafcLiveFetch(input, init) {\n        const promise = originalFetch.apply(this, arguments);\n        try {\n          const url = typeof input === "string" ? input : input && input.url;\n          if (url && FC26_RE.test(url) && TRANSFERMARKET_RE.test(url)) {\n            promise.then((response) => {\n              response.clone().text().then((text) => dispatchSanitizedAuctions(url, text)).catch(() => {\n              });\n            }).catch(() => {\n            });\n          }\n        } catch (err) {\n          log("fetch hook observation failed (request unaffected):", err && err.message);\n        }\n        return promise;\n      };\n    }\n    const OriginalXHR = window.XMLHttpRequest;\n    if (OriginalXHR) {\n      const originalOpen = OriginalXHR.prototype.open;\n      const originalSend = OriginalXHR.prototype.send;\n      OriginalXHR.prototype.open = function eafcLiveOpen(method, url) {\n        try {\n          this.__eafcLiveUrl = String(url);\n        } catch (_err) {\n          this.__eafcLiveUrl = null;\n        }\n        return originalOpen.apply(this, arguments);\n      };\n      OriginalXHR.prototype.send = function eafcLiveSend() {\n        const url = this.__eafcLiveUrl;\n        if (url && FC26_RE.test(url) && TRANSFERMARKET_RE.test(url)) {\n          this.addEventListener("loadend", function() {\n            try {\n              dispatchSanitizedAuctions(url, this.responseText);\n            } catch (err) {\n              log("XHR hook observation failed (request unaffected):", err && err.message);\n            }\n          });\n        }\n        return originalSend.apply(this, arguments);\n      };\n    }\n    console.log("[EAFC Live] page hook installed - observing window.fetch/XHR for /ut/game/fc26 responses", {\n      href: location.href,\n      inIframe: window !== window.top\n    });\n  })();\n})();\n';
+  var virtual_page_hook_source_default = '(() => {\n  // src/card-detector.js\n  function toPositiveInt(value) {\n    const n = Number(value);\n    return Number.isFinite(n) && n > 0 ? Math.trunc(n) : null;\n  }\n  function extractExactCardId(itemData) {\n    if (!itemData || typeof itemData !== "object") return null;\n    return toPositiveInt(itemData.resourceId) || toPositiveInt(itemData.definitionId) || null;\n  }\n  function normalizeAuction(entry) {\n    if (!entry || typeof entry !== "object") return null;\n    const item = entry.itemData || entry.item || {};\n    const sourceCardId = extractExactCardId(item);\n    if (sourceCardId === null) return null;\n    return {\n      sourceCardId,\n      tradeId: toPositiveInt(entry.tradeId ?? item.id) ?? null,\n      rating: Number.isFinite(Number(item.rating)) ? Number(item.rating) : null,\n      buyNowPrice: toPositiveInt(entry.buyNowPrice) ?? 0,\n      currentBid: toPositiveInt(entry.currentBid) ?? 0,\n      startingBid: toPositiveInt(entry.startingBid) ?? 0,\n      // Seconds remaining, as EA reports it. 0/undefined is treated as\n      // "unknown", never as "expired now".\n      expires: toPositiveInt(entry.expires),\n      tradeState: typeof entry.tradeState === "string" ? entry.tradeState : null\n    };\n  }\n  function extractAuctionsFromResponse(body) {\n    if (!body || typeof body !== "object") return [];\n    let rawList;\n    if (Array.isArray(body.auctionInfo)) {\n      rawList = body.auctionInfo;\n    } else if (Array.isArray(body)) {\n      rawList = body;\n    } else if (body.itemData || body.buyNowPrice !== void 0) {\n      rawList = [body];\n    } else {\n      rawList = [];\n    }\n    const out = [];\n    for (const entry of rawList) {\n      const normalized = normalizeAuction(entry);\n      if (normalized) out.push(normalized);\n    }\n    return out;\n  }\n\n  // src/page-hook.js\n  var FC26_RE = /\\/ut\\/game\\/fc26(\\/|$)/;\n  var TRANSFERMARKET_RE = /\\/transfermarket(\\/|$|\\?)/;\n  var EVENT_NAME = "eafc-live:transfermarket";\n  function log(...args) {\n    if (window.EAFC_LIVE_DEBUG) console.log("[EAFC.Live]", ...args);\n  }\n  function dispatchSanitizedAuctions(url, bodyText) {\n    let body = null;\n    try {\n      body = bodyText ? JSON.parse(bodyText) : null;\n    } catch (_err) {\n      return;\n    }\n    let auctions;\n    try {\n      auctions = extractAuctionsFromResponse(body);\n    } catch (err) {\n      log("card extraction failed in page context, dropping response:", err && err.message);\n      return;\n    }\n    if (!auctions || auctions.length === 0) return;\n    try {\n      window.dispatchEvent(new CustomEvent(EVENT_NAME, { detail: { url, auctions } }));\n    } catch (err) {\n      log("failed to dispatch sanitized market event:", err && err.message);\n    }\n  }\n  (function installPageHook() {\n    const originalFetch = window.fetch;\n    if (typeof originalFetch === "function") {\n      window.fetch = function eafcLiveFetch(input, init) {\n        const promise = originalFetch.apply(this, arguments);\n        try {\n          const url = typeof input === "string" ? input : input && input.url;\n          if (url && FC26_RE.test(url) && TRANSFERMARKET_RE.test(url)) {\n            promise.then((response) => {\n              response.clone().text().then((text) => dispatchSanitizedAuctions(url, text)).catch(() => {\n              });\n            }).catch(() => {\n            });\n          }\n        } catch (err) {\n          log("fetch hook observation failed (request unaffected):", err && err.message);\n        }\n        return promise;\n      };\n    }\n    const OriginalXHR = window.XMLHttpRequest;\n    if (OriginalXHR) {\n      const originalOpen = OriginalXHR.prototype.open;\n      const originalSend = OriginalXHR.prototype.send;\n      OriginalXHR.prototype.open = function eafcLiveOpen(method, url) {\n        try {\n          this.__eafcLiveUrl = String(url);\n        } catch (_err) {\n          this.__eafcLiveUrl = null;\n        }\n        return originalOpen.apply(this, arguments);\n      };\n      OriginalXHR.prototype.send = function eafcLiveSend() {\n        const url = this.__eafcLiveUrl;\n        if (url && FC26_RE.test(url) && TRANSFERMARKET_RE.test(url)) {\n          this.addEventListener("loadend", function() {\n            try {\n              dispatchSanitizedAuctions(url, this.responseText);\n            } catch (err) {\n              log("XHR hook observation failed (request unaffected):", err && err.message);\n            }\n          });\n        }\n        return originalSend.apply(this, arguments);\n      };\n    }\n    console.log("[EAFC.Live] page hook installed - observing window.fetch/XHR for /ut/game/fc26 responses", {\n      href: location.href,\n      inIframe: window !== window.top\n    });\n  })();\n})();\n';
 
   // src/market-observer.js
   var EVENT_NAME = "eafc-live:transfermarket";
   function log(...args) {
-    if (typeof window !== "undefined" && window.EAFC_LIVE_DEBUG) console.log("[EAFC Live]", ...args);
+    if (typeof window !== "undefined" && window.EAFC_LIVE_DEBUG) console.log("[EAFC.Live]", ...args);
   }
   var onDetected = null;
   var installed = false;
@@ -78,13 +78,13 @@
       (document.head || document.documentElement).appendChild(script);
       script.remove();
     } catch (err) {
-      console.error("[EAFC Live] failed to inject page hook - market observation disabled:", err);
+      console.error("[EAFC.Live] failed to inject page hook - market observation disabled:", err);
     }
   }
 
   // src/config.js
   var CONFIG = {
-    // Base URL of the EAFC Live backend's v2 API
+    // Base URL of the EAFC.Live backend's v2 API
     // (backend/app/routers/v2/companion.py mounts /companion/card/{id}
     // under this prefix).
     API_BASE_URL: "https://api.eafc.live/api/v2",
@@ -154,7 +154,7 @@
 
   // src/api-client.js
   function log2(...args) {
-    if (typeof window !== "undefined" && window.EAFC_LIVE_DEBUG) console.log("[EAFC Live]", ...args);
+    if (typeof window !== "undefined" && window.EAFC_LIVE_DEBUG) console.log("[EAFC.Live]", ...args);
   }
   function resolveGMRequest() {
     if (typeof GM_xmlhttpRequest === "function") return GM_xmlhttpRequest;
@@ -362,7 +362,7 @@
       case "no_target_price":
         return { text: "NO BUY TARGET AVAILABLE", tone: "neutral" };
       case "no_intelligence":
-        return { text: "NO EAFC LIVE INTELLIGENCE", tone: "neutral" };
+        return { text: "NO EAFC.LIVE INTELLIGENCE", tone: "neutral" };
       case "no_buy_signal": {
         const label = signal ? String(signal).replace(/_/g, " ").toUpperCase() : null;
         return {
@@ -381,7 +381,7 @@
     return n === null || n === void 0 ? "-" : NUMBER_FORMAT.format(n);
   }
   function log3(...args) {
-    if (typeof window !== "undefined" && window.EAFC_LIVE_DEBUG) console.log("[EAFC Live]", ...args);
+    if (typeof window !== "undefined" && window.EAFC_LIVE_DEBUG) console.log("[EAFC.Live]", ...args);
   }
   function describeError(err) {
     if (!err) return "no error info given";
@@ -610,7 +610,7 @@
       if (barHeight > 0) panel.style.bottom = `${Math.round(barHeight)}px`;
     }
     const header = el("div", "eafc-live-full-header");
-    header.appendChild(el("span", "eafc-live-full-title", "EAFC LIVE OPPORTUNITIES"));
+    header.appendChild(el("span", "eafc-live-full-title", "EAFC.LIVE OPPORTUNITIES"));
     const closeBtn = el("span", "eafc-live-full-close", "\xD7");
     closeBtn.addEventListener("click", closePanel);
     header.appendChild(closeBtn);
@@ -750,7 +750,7 @@
     const tab = document.createElement("div");
     tab.className = "eafc-live-nav-tab";
     tab.setAttribute("role", "button");
-    tab.setAttribute("aria-label", "EAFC Live opportunities");
+    tab.setAttribute("aria-label", "EAFC.Live opportunities");
     tab.style.pointerEvents = "auto";
     const icon = el("span", "eafc-live-nav-tab-icon", "\u26A1");
     const label = el("span", "eafc-live-nav-tab-label", "LIVE");
@@ -803,7 +803,7 @@
       }
     });
     keepTabPinned.observe(navBar, { childList: true });
-    log3("EAFC LIVE nav tab installed");
+    log3("EAFC.LIVE nav tab installed");
     return true;
   }
 
@@ -967,7 +967,7 @@
     clearPanel();
     const panel = el2("div", `eafc-live-panel${collapsed ? " collapsed" : ""}`);
     const header = el2("div", "eafc-live-header");
-    header.appendChild(el2("span", "eafc-live-brand", "EAFC LIVE"));
+    header.appendChild(el2("span", "eafc-live-brand", "EAFC.LIVE"));
     const statusClass = state.kind === "result" ? "connected" : state.kind === "loading" || state.kind === "watching" ? "" : "error";
     const statusText = state.kind === "loading" ? "LOADING" : state.kind === "result" ? "CONNECTED" : state.kind === "watching" ? "WATCHING" : "NO DATA";
     const collapsedIcon = el2("span", "eafc-live-collapsed-icon", "\u26A1");
@@ -1071,7 +1071,7 @@
   var verifyTimer = null;
   var lastRowDiagnostic = "no badge inserted yet";
   function log4(...args) {
-    if (typeof window !== "undefined" && window.EAFC_LIVE_DEBUG) console.log("[EAFC Live]", ...args);
+    if (typeof window !== "undefined" && window.EAFC_LIVE_DEBUG) console.log("[EAFC.Live]", ...args);
   }
   function getListBadgesDiagnostic() {
     return lastRowDiagnostic;
@@ -1244,7 +1244,7 @@
 
   // src/main.js
   function log5(...args) {
-    if (typeof window !== "undefined" && window.EAFC_LIVE_DEBUG) console.log("[EAFC Live]", ...args);
+    if (typeof window !== "undefined" && window.EAFC_LIVE_DEBUG) console.log("[EAFC.Live]", ...args);
   }
   var RETRYABLE_STATUSES = /* @__PURE__ */ new Set(["network_error", "server_error", "timeout"]);
   var lastRenderKey = null;
@@ -1310,7 +1310,7 @@
     onCardDetected(handleDetection);
     installMarketObserver();
     pollForNavTab();
-    console.log("[EAFC Live] Companion userscript ready", { href: location.href });
+    console.log("[EAFC.Live] Companion userscript ready", { href: location.href });
   }
   initLifecycle(setup);
 })();

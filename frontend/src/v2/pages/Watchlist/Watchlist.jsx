@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { ArrowRight, Bell, MoreVertical, RefreshCw, Star, Trash2 } from "lucide-react";
 import { useQueryClient, useQuery } from "@tanstack/react-query";
@@ -6,6 +6,7 @@ import toast from "react-hot-toast";
 import { deleteWatch, refreshWatch, getAlerts, createAlert, deleteAlert } from "../../../api/watchlist";
 import CoinValue from "../../components/CoinValue";
 import EmptyState from "../../components/EmptyState";
+import { SkeletonCards } from "../../components/Skeleton";
 import { useWatchlist } from "../../hooks/useWatchlist";
 import { PageHead } from "../Players/Players";
 import { versionLabel } from "../../lib/format";
@@ -75,6 +76,13 @@ export default function Watchlist() {
     setAlertTarget(item);
     setAlertForm({ metric: "price", rise_pct: 10, fall_pct: 10, cooloff_minutes: 30 });
   }
+
+  useEffect(() => {
+    if (!alertTarget) return;
+    const onKey = (e) => e.key === "Escape" && setAlertTarget(null);
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [alertTarget]);
 
   async function handleCreateAlert(e) {
     e.preventDefault();
@@ -170,7 +178,7 @@ export default function Watchlist() {
         </section>
       )}
 
-      {query.isLoading ? <EmptyState icon={<Star size={28} />} text="Loading watchlist…" /> : query.error?.response?.status === 401 ? <EmptyState icon={<Star size={28} />} text="Sign in to view your watchlist." action={<Link to="/login">Sign in</Link>} /> : query.isError ? <EmptyState icon={<Star size={28} />} error text="Your watchlist could not be loaded." action={<button onClick={() => query.refetch()}>Try again</button>} /> : items.length ? (
+      {query.isLoading ? <SkeletonCards count={6} gridClassName="v2-watch-grid" cardClassName="" /> : query.error?.response?.status === 401 ? <EmptyState icon={<Star size={28} />} text="Sign in to view your watchlist." action={<Link to="/login">Sign in</Link>} /> : query.isError ? <EmptyState icon={<Star size={28} />} error text="Your watchlist could not be loaded." action={<button onClick={() => query.refetch()}>Try again</button>} /> : items.length ? (
         <section className="v2-watch-grid">
           {items.map((item) => {
             // Prices are last-checked, not live-polled - the list query
@@ -220,9 +228,9 @@ export default function Watchlist() {
 
       {alertTarget && (
         <div className="v2-modal-backdrop" onClick={() => setAlertTarget(null)}>
-          <div className="v2-modal" onClick={(e) => e.stopPropagation()}>
+          <div className="v2-modal" role="dialog" aria-modal="true" aria-labelledby="watch-alert-title" onClick={(e) => e.stopPropagation()}>
             <div className="v2-modal-head">
-              <h2>Set Alert — {alertTarget.player_name}</h2>
+              <h2 id="watch-alert-title">Set Alert — {alertTarget.player_name}</h2>
               <button type="button" className="v2-modal-close" onClick={() => setAlertTarget(null)} aria-label="Close">✕</button>
             </div>
             <form onSubmit={handleCreateAlert}>
@@ -232,7 +240,7 @@ export default function Watchlist() {
               <div className="v2-modal-grid">
                 <label>
                   Rises by (%)
-                  <input type="number" min="0" step="0.5" value={alertForm.rise_pct} onChange={(e) => setAlertForm((f) => ({ ...f, rise_pct: e.target.value }))} />
+                  <input autoFocus type="number" min="0" step="0.5" value={alertForm.rise_pct} onChange={(e) => setAlertForm((f) => ({ ...f, rise_pct: e.target.value }))} />
                 </label>
                 <label>
                   Drops by (%)

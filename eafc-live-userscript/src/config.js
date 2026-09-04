@@ -5,7 +5,7 @@
 // identical on purpose so the userscript and Chrome extension behave the
 // same way against the same backend.
 export const CONFIG = {
-  // Base URL of the EAFC Live backend's v2 API
+  // Base URL of the EAFC.Live backend's v2 API
   // (backend/app/routers/v2/companion.py mounts /companion/card/{id}
   // under this prefix).
   API_BASE_URL: "https://api.eafc.live/api/v2",

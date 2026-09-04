@@ -90,7 +90,7 @@ export default function Onboarding() {
   return (
     <main className="onboarding">
       <header className="onboarding-head">
-        <span className="onboarding-brand">EAFC <b>Live</b></span>
+        <span className="onboarding-brand">EAFC<b>.Live</b></span>
         <button type="button" className="onboarding-skip" onClick={() => finish({ skipped: true })}>
           Skip
         </button>

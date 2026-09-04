@@ -1,7 +1,7 @@
 // src/market-calc.js
 //
 // Pure logic: combine live EA auctions (from card-detector.js) with the
-// EAFC Live backend's intelligence object (from eafc-api.js) into the
+// EAFC.Live backend's intelligence object (from eafc-api.js) into the
 // numbers the overlay shows. No DOM, no network - unit-testable under
 // Node (see tests/market-calc.test.js).
 //
@@ -24,7 +24,7 @@
   try {
     Object.assign(root.EAFCLive, factory());
   } catch (err) {
-    console.error("[EAFC Live] market-calc.js failed to initialize:", err);
+    console.error("[EAFC.Live] market-calc.js failed to initialize:", err);
   }
 })(function () {
   "use strict";
@@ -178,7 +178,7 @@
       case "no_target_price":
         return { text: "NO BUY TARGET AVAILABLE", tone: "neutral" };
       case "no_intelligence":
-        return { text: "NO EAFC LIVE INTELLIGENCE", tone: "neutral" };
+        return { text: "NO EAFC.LIVE INTELLIGENCE", tone: "neutral" };
       case "no_buy_signal": {
         const label = signal ? String(signal).replace(/_/g, " ").toUpperCase() : null;
         return {

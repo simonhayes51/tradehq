@@ -83,7 +83,7 @@ function getCompanionToken() {
 }
 
 function log(...args) {
-  if (typeof window !== "undefined" && window.EAFC_LIVE_DEBUG) console.log("[EAFC Live]", ...args);
+  if (typeof window !== "undefined" && window.EAFC_LIVE_DEBUG) console.log("[EAFC.Live]", ...args);
 }
 
 export function resolveGMRequest() {
@@ -205,7 +205,7 @@ async function getJson(url, label) {
         // A header cannot be declined by any of them.
         ...(getCompanionToken() ? { Authorization: `Bearer ${getCompanionToken()}` } : {}),
       },
-      // Sends the EAFC Live session cookie so an Elite member's overlay
+      // Sends the EAFC.Live session cookie so an Elite member's overlay
       // shows their trade plan. The companion endpoint used to be
       // ungated, so this request being anonymous still returned the full
       // plan; now an anonymous request gets the locked payload instead,

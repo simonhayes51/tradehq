@@ -138,7 +138,7 @@ test("verdictLabel: no_target_price", () => {
 
 test("verdictLabel: no_intelligence", () => {
   const v = verdictLabel("no_intelligence", undefined);
-  assert.equal(v.text, "NO EAFC LIVE INTELLIGENCE");
+  assert.equal(v.text, "NO EAFC.LIVE INTELLIGENCE");
 });
 
 test("verdictLabel: no_buy_signal shows the backend's actual signal", () => {

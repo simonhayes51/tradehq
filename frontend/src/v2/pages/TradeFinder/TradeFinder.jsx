@@ -11,6 +11,7 @@ import { Link } from "react-router-dom";
 import { ArrowRight, RotateCcw, ShieldAlert, SlidersHorizontal, TrendingUp } from "lucide-react";
 import CoinValue from "../../components/CoinValue";
 import EmptyState from "../../components/EmptyState";
+import { SkeletonCards } from "../../components/Skeleton";
 import MarketFreshness from "../../components/MarketFreshness";
 import EmptyFeedReason from "../../components/EmptyFeedReason";
 import { useFutggTradeFinder } from "../../hooks/useFutggMarket";
@@ -199,7 +200,7 @@ export default function TradeFinder() {
     {locked || signedOut ? (
       <UpgradePrompt {...GATED.trade_finder} />
     ) : query.isLoading ? (
-      <EmptyState icon={<SlidersHorizontal size={25}/>} text="Checking the latest trade opportunities…" />
+      <SkeletonCards count={6} gridClassName="finder-grid" cardClassName="" />
     ) : notDeployed ? (
       <EmptyState icon={<ShieldAlert size={25}/>} error text="Trade Finder isn't available right now. Please check back shortly." action={<button onClick={() => query.refetch()}>Try again</button>} />
     ) : query.isError ? (

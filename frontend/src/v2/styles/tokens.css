@@ -297,6 +297,38 @@
 .v2-root .v2-empty-state a:hover,
 .v2-root .v2-empty-state button:hover { border-color: var(--v2-accent); color: var(--v2-accent); }
 
+/* Shared loading skeleton (Skeleton.jsx) - one shimmer look for "still
+   loading, here's the shape of what's coming" everywhere it appears in
+   v2, matching the shimmer already used on Quick Analysis
+   (player-analysis.css's .quick-skeleton) rather than inventing a
+   second one. */
+@keyframes v2SkelShimmer {
+  to { background-position: -200% 0; }
+}
+.v2-root .v2-skel {
+  background: linear-gradient(90deg, var(--v2-card), var(--v2-elevated), var(--v2-card));
+  background-size: 200% 100%;
+  animation: v2SkelShimmer 1.3s linear infinite;
+  border-radius: 3px;
+}
+.v2-root .v2-skel-line { height: 11px; width: 100%; }
+.v2-root .v2-skel-line + .v2-skel-line { margin-top: 8px; }
+.v2-root .v2-skel-block { border-radius: var(--v2-radius); }
+.v2-root .v2-skel-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--v2-border);
+  border-radius: var(--v2-radius);
+  background: var(--v2-card);
+}
+.v2-root .v2-skel-card-art { height: 80px; width: 100%; }
+.v2-root .v2-skel-card-lines { display: flex; flex-direction: column; }
+@media (prefers-reduced-motion: reduce) {
+  .v2-root .v2-skel { animation: none; }
+}
+
 /* A lock beside a nav item a Free member can see but not use. Shown
    rather than hidden: hiding Trade Finder means a Free member never
    learns it exists, which is the thing they would be upgrading for. */

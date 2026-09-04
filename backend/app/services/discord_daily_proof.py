@@ -617,7 +617,7 @@ def build_daily_proof_embed(report: dict[str, Any], app_url: str) -> dict[str, A
         {
             "name": "ABOUT THESE RESULTS",
             "value": (
-                "Recorded 24-hour outcomes for independent EAFC Live opportunities. "
+                "Recorded 24-hour outcomes for independent EAFC.Live opportunities. "
                 "They are not an actual user portfolio and do not assume every opportunity "
                 "was purchased. Past performance does not guarantee future results."
             ),
@@ -626,7 +626,7 @@ def build_daily_proof_embed(report: dict[str, Any], app_url: str) -> dict[str, A
     )
     color = 0x22C55E if result > 0 else 0xEF4444 if result < 0 else 0xEAB308
     return {
-        "title": "EAFC LIVE - DAILY TRADING REVIEW",
+        "title": "EAFC.LIVE - DAILY TRADING REVIEW",
         "url": app_url.rstrip("/") + "/#/opportunities",
         "description": period_end.astimezone(zone).strftime("%d %B %Y"),
         "color": color,

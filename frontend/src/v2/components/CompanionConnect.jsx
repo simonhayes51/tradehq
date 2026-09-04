@@ -94,7 +94,7 @@ export default function CompanionConnect() {
         <div>
           <strong>Browser companion</strong>
           <p>
-            Shows your EAFC Live analysis on the EA Web App transfer market. Connect it so the
+            Shows your EAFC.Live analysis on the EA Web App transfer market. Connect it so the
             overlay knows it&apos;s you.
           </p>
         </div>

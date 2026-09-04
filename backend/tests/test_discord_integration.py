@@ -232,7 +232,7 @@ def test_opportunity_publisher_uses_quiet_defaults_and_rich_deduplicated_digest(
     assert conn.calls[1][1] == (180, 24)
     assert len(client.posts) == 1
     assert client.posts[0][0] == "opportunity-channel"
-    assert client.posts[0][1]["title"] == "EAFC LIVE - OPPORTUNITY UPDATE"
+    assert client.posts[0][1]["title"] == "EAFC.LIVE - OPPORTUNITY UPDATE"
     assert client.posts[0][3] is True
     assert conn.calls[-1][1] == (91, "sent", None)
 

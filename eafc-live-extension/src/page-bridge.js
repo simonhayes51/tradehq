@@ -31,7 +31,7 @@
 //
 // SECURITY: this file inspects response BODIES for market data but
 // never reads request HEADERS, and never logs a full response body
-// (only counts/ids - see the [EAFC Live] debug lines below). EA session
+// (only counts/ids - see the [EAFC.Live] debug lines below). EA session
 // values such as X-UT-SID / X-UT-PHISHING-TOKEN pass through this
 // wrapper completely untouched and unread, exactly like every other
 // request header - and even if they weren't, nothing containing them
@@ -41,7 +41,7 @@
   "use strict";
 
   function log(...args) {
-    if (globalThis.EAFC_LIVE_DEBUG) console.log("[EAFC Live]", ...args);
+    if (globalThis.EAFC_LIVE_DEBUG) console.log("[EAFC.Live]", ...args);
   }
 
   const FC26_RE = /\/ut\/game\/fc26(\/|$)/;
@@ -173,7 +173,7 @@
   // UI renders inside an iframe, which this never saw" (manifest.json's
   // content_scripts don't set all_frames, so only the top-level document
   // is injected into by default).
-  console.log("[EAFC Live] page-bridge installed - observing window.fetch/XHR for /ut/game/fc26 responses", {
+  console.log("[EAFC.Live] page-bridge installed - observing window.fetch/XHR for /ut/game/fc26 responses", {
     href: location.href,
     inIframe: window !== window.top,
   });

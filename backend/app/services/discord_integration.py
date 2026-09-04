@@ -465,7 +465,7 @@ def build_opportunity_digest(
     )
     opportunity_url = app_url.rstrip("/") + "/#/opportunities"
     return {
-        "title": "EAFC LIVE - OPPORTUNITY UPDATE",
+        "title": "EAFC.LIVE - OPPORTUNITY UPDATE",
         "url": opportunity_url,
         "description": (
             f"{count} genuinely new opportunities have qualified since the previous update."
@@ -499,12 +499,12 @@ def build_opportunity_digest(
             },
             {
                 "name": "VIEW LIVE OPPORTUNITIES",
-                "value": f"[Open EAFC Live]({opportunity_url})",
+                "value": f"[Open EAFC.Live]({opportunity_url})",
                 "inline": False,
             },
         ],
         "footer": {
-            "text": "Live conditions change. Open EAFC Live and check current status before buying."
+            "text": "Live conditions change. Open EAFC.Live and check current status before buying."
         },
     }
 

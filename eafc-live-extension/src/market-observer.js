@@ -37,7 +37,7 @@
   "use strict";
 
   function log(...args) {
-    if (globalThis.EAFC_LIVE_DEBUG) console.log("[EAFC Live]", ...args);
+    if (globalThis.EAFC_LIVE_DEBUG) console.log("[EAFC.Live]", ...args);
   }
 
   let onDetected = null;
@@ -64,7 +64,7 @@
       // manifest.json's content_scripts don't set all_frames, so only
       // the top-level document is injected into by default).
       console.warn(
-        "[EAFC Live] card-grouping unavailable for this response; skipping",
+        "[EAFC.Live] card-grouping unavailable for this response; skipping",
         {
           href: location.href,
           inIframe: window !== window.top,

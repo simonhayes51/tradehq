@@ -181,11 +181,14 @@ describe("Home, nothing cleared the bar at all", () => {
 });
 
 describe("Home, still loading", () => {
-  it("says it is checking rather than asserting an empty market", () => {
+  it("shows a loading skeleton rather than asserting an empty market", () => {
     useDashboard.mockReturnValue({ data: undefined, isLoading: true });
     useFutggOpportunities.mockReturnValue({ data: undefined, isLoading: true });
-    renderHome();
-    expect(screen.getByText(/Checking today's picks/)).toBeInTheDocument();
+    const { container } = renderHome();
+    // P2: replaced the "Checking today's picks…" text-only state with a
+    // shape-matching skeleton (Skeleton.jsx) - assert the busy region is
+    // present instead of copy that no longer renders.
+    expect(container.querySelector('.lead-trade[aria-busy="true"], .lead-layout[aria-busy="true"]')).toBeTruthy();
     expect(screen.queryByText(/No trade has cleared our bar today/)).not.toBeInTheDocument();
   });
 });
