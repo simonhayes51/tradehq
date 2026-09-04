@@ -29,7 +29,7 @@ const Login = () => {
       <div className="login-card">
         <Link to="/" className="login-brand">
           <span className="brand-mark">EL</span>
-          <span>EAFC <b>Live</b></span>
+          <span>EAFC<b>.Live</b></span>
         </Link>
         <h1>Welcome back</h1>
         <p className="login-lede">Log in to see your watchlist, trades and alerts.</p>

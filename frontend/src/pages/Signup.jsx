@@ -102,7 +102,7 @@ export default function Signup() {
   return (
     <main className="signup-page">
       <div className="signup-card">
-        <Link to="/" className="signup-brand">EAFC <b>Live</b></Link>
+        <Link to="/" className="signup-brand">EAFC<b>.Live</b></Link>
 
         <h1>Create your free account</h1>
         <p className="signup-lede">
