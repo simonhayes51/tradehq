@@ -1,5 +1,5 @@
 # SalesSync - completed-sales history sync via FUT.GG's signed JSON
-# price-access endpoint.
+# price-access endpoint, with the bulk price worker bundled for Railway.
 #
 # futgg_sales_sync.py is already long-running: its __main__ calls
 # run_forever(), which loads one fut.gg page ONCE (the anchor page) and
@@ -11,8 +11,18 @@
 # for no benefit, and would throw away the warm browser/page the script
 # deliberately keeps alive between cycles.
 #
-# Deploy this as a normal continuous Coolify service (NOT a Scheduled
-# Task) - see auto_sync/COOLIFY.md.
+# Railway currently deploys this Dockerfile as the live worker. To make
+# that single service use the intended two-stage data path, the entrypoint
+# also starts futgg_bulk_price_sync.py in the background by default. Bulk
+# prices come from FUT.GG's captured catalogue feed; signed per-card calls
+# are then capped and reserved for completed sales history instead of
+# trying to refresh price freshness for the whole catalogue.
+#
+# Set FUTGG_RUN_BULK_WITH_SALES=false only if PriceSync is deployed as a
+# separate service from Dockerfile.price.
+#
+# Deploy this as a normal continuous Coolify/Railway service (NOT a
+# Scheduled Task) - see auto_sync/COOLIFY.md.
 #
 # Still needs the Playwright base image: sales are fetched via one of two
 # transports (FUTGG_SALES_TRANSPORT=signed_fetch|page_capture|auto) - both
@@ -70,5 +80,7 @@ COPY . .
 RUN chmod +x /app/docker-entrypoint-sales.sh
 
 ENV PLAYWRIGHT_HEADLESS=false
+ENV FUTGG_RUN_BULK_WITH_SALES=true
+ENV FUTGG_SALES_SELECT_LIMIT_MAX=80
 
 CMD ["/app/docker-entrypoint-sales.sh"]
