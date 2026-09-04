@@ -46,11 +46,17 @@ function scrollToId(id) {
   document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
-function Brand() {
+function Brand({ compact = false }) {
   return (
-    <Link to="/" className="pub-brand" aria-label="EAFC Live home">
-      <img src="/icons/icon-192x192.png" alt="" width="38" height="38" />
-      <span>EAFC.<b>Live</b></span>
+    <Link to="/" className={`pub-brand${compact ? " pub-brand-compact" : ""}`} aria-label="EAFC.Live home">
+      {compact ? (
+        <>
+          <img src="/icons/icon-192x192.png" alt="" width="38" height="38" />
+          <span>EAFC.<b>Live</b></span>
+        </>
+      ) : (
+        <img className="pub-brand-pill" src="/marketing/eafc-logo-pill.svg" alt="EAFC.Live" width="150" height="45" />
+      )}
     </Link>
   );
 }
@@ -117,11 +123,12 @@ function Hero() {
       <div className="pub-glow pub-glow-one" />
       <div className="pub-container pub-hero-inner">
         <div className="pub-hero-copy">
+          <img className="pub-hero-logo" src="/marketing/eafc-logo-pill.svg" alt="EAFC.Live" width="230" height="69" />
           <div className="pub-eyebrow"><span /> LIVE EA FC MARKET INTELLIGENCE</div>
           <h1>Know what to buy.<br /><em>Know when to sell.</em></h1>
           <p>
             EAFC.Live turns live prices and completed sales into clear trading opportunities.
-            Get the buy price, expected profit, risk and reasoning before you spend your coins.
+            See the buy price, expected profit, risk and reasoning before you spend your coins.
           </p>
           <div className="pub-hero-actions">
             <a href={APP_SIGNUP} className="pub-button">Create free account <ArrowRight size={17} /></a>
@@ -144,6 +151,37 @@ function Hero() {
         <div><strong>Live</strong><span>market updates</span></div>
         <div><strong>After tax</strong><span>profit calculations</span></div>
         <div><strong>Console + PC</strong><span>market support</span></div>
+      </div>
+    </section>
+  );
+}
+
+function ProofBand() {
+  const proof = [
+    { icon: Search, title: "Not guesswork", text: "Calls are checked against recent completed sales and fair value before they surface." },
+    { icon: Activity, title: "Actionable numbers", text: "Every move shows maximum buy, expected profit after EA tax, risk and confidence." },
+    { icon: Bot, title: "Built beyond the app", text: "Server feeds can post the best opportunities straight into a Discord trading community." },
+  ];
+
+  return (
+    <section className="pub-proof" aria-label="EAFC.Live proof points">
+      <div className="pub-container pub-proof-inner">
+        <div className="pub-proof-lead">
+          <img src="/icons/icon-192x192.png" alt="" width="62" height="62" />
+          <div>
+            <span>WHY IT FEELS DIFFERENT</span>
+            <h2>Actual market evidence, turned into a clear move.</h2>
+          </div>
+        </div>
+        <div className="pub-proof-grid">
+          {proof.map(({ icon: Icon, title, text }) => (
+            <article key={title}>
+              <Icon size={20} />
+              <h3>{title}</h3>
+              <p>{text}</p>
+            </article>
+          ))}
+        </div>
       </div>
     </section>
   );
@@ -183,17 +221,19 @@ function MobileProduct() {
   return (
     <section className="pub-section pub-mobile-product">
       <div className="pub-container pub-split">
-        <div className="pub-phone-stack" aria-label="EAFC.Live mobile experience">
-          <ProductImage
-            src="/marketing/eafc-mobile-home.svg"
-            alt="EAFC.Live mobile home screen showing a Harry Kane opportunity"
-            className="pub-phone pub-phone-back"
-          />
-          <ProductImage
-            src="/marketing/eafc-mobile-finder.svg"
-            alt="EAFC.Live mobile Trade Finder showing matching opportunities"
-            className="pub-phone pub-phone-front"
-          />
+        <div className="pub-phone-stage">
+          <div className="pub-phone-stack" aria-label="EAFC.Live mobile experience">
+            <ProductImage
+              src="/marketing/eafc-mobile-home.svg"
+              alt="EAFC.Live mobile home screen showing a Harry Kane opportunity"
+              className="pub-phone pub-phone-back"
+            />
+            <ProductImage
+              src="/marketing/eafc-mobile-finder.svg"
+              alt="EAFC.Live mobile Trade Finder showing matching opportunities"
+              className="pub-phone pub-phone-front"
+            />
+          </div>
         </div>
         <div className="pub-split-copy">
           <div className="pub-eyebrow"><Smartphone size={14} /> BUILT FOR THE WAY YOU TRADE</div>
@@ -224,10 +264,11 @@ function HowItWorks() {
 
   return (
     <section id="how" className="pub-section pub-how">
-      <div className="pub-container">
+      <div className="pub-container pub-how-inner">
         <div className="pub-section-heading">
           <span>HOW IT WORKS</span>
           <h2>From market noise to one clear move</h2>
+          <p>EAFC.Live does the boring market checks, then gives you the part that matters.</p>
         </div>
         <div className="pub-steps">
           {steps.map(({ icon: Icon, number, title, text }) => (
@@ -265,11 +306,14 @@ function DiscordSection() {
             <button type="button" className="pub-text-link" onClick={() => scrollToId("server-pricing")}>See server pricing</button>
           </div>
         </div>
-        <ProductImage
-          src="/marketing/eafc-discord.svg"
-          alt="EAFC.Live Discord bot posting a live Daniel Muñoz trading opportunity"
-          className="pub-discord-image"
-        />
+        <div className="pub-discord-showcase">
+          <div className="pub-discord-brand"><img src="/icons/icon-192x192.png" alt="" width="52" height="52" /><span>EAFC.Live bot preview</span></div>
+          <ProductImage
+            src="/marketing/eafc-discord.svg"
+            alt="EAFC.Live Discord bot posting a live Daniel Muñoz trading opportunity"
+            className="pub-discord-image"
+          />
+        </div>
       </div>
     </section>
   );
@@ -303,7 +347,7 @@ function Pricing() {
           <h2>Start free. Upgrade when it earns its place.</h2>
           <p>Personal plans and Discord server feeds are separate. Pick only what you need.</p>
         </div>
-        <div className="pub-pricing-group">
+        <div className="pub-pricing-group pub-personal-pricing">
           <div className="pub-pricing-title"><Smartphone size={18} /><div><h3>For your own trading</h3><p>Your personal EAFC.Live account.</p></div></div>
           <div className="pub-plan-grid">
             <PlanCard
@@ -392,7 +436,7 @@ function FinalCTA() {
 }
 
 function PublicHome() {
-  return <main><Hero /><FeatureIntro /><MobileProduct /><HowItWorks /><DiscordSection /><Pricing /><FAQ /><FinalCTA /></main>;
+  return <main><Hero /><ProofBand /><FeatureIntro /><MobileProduct /><HowItWorks /><DiscordSection /><Pricing /><FAQ /><FinalCTA /></main>;
 }
 
 function ForwardToApp() {
@@ -404,7 +448,7 @@ function Footer() {
   return (
     <footer className="pub-footer">
       <div className="pub-container pub-footer-inner">
-        <div className="pub-footer-brand"><Brand /><p>Live EA FC market intelligence for traders and Discord communities.</p></div>
+        <div className="pub-footer-brand"><Brand compact /><p>Live EA FC market intelligence for traders and Discord communities.</p></div>
         <div><strong>Product</strong><button type="button" onClick={() => scrollToId("product")}>Features</button><button type="button" onClick={() => scrollToId("pricing")}>Pricing</button><a href={APP_SIGNUP}>Create account</a></div>
         <div><strong>Community</strong><a href={DISCORD_INVITE_URL} target="_blank" rel="noreferrer">Discord</a><button type="button" onClick={() => scrollToId("server-pricing")}>Server feeds</button><a href="mailto:support@eafc.live">Support</a></div>
         <div><strong>Legal</strong><Link to="/privacy">Privacy</Link><Link to="/terms">Terms</Link></div>
