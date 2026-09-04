@@ -444,20 +444,26 @@ async def harvest_feed(page, url: str) -> dict[str, Any]:
 
     page.on("response", on_response)
     try:
-        await page.goto(url, wait_until="domcontentloaded", timeout=TIMEOUT_MS)
-    except Exception:
-        log.warning("navigation failed for url=%s", url, exc_info=True)
-    # The feed is requested during hydration, after domcontentloaded.
-    await page.wait_for_timeout(HYDRATION_WAIT_MS)
-    if pending:
         try:
-            await asyncio.wait_for(
-                asyncio.gather(*pending, return_exceptions=True), timeout=30
-            )
-        except asyncio.TimeoutError:
-            log.warning("timed out reading %d captured responses", len(pending))
-    page.remove_listener("response", on_response)
-    return captured
+            await page.goto(url, wait_until="domcontentloaded", timeout=TIMEOUT_MS)
+        except Exception:
+            log.warning("navigation failed for url=%s", url, exc_info=True)
+            raise
+        # The feed is requested during hydration, after domcontentloaded.
+        await page.wait_for_timeout(HYDRATION_WAIT_MS)
+        if pending:
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*pending, return_exceptions=True), timeout=30
+                )
+            except asyncio.TimeoutError:
+                log.warning("timed out reading %d captured responses", len(pending))
+        return captured
+    finally:
+        try:
+            page.remove_listener("response", on_response)
+        except Exception:
+            pass
 
 
 #: Guards rediscover() so two overlapping cycles (there should only ever
@@ -956,8 +962,11 @@ async def run_forever() -> None:
             headless=HEADLESS, args=["--no-sandbox", "--disable-dev-shm-usage"]
         )
         try:
-            context = await browser.new_context(user_agent=USER_AGENT, locale="en-GB")
-            page = await context.new_page()
+            async def fresh_page():
+                context = await browser.new_context(user_agent=USER_AGENT, locale="en-GB")
+                return context, await context.new_page()
+
+            context, page = await fresh_page()
             while not shutdown_event.is_set():
                 timers = StageTimers()
                 started = time.perf_counter()
@@ -967,6 +976,14 @@ async def run_forever() -> None:
                     result = await ingest_once(pool, page, timers, shutdown_event=shutdown_event)
                 except Exception:
                     log.exception("ingest failed")
+                    result = {"ok": False, "reason": "page_crashed"}
+                    try:
+                        await context.close()
+                    except Exception:
+                        log.warning("failed to close crashed browser context", exc_info=True)
+                    if shutdown_event.is_set():
+                        break
+                    context, page = await fresh_page()
 
                 # Best-effort, per cycle: GET /api/v2/market/freshness
                 # (backend/app/services/market_data_provider.py) reads
