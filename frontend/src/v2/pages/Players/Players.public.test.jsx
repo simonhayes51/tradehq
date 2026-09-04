@@ -26,7 +26,7 @@ const PUBLIC_ROW = {
 };
 const FULL_ROW = {
   source_card_id: 111, card_id: 111, name: "Kylian Mbappe", rating: 91,
-  rarity: "team_of_the_week", position: "ST", current_bin: 420431,
+  rarity: "team_of_the_week", primary_position: "ST", current_bin: 420431,
 };
 
 function renderSearch() {
@@ -83,5 +83,10 @@ describe("signed-in search", () => {
     renderSearch();
     expect(screen.getByText("LIVE PRICE")).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /Create free account/ })).toBeNull();
+  });
+
+  it("shows the API's primary position", () => {
+    renderSearch();
+    expect(screen.getByText("ST")).toBeInTheDocument();
   });
 });
