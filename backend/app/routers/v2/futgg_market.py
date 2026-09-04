@@ -292,14 +292,16 @@ def _serialize_player(row: Dict[str, Any]) -> Dict[str, Any]:
     # ago could advertise itself as 17 minutes stale while the engine,
     # correctly, treated it as fresh. Two numbers for one fact, disagreeing
     # on screen.
-    bin_captured_at = out.get("bin_checked_at") or out.get("bin_captured_at")
-    # Frontend-facing aliases (current_bin_captured_at / price_age_seconds)
-    # alongside the raw column names - computed here, not duplicated in SQL,
+    bin_checked_at = out.get("bin_checked_at")
+    bin_captured_at = out.get("bin_captured_at")
+    bin_observed_at = bin_checked_at or bin_captured_at
+    # Frontend-facing aliases are computed here, not duplicated in SQL,
     # since "now" has to be evaluated at serialization time either way.
-    out["current_bin_captured_at"] = bin_captured_at.isoformat() if bin_captured_at else None
+    out["current_bin_checked_at"] = bin_checked_at.isoformat() if bin_checked_at else None
+    out["current_bin_captured_at"] = bin_observed_at.isoformat() if bin_observed_at else None
     out["price_age_seconds"] = (
-        int((datetime.now(timezone.utc) - bin_captured_at).total_seconds())
-        if bin_captured_at is not None else None
+        int((datetime.now(timezone.utc) - bin_observed_at).total_seconds())
+        if bin_observed_at is not None else None
     )
     # image_url alias: player_image_url (the cutout-only photo, no frame/
     # rating/stats baked in) under the frontend's generic name every
@@ -322,7 +324,7 @@ def _serialize_player(row: Dict[str, Any]) -> Dict[str, Any]:
     # never pass this into a component that also draws its own rating/
     # stats text (e.g. PlayerCardArt's bgImage/cutoutImage props).
     out["composited_image_url"] = out.get("card_image_stored_url") or out.get("card_image_url")
-    for key in ("price_updated_at", "next_price_due_at", "bin_captured_at",
+    for key in ("price_updated_at", "next_price_due_at", "bin_checked_at", "bin_captured_at",
                 "latest_sale_at", "sales_window_earliest_at",
                 "sales_window_latest_at", "snapshot_computed_at"):
         if out.get(key) is not None:
