@@ -2066,6 +2066,24 @@ async def apply_batch_results(
             ))
             continue
 
+        # AUDIT NOTE (Part 3, price-detail field-usage review): result
+        # also carries currentPrice, fetched in both transports (see
+        # fetch_via_page_capture's equivalent) but used ONLY in the two
+        # DIAGNOSTIC log lines - never read here, never persisted.
+        # Deliberately so: futgg_bulk_price_sync.py is this deployment's
+        # canonical BIN source for the whole catalogue (~7s per cycle,
+        # see this file's own module docstring), and writing a second,
+        # independently-timed current-price value from here would be
+        # exactly the "parallel competing price source" this codebase
+        # avoids elsewhere (see futgg_price_access.py's CDN-feed design
+        # notes). The full detailed response's other fields
+        # (liveAuctions/history/priceRange/overview/momentum) are not
+        # fetched by this batch script AT ALL - only reachable today via
+        # futgg_price_access.fetch_player_price_detail()'s single-card
+        # path (scripts/futgg_price_probe.py). None have a database
+        # column yet; each needs a real captured example (not a
+        # description) and a specific, checked hypothesis for what it
+        # would improve before one is added.
         sale_rows = build_sale_rows(card_id, result.get("completedAuctions") or [], captured_at)
         to_insert.extend(sale_rows)
         stats["ok"] += 1
