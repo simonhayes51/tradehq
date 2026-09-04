@@ -835,6 +835,27 @@ async def ingest_once(
                         """,
                         no_market_ids, now,
                     )
+                if _last_price_changes:
+                    # Handoff to the triggered-detailed-sales queue
+                    # (auto_sync/futgg_sales_triggers.py, Part 5): this
+                    # worker and futgg_sales_sync.py are separate
+                    # deployed processes, so _last_price_changes itself
+                    # (in-process only) never reaches the other side -
+                    # this table is the only channel between them.
+                    # Consumed, never deleted, by the trigger reader, so
+                    # a "why did this fire" question later still has an
+                    # answer.
+                    await conn.executemany(
+                        """
+                        INSERT INTO futgg_price_change_events
+                            (card_id, previous_price, new_price, detected_at)
+                        VALUES ($1, $2, $3, $4)
+                        """,
+                        [
+                            (card_id, previous_price, new_price, now)
+                            for card_id, previous_price, new_price in _last_price_changes
+                        ],
+                    )
     log.info(
         "WROTE %d prices in one COPY (%d changed, %d heartbeat, %d unchanged and "
         "skipped); %d matched cards have no active market",
