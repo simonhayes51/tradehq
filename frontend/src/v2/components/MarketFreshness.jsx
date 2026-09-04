@@ -31,24 +31,37 @@ export function formatAge(seconds) {
   return `${days} day${days === 1 ? "" : "s"} ago`;
 }
 
+export function formatCompactAge(seconds) {
+  if (seconds == null || !Number.isFinite(Number(seconds))) return null;
+  const s = Math.max(0, Math.round(Number(seconds)));
+  if (s < 60) return "now";
+  const mins = Math.round(s / 60);
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 48) return `${hours}h ago`;
+  const days = Math.round(hours / 24);
+  return `${days}d ago`;
+}
+
 /**
  * MarketFreshness - renders the FUT.GG live-source/freshness label.
  *
  * Pass either:
  *  - priceAgeSeconds: a single card's `price_age_seconds`, or
- *  - capturedAt: an ISO timestamp (e.g. `current_bin_captured_at`) to
- *    derive the age from, if price_age_seconds isn't present, or
+ *  - checkedAt: an ISO timestamp for the last BIN feed confirmation, or
+ *  - capturedAt: an older ISO timestamp fallback, or
  *  - staleThresholdSeconds: override the default 6h cutoff.
  */
-export default function MarketFreshness({ priceAgeSeconds, capturedAt, staleThresholdSeconds = STALE_THRESHOLD_SECONDS, compact = false, className = "" }) {
+export default function MarketFreshness({ priceAgeSeconds, checkedAt, capturedAt, staleThresholdSeconds = STALE_THRESHOLD_SECONDS, compact = false, className = "" }) {
   let ageSeconds = priceAgeSeconds;
-  if (ageSeconds == null && capturedAt) {
-    const then = new Date(capturedAt).getTime();
+  const observedAt = checkedAt || capturedAt;
+  if (ageSeconds == null && observedAt) {
+    const then = new Date(observedAt).getTime();
     if (!Number.isNaN(then)) ageSeconds = Math.max(0, Math.round((Date.now() - then) / 1000));
   }
   const known = ageSeconds != null && Number.isFinite(Number(ageSeconds));
   const isStale = !known || Number(ageSeconds) > staleThresholdSeconds;
-  const ageText = known ? formatAge(ageSeconds) : "unknown";
+  const ageText = known ? (compact ? formatCompactAge(ageSeconds) : formatAge(ageSeconds)) : "unknown";
 
   return (
     <div className={`v2-market-freshness ${isStale ? "is-stale" : "is-live"}${compact ? " is-compact" : ""} ${className}`.trim()} role="status">
@@ -56,9 +69,9 @@ export default function MarketFreshness({ priceAgeSeconds, capturedAt, staleThre
       <span>
         {isStale
           ? known
-            ? `Last market update ${ageText} — live pricing may be unavailable`
-            : "Market update time unknown — live pricing may be unavailable"
-          : `Live market data · Updated ${ageText}`}
+            ? compact ? `Stale ${ageText}` : `Last market check ${ageText} - live pricing may be unavailable`
+            : compact ? "Check unknown" : "Market check time unknown - live pricing may be unavailable"
+          : compact ? `Checked ${ageText}` : `Live market data · Checked ${ageText}`}
       </span>
     </div>
   );
