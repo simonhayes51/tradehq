@@ -103,7 +103,7 @@ fi
 # above the live signed-endpoint ceiling and repeatedly trips FUT.GG's
 # 429 limit. Keep an escape hatch, but cap the signed path by default now
 # that bulk prices are supplied separately.
-SALES_SELECT_LIMIT_MAX="${FUTGG_SALES_SELECT_LIMIT_MAX:-80}"
+SALES_SELECT_LIMIT_MAX="${FUTGG_SALES_SELECT_LIMIT_MAX:-60}"
 if [ -n "${FUTGG_SALES_SELECT_LIMIT:-}" ]; then
     if [ "${FUTGG_SALES_SELECT_LIMIT}" -gt "${SALES_SELECT_LIMIT_MAX}" ] 2>/dev/null; then
         echo "Capping FUTGG_SALES_SELECT_LIMIT from ${FUTGG_SALES_SELECT_LIMIT} to ${SALES_SELECT_LIMIT_MAX}"
@@ -111,6 +111,20 @@ if [ -n "${FUTGG_SALES_SELECT_LIMIT:-}" ]; then
     fi
 else
     export FUTGG_SALES_SELECT_LIMIT="${SALES_SELECT_LIMIT_MAX}"
+fi
+
+# With bulk prices running, the signed endpoint only needs to refresh
+# completed-sales history. Force a real pause between signed batches so
+# a clean cycle does not immediately drain FUT.GG's rate window again.
+SALES_CYCLE_SLEEP_MIN="${FUTGG_SALES_CYCLE_SLEEP_MIN:-300}"
+SALES_CYCLE_SLEEP_FORCE="${FUTGG_SALES_CYCLE_SLEEP_FORCE:-true}"
+if [ "${SALES_CYCLE_SLEEP_FORCE,,}" != "false" ] && [ "${SALES_CYCLE_SLEEP_FORCE}" != "0" ]; then
+    if [ "${FUTGG_SALES_CYCLE_SLEEP:-}" != "${SALES_CYCLE_SLEEP_MIN}" ]; then
+        echo "Setting FUTGG_SALES_CYCLE_SLEEP to ${SALES_CYCLE_SLEEP_MIN} for signed-endpoint recovery"
+        export FUTGG_SALES_CYCLE_SLEEP="${SALES_CYCLE_SLEEP_MIN}"
+    fi
+elif [ -z "${FUTGG_SALES_CYCLE_SLEEP:-}" ]; then
+    export FUTGG_SALES_CYCLE_SLEEP="${SALES_CYCLE_SLEEP_MIN}"
 fi
 
 cleanup() {
