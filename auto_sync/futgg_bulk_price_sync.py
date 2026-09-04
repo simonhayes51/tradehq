@@ -75,6 +75,31 @@ normally instead of waiting for the next scheduled interval. If
 rediscovery also fails, the cycle backs off for
 FUTGG_DISCOVERY_FAILURE_BACKOFF_SECONDS (longer than the normal cadence)
 rather than hammering a broken feed every FUTGG_BULK_INTERVAL_SECONDS.
+
+AUDIT NOTE (bulk CDN feed task, 2026-09)
+-----------------------------------------
+A later task specified this design: poll r2.fut.gg/26/manifest.json every
+minute, diff its player-prices-index / player-prices-<platform>-dyn hashes
+against a cache, and only download a blob when its hash changes.
+
+That is not what this file does, deliberately. manifest.json is itself
+served from r2.fut.gg, which - per TRANSPORT above - refuses every direct
+request this worker has tried (plain HTTP, context.request with
+origin/referer, in-page fetch(); all three tested in production). A poller
+would 403 identically on the manifest fetch itself, before ever reaching
+the blobs. So there is no lower-effort "just poll the manifest" path
+available here; the passive-capture design above is what actually works
+against this origin, and it already yields the same outcome the poll was
+meant to produce - one full-catalogue snapshot per cycle, decoded and
+diffed against the previous snapshot (see select_rows_to_write() and
+_last_price_changes below) without a signed per-card request.
+
+Consequently this worker was extended rather than duplicated: a second,
+competing bulk-price poller/table would just be two sources fighting over
+the same canonical price columns. What was missing - and what
+select_rows_to_write() now exposes via the module-level
+_last_price_changes list - was a per-cycle record of WHICH cards' prices
+genuinely changed, for the triggered-detailed-sales queue to consume.
 """
 
 from __future__ import annotations
@@ -192,6 +217,23 @@ PRUNE_EVERY_N_CYCLES = env_int("FUTGG_BIN_HISTORY_PRUNE_EVERY_N_CYCLES", 12, min
 _last_written: dict[int, tuple[int, datetime]] = {}
 _last_written_seeded = False
 
+#: Part 5 (triggered detailed-sales queue) needs to know WHICH cards had
+#: a genuine bulk-price change this cycle, not just how many - so a
+#: trigger consumer can decide whether the change was material relative
+#: to that card's own price, and prioritise a detailed signed request
+#: accordingly. select_rows_to_write()'s existing (records, changed,
+#: heartbeat) return is unpacked as a 3-tuple across many existing,
+#: heavily-tested call sites (see test_futgg_bulk_write_volume.py,
+#: test_futgg_bulk_price_checked_at.py) - widening that tuple would
+#: break every one of them for a consumer that doesn't even exist yet.
+#: Mirrors this file's own _last_written pattern instead: populated
+#: fresh on every select_rows_to_write() call, read by whichever caller
+#: wants it immediately afterward (see ingest_once()'s "price_changes"
+#: key). previous_price is None for a card's first-ever observation -
+#: a "change" in the sense that mattered enough to write, but not one
+#: with a real prior value to compare against.
+_last_price_changes: list[tuple[int, "int | None", int]] = []
+
 #: A stable, operator-maintained "known good" FUT.GG player URL to fall
 #: back to when the normal PLAYER_URL stops yielding the feed - e.g.
 #: https://www.fut.gg/players/245037-eric-garcia/26-84131117/, confirmed
@@ -264,7 +306,18 @@ def select_rows_to_write(
     from what we last wrote, or when its last write is older than the
     heartbeat - the latter keeping observation counts and persistence
     meaningful for cards whose price simply is not moving.
+
+    Also refreshes module-level _last_price_changes with the
+    (card_id, previous_price, new_price) detail for every GENUINE change
+    this call found (previous_price not None and different from price) -
+    a first-ever observation and a heartbeat re-write are deliberately
+    excluded, since neither is a price actually moving. See that
+    variable's own comment for why this is exposed this way rather than
+    widening this function's long-established return signature.
     """
+    global _last_price_changes
+    _last_price_changes = []
+
     if not CHANGE_ONLY_WRITES:
         return [(cid, price, now) for cid, price in candidates], len(candidates), 0
 
@@ -278,6 +331,7 @@ def select_rows_to_write(
         elif previous[0] != price:
             records.append((card_id, price, now))
             changed += 1
+            _last_price_changes.append((card_id, previous[0], price))
         elif previous[1] <= now - timedelta(minutes=_heartbeat_minutes_for(card_id)):
             records.append((card_id, price, now))
             heartbeat += 1
@@ -789,6 +843,12 @@ async def ingest_once(
     return {
         "ok": True, "coverage_pct": coverage_pct, "applied": True,
         "written": len(records), "no_market": len(no_market_ids),
+        # (card_id, previous_price, new_price) for every genuine price
+        # change this cycle - see _last_price_changes' own comment. A
+        # future triggered-detailed-sales consumer reads this key
+        # directly rather than re-deriving "what changed" from
+        # bin_history itself.
+        "price_changes": list(_last_price_changes),
     }
 
 
