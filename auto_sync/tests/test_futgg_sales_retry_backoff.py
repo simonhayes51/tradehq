@@ -173,8 +173,12 @@ class TestCircuitBreakerUnchanged:
         assert sales.CIRCUIT_BREAKER_BACKOFF_SECONDS == 300.0
 
     def test_throttle_error_markers_are_untouched(self):
+        # "pow_" added later (futgg_price_access.py's structured
+        # sha256-prefix-v1 proof-of-work challenge) - a deliberate,
+        # separately-justified addition, not drift in this file's own
+        # retry/backoff logic, which this test still pins otherwise.
         assert sales._THROTTLE_ERROR_MARKERS == (
-            "429", "403", "sign_5", "data_5", "challenge",
+            "429", "403", "sign_5", "data_5", "challenge", "pow_",
         )
 
     def test_the_adaptive_throttle_class_still_exists_unmodified(self):
@@ -317,9 +321,10 @@ class TestRateLimitDoesNotForceTheExpensiveTransport:
 
     def test_the_throttle_marker_list_is_unchanged(self):
         # AdaptiveThrottle's inputs are untouched; only what the circuit
-        # breaker DOES afterwards changed.
+        # breaker DOES afterwards changed. "pow_" added later for the same
+        # reason as TestCircuitBreakerUnchanged's own pin above.
         assert sales._THROTTLE_ERROR_MARKERS == (
-            "429", "403", "sign_5", "data_5", "challenge",
+            "429", "403", "sign_5", "data_5", "challenge", "pow_",
         )
 
 

@@ -95,6 +95,7 @@ import asyncpg
 from db_connect import connect_with_retry, create_pool_with_retry
 
 from futgg_instrumentation import StageTimers, redact_headers, redact_url, redact_value
+from futgg_price_access import build_batch_script
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("futgg_sales_sync")
@@ -826,6 +827,20 @@ def sales_interval_minutes(tier: str | None) -> int:
 # and carries the browser's own cookies/TLS. Promise.all means a batch of
 # N cards costs ONE round trip to the browser instead of N.
 #
+# Built from futgg_price_access.build_batch_script() - the canonical
+# sign -> (solve a structured sha256-prefix-v1 proof-of-work challenge,
+# if FUT.GG returns one; otherwise fail exactly as before) -> resubmit
+# -> fetch implementation, shared with scripts/futgg_price_probe.py's
+# manual diagnostic tool rather than reimplemented here a second time.
+# See that module's docstring for the full challenge-type distinction:
+# a STRUCTURED price-access challenge (data.challenge present, algorithm
+# "sha256-prefix-v1") is expected application behaviour and is solved
+# in-browser; an UNSTRUCTURED Cloudflare/browser challenge
+# (challengeRequired with no data.challenge, or an unrecognised
+# algorithm) is NOT solvable by computing anything and still fails
+# straight into this file's existing circuit-breaker/backoff/transport-
+# switch handling below, unchanged.
+#
 # Every result also carries a small set of SAFE diagnostic fields (never
 # the signed URL itself, never cookies/tokens) so a live failure can be
 # root-caused from logs instead of guessed at:
@@ -848,86 +863,7 @@ def sales_interval_minutes(tier: str | None) -> int:
 #                                response-body prefix, further redacted by
 #                                redact_value() on the Python side before
 #                                it's ever logged.
-_FETCH_SCRIPT = """
-async ({ ids, gameYear, platform, diagnostic }) => {
-    const one = async (eaId) => {
-        const diag = {};
-        try {
-            const target = `/api/fut/player-prices/${gameYear}/${eaId}/?platform=${platform}`;
-            const signRes = await fetch('/api/fut/price-access/sign/', {
-                method: 'POST',
-                headers: { 'content-type': 'application/json', 'accept': 'application/json' },
-                body: JSON.stringify({ url: target }),
-                credentials: 'include',
-            });
-            diag.signStatus = signRes.status;
-            if (!signRes.ok) return { eaId, error: 'sign_' + signRes.status, ...diag };
-
-            const signed = await signRes.json();
-            const signedUrl = signed && signed.data && signed.data.url;
-            diag.expiresIn = (signed && signed.data && signed.data.expiresIn != null)
-                ? signed.data.expiresIn : null;
-            diag.challengeRequired = !!(signed && signed.data && signed.data.challengeRequired);
-            if (!signedUrl) return { eaId, error: 'no_signed_url', ...diag };
-
-            diag.signedUrlIsAbsolute = /^https?:\\/\\//i.test(signedUrl);
-            diag.signedUrlHasVerifyParam = signedUrl.indexOf('verify=') !== -1;
-            try {
-                const parsed = new URL(signedUrl, location.href);
-                diag.signedUrlOrigin = parsed.origin;
-                diag.signedUrlPath = parsed.pathname;
-                diag.sameOriginAsPage = parsed.origin === location.origin;
-            } catch (e) {
-                diag.signedUrlOrigin = null;
-                diag.signedUrlPath = null;
-                diag.sameOriginAsPage = null;
-            }
-
-            if (diag.challengeRequired) return { eaId, error: 'challenge_required', ...diag };
-
-            const dataRes = await fetch(signedUrl, {
-                headers: { 'accept': 'application/json' },
-                credentials: 'include',
-            });
-            diag.dataStatus = dataRes.status;
-            diag.dataContentType = dataRes.headers.get('content-type') || '';
-
-            if (!dataRes.ok) {
-                if (diagnostic) {
-                    try { diag.dataBodyPreview = (await dataRes.text()).slice(0, 500); } catch (e) {}
-                }
-                return { eaId, error: 'data_' + dataRes.status, ...diag };
-            }
-
-            let payload;
-            try {
-                payload = await dataRes.json();
-            } catch (e) {
-                if (diagnostic) {
-                    try { diag.dataBodyPreview = (await dataRes.clone().text()).slice(0, 500); } catch (e2) {}
-                }
-                return { eaId, error: 'malformed_json', ...diag };
-            }
-            if (!payload || typeof payload !== 'object' || !('data' in payload)) {
-                if (diagnostic) diag.dataBodyPreview = JSON.stringify(payload).slice(0, 500);
-                return { eaId, error: 'malformed_payload', ...diag };
-            }
-
-            const d = payload.data || {};
-            const completedAuctions = Array.isArray(d.completedAuctions) ? d.completedAuctions : [];
-            return {
-                eaId,
-                completedAuctions,
-                currentPrice: d.currentPrice != null ? d.currentPrice : null,
-                ...diag,
-            };
-        } catch (e) {
-            return { eaId, error: 'exception:' + String(e && e.message ? e.message : e), ...diag };
-        }
-    };
-    return await Promise.all(ids.map(one));
-}
-"""
+_FETCH_SCRIPT = build_batch_script()
 
 
 def _parse_sold_at(value: Any, now: datetime) -> datetime | None:
@@ -1861,9 +1797,22 @@ async def ensure_schema(conn: asyncpg.Connection) -> None:
 #: AdaptiveThrottle, which must react to more than just 429s (item 7) - a
 #: 403 wall or a sign_5xx means "slow down" exactly as a 429 does. Also
 #: what the circuit breaker's auto-transport-switch (item 4) looks for -
-#: "challenge" covers both signed_fetch's challenge_required and
-#: page_capture's page_capture_challenge uniformly.
-_THROTTLE_ERROR_MARKERS = ("429", "403", "sign_5", "data_5", "challenge")
+#: "challenge" covers signed_fetch's unstructured_challenge/
+#: unknown_challenge_algorithm (see futgg_price_access.py - a
+#: STRUCTURED sha256-prefix-v1 challenge is solved in-browser and never
+#: reaches here as an error at all) and page_capture's
+#: page_capture_challenge uniformly.
+#:
+#: "pow_" added for the structured sha256-prefix-v1 proof-of-work
+#: challenge (see futgg_price_access.py): a card whose challenge could
+#: not be solved in budget (pow_exhausted/pow_timeout) is throttle-
+#: shaped evidence exactly like a 429 - FUT.GG demanding more work per
+#: request - but deliberately NOT added to _BLOCKING_ERROR_MARKERS
+#: below: unlike an outright 403/Cloudflare wall, nothing here shows
+#: page_capture would fare any better against the same challenge, and
+#: that file's own history documents the cost of switching transport on
+#: a signal that only meant "slow down".
+_THROTTLE_ERROR_MARKERS = ("429", "403", "sign_5", "data_5", "challenge", "pow_")
 
 
 def is_throttle_signal(error: str) -> bool:
@@ -2082,7 +2031,7 @@ async def apply_batch_results(
                 throttled += 1
 
             # DATA-INTEGRITY FIX (item 4): a failed fetch of ANY kind
-            # (data_403, sign_502, challenge_required, network errors,
+            # (data_403, sign_502, unstructured_challenge, network errors,
             # malformed payloads, ...) must never count as a successful
             # read. A never-read card must stay never-read so it keeps
             # its place at the front of the backfill queue and the
