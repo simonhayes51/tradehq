@@ -243,7 +243,7 @@ export default function TradeFinder() {
             </div>
             <div className="finder-card-foot">
               <span className={`risk-${String(item.risk_level || "unknown").toLowerCase()}`}>{riskLabel(item.risk_level)}</span>
-              <MarketFreshness priceAgeSeconds={item.price_age_seconds} capturedAt={item.current_bin_captured_at} compact />
+              <MarketFreshness priceAgeSeconds={item.price_age_seconds} checkedAt={item.current_bin_checked_at || item.bin_checked_at || item.current_bin_captured_at} compact />
             </div>
           </Link>;
         })}
