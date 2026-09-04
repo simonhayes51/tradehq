@@ -449,7 +449,7 @@
   .v2-market-row { grid-template-columns: 25px 54px minmax(0,1fr) auto; gap: 9px; padding: 9px 10px; }
   .v2-market-row > img { width: 52px; height: 66px; }
   .v2-market-row > div > strong { font-size: 14px; }
-  .v2-watch-card { min-height: 340px; }
+  .v2-watch-card { min-height: 0; }
 }
 
 /* ---------------------------------------------------------------------
