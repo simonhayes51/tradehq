@@ -81,6 +81,14 @@ describe("HomeDashboard mobile section grouping", () => {
     expect(screen.queryByText("Where coins are moving")).not.toBeInTheDocument();
   });
 
+  it("leads with live opportunity value instead of an internal market confidence score", () => {
+    renderHome();
+    expect(screen.getByText("EAFC.LIVE MARKET")).toBeInTheDocument();
+    expect(screen.getByText(/opportunities worth checking/i)).toBeInTheDocument();
+    expect(screen.queryByText(/\/100/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/very low confidence/i)).not.toBeInTheDocument();
+  });
+
   it("on mobile, defaults to Overview: the decision (Top Card) is present, other section groups are not mounted", () => {
     useIsMobile.mockReturnValue(true);
     renderHome();

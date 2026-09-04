@@ -37,6 +37,13 @@ const PLAN_KEYS = {
   yearly: { key: "season", priceId: "price_season_premium", label: "Full season" },
 };
 
+function seasonSavingPercent(plans) {
+  const monthly = Number(plans?.plans?.monthly?.amount_minor);
+  const season = Number(plans?.plans?.season?.amount_minor);
+  if (!monthly || !season || season >= monthly * 12) return null;
+  return Math.round((1 - season / (monthly * 12)) * 100);
+}
+
 // The real, currently-shipped v2 feature set - not the v1 list's
 // "Smart Buy AI"/"Sharpe ratio and max drawdown"/generic AI language,
 // none of which describes an actual v2 component.
@@ -227,6 +234,7 @@ export default function Billing() {
   const { refreshEntitlements } = useEntitlements();
   const activePlan = plans?.plans?.[PLAN_KEYS[billingCycle].key];
   const priceDisplay = headlinePrice(plans, PLAN_KEYS[billingCycle].key);
+  const seasonSaving = seasonSavingPercent(plans);
 
   useEffect(() => {
     loadUserData();
@@ -495,7 +503,7 @@ export default function Billing() {
             <div className="billing-v2-toggle" role="tablist" aria-label="Billing cycle">
               <button role="tab" aria-selected={billingCycle === "monthly"} className={billingCycle === "monthly" ? "active" : ""} onClick={() => setBillingCycle("monthly")}>Monthly</button>
               <button role="tab" aria-selected={billingCycle === "yearly"} className={billingCycle === "yearly" ? "active" : ""} onClick={() => setBillingCycle("yearly")}>
-                Season <span className="billing-v2-save-pill">30% off</span>
+                Season <span className="billing-v2-save-pill">{seasonSaving ? `Save ${seasonSaving}%` : "Best value"}</span>
               </button>
             </div>
 

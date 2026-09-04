@@ -39,6 +39,7 @@ from app.auth.access import get_viewer, limit_reached
 from app.routers.v2.events import record_server_event
 from app.auth.entitlements import (
     ELITE_ALERT_MAX,
+    FREE_WATCHLIST_MAX,
     compute_entitlements,
     require_feature,
     invalidate_entitlements_cache,
@@ -2594,7 +2595,7 @@ async def get_current_user_info(request: Request, conn=Depends(get_db)):
             "last_validated": datetime.now(timezone.utc).isoformat(),
             "features": [],
             "limits": {
-                "watchlist_max": 3,
+                "watchlist_max": FREE_WATCHLIST_MAX,
                 "trending": {"timeframes": ["24h"]},
             },
             "account_type": "user",
@@ -2639,7 +2640,7 @@ async def get_current_user_info(request: Request, conn=Depends(get_db)):
             "last_validated": datetime.now(timezone.utc).isoformat(),
             "features": [],
             "limits": {
-                "watchlist_max": 3,
+                "watchlist_max": FREE_WATCHLIST_MAX,
                 "trending": {"timeframes": ["24h"]},
             },
             "account_type": "user",

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { Activity, ArrowRight, Bell, ChevronRight, Lock, Search, Star, Target, X, Zap } from "lucide-react";
+import { ArrowRight, Bell, ChevronRight, Lock, Search, Star, Target, X, Zap } from "lucide-react";
 import { useAuth } from "../../../context/AuthContext";
 import { isPublicHost, PUBLIC_HOSTNAME } from "../../../lib/domains";
 import { useDashboard } from "../../hooks/useDashboard";
@@ -238,11 +238,6 @@ export default function HomeDashboard(){
   // signals, 0 coin potential looks like a calculation bug even when it
   // is really just missing per-card profit data on those rows).
   const buyItemsWithProfit=buyItems.filter(x=>expectedProfit(x)!=null);
-  const score=Math.round(Number(dashboard.marketRegime?.confidence||0));
-  // "Unknown" is the backend's explicit "we are not calling this market",
-  // not a low score - see the Market Pulse comment below.
-  const hasMarketVerdict=Boolean(dashboard.marketRegime?.label)&&dashboard.marketRegime.label!=="Unknown";
-  const valuedCards=dashboard.marketRegime?.metrics?.valuedCards??null;
   // Prefer the backend's own expected_profit_after_tax (correct EA price-
   // increment rounding) over the generic profit() recompute, same reason
   // AnalysisModal's `gain`/`target` do below.
@@ -336,37 +331,30 @@ export default function HomeDashboard(){
               withheld does not invalidate an individual card that DID
               have enough data to evaluate, and the copy now says which
               is which rather than leaving the reader to reconcile them. */}
-          <aside className="market-panel">
-            <div className="panel-label"><Activity size={15}/> MARKET PULSE</div>
-            {hasMarketVerdict?<>
-              <div className="pulse-head">
-                <div><h2>{mood(dashboard.marketRegime?.label,score)}</h2><p>{dashboard.marketRegime?.summary}</p></div>
-                <strong>{score}<small>/100</small></strong>
-              </div>
-              <div className="pulse-track"><span style={{width:`${Math.max(5,score)}%`}}/></div>
-            </>:<div className="pulse-head no-verdict">
-              <div>
-                <h2>No market-wide read yet</h2>
-                <p>{dashboard.marketRegime?.summary||"Prices and completed sales are being checked now."}</p>
-              </div>
-            </div>}
+          <aside className="market-panel market-overview">
+            <div className="panel-label market-brand-label">
+              <img className="market-brand-logo" src="/icons/icon-192x192.png" alt="" />
+              EAFC.LIVE MARKET
+            </div>
+            <div className="market-overview-head">
+              <span className="market-live-pill"><i /> LIVE MARKET SCAN</span>
+              <h2>{buyCount > 0 ? `${buyCount} opportunities worth checking` : "The market scan is active"}</h2>
+              <p>{buyCount > 0
+                ? "These cards cleared the live price, sales and risk checks. Open a card before buying to see the full evidence."
+                : "Prices are being monitored across the market. We will show a trade when it clears the quality bar."}</p>
+            </div>
             <div className="pulse-stats">
-              <Metric label="Buy signals" value={buyCount} sub="Cards that passed the filters now"/>
+              <Metric label="Live opportunities" value={buyCount} sub="Passed the filters now"/>
               <Metric
-                label="Coin potential"
-                value={buyCount>0&&buyItemsWithProfit.length===0?"—":<CoinValue value={potential} signed/>}
+                label="Potential profit"
+                value={buyCount>0&&buyItemsWithProfit.length===0?"Calculating":<CoinValue value={potential} signed/>}
                 sub={buyCount>0&&buyItemsWithProfit.length===0
-                  ?"Profit not priced for these yet"
+                  ?"Waiting for complete trade pricing"
                   :buyItemsWithProfit.length<buyCount
-                    ?`Combined, after EA tax · ${buyItemsWithProfit.length} of ${buyCount} priced`
+                    ?`After EA tax · ${buyItemsWithProfit.length} of ${buyCount} priced`
                     :"Combined, after EA tax"}
               />
-              {/* Two separate facts, shown as two separate facts. This
-                  tile used to ADD the regime's candidate count to the
-                  price-worker's priced-card count and present the sum as
-                  "Tracked" - two different populations, double-counted
-                  into one number that described neither. */}
-              <Metric label="Cards tracked" value={count(freshnessQuery.data?.cards_priced)} sub={valuedCards!=null?`${count(valuedCards)} have a fresh enough price to score`:"Live price coverage"}/>
+              <Metric label="Cards priced" value={count(freshnessQuery.data?.cards_priced)} sub="Live BIN coverage"/>
             </div>
             <PulseFooter nextPromo={dashboard.nextPromo} sbcImpact={dashboard.latestSbcImpact}/>
           </aside>
@@ -868,16 +856,3 @@ function expectedProfit(item){return item?.source==="futgg"&&item.expectedProfit
 // exact same string throughout. Graduated bands make the qualifier
 // track the number the way the number visibly moves, without inventing
 // a market condition the backend never actually said.
-function confidenceBand(score){
-  if(score<25)return"very low confidence";
-  if(score<MIN_CONFIDENT_SCORE)return"low confidence";
-  if(score<70)return"building confidence";
-  if(score<85)return"good confidence";
-  return"high confidence";
-}
-function mood(label,score){
-  const known=String(label||"").trim();
-  if(!known||known==="Unknown")return"Checking the market";
-  return`${known} (${confidenceBand(score)})`;
-}
-const MIN_CONFIDENT_SCORE=40;

@@ -145,7 +145,12 @@ function Hero() {
           </div>
         </div>
         <div className="pub-hero-visual">
-          <img src="/marketing/eafc-dashboard.svg" alt="EAFC.Live dashboard showing a live Daniel Muñoz trading opportunity" />
+          <div className="pub-hero-product-label">
+            <img src="/icons/icon-192x192.png" alt="" />
+            <div><strong>EAFC.<b>Live</b></strong><span>LIVE MARKET INTELLIGENCE</span></div>
+            <em><i /> SCANNING</em>
+          </div>
+          <img src="/marketing/eafc-mobile-home.svg" alt="EAFC.Live showing a live trade with buy price, expected profit and confidence" />
         </div>
       </div>
       <div className="pub-container pub-signal-strip" aria-label="Product highlights">

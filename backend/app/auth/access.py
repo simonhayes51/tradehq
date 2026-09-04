@@ -338,7 +338,7 @@ _PUBLIC_CARD_FIELDS = (
 # The rounding applied to a public price. Coarse enough that it cannot be
 # used as a live price feed, fine enough to tell a 5k card from a 500k one
 # - which is the whole point of showing it.
-_PUBLIC_PRICE_BUCKETS = ((10_000, 500), (100_000, 5_000), (1_000_000, 25_000))
+_PUBLIC_PRICE_BUCKETS = ((1_000, 50), (10_000, 500), (100_000, 5_000), (1_000_000, 25_000))
 _PUBLIC_PRICE_COARSEST = 100_000
 
 
