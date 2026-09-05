@@ -28,7 +28,7 @@ vi.mock("../../components/TrackRecordSummary", () => ({
 const EMPTY_DASHBOARD = {
   marketRegime: { label: "Steady", confidence: 40, summary: "", metrics: {} },
   todaysOpportunities: [], highConfidenceInvestments: [], cardsToAvoid: [], biggestMovers: [],
-  watchlistAlerts: [], watchedCount: 0, nextPromo: null, latestMarketEvents: [], latestSbcImpact: [],
+  watchlistAlerts: [], alertRules: [], watchedCount: 0, nextPromo: null, latestMarketEvents: [], latestSbcImpact: [],
   locked: { opportunityFeed: false, previewCount: 0 },
 };
 
@@ -119,6 +119,29 @@ describe("HomeDashboard mobile section grouping", () => {
     expect(screen.getByText("Next best moves")).toBeInTheDocument();
     expect(screen.getByText("Find a different angle")).toBeInTheDocument();
     expect(screen.queryByTestId("track-record-stub")).not.toBeInTheDocument();
+  });
+
+  it("shows saved alert rules in Alerts & content before they trigger", () => {
+    useIsMobile.mockReturnValue(false);
+    useDashboard.mockReturnValue({
+      data: {
+        ...EMPTY_DASHBOARD,
+        watchedCount: 1,
+        alertRules: [{
+          id: 12,
+          cardId: 218342893,
+          playerName: "Achraf Hakimi",
+          metric: "price",
+          risePct: 25,
+          fallPct: 10,
+        }],
+      },
+      isLoading: false,
+    });
+    renderHome();
+    expect(screen.getByText("Achraf Hakimi alert is active")).toBeInTheDocument();
+    expect(screen.getByText(/25% up or 10% down/)).toBeInTheDocument();
+    expect(screen.queryByText("No price alerts yet")).not.toBeInTheDocument();
   });
 
   it("switching to Your feed mounts the alerts feed and unmounts Overview", () => {
