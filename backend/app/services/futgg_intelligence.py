@@ -446,15 +446,9 @@ def _bin_fallback_card_intelligence(
 ) -> CardIntelligence:
     """Builds a CardIntelligence from a QUALIFYING BinValuationResult.
 
-    Deliberately much simpler than the sales-path signal ladder: qualifying
-    already required clearing the stricter BIN ROI/profit floors (see
-    evaluate_bin_fallback), so the only signal a qualifying result can ever
-    produce is "buy" - never "strong_buy" (explicit requirement: BIN-only
-    evidence can never reach the top tier) and never "watch" (a BIN
-    estimate that isn't executable right now, i.e. current_bin above its
-    own recommended_buy_max, is simply not a result worth surfacing - it
-    would be a lower-confidence version of a case the sales path already
-    handles better once real sales exist).
+    A qualifying BIN-history result is supporting evidence, not a completed sale.
+    It can explain why a card may be worth watching while sales are unavailable
+    or stale, but it must never become an executable opportunity by itself.
     """
     current_bin_dec = Decimal(str(current_bin))
     is_executable = current_bin_dec <= bin_result.recommended_buy_max
@@ -470,9 +464,10 @@ def _bin_fallback_card_intelligence(
             trend=trend, current_bin=current_bin,
         )
 
-    expected_profit = tm.net_profit(bin_result.recommended_sell_target, current_bin_dec)
-    expected_roi = tm.net_roi(bin_result.recommended_sell_target, current_bin_dec)
-    break_even_price = tm.break_even_sale_price(current_bin_dec)
+    entry_for_expectation = bin_result.recommended_buy_max
+    expected_profit = tm.net_profit(bin_result.recommended_sell_target, entry_for_expectation)
+    expected_roi = tm.net_roi(bin_result.recommended_sell_target, entry_for_expectation)
+    break_even_price = tm.break_even_sale_price(entry_for_expectation)
 
     # Same geometric-blend philosophy as the sales path's _compute_confidence
     # (one bad component tanks the whole score), with BIN-specific inputs:
@@ -507,12 +502,12 @@ def _bin_fallback_card_intelligence(
         fair_value=bin_result.bin_reference_price,
         theoretical_max_buy=bin_result.theoretical_max_buy,
         recommended_buy_max=bin_result.recommended_buy_max,
-        current_executable_buy=current_bin_dec,
+        current_executable_buy=None,
         break_even_price=break_even_price,
         recommended_sell_target=bin_result.recommended_sell_target,
-        buy_below=None,
+        buy_below=bin_result.recommended_buy_max,
         expected_profit_after_tax=expected_profit,
-        expected_profit_basis=current_bin_dec,
+        expected_profit_basis=entry_for_expectation,
         expected_roi=expected_roi,
         liquidity_score=None,
         confidence_score=confidence,
@@ -520,8 +515,8 @@ def _bin_fallback_card_intelligence(
         # engine's lowest risk tier regardless of how clean its own
         # numbers look (explicit requirement).
         risk_level="medium",
-        signal="buy",
-        status=STATUS_ACTIVE,
+        signal="watch",
+        status=STATUS_WATCH,
         signal_reasons=bin_result.reasons.messages,
         reason_codes=bin_result.reasons.codes,
         reasons=bin_result.reasons.as_dicts(),
