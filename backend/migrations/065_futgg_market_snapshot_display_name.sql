@@ -1,7 +1,7 @@
 -- Migration 065: expose display_name / full_name / released_at on futgg_market_snapshot
 -- target: core
 -- requires-table: futgg_players, futgg_bin_history, futgg_sales_history
--- requires-column: futgg_players.display_name, futgg_players.full_name, futgg_players.released_at, futgg_players.card_image_url, futgg_players.card_image_stored_url, futgg_players.card_image_stored_status, futgg_players.pace, futgg_players.card_design_image_url
+-- requires-column: futgg_players.display_name, futgg_players.full_name, futgg_players.released_at, futgg_players.price_checked_at, futgg_players.card_image_url, futgg_players.card_image_stored_url, futgg_players.card_image_stored_status, futgg_players.pace, futgg_players.card_design_image_url
 --
 -- Adds three columns to the snapshot so backend read paths can prefer the
 -- SHORT user-facing player name without a second join to futgg_players on
@@ -156,6 +156,7 @@ SELECT
     lb.price_range_high,
     lb.bin_source_age_text,
     lb.bin_captured_at,
+    p.price_checked_at                                   AS bin_checked_at,
 
     coalesce(ss.sales_count, 0)                          AS sales_count,
     ss.sales_median,
