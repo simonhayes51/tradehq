@@ -96,6 +96,7 @@ log = logging.getLogger("futgg_market")
 
 DEFAULT_PAGE_SIZE = 25
 MAX_PAGE_SIZE = 100
+MAX_OPPORTUNITY_EVIDENCE_AGE_MINUTES = 24 * 60
 
 
 def _is_stale_for_tier(price_age_minutes: Optional[int], price_tier: Optional[str]) -> bool:
@@ -492,6 +493,8 @@ def _score_and_filter(
     min_expected_profit: Optional[float] = None, min_roi: Optional[float] = None,
     min_confidence: Optional[float] = None, min_liquidity: Optional[float] = None,
     signals: Optional[set] = None,
+    require_confirmed_sales: bool = False,
+    max_evidence_age_minutes: Optional[int] = None,
     sales_by_card: Optional[Dict[int, List[Dict[str, Any]]]] = None,
     bin_by_card: Optional[Dict[int, List[Any]]] = None,
 ) -> List[Any]:
@@ -512,6 +515,14 @@ def _score_and_filter(
             # loop had no equivalent isolation, which is exactly how one
             # bad row emptied the entire feed on 2026-09-05.
             log.warning("evaluate_card failed for card_id=%s", card_id, exc_info=True)
+            continue
+        if require_confirmed_sales and (
+            ci.valuation_source != "completed_sales" or ci.evidence_quality != "confirmed"
+        ):
+            continue
+        if max_evidence_age_minutes is not None and (
+            ci.evidence_age_minutes is None or ci.evidence_age_minutes > max_evidence_age_minutes
+        ):
             continue
         if signals is not None and ci.signal not in signals:
             continue
@@ -707,6 +718,8 @@ async def free_pick_candidates(provider: "FutggMarketDataProvider") -> List[Dict
     )
     scored = _score_and_filter(
         rows, signals={"buy", "strong_buy"},
+        require_confirmed_sales=True,
+        max_evidence_age_minutes=MAX_OPPORTUNITY_EVIDENCE_AGE_MINUTES,
         sales_by_card=await _sales_for_rows(provider, rows),
         bin_by_card=await _bin_observations_for_rows(provider, rows),
     )
@@ -769,6 +782,8 @@ async def list_opportunities(
         rows, risk=risk, min_expected_profit=min_profit, min_roi=min_roi,
         min_confidence=min_confidence, min_liquidity=min_liquidity,
         signals={"buy", "strong_buy"},
+        require_confirmed_sales=True,
+        max_evidence_age_minutes=MAX_OPPORTUNITY_EVIDENCE_AGE_MINUTES,
         sales_by_card=await _sales_for_rows(provider, rows),
         bin_by_card=await _bin_observations_for_rows(provider, rows),
     )
