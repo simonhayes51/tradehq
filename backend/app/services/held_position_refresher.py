@@ -48,6 +48,16 @@ async def refresh_held_positions(pool: asyncpg.Pool, player_pool: asyncpg.Pool) 
         platform = row["platform"] or "ps"
         try:
             async with player_pool.acquire() as eval_conn:
+                exists = await eval_conn.fetchval(
+                    "SELECT EXISTS (SELECT 1 FROM fut_players WHERE card_id = $1)",
+                    card_id,
+                )
+                if not exists:
+                    log.warning(
+                        "held_position_refresher: skipping trade_id=%s card_id=%s because card is missing from fut_players",
+                        trade_id, card_id,
+                    )
+                    continue
                 result = await evaluate_card(
                     eval_conn,
                     card_id,
