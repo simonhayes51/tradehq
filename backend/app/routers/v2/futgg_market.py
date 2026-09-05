@@ -867,6 +867,8 @@ async def opportunities_preview(
     rows = await _segmented_candidates(provider)
     scored = _score_and_filter(
         rows, signals={"buy", "strong_buy"},
+        require_confirmed_sales=True,
+        max_evidence_age_minutes=MAX_OPPORTUNITY_EVIDENCE_AGE_MINUTES,
         sales_by_card=await _sales_for_rows(provider, rows),
         bin_by_card=await _bin_observations_for_rows(provider, rows),
     )
