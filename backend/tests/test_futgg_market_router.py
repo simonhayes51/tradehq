@@ -542,6 +542,40 @@ def _app_with(provider: "FakeProvider", viewer: Viewer = ELITE_VIEWER) -> FastAP
     return app
 
 
+class TestScoreAndFilterPerCardIsolation:
+    """Regression test for a live incident (2026-09-05): evaluate_card()
+    raising for one card - out of possibly hundreds in a single request -
+    had no per-card isolation in _score_and_filter's loop (unlike
+    futgg_scanner.run_scan(), which already wraps each card individually),
+    so it took the ENTIRE Opportunities/dashboard feed down for every
+    user with one bad row. This proves the loop now survives that."""
+
+    def test_one_bad_row_does_not_break_the_whole_feed(self, monkeypatch):
+        import app.routers.v2.futgg_market as market_module
+
+        good_row = _row(source_card_id=1)
+        bad_row = _row(source_card_id=2)
+        real_evaluate_card = market_module.evaluate_card
+
+        def _flaky_evaluate_card(row, **kwargs):
+            if row["source_card_id"] == 2:
+                raise RuntimeError("simulated unanticipated production data shape")
+            return real_evaluate_card(row, **kwargs)
+
+        monkeypatch.setattr(market_module, "evaluate_card", _flaky_evaluate_card)
+        provider = FakeProvider([good_row, bad_row])
+        app = FastAPI()
+        app.include_router(futgg_router, prefix="/api/v2")
+        app.dependency_overrides[get_provider] = lambda: provider
+        app.dependency_overrides[get_viewer] = lambda: ELITE_VIEWER
+        client = TestClient(app)
+        resp = client.get("/api/v2/opportunities")
+        assert resp.status_code == 200
+        # The good card still shows up - only the bad one is skipped.
+        card_ids = [item.get("source_card_id") for item in resp.json()["items"]]
+        assert 2 not in card_ids
+
+
 class TestBinHistoryFallbackAPI:
     """API-surface coverage for app/services/futgg_bin_valuation.py -
     evidence fields serialize with the exact names the requirement asked
