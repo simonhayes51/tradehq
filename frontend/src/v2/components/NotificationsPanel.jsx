@@ -13,7 +13,7 @@ import { Bell, Trash2, X } from "lucide-react";
 import { useAlerts, useDismissAlert, useDismissAllAlerts, useMarkAlertsRead } from "../hooks/useAlerts";
 import EmptyState from "./EmptyState";
 
-export default function NotificationsPanel({ open, onClose, onUnreadCount }) {
+export default function NotificationsPanel({ open, onClose, onUnreadCount, rules = [] }) {
   const { data, isLoading, isError, refetch } = useAlerts({ enabled: open });
   const dismiss = useDismissAlert();
   const dismissAll = useDismissAllAlerts();
@@ -126,6 +126,24 @@ export default function NotificationsPanel({ open, onClose, onUnreadCount }) {
           action={<Link to="/watchlist" onClick={onClose}>Open watchlist</Link>}
         />
       )}
+
+      {rules.length ? (
+        <section className="v2-notifications-rules" aria-labelledby="active-alert-rules">
+          <h3 id="active-alert-rules">Active rules <span>{rules.length}</span></h3>
+          <ul>
+            {rules.slice(0, 4).map((rule) => (
+              <li key={rule.id}>
+                <Link to={`/players/${rule.cardId}`} onClick={onClose}>
+                  <strong>{rule.playerName}</strong>
+                  <span>
+                    {rule.metric === "liquidity" ? "Sales activity" : "Price"}: {Number(rule.risePct).toFixed(0)}% up or {Number(rule.fallPct).toFixed(0)}% down
+                  </span>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
 
       <footer className="v2-notifications-foot">
         <Link to="/watchlist" onClick={onClose}>Manage alert rules</Link>
