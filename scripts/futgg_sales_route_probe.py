@@ -93,7 +93,19 @@ from urllib.parse import urlsplit
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _SCRIPT_DIR.parent
 sys.path.insert(0, str(_SCRIPT_DIR))
-sys.path.insert(0, str(_REPO_ROOT / "auto_sync"))
+# Two possible layouts for where auto_sync's modules (futgg_price_access,
+# futgg_r2_capture_probe) actually live, depending on how this script was
+# deployed:
+#   - a full repo checkout: <repo_root>/auto_sync/futgg_price_access.py
+#   - the deployed SalesSync container: Dockerfile.sales's build context
+#     is auto_sync/ itself (per COOLIFY.md's Base Directory), so its
+#     "COPY . ." puts auto_sync's own files directly at /app - there is
+#     no /app/auto_sync subdirectory there at all.
+# Try both rather than assuming either.
+_auto_sync_dir = _REPO_ROOT / "auto_sync"
+if _auto_sync_dir.is_dir():
+    sys.path.insert(0, str(_auto_sync_dir))
+sys.path.insert(0, str(_REPO_ROOT))
 
 import futgg_price_access as price_access  # noqa: E402
 # Reused rather than duplicated - phase 1's probe already implements
