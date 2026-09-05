@@ -806,13 +806,15 @@ async def get_dashboard(
     # different empty states the frontend cannot tell apart from an empty
     # array alone.
     watchlist_alerts: List[Dict[str, Any]] = []
+    alert_rules: List[Dict[str, Any]] = []
     watched_count = 0
     unread_alert_count = 0
     uid = request.session.get("user_id")
     if uid:
+        watchlist_pool = await get_watchlist_pool()
         try:
             feed = await fetch_alert_feed(
-                watchlist_pool=await get_watchlist_pool(),
+                watchlist_pool=watchlist_pool,
                 core_pool=core_pool,
                 player_pool=player_pool,
                 user_id=str(uid),
@@ -823,6 +825,83 @@ async def get_dashboard(
             unread_alert_count = feed["unreadCount"]
         except Exception:
             log.warning("dashboard: alert feed unavailable", exc_info=True)
+
+        try:
+            async with watchlist_pool.acquire() as conn:
+                rule_rows = await conn.fetch(
+                    """
+                    SELECT id, card_id, platform, metric, rise_pct, fall_pct,
+                           last_alert_at, source
+                    FROM watchlist_alerts
+                    WHERE user_id = $1
+                    ORDER BY created_at DESC
+                    LIMIT 20
+                    """,
+                    str(uid),
+                )
+
+            futgg_ids = [
+                int(row["card_id"])
+                for row in rule_rows
+                if (row["source"] or "futbin") == "futgg"
+            ]
+            futbin_ids = [
+                str(row["card_id"])
+                for row in rule_rows
+                if (row["source"] or "futbin") != "futgg"
+            ]
+            names: Dict[tuple[str, int], str] = {}
+            if futgg_ids:
+                async with core_pool.acquire() as conn:
+                    name_rows = await conn.fetch(
+                        """
+                        SELECT source_card_id, name, rating, rarity
+                        FROM futgg_market_snapshot
+                        WHERE source_card_id = ANY($1::bigint[])
+                        """,
+                        futgg_ids,
+                    )
+                for row in name_rows:
+                    label = row["name"]
+                    if label and row["rating"] and row["rarity"]:
+                        rarity = str(row["rarity"]).replace("_", " ").title()
+                        label = f"{label} ({row['rating']} {rarity})"
+                    if label:
+                        names[("futgg", int(row["source_card_id"]))] = label
+            if futbin_ids:
+                async with player_pool.acquire() as conn:
+                    name_rows = await conn.fetch(
+                        "SELECT card_id, name FROM fut_players WHERE card_id = ANY($1::text[])",
+                        futbin_ids,
+                    )
+                for row in name_rows:
+                    if row["name"]:
+                        names[("futbin", int(row["card_id"]))] = row["name"]
+
+            for row in rule_rows:
+                source = row["source"] or "futbin"
+                card_id = int(row["card_id"])
+                alert_rules.append(
+                    {
+                        "id": row["id"],
+                        "cardId": card_id,
+                        "playerName": names.get(
+                            (source, card_id),
+                            "Card no longer in our catalogue",
+                        ),
+                        "platform": str(row["platform"] or "ps").upper(),
+                        "metric": row["metric"] or "price",
+                        "risePct": float(row["rise_pct"] or 0),
+                        "fallPct": float(row["fall_pct"] or 0),
+                        "lastAlertAt": (
+                            row["last_alert_at"].isoformat()
+                            if row["last_alert_at"]
+                            else None
+                        ),
+                    }
+                )
+        except Exception:
+            log.warning("dashboard: alert rules unavailable", exc_info=True)
 
     # --- Latest market events + SBC impact ---
     async with player_pool.acquire() as conn:
@@ -902,6 +981,7 @@ async def get_dashboard(
         "biggestMovers": mover_cards,
         "recentAiPredictions": recent_predictions,
         "watchlistAlerts": watchlist_alerts,
+        "alertRules": alert_rules,
         "watchedCount": watched_count,
         "unreadAlertCount": unread_alert_count,
         "nextPromo": next_promo,
