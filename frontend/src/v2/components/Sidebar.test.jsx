@@ -27,6 +27,15 @@ function setup({ authenticated = true, tier = "free", features = [], isAdmin = f
 
 beforeEach(() => vi.clearAllMocks());
 
+describe("sidebar branding", () => {
+  it("uses the real EAFC.Live logo instead of the EL placeholder", () => {
+    setup();
+    const brand = screen.getByRole("link", { name: "EAFC.Live home" });
+    expect(brand.querySelector("img")).toHaveAttribute("src", "/icons/icon-192x192.png");
+    expect(brand.textContent).not.toContain("EL");
+  });
+});
+
 describe("upgrade entry point", () => {
   it("gives a Free account one persistent route to billing", () => {
     setup({ tier: "free", features: [] });

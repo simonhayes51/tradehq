@@ -39,7 +39,7 @@
    scrolls with the rest of the page like every other v2 route. */
 .dash-page-shell{min-height:100vh;padding:36px clamp(16px,3vw,32px) 70px;background:radial-gradient(circle at 80% 0,rgba(57,255,138,.06),transparent 30%),#101010}
 .dash-analysis-modal.page-mode{position:relative;display:grid;max-width:1080px;margin:0 auto;max-height:none;overflow:visible;box-shadow:none;animation:none}
-.dash-analysis-modal.page-mode .dash-modal-card{top:20px}
+.dash-analysis-modal.page-mode .dash-modal-card{position:relative;top:0}
 @media(max-width:900px){.dash-analysis-modal.page-mode{grid-template-columns:190px minmax(0,1fr)}}
 /* mobile-polish.css's own (earlier-loaded, un-scoped) @media(max-width:700px)
    block turns the POPUP modal into a bottom sheet with the card art as a

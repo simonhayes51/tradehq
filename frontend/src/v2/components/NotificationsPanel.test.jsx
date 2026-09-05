@@ -30,6 +30,17 @@ const ALERT = {
   severity: "medium",
 };
 
+const RULE = {
+  id: 12,
+  cardId: 218342893,
+  playerName: "Achraf Hakimi (96 Uefa Champions League Road To The Final)",
+  platform: "PS",
+  metric: "price",
+  risePct: 25,
+  fallPct: 10,
+  lastAlertAt: null,
+};
+
 function renderPanel(props = {}) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
   return render(
@@ -123,6 +134,13 @@ describe("NotificationsPanel", () => {
     alertsApi.getAlerts.mockResolvedValue({ items: [], unreadCount: 0, watchedCount: 0 });
     renderPanel();
     expect(await screen.findByText(/not watching any cards yet/)).toBeInTheDocument();
+  });
+
+  it("shows saved rules even when none has triggered", async () => {
+    alertsApi.getAlerts.mockResolvedValue({ items: [], unreadCount: 0, watchedCount: 1 });
+    renderPanel({ rules: [RULE] });
+    expect(await screen.findByText(RULE.playerName)).toBeInTheDocument();
+    expect(screen.getByText("Price: 25% up or 10% down")).toBeInTheDocument();
   });
 
   it("surfaces a load failure instead of rendering an empty feed", async () => {

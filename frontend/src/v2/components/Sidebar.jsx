@@ -54,7 +54,7 @@ export default function Sidebar() {
   const isLocked = (item) => Boolean(item.eliteFeature) && !features.includes(item.eliteFeature);
 
   return <aside className="fut-side v2-global-nav">
-    <Link className="fut-brand" to="/"><span className="brand-mark">EL</span><strong>EAFC<b>.Live</b></strong></Link>
+    <Link className="fut-brand" to="/" aria-label="EAFC.Live home"><img className="brand-logo" src="/icons/icon-192x192.png" alt="" /><strong>EAFC<b>.Live</b></strong></Link>
     <nav aria-label="Main">
       {items.map((item) => {
         const active = item.match(pathname);
