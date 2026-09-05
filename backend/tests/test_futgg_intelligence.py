@@ -888,7 +888,8 @@ class TestBinHistoryFallbackWiring:
         )
         assert ci.valuation_source == "bin_history"
         assert ci.evidence_quality == "estimated"
-        assert ci.signal == "buy"
+        assert ci.signal == "watch"
+        assert ci.current_executable_buy is None
         assert ci.bin_sample_count == 10
         assert ci.bin_history_span_hours is not None
         assert ci.bin_reference_price is not None
