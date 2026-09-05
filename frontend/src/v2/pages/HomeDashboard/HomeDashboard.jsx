@@ -30,7 +30,7 @@ import "../../styles/dashboard-v2.css";
 import "../../styles/dashboard-analysis-modal.css";
 import "../../styles/mobile-polish.css";
 
-const EMPTY={marketRegime:{label:"Unknown",confidence:0,summary:"",metrics:{}},todaysOpportunities:[],highConfidenceInvestments:[],cardsToAvoid:[],biggestMovers:[],watchlistAlerts:[],watchedCount:0,nextPromo:null,latestMarketEvents:[],latestSbcImpact:[],freePicks:null,locked:{opportunityFeed:false,previewCount:0}};
+const EMPTY={marketRegime:{label:"Unknown",confidence:0,summary:"",metrics:{}},todaysOpportunities:[],highConfidenceInvestments:[],cardsToAvoid:[],biggestMovers:[],watchlistAlerts:[],alertRules:[],watchedCount:0,nextPromo:null,latestMarketEvents:[],latestSbcImpact:[],freePicks:null,locked:{opportunityFeed:false,previewCount:0}};
 // Strategy Finder used to hit the legacy FUTBIN engine's
 // /api/v2/recommendations/strategy/{name} - that pipeline's fair_value_mv
 // is broken (see the comment above baseItems below), so every tab always
@@ -275,12 +275,19 @@ export default function HomeDashboard(){
   // final fallback of the literal string "Market update" / "New market
   // activity" - a row that told the reader nothing at all, and nothing to
   // click through to.
+  const firedAlertCards=new Set((dashboard.watchlistAlerts||[]).map(alert=>String(alert.cardId)));
   const feedRows=[
     ...(dashboard.watchlistAlerts||[]).slice(0,3).map(alert=>({
       key:`alert-${alert.id}`,
       title:alert.title,
       detail:[alert.movement,alert.age].filter(Boolean).join(" · "),
       href:alert.href||`/players/${alert.cardId}`,
+    })),
+    ...(dashboard.alertRules||[]).filter(rule=>!firedAlertCards.has(String(rule.cardId))).slice(0,3).map(rule=>({
+      key:`rule-${rule.id}`,
+      title:`${rule.playerName} alert is active`,
+      detail:`Watching for a ${rule.metric==="liquidity"?"sales activity":"price"} move of ${Number(rule.risePct).toFixed(0)}% up or ${Number(rule.fallPct).toFixed(0)}% down`,
+      href:"/watchlist",
     })),
     ...(dashboard.latestSbcImpact||[]).slice(0,3).filter(x=>x.title).map(x=>({
       key:`sbc-${x.eventId}`,
@@ -310,7 +317,7 @@ export default function HomeDashboard(){
           >
             <Bell size={18}/>{unreadAlerts?<span className="bell-badge">{unreadAlerts>9?"9+":unreadAlerts}</span>:null}
           </button>
-          <NotificationsPanel open={alertsOpen} onClose={()=>setAlertsOpen(false)} onUnreadCount={setPanelUnread}/>
+          <NotificationsPanel open={alertsOpen} onClose={()=>setAlertsOpen(false)} onUnreadCount={setPanelUnread} rules={dashboard.alertRules||[]}/>
         </div>
       </header>
       <Ticker items={futggItems} events={dashboard.latestMarketEvents}/>
