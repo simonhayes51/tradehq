@@ -790,17 +790,6 @@ async def list_opportunities(
     unlocked: List[int] = []
     if viewer.is_free:
         unlocked = await resolve_pick_ids(lambda: free_pick_candidates(provider))
-    # TEMPORARY DIAGNOSTIC (remove once the 2026-09-05 empty-feed incident
-    # is root-caused) - tells us, from the same server logs already being
-    # pasted back, whether this response is genuinely empty at the API or
-    # whether the frontend is failing to render a non-empty one.
-    log.info(
-        "opportunities diagnostic: viewer_tier=%s candidates=%d scored=%d "
-        "items=%d unlocked=%d valuation_sources=%s",
-        viewer.tier, len(rows), total, len(items), len(unlocked),
-        {src: sum(1 for _, ci in window if ci.valuation_source == src)
-         for src in ("completed_sales", "bin_history", None)},
-    )
     payload = serialise_opportunities(items, viewer, unlocked_ids=unlocked)
     payload.update({"page": page, "page_size": page_size, "total": total})
     if not viewer.has("opportunity_feed"):

@@ -720,17 +720,6 @@ async def get_dashboard(
     all_opportunities = [_futgg_to_recommendation(row, ci, sbc_demand) for row, ci in buy_scored[:8]]
     all_high_confidence = [d for d in all_opportunities if (d.get("confidence") or 0) >= 70]
 
-    # TEMPORARY DIAGNOSTIC (remove once the 2026-09-05 empty-feed incident
-    # is root-caused) - same reasoning as futgg_market.list_opportunities's
-    # own diagnostic line: tells us from the server logs whether Home's
-    # Top Card/queue is genuinely empty at the API or a frontend problem.
-    log.info(
-        "dashboard diagnostic: viewer_tier=%s candidates=%d buy_scored=%d "
-        "avoid_scored=%d all_opportunities=%d opportunities_unlocked=%s",
-        viewer.tier, len(candidate_rows), len(buy_scored), len(avoid_scored),
-        len(all_opportunities), opportunities_unlocked,
-    )
-
     free_picks_meta: Optional[Dict[str, Any]] = None
     if opportunities_unlocked:
         todays_opportunities = all_opportunities
