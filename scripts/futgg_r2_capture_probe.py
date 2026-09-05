@@ -383,14 +383,23 @@ async def probe_one_url(context, url: str, capture: R2Capture, *, settle_ms: int
                 print(f"  failed to load {url} even after recreating the page: {exc2!r} - skipping", file=sys.stderr)
                 return
 
-        await page.wait_for_timeout(settle_ms)
+        # Everything from here on (the post-load settle wait AND the
+        # tab-click attempt) is one crash-guarded block, not two - a
+        # crash during the plain settle wait (confirmed in production:
+        # a real fut.gg player page loaded a 16 MB all-evolutions blob
+        # and the renderer died on the wait_for_timeout() right after)
+        # must not escape uncaught and abort every remaining --url the
+        # caller passed. Captures already made for THIS page are kept
+        # either way (they were already recorded when their responses
+        # arrived, independent of what happens to the page afterward).
         try:
+            await page.wait_for_timeout(settle_ms)
             await _try_click_tabs(page, settle_ms=settle_ms)
         except Exception as exc:
             if is_crashed_page_error(exc):
-                print(f"  page crashed while clicking tabs on {url} - captures already made are kept", file=sys.stderr)
+                print(f"  page crashed after loading {url} (captures already made are kept) - moving on", file=sys.stderr)
             else:
-                print(f"  tab-click step failed on {url}: {exc!r} (non-fatal)", file=sys.stderr)
+                print(f"  settle/tab-click step failed on {url}: {exc!r} (non-fatal)", file=sys.stderr)
 
         if pending:
             try:
@@ -399,6 +408,8 @@ async def probe_one_url(context, url: str, capture: R2Capture, *, settle_ms: int
                 )
             except asyncio.TimeoutError:
                 print(f"  timed out waiting for some captured response bodies on {url}", file=sys.stderr)
+            except Exception as exc:
+                print(f"  error while draining captured response bodies on {url}: {exc!r}", file=sys.stderr)
     finally:
         await _detach_and_close(page, on_response)
 
@@ -485,7 +496,17 @@ async def _run(args: argparse.Namespace) -> int:
             context = await browser.new_context(user_agent=price_access.DEFAULT_USER_AGENT, locale="en-GB")
             for url in args.urls:
                 print(f"\n--- probing {url} ---")
-                await probe_one_url(context, url, capture, settle_ms=args.settle_ms)
+                try:
+                    await probe_one_url(context, url, capture, settle_ms=args.settle_ms)
+                except Exception as exc:
+                    # Belt-and-suspenders beyond probe_one_url's own
+                    # crash handling: if something at the CONTEXT level
+                    # (not just one page) fails - a real risk in a
+                    # resource-constrained container, per production
+                    # evidence elsewhere in this codebase - one bad URL
+                    # must not lose every remaining --url's chance to
+                    # be probed and reported in the final summary.
+                    print(f"  unexpected failure probing {url}: {exc!r} - moving on to the next URL", file=sys.stderr)
         finally:
             await browser.close()
 
