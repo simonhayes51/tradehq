@@ -981,3 +981,28 @@ class TestBinHistoryFallbackWiring:
         )
         assert ci.signal == "insufficient_data"
         assert rc.BIN_INSUFFICIENT_PROFIT in ci.reason_codes
+
+    def test_a_crash_inside_the_bin_fallback_never_propagates(self, monkeypatch):
+        """Regression test for a live incident (2026-09-05): an unhandled
+        exception in the BIN-fallback path - which runs for every card
+        with insufficient/stale sales, an everyday case, not a rare one -
+        propagated out of evaluate_card() and, with no per-card isolation
+        in the router's scoring loop, emptied the entire Opportunities/
+        dashboard feed for every user. evaluate_card()'s own documented
+        contract is "never raises on missing/None fields"; this proves the
+        fallback attempt itself can never violate that, regardless of
+        what breaks inside it."""
+        import app.services.futgg_intelligence as intelligence_module
+
+        def _boom(*args, **kwargs):
+            raise RuntimeError("simulated unanticipated production data shape")
+
+        monkeypatch.setattr(intelligence_module, "evaluate_bin_fallback", _boom)
+        ci = evaluate_card(
+            _snapshot(sales_count=0, sales_median=None, sales_trimmed_mean=None,
+                      current_bin=7000, bin_captured_at=AS_OF - timedelta(minutes=1)),
+            as_of=AS_OF,
+            bin_observations=_bin_observations(price=10000),
+        )
+        assert ci.signal == "insufficient_data"
+        assert ci.valuation_source is None

@@ -66,6 +66,7 @@ market_data_provider.py; the router layer wires the two together.
 """
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -74,6 +75,8 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from app.services import trading_math as tm
 from app.services import futgg_reasons as rc
+
+log = logging.getLogger("futgg_intelligence")
 from app.services.futgg_bin_valuation import (
     BIN_FALLBACK_CONFIG, BinFallbackConfig, evaluate_bin_fallback,
 )
@@ -789,22 +792,43 @@ def evaluate_card(
             and blocking.issubset(_SALES_EVIDENCE_MISSING_CODES)
         )
         if can_attempt_bin_fallback:
-            bin_result = evaluate_bin_fallback(
-                card_id, bin_observations,
-                current_bin=current_bin, price_age_minutes=price_age_minutes,
-                max_acceptable_price_age_minutes=max_age,
-                as_of=as_of, config=bin_cfg,
-            )
-            if bin_result.qualifies:
-                return _bin_fallback_card_intelligence(
-                    card_id, bin_result, as_of=as_of, current_bin=current_bin,
-                    trend=trend, engine_config=cfg, bin_config=bin_cfg,
+            # evaluate_card() has always documented "never raises on
+            # missing/None fields - every optional input degrades to a
+            # documented insufficient-data outcome" (see this function's
+            # own docstring), and this whole call site runs for every card
+            # with insufficient/stale sales - an everyday case, not a rare
+            # one - so a single unanticipated real-data shape here must
+            # degrade to the pre-fallback behaviour, never propagate and
+            # take the entire request down with it. This is exactly the
+            # failure mode a live incident (2026-09-05) traced to: an
+            # unhandled exception in one card's evaluation, inside a loop
+            # with no per-card isolation (app/routers/v2/futgg_market.py's
+            # _score_and_filter, unlike futgg_scanner.py's own try/except
+            # per card), turned into a 500 that emptied the whole feed.
+            try:
+                bin_result = evaluate_bin_fallback(
+                    card_id, bin_observations,
+                    current_bin=current_bin, price_age_minutes=price_age_minutes,
+                    max_acceptable_price_age_minutes=max_age,
+                    as_of=as_of, config=bin_cfg,
                 )
-            # Fallback attempted and also failed: fold its specific
-            # rejection reason(s) into the result so the scanner's existing
-            # blocking_reason_counts metric can distinguish "no sales AND no
-            # usable BIN history either" from a plain sales-only rejection.
-            reasons.extend(bin_result.reasons)
+                if bin_result.qualifies:
+                    return _bin_fallback_card_intelligence(
+                        card_id, bin_result, as_of=as_of, current_bin=current_bin,
+                        trend=trend, engine_config=cfg, bin_config=bin_cfg,
+                    )
+                # Fallback attempted and also failed: fold its specific
+                # rejection reason(s) into the result so the scanner's
+                # existing blocking_reason_counts metric can distinguish
+                # "no sales AND no usable BIN history either" from a plain
+                # sales-only rejection.
+                reasons.extend(bin_result.reasons)
+            except Exception:
+                log.warning(
+                    "BIN-history fallback failed for card_id=%s; degrading "
+                    "to the pre-fallback insufficient_data result", card_id,
+                    exc_info=True,
+                )
         return _insufficient(
             card_id, reasons, as_of=as_of, confidence=confidence,
             liquidity=liquidity, risk_level=risk_level,

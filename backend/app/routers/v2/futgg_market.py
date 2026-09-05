@@ -500,10 +500,19 @@ def _score_and_filter(
     bin_by_card = bin_by_card or {}
     for row in rows:
         card_id = int(row["source_card_id"])
-        ci = evaluate_card(
-            row, sales=sales_by_card.get(card_id, []),
-            bin_observations=bin_by_card.get(card_id),
-        )
+        try:
+            ci = evaluate_card(
+                row, sales=sales_by_card.get(card_id, []),
+                bin_observations=bin_by_card.get(card_id),
+            )
+        except Exception:
+            # One malformed/unanticipated row must never take the whole
+            # list down for every user - futgg_scanner.run_scan() already
+            # isolates per-card failures the same way; this endpoint-level
+            # loop had no equivalent isolation, which is exactly how one
+            # bad row emptied the entire feed on 2026-09-05.
+            log.warning("evaluate_card failed for card_id=%s", card_id, exc_info=True)
+            continue
         if signals is not None and ci.signal not in signals:
             continue
         if risk is not None and ci.risk_level != risk:
