@@ -621,6 +621,29 @@ class TestBinHistoryFallbackAPI:
         assert body["bin_volatility"] is not None
         assert body["evidence_age_minutes"] is not None
 
+    def test_bin_history_estimate_is_never_an_opportunity(self):
+        row = self._bin_row()
+        provider = FakeProvider(
+            [row], bin_observations_by_card={77: _bin_observations(price=10000)},
+        )
+        client = TestClient(_app_with(provider))
+        player = client.get("/api/v2/players/77").json()
+        assert player["signal"] == "watch"
+        assert player["current_executable_buy"] is None
+        assert client.get("/api/v2/opportunities").json()["items"] == []
+
+    def test_opportunities_require_recent_completed_sales(self):
+        stale_sales_row = _row(
+            source_card_id=79,
+            latest_sale_at=AS_OF - timedelta(hours=25),
+            sales_window_latest_at=AS_OF - timedelta(hours=25),
+            sales_window_earliest_at=AS_OF - timedelta(hours=31),
+        )
+        client = TestClient(_app_with(FakeProvider([stale_sales_row])))
+        resp = client.get("/api/v2/opportunities")
+        assert resp.status_code == 200
+        assert resp.json()["items"] == []
+
     def test_confirmed_sales_result_reports_no_bin_fields(self):
         # The default fixture row (_row()) has a full, fresh sales series -
         # a sales-confirmed result must never carry BIN evidence fields,
