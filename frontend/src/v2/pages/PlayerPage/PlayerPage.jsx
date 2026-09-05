@@ -169,6 +169,15 @@ function toFutggAnalysisItem(raw, cardId) {
     reasoning: reasons[0] || "Market signal",
     updatedAt: raw.current_bin_captured_at,
     priceAgeSeconds: raw.price_age_seconds,
+    // Evidence provenance (app/services/futgg_bin_valuation.py) - a
+    // BIN-derived estimate must always be visibly distinct from a
+    // confirmed sale, never inferred client-side. AnalysisModal reads
+    // evidenceQuality directly to decide whether to show the "BIN
+    // history estimate" badge.
+    valuationSource: raw.valuation_source,
+    evidenceQuality: raw.evidence_quality,
+    binSampleCount: raw.bin_sample_count,
+    binHistorySpanHours: raw.bin_history_span_hours,
     player: {
       name: raw.name,
       displayName: raw.name,

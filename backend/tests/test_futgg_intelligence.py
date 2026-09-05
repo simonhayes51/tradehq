@@ -11,12 +11,25 @@ import pytest
 from app.services import trading_math as tm
 from app.services import futgg_reasons as reasons_pkg
 from app.services import futgg_reasons as rc
+from app.services.futgg_bin_valuation import BIN_FALLBACK_CONFIG
 from app.services.futgg_config import ENGINE_CONFIG
 from app.services.futgg_intelligence import (
     DEFAULT_MAX_ACCEPTABLE_PRICE_AGE_MINUTES,
     MIN_SALES_FOR_SIGNAL,
     evaluate_card,
 )
+
+
+def _bin_observations(*, buckets=10, hours_apart=3, price=10000, as_of=None, price_fn=None):
+    """A clean, qualifying BIN-history series - see
+    test_futgg_bin_valuation.py's own helper of the same shape."""
+    as_of = as_of or AS_OF
+    out = []
+    for i in range(buckets):
+        at = as_of - timedelta(hours=(buckets - i) * hours_apart)
+        p = price_fn(i) if price_fn else price
+        out.append((p, at))
+    return out
 
 AS_OF = datetime(2026, 1, 10, 12, 0, tzinfo=timezone.utc)
 
@@ -833,3 +846,138 @@ class TestSellTargetIsSalesDerived:
         expected = Decimal("11000") * (Decimal("1") - Decimal(str(ENGINE_CONFIG.sell_target_margin)))
         assert ci.recommended_sell_target <= expected
         assert ci.recommended_sell_target > expected * Decimal("0.98")
+
+
+class TestBinHistoryFallbackWiring:
+    """evaluate_card()'s integration with app/services/futgg_bin_valuation.py
+    - the fallback is attempted ONLY when completed-sales evidence is
+    missing or stale, never when it merely looks unreliable (dispersion/
+    divergence), and every field it stamps is checked here so a caller can
+    always tell a confirmed sale from an estimated BIN-history valuation.
+    """
+
+    def test_fresh_completed_sales_take_precedence_over_bin_observations(self):
+        # A normal, healthy snapshot - plenty of BIN observations are
+        # available too, but must never be consulted while real sales
+        # evidence is fresh and sufficient.
+        ci = evaluate_card(
+            _snapshot(), as_of=AS_OF, bin_observations=_bin_observations(),
+        )
+        assert ci.valuation_source == "completed_sales"
+        assert ci.evidence_quality == "confirmed"
+        assert ci.bin_sample_count is None
+        assert ci.bin_reference_price is None
+
+    def test_no_bin_observations_passed_behaves_exactly_as_before(self):
+        """Omitting bin_observations entirely (every caller that has not
+        been updated yet) must degrade to the pre-fallback behaviour
+        byte-for-byte - insufficient_data, no BIN fields populated, no
+        BIN reason codes anywhere."""
+        ci = evaluate_card(_snapshot(sales_count=0), as_of=AS_OF)
+        assert ci.signal == "insufficient_data"
+        assert ci.valuation_source is None
+        assert ci.evidence_quality is None
+        assert not any(code.startswith("bin_") for code in ci.reason_codes)
+
+    def test_absent_sales_can_use_qualifying_bin_history(self):
+        ci = evaluate_card(
+            _snapshot(sales_count=0, sales_median=None, sales_trimmed_mean=None,
+                      current_bin=7000, bin_captured_at=AS_OF - timedelta(minutes=10)),
+            as_of=AS_OF,
+            bin_observations=_bin_observations(price=10000),
+        )
+        assert ci.valuation_source == "bin_history"
+        assert ci.evidence_quality == "estimated"
+        assert ci.signal == "buy"
+        assert ci.bin_sample_count == 10
+        assert ci.bin_history_span_hours is not None
+        assert ci.bin_reference_price is not None
+
+    def test_stale_sales_can_use_qualifying_bin_history(self):
+        stale_sale_at = AS_OF - timedelta(minutes=ENGINE_CONFIG.reject_sales_older_than_minutes + 60)
+        ci = evaluate_card(
+            _snapshot(
+                current_bin=7000, bin_captured_at=AS_OF - timedelta(minutes=10),
+                latest_sale_at=stale_sale_at,
+            ),
+            as_of=AS_OF,
+            bin_observations=_bin_observations(price=10000),
+        )
+        assert ci.valuation_source == "bin_history"
+        assert ci.evidence_quality == "estimated"
+
+    def test_sparse_bin_history_is_rejected_and_stays_insufficient_data(self):
+        ci = evaluate_card(
+            _snapshot(sales_count=0, current_bin=7000,
+                      bin_captured_at=AS_OF - timedelta(minutes=10)),
+            as_of=AS_OF,
+            bin_observations=_bin_observations(buckets=2, hours_apart=3),
+        )
+        assert ci.signal == "insufficient_data"
+        assert ci.valuation_source is None
+        assert rc.BIN_INSUFFICIENT_BUCKETS in ci.reason_codes
+
+    def test_excessive_dispersion_never_triggers_bin_fallback(self):
+        """Sales exist and are fresh but too scattered to trust - this is
+        NOT the "unavailable or stale" case the fallback covers, so it
+        must keep blocking outright even with perfectly good BIN history
+        sitting right there."""
+        ci = evaluate_card(
+            _snapshot(sales_dispersion_ratio=0.9, current_bin=7000,
+                      bin_captured_at=AS_OF - timedelta(minutes=10)),
+            as_of=AS_OF,
+            bin_observations=_bin_observations(price=10000),
+        )
+        assert ci.signal == "insufficient_data"
+        assert ci.valuation_source is None
+        assert not any(code.startswith("bin_") for code in ci.reason_codes)
+
+    def test_bin_derived_confidence_is_capped_below_the_configured_ceiling(self):
+        ci = evaluate_card(
+            _snapshot(sales_count=0, current_bin=7000,
+                      bin_captured_at=AS_OF - timedelta(minutes=1)),
+            as_of=AS_OF,
+            # A maximally clean series - long span, many buckets, dead
+            # flat - to try to push confidence as high as possible.
+            bin_observations=_bin_observations(buckets=40, hours_apart=6, price=10000),
+        )
+        assert ci.valuation_source == "bin_history"
+        assert ci.confidence_score <= BIN_FALLBACK_CONFIG.confidence_cap
+
+    def test_bin_derived_signal_is_never_strong_buy(self):
+        ci = evaluate_card(
+            _snapshot(sales_count=0, sales_median=None, sales_trimmed_mean=None,
+                      current_bin=5000, bin_captured_at=AS_OF - timedelta(minutes=1)),
+            as_of=AS_OF,
+            # A huge apparent discount - if anything could push the
+            # sales-path logic to strong_buy, an edge this large would.
+            bin_observations=_bin_observations(buckets=40, hours_apart=6, price=20000),
+        )
+        assert ci.valuation_source == "bin_history"
+        assert ci.signal in ("buy", "insufficient_data")
+        assert ci.signal != "strong_buy"
+
+    def test_bin_derived_risk_is_never_low(self):
+        ci = evaluate_card(
+            _snapshot(sales_count=0, current_bin=7000,
+                      bin_captured_at=AS_OF - timedelta(minutes=1)),
+            as_of=AS_OF,
+            bin_observations=_bin_observations(buckets=40, hours_apart=6, price=10000),
+        )
+        assert ci.valuation_source == "bin_history"
+        assert ci.risk_level != "low"
+
+    def test_bin_derived_profit_floor_is_the_stricter_500_coins(self):
+        """A cheap card clearing the 8% ROI floor but under the 500-coin
+        absolute profit floor must still be rejected - see
+        test_futgg_bin_valuation.py's own dedicated coverage of the
+        formula; this just confirms evaluate_card() actually surfaces
+        that rejection rather than falling through to some other path."""
+        ci = evaluate_card(
+            _snapshot(sales_count=0, sales_median=None, sales_trimmed_mean=None,
+                      current_bin=700, bin_captured_at=AS_OF - timedelta(minutes=1)),
+            as_of=AS_OF,
+            bin_observations=_bin_observations(price=1000),
+        )
+        assert ci.signal == "insufficient_data"
+        assert rc.BIN_INSUFFICIENT_PROFIT in ci.reason_codes

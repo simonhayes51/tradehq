@@ -67,6 +67,19 @@ class ScanMetrics:
     # and answering it took a forensic pass over raw logs; these counts
     # answer it in one line.
     blocking_reason_counts: Dict[str, int] = field(default_factory=dict)
+    # How the BIN-history fallback (app/services/futgg_bin_valuation.py)
+    # resolved for every card evaluated - the six BIN_* rejection reasons
+    # (insufficient buckets/span, stale current BIN, excessive volatility,
+    # insufficient ROI/profit) already land in blocking_reason_counts above
+    # via the same ci.blocking_codes mechanism every other gate uses; this
+    # dict adds the one bucket that mechanism cannot express, because a
+    # successful sales-confirmed result is not "blocked" by anything -
+    # "completed_sales" (existing completed-sales evidence took precedence,
+    # the fallback was never even attempted) vs "bin_history" (the
+    # fallback qualified and was actually used). Together the two dicts
+    # answer every one of the seven rejection/precedence buckets this
+    # metric was added to make visible.
+    valuation_path_counts: Dict[str, int] = field(default_factory=dict)
     # Age of the materialized view the whole pass reads from. The
     # refresher (market_data_provider.refresher_loop) is watermark-gated
     # and silent when it declines to refresh, so a stalled snapshot
@@ -83,6 +96,7 @@ class ScanMetrics:
             "pool_coverage_pct": self.pool_coverage_pct,
             "recommendations_written": self.recommendations_written,
             "blocking_reason_counts": dict(self.blocking_reason_counts),
+            "valuation_path_counts": dict(self.valuation_path_counts),
             "snapshot_age_minutes": self.snapshot_age_minutes,
             "segments": [s.as_dict() for s in self.segments],
         }
@@ -117,21 +131,28 @@ async def run_scan(provider, pool, *, persist: bool = True) -> ScanMetrics:
 
     card_ids = list(unique_rows)
     sales_by_card = await provider.get_sales_by_ids(card_ids)
+    bin_by_card = await provider.get_bin_observations_by_ids(card_ids)
 
     as_of = datetime.now(timezone.utc)
     to_persist: List[Tuple[Dict[str, Any], Any]] = []
     blocked_by: Counter = Counter()
+    valuation_path: Counter = Counter()
 
     for card_id, row in unique_rows.items():
         segment_name = seen[card_id]
         sm = segment_metrics[segment_name]
         try:
-            ci = evaluate_card(row, as_of=as_of, sales=sales_by_card.get(card_id, []))
+            ci = evaluate_card(
+                row, as_of=as_of, sales=sales_by_card.get(card_id, []),
+                bin_observations=bin_by_card.get(card_id),
+            )
         except Exception:
             # One malformed row must never abort a whole pass.
             log.warning("evaluate_card failed for card_id=%s", card_id, exc_info=True)
             continue
         sm.evaluated += 1
+        if ci.valuation_source:
+            valuation_path[ci.valuation_source] += 1
         if ci.signal in ("buy", "strong_buy"):
             sm.buy_signals += 1
             sm.recommendations += 1
@@ -156,6 +177,7 @@ async def run_scan(provider, pool, *, persist: bool = True) -> ScanMetrics:
     metrics.unique_cards_evaluated = len(unique_rows)
     metrics.segments = list(segment_metrics.values())
     metrics.blocking_reason_counts = dict(blocked_by.most_common())
+    metrics.valuation_path_counts = dict(valuation_path.most_common())
 
     try:
         async with pool.acquire() as conn:

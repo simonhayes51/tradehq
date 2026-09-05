@@ -51,10 +51,30 @@ def _row(**overrides) -> Dict[str, Any]:
     return defaults
 
 
+def _bin_observations(*, buckets=10, hours_apart=3, price=10000, as_of=None, price_fn=None):
+    """A clean, qualifying BIN-history series - same shape as
+    test_futgg_bin_valuation.py's own helper."""
+    as_of = as_of or AS_OF
+    out = []
+    for i in range(buckets):
+        at = as_of - timedelta(hours=(buckets - i) * hours_apart)
+        p = price_fn(i) if price_fn else price
+        out.append((p, at))
+    return out
+
+
 class FakeProvider:
-    def __init__(self, rows: Optional[List[Dict[str, Any]]] = None, heartbeats: Optional[List[Dict[str, Any]]] = None):
+    def __init__(
+        self, rows: Optional[List[Dict[str, Any]]] = None,
+        heartbeats: Optional[List[Dict[str, Any]]] = None,
+        bin_observations_by_card: Optional[Dict[int, List[Any]]] = None,
+    ):
         self.rows = rows if rows is not None else [_row()]
         self.heartbeats = heartbeats
+        # Empty by default - every existing test in this file relies on
+        # the BIN-history fallback never being attempted (the sales-only
+        # behaviour predating it), so this stays opt-in per test.
+        self.bin_observations_by_card = bin_observations_by_card or {}
         # Records the order_by every search_players() call was actually
         # made with, so tests can assert on candidate-scan ordering
         # without needing a real Postgres EXPLAIN.
@@ -86,6 +106,15 @@ class FakeProvider:
                 "source_age_text": "3 minutes ago", "source_age_seconds": 180,
             }
         ]
+
+    async def get_sales_by_ids(self, card_ids: List[int]) -> Dict[int, List[Dict[str, Any]]]:
+        return {}
+
+    async def get_bin_observations_by_ids(self, card_ids: List[int]) -> Dict[int, List[Any]]:
+        return {
+            cid: obs for cid, obs in self.bin_observations_by_card.items()
+            if cid in card_ids
+        }
 
     async def get_sales_coverage(self, card_id: int):
         # This card was checked recently, so an empty window here would
@@ -502,6 +531,96 @@ class TestStrategyFinderParams:
         client = TestClient(app)
         resp = client.get("/api/v2/trade-finder?require_executable=true")
         assert resp.status_code == 200
+        assert resp.json()["items"] == []
+
+
+def _app_with(provider: "FakeProvider", viewer: Viewer = ELITE_VIEWER) -> FastAPI:
+    app = FastAPI()
+    app.include_router(futgg_router, prefix="/api/v2")
+    app.dependency_overrides[get_provider] = lambda: provider
+    app.dependency_overrides[get_viewer] = lambda: viewer
+    return app
+
+
+class TestBinHistoryFallbackAPI:
+    """API-surface coverage for app/services/futgg_bin_valuation.py -
+    evidence fields serialize with the exact names the requirement asked
+    for, and the existing meaningful-profit floor still applies to a
+    BIN-derived result exactly as it does to a sales-confirmed one (see
+    futgg_intelligence.evaluate_card's own confirmation of this stacking
+    before implementation)."""
+
+    def _bin_row(self, **overrides) -> Dict[str, Any]:
+        # No fresh completed sales at all - forces the fallback to be the
+        # only possible source of a valuation.
+        defaults = dict(
+            source_card_id=77, current_bin=7000,
+            bin_captured_at=AS_OF - timedelta(minutes=1),
+            sales_count=0, sales_median=None, sales_trimmed_mean=None,
+            sales_low=None, sales_high=None, sales_stddev=None,
+            latest_sale_price=None, latest_sale_at=None,
+            sales_window_earliest_at=None, sales_window_latest_at=None,
+            sales_window_span_minutes=None, sales_dispersion_ratio=None,
+        )
+        defaults.update(overrides)
+        return _row(**defaults)
+
+    def test_evidence_fields_serialize_with_the_expected_names(self):
+        row = self._bin_row()
+        provider = FakeProvider(
+            [row], bin_observations_by_card={77: _bin_observations(price=10000)},
+        )
+        app = FastAPI()
+        app.include_router(futgg_router, prefix="/api/v2")
+        app.dependency_overrides[get_provider] = lambda: provider
+        app.dependency_overrides[get_viewer] = lambda: ELITE_VIEWER
+        client = TestClient(app)
+        resp = client.get("/api/v2/players/77")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["valuation_source"] == "bin_history"
+        assert body["evidence_quality"] == "estimated"
+        assert body["bin_sample_count"] == 10
+        assert body["bin_history_span_hours"] is not None
+        assert body["bin_reference_price"] is not None
+        assert body["bin_trend_direction"] == "flat"
+        assert body["bin_volatility"] is not None
+        assert body["evidence_age_minutes"] is not None
+
+    def test_confirmed_sales_result_reports_no_bin_fields(self):
+        # The default fixture row (_row()) has a full, fresh sales series -
+        # a sales-confirmed result must never carry BIN evidence fields,
+        # even when they were never asked for.
+        resp = TestClient(_app_with(FakeProvider([_row()]))).get("/api/v2/players/1")
+        body = resp.json()
+        assert body["valuation_source"] == "completed_sales"
+        assert body["evidence_quality"] == "confirmed"
+        assert body["bin_sample_count"] is None
+        assert body["bin_reference_price"] is None
+
+    def test_meaningful_profit_floor_still_applies_to_a_bin_derived_result(self):
+        # A cheap card: BIN fallback clears its own 8%/500-coin floors
+        # (500 coins on a 1,000-coin card is a real ROI), but the EXISTING
+        # meaningful_profit floor (max(300, price*1.5%) = 300 here) must
+        # still gate it exactly as it would a sales-confirmed result -
+        # confirming the two floors stack rather than one replacing the
+        # other (see the confirmation given before this was implemented).
+        row = self._bin_row(source_card_id=78, current_bin=700)
+        provider = FakeProvider(
+            [row], bin_observations_by_card={78: _bin_observations(price=1000)},
+        )
+        app = FastAPI()
+        app.include_router(futgg_router, prefix="/api/v2")
+        app.dependency_overrides[get_provider] = lambda: provider
+        app.dependency_overrides[get_viewer] = lambda: ELITE_VIEWER
+        app.dependency_overrides[require_trade_finder] = lambda: {"tier": "elite"}
+        client = TestClient(app)
+        resp = client.get("/api/v2/trade-finder?sort_by=budget&meaningful_profit=true")
+        assert resp.status_code == 200
+        # Rejected by the BIN engine's own stricter 500-coin floor before
+        # meaningful_profit even runs (700 vs 1000 clears 8% ROI at ~155
+        # coins profit, under both the 500-coin BIN floor and the
+        # meaningful_profit floor) - either way, never surfaced.
         assert resp.json()["items"] == []
 
 

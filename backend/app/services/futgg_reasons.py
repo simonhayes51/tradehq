@@ -60,6 +60,20 @@ SALES_BIN_DIVERGENCE = "sales_bin_divergence"
 # EngineConfig.sbc_reward_guard_enabled.
 SBC_REWARD_ACTIVE = "sbc_reward_active"
 
+# ---- BIN-history fallback (app/services/futgg_bin_valuation.py) -------------
+# Only ever attempted when completed-sales evidence is unavailable or stale
+# (INSUFFICIENT_SALES / STALE_SALES above); every rejection here is a
+# distinct, stable code so futgg_scanner.py's existing blocking_reason_counts
+# metric can answer "how many cards are rejected for X" with no extra
+# plumbing - see that module's own docstring.
+BIN_INSUFFICIENT_BUCKETS = "bin_insufficient_buckets"
+BIN_INSUFFICIENT_SPAN = "bin_insufficient_span"
+BIN_STALE_CURRENT_PRICE = "bin_stale_current_price"
+BIN_EXCESSIVE_VOLATILITY = "bin_excessive_volatility"
+BIN_INSUFFICIENT_ROI = "bin_insufficient_roi"
+BIN_INSUFFICIENT_PROFIT = "bin_insufficient_profit"
+BIN_NO_LIVE_PRICE = "bin_no_live_price"
+
 # ---- Downgrading codes (signal allowed but capped) --------------------------
 EXCESSIVE_DISPERSION = "excessive_dispersion"
 LOW_LIQUIDITY = "low_liquidity"
@@ -79,6 +93,10 @@ INFO_ROI_CLEARS_BUY = "roi_clears_buy"
 INFO_ROI_CLEARS_STRONG_BUY = "roi_clears_strong_buy"
 INFO_WATCH_THRESHOLD = "watch_threshold"
 INFO_NO_EDGE = "no_edge"
+# Not a rejection - fires when the BIN fallback was actually used (as
+# opposed to blocked). Never a blocking code: a qualifying BIN-derived
+# valuation is a real, if lower-confidence, result.
+INFO_BIN_FALLBACK_USED = "bin_fallback_used"
 
 BLOCKING_CODES = frozenset({
     INSUFFICIENT_SALES, STALE_MARKET, STALE_SALES, NO_LIVE_PRICE, UNTRADEABLE,
@@ -86,6 +104,9 @@ BLOCKING_CODES = frozenset({
     TARGET_BELOW_BREAK_EVEN, NO_REALISTIC_EXIT_EVIDENCE,
     PRICE_ABOVE_MAX_BUY, EVENT_RISK, STALE_RECOMMENDATION,
     SALES_BIN_DIVERGENCE, SBC_REWARD_ACTIVE,
+    BIN_INSUFFICIENT_BUCKETS, BIN_INSUFFICIENT_SPAN, BIN_STALE_CURRENT_PRICE,
+    BIN_EXCESSIVE_VOLATILITY, BIN_INSUFFICIENT_ROI, BIN_INSUFFICIENT_PROFIT,
+    BIN_NO_LIVE_PRICE,
 })
 
 DOWNGRADE_CODES = frozenset({
@@ -198,6 +219,14 @@ CODE_LABELS: Dict[str, str] = {
     INFO_ROI_CLEARS_STRONG_BUY: "Clears strong-buy threshold",
     INFO_WATCH_THRESHOLD: "Watch threshold",
     INFO_NO_EDGE: "No edge",
+    BIN_INSUFFICIENT_BUCKETS: "Not enough BIN history",
+    BIN_INSUFFICIENT_SPAN: "BIN history too short a period",
+    BIN_STALE_CURRENT_PRICE: "Current price too old for BIN estimate",
+    BIN_EXCESSIVE_VOLATILITY: "Asking price too volatile",
+    BIN_INSUFFICIENT_ROI: "BIN-derived margin too small",
+    BIN_INSUFFICIENT_PROFIT: "BIN-derived profit too small",
+    BIN_NO_LIVE_PRICE: "No live price for BIN estimate",
+    INFO_BIN_FALLBACK_USED: "Valued from BIN history, not confirmed sales",
 }
 
 
