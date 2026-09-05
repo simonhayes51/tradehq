@@ -33,10 +33,11 @@ import time
 import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import asyncpg
 
+from app.services.bin_market_signal import load_bin_observations
 from app.services.priority_config import PRIORITY_ENGINE_CONFIG
 from app.services.priority_config import TIERS as PRIORITY_TIERS
 
@@ -743,6 +744,22 @@ class FutggMarketDataProvider(MarketDataProvider):
                 }
             )
         return out
+
+    async def get_bin_observations_by_ids(
+        self, card_ids: List[int],
+    ) -> Dict[int, List[Tuple[int, datetime]]]:
+        """Batch raw BIN history, keyed by card id - for
+        app/services/futgg_bin_valuation.py's fallback path, which is only
+        ever attempted when completed-sales evidence is missing/stale (see
+        futgg_intelligence.evaluate_card's own gating).
+
+        A thin wrapper, not a new query: bin_market_signal.py already has
+        exactly this batch loader (used there to decide whether a card's
+        asking price is worth an expensive sales request), same 7-day/
+        2500-row-capped LATERAL shape get_sales_by_ids uses above and for
+        the same reason - reused rather than duplicated.
+        """
+        return await load_bin_observations(self._pool, card_ids)
 
     async def select_candidates_by_segment(self) -> Dict[str, List[Dict[str, Any]]]:
         """Run the segmented candidate scan.

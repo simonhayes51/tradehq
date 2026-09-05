@@ -262,6 +262,20 @@ def _serialize_intelligence(ci: CardIntelligence) -> Dict[str, Any]:
         "expiry_minutes": ci.expiry_minutes,
         "evaluated_at": ci.evaluated_at.isoformat() if ci.evaluated_at else None,
         "evaluated_bin": ci.evaluated_bin,
+        # ---- Evidence provenance (app/services/futgg_bin_valuation.py) --
+        # valuation_source/evidence_quality are the two fields a caller
+        # must check before treating any of the above as a confirmed sale -
+        # see that module's docstring. Both None when no valuation was
+        # produced at all (untradeable, no live price, insufficient_data
+        # with no qualifying BIN fallback either).
+        "valuation_source": ci.valuation_source,
+        "evidence_quality": ci.evidence_quality,
+        "bin_sample_count": ci.bin_sample_count,
+        "bin_history_span_hours": ci.bin_history_span_hours,
+        "bin_reference_price": _int_or_none(ci.bin_reference_price),
+        "bin_trend_direction": ci.bin_trend_direction,
+        "bin_volatility": ci.bin_volatility,
+        "evidence_age_minutes": ci.evidence_age_minutes,
     }
 
 
@@ -433,6 +447,7 @@ async def list_players(
     scored = _score_and_filter(
         rows, risk=risk, min_expected_profit=min_expected_profit,
         min_roi=min_roi, min_confidence=min_confidence, min_liquidity=min_liquidity,
+        bin_by_card=await _bin_observations_for_rows(provider, rows),
     )
     total = len(scored)
     window = scored[(page - 1) * page_size: page * page_size]
@@ -460,17 +475,35 @@ async def _sales_for_rows(provider, rows: List[Dict[str, Any]]) -> Dict[int, Lis
         return {}
 
 
+async def _bin_observations_for_rows(provider, rows: List[Dict[str, Any]]) -> Dict[int, List[Any]]:
+    """Batch-fetch raw BIN history backing the BIN-history fallback
+    (app/services/futgg_bin_valuation.py). Mirrors _sales_for_rows above -
+    same best-effort contract: a failed batch fetch degrades to "no BIN
+    fallback available this pass", never to a broken request."""
+    try:
+        return await provider.get_bin_observations_by_ids([int(r["source_card_id"]) for r in rows])
+    except Exception:
+        log.warning("batch bin observation fetch failed; evaluating without BIN fallback", exc_info=True)
+        return {}
+
+
 def _score_and_filter(
     rows: List[Dict[str, Any]], *, risk: Optional[str] = None,
     min_expected_profit: Optional[float] = None, min_roi: Optional[float] = None,
     min_confidence: Optional[float] = None, min_liquidity: Optional[float] = None,
     signals: Optional[set] = None,
     sales_by_card: Optional[Dict[int, List[Dict[str, Any]]]] = None,
+    bin_by_card: Optional[Dict[int, List[Any]]] = None,
 ) -> List[Any]:
     out = []
     sales_by_card = sales_by_card or {}
+    bin_by_card = bin_by_card or {}
     for row in rows:
-        ci = evaluate_card(row, sales=sales_by_card.get(int(row["source_card_id"]), []))
+        card_id = int(row["source_card_id"])
+        ci = evaluate_card(
+            row, sales=sales_by_card.get(card_id, []),
+            bin_observations=bin_by_card.get(card_id),
+        )
         if signals is not None and ci.signal not in signals:
             continue
         if risk is not None and ci.risk_level != risk:
@@ -509,7 +542,16 @@ async def get_player_detail(
         log.warning("get_recent_sales failed for card_id=%s", card_id, exc_info=True)
         sales = []
 
-    ci = evaluate_card(row, sales=sales)
+    # Same "always afford it on the detail view" reasoning as sales above -
+    # only actually used by evaluate_card when sales evidence is missing or
+    # stale (app/services/futgg_bin_valuation.py).
+    try:
+        bin_observations = await provider.get_bin_observations_by_ids([card_id])
+    except Exception:
+        log.warning("get_bin_observations_by_ids failed for card_id=%s", card_id, exc_info=True)
+        bin_observations = {}
+
+    ci = evaluate_card(row, sales=sales, bin_observations=bin_observations.get(card_id))
     if _is_stale_for_tier(ci.price_age_minutes, row.get("price_tier")):
         # A user actually opening this card is the strongest "someone
         # might act on this" signal short of it already being a surfaced
@@ -657,6 +699,7 @@ async def free_pick_candidates(provider: "FutggMarketDataProvider") -> List[Dict
     scored = _score_and_filter(
         rows, signals={"buy", "strong_buy"},
         sales_by_card=await _sales_for_rows(provider, rows),
+        bin_by_card=await _bin_observations_for_rows(provider, rows),
     )
     scored.sort(key=_opportunity_sort_key)
     return [_item_with_intelligence(row, ci) for row, ci in scored]
@@ -718,6 +761,7 @@ async def list_opportunities(
         min_confidence=min_confidence, min_liquidity=min_liquidity,
         signals={"buy", "strong_buy"},
         sales_by_card=await _sales_for_rows(provider, rows),
+        bin_by_card=await _bin_observations_for_rows(provider, rows),
     )
     scored.sort(key=_opportunity_sort_key)  # see _opportunity_sort_key
     total = len(scored)
@@ -800,6 +844,7 @@ async def opportunities_preview(
     scored = _score_and_filter(
         rows, signals={"buy", "strong_buy"},
         sales_by_card=await _sales_for_rows(provider, rows),
+        bin_by_card=await _bin_observations_for_rows(provider, rows),
     )
     scored.sort(
         key=lambda pair: (
@@ -930,6 +975,7 @@ async def trade_finder(
         min_confidence=min_confidence, min_liquidity=min_liquidity,
         signals={"buy", "strong_buy"} if require_executable else {"buy", "strong_buy", "watch"},
         sales_by_card=await _sales_for_rows(provider, rows),
+        bin_by_card=await _bin_observations_for_rows(provider, rows),
     )
     if max_risk_rank is not None:
         scored = [(row, ci) for row, ci in scored if risk_order.get(ci.risk_level, 3) <= max_risk_rank]
@@ -1418,6 +1464,7 @@ async def strategy_finder(
     max_risk_rank = risk_order.get(definition.risk_tolerance, 2) if definition.risk_tolerance else None
 
     sales_by_card = await _sales_for_rows(provider, rows)
+    bin_by_card = await _bin_observations_for_rows(provider, rows)
 
     scored = _score_and_filter(
         rows, min_expected_profit=definition.min_profit, min_roi=definition.min_roi,
@@ -1427,7 +1474,7 @@ async def strategy_finder(
         # only, never watch. See classify_watch_candidate() below for the
         # separate, explicitly non-actionable Watch section.
         signals={"buy", "strong_buy"},
-        sales_by_card=sales_by_card,
+        sales_by_card=sales_by_card, bin_by_card=bin_by_card,
     )
     if max_risk_rank is not None:
         scored = [(row, ci) for row, ci in scored if risk_order.get(ci.risk_level, 3) <= max_risk_rank]
@@ -1461,7 +1508,7 @@ async def strategy_finder(
     # fails any of them is excluded here, not merely hidden client-side.
     watch_scored = _score_and_filter(
         rows, min_confidence=definition.min_confidence, min_liquidity=definition.min_liquidity,
-        signals={"watch"}, sales_by_card=sales_by_card,
+        signals={"watch"}, sales_by_card=sales_by_card, bin_by_card=bin_by_card,
     )
     if max_risk_rank is not None:
         watch_scored = [(row, ci) for row, ci in watch_scored if risk_order.get(ci.risk_level, 3) <= max_risk_rank]

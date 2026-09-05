@@ -19,3 +19,10 @@
 @media(max-width:1300px){.trade-finder-controls{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:800px){.trade-finder-controls{grid-template-columns:1fr}}
 @media(max-width:700px){.finder-controls{grid-template-columns:1fr;padding:10px}.finder-card-top{grid-template-columns:68px minmax(0,1fr) 52px}.finder-card-top>img{width:64px;height:82px}.finder-confidence{width:50px;height:50px;border-width:4px;font-size:13px}.finder-signals .coin-value{font-size:17px}.finder-result-head{align-items:flex-start}.finder-result-head button{white-space:nowrap}}
+
+/* BIN history estimate badge (app/services/futgg_bin_valuation.py) -
+   shared by Opportunities and Trade Finder card grids, both of which
+   import this stylesheet. Amber, matching .finder-signal-pill.signal-watch
+   and .risk-medium's caution tone, never the green used for a confirmed
+   buy signal. */
+.bin-estimate-badge{display:inline-flex;align-items:center;padding:2px 7px;border-radius:99px;border:1px solid rgba(242,201,76,.4);background:rgba(242,201,76,.14);color:#f2c94c;font-size:9px;font-weight:900;letter-spacing:.03em;text-transform:uppercase;white-space:nowrap}

@@ -74,11 +74,27 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from app.services import trading_math as tm
 from app.services import futgg_reasons as rc
+from app.services.futgg_bin_valuation import (
+    BIN_FALLBACK_CONFIG, BinFallbackConfig, evaluate_bin_fallback,
+)
 from app.services.futgg_config import ENGINE_CONFIG, EngineConfig, TREND_CONFIG
 from app.services.futgg_reasons import ReasonList
 from app.services.futgg_trend import (
     INSUFFICIENT_TREND_DATA, TrendAssessment, evaluate_trend,
 )
+
+# The BIN-history fallback is only ever attempted when EVERY blocking
+# reason present is one of these - i.e. the live BIN itself is fine
+# (tradeable, present, fresh, not divergent from sales) and the only
+# problem is that completed-sales evidence is absent or too old. A card
+# blocked for EXCESSIVE_DISPERSION or SALES_BIN_DIVERGENCE has sales data
+# that exists but cannot be trusted for a different reason than "missing" -
+# that is out of scope for this fallback and must keep blocking outright,
+# per the explicit requirement that this only covers "unavailable or
+# stale", not "unreliable".
+_SALES_EVIDENCE_MISSING_CODES = frozenset({
+    rc.INSUFFICIENT_SALES, rc.STALE_SALES, rc.NO_REALISTIC_EXIT_EVIDENCE,
+})
 
 # =============================================================================
 # Backwards-compatible constant surface
@@ -195,6 +211,32 @@ class CardIntelligence:
     # the state that produced the call and invalidate it, rather than keep
     # showing a profit figure derived from a price that no longer exists.
     evaluated_bin: Optional[int] = None
+
+    # ---- Evidence provenance (app/services/futgg_bin_valuation.py) -----
+    # None on every path that predates the BIN-history fallback (an
+    # untradeable card, no live price at all) - only ever "completed_sales"
+    # or "bin_history" once SOME valuation was actually produced. A caller
+    # must never infer "confirmed" from this field being unset; check
+    # evidence_quality/signal instead.
+    valuation_source: Optional[str] = None
+    # "confirmed" only when valuation_source == "completed_sales";
+    # "estimated" only when valuation_source == "bin_history". Kept as its
+    # own field (rather than derived client-side) because it is the one
+    # thing a UI must never get wrong - see futgg_bin_valuation.py's
+    # module docstring on why a BIN observation must never be presented
+    # as a confirmed sale.
+    evidence_quality: Optional[str] = None
+    bin_sample_count: Optional[int] = None
+    bin_history_span_hours: Optional[float] = None
+    bin_reference_price: Optional[Decimal] = None
+    bin_trend_direction: Optional[str] = None
+    bin_volatility: Optional[float] = None
+    # Age of whichever evidence actually backs this valuation - sales
+    # staleness on a completed_sales result, current-BIN staleness on a
+    # bin_history result. A single unified field so the UI can show "how
+    # old is the evidence behind this" without needing to know which of
+    # two source-specific fields to read.
+    evidence_age_minutes: Optional[int] = None
 
 
 def _price_age_minutes(bin_captured_at: Optional[datetime], as_of: datetime) -> Optional[int]:
@@ -394,11 +436,121 @@ def _insufficient(
     )
 
 
+def _bin_fallback_card_intelligence(
+    card_id: int, bin_result, *, as_of: datetime, current_bin: int,
+    trend: TrendAssessment, engine_config: EngineConfig,
+    bin_config: BinFallbackConfig,
+) -> CardIntelligence:
+    """Builds a CardIntelligence from a QUALIFYING BinValuationResult.
+
+    Deliberately much simpler than the sales-path signal ladder: qualifying
+    already required clearing the stricter BIN ROI/profit floors (see
+    evaluate_bin_fallback), so the only signal a qualifying result can ever
+    produce is "buy" - never "strong_buy" (explicit requirement: BIN-only
+    evidence can never reach the top tier) and never "watch" (a BIN
+    estimate that isn't executable right now, i.e. current_bin above its
+    own recommended_buy_max, is simply not a result worth surfacing - it
+    would be a lower-confidence version of a case the sales path already
+    handles better once real sales exist).
+    """
+    current_bin_dec = Decimal(str(current_bin))
+    is_executable = current_bin_dec <= bin_result.recommended_buy_max
+    if not is_executable:
+        bin_result.reasons.add(
+            rc.PRICE_ABOVE_MAX_BUY,
+            f"Currently {int(current_bin):,} - above the {int(bin_result.recommended_buy_max):,} "
+            "BIN-derived maximum that leaves a worthwhile margin.",
+        )
+        return _insufficient(
+            card_id, bin_result.reasons, as_of=as_of, config=engine_config,
+            risk_level="high", price_age_minutes=bin_result.evidence_age_minutes,
+            trend=trend, current_bin=current_bin,
+        )
+
+    expected_profit = tm.net_profit(bin_result.recommended_sell_target, current_bin_dec)
+    expected_roi = tm.net_roi(bin_result.recommended_sell_target, current_bin_dec)
+    break_even_price = tm.break_even_sale_price(current_bin_dec)
+
+    # Same geometric-blend philosophy as the sales path's _compute_confidence
+    # (one bad component tanks the whole score), with BIN-specific inputs:
+    # bucket count instead of sales count, bin_volatility instead of sales
+    # dispersion, span-adequacy instead of a second sales-freshness term.
+    sample_component = min(bin_result.bin_sample_count or 0, 20) / 20.0
+    freshness_component = 1.0 - _clamp(
+        (bin_result.evidence_age_minutes or 0) / max(engine_config.default_max_price_age_minutes, 1),
+        0.0, 1.0,
+    )
+    volatility = bin_result.bin_volatility if bin_result.bin_volatility is not None else bin_config.max_bin_volatility_for_valuation
+    dispersion_component = 1.0 - _clamp(volatility / bin_config.max_bin_volatility_for_valuation, 0.0, 1.0)
+    span_component = _clamp(
+        (bin_result.bin_history_span_hours or 0.0) / (bin_config.min_span_hours * 2.0), 0.0, 1.0,
+    )
+    components = (
+        (max(sample_component, 0.0), 0.30),
+        (max(freshness_component, 0.0), 0.28),
+        (max(dispersion_component, 0.0), 0.20),
+        (max(span_component, 0.0), 0.22),
+    )
+    if any(base == 0.0 for base, _ in components):
+        raw_confidence = 0.0
+    else:
+        raw_confidence = _clamp(math.exp(sum(w * math.log(b) for b, w in components)), 0.0, 1.0)
+    # The hard cap - independent of how clean the inputs are, a BIN-only
+    # call can never equal or exceed a sales-confirmed one.
+    confidence = min(raw_confidence, bin_config.confidence_cap)
+
+    return CardIntelligence(
+        card_id=card_id,
+        fair_value=bin_result.bin_reference_price,
+        theoretical_max_buy=bin_result.theoretical_max_buy,
+        recommended_buy_max=bin_result.recommended_buy_max,
+        current_executable_buy=current_bin_dec,
+        break_even_price=break_even_price,
+        recommended_sell_target=bin_result.recommended_sell_target,
+        buy_below=None,
+        expected_profit_after_tax=expected_profit,
+        expected_profit_basis=current_bin_dec,
+        expected_roi=expected_roi,
+        liquidity_score=None,
+        confidence_score=confidence,
+        # Floored at medium, never low - a BIN-derived call is never the
+        # engine's lowest risk tier regardless of how clean its own
+        # numbers look (explicit requirement).
+        risk_level="medium",
+        signal="buy",
+        status=STATUS_ACTIVE,
+        signal_reasons=bin_result.reasons.messages,
+        reason_codes=bin_result.reasons.codes,
+        reasons=bin_result.reasons.as_dicts(),
+        blocking_codes=bin_result.reasons.blocking_codes,
+        price_age_minutes=bin_result.evidence_age_minutes,
+        sales_sample_size=0,
+        sales_window_span_minutes=None,
+        trend_state=trend.state,
+        trend_description=trend.description,
+        trend_features=trend.features.as_dict(),
+        engine_version=engine_config.version,
+        trend_version=trend.version,
+        evaluated_at=as_of,
+        evaluated_bin=int(current_bin),
+        valuation_source="bin_history",
+        evidence_quality="estimated",
+        bin_sample_count=bin_result.bin_sample_count,
+        bin_history_span_hours=bin_result.bin_history_span_hours,
+        bin_reference_price=bin_result.bin_reference_price,
+        bin_trend_direction=bin_result.bin_trend_direction,
+        bin_volatility=bin_result.bin_volatility,
+        evidence_age_minutes=bin_result.evidence_age_minutes,
+    )
+
+
 def evaluate_card(
     snapshot: Dict[str, Any], *,
     as_of: Optional[datetime] = None,
     sales: Optional[Sequence[Any]] = None,
+    bin_observations: Optional[Sequence[Any]] = None,
     config: Optional[EngineConfig] = None,
+    bin_config: Optional[BinFallbackConfig] = None,
 ) -> CardIntelligence:
     """Pure function: one futgg_market_snapshot row (or an equivalent
     constructed dict) -> CardIntelligence.
@@ -410,10 +562,21 @@ def evaluate_card(
     "cannot confirm the trend" rather than to the old, dangerous
     "trend does not exist" behaviour.
 
+    `bin_observations` is the optional raw BIN history series
+    ([(lowest_bin, captured_at), ...], e.g.
+    bin_market_signal.load_bin_observations()'s own per-card output) used
+    ONLY when completed-sales evidence is unavailable or stale - see
+    futgg_bin_valuation.py. Omitted entirely (the default), this function's
+    behaviour is byte-for-byte identical to before the BIN-history fallback
+    existed: a card with no trustworthy sales evidence returns
+    insufficient_data exactly as it always has, never a BIN-derived guess a
+    caller did not ask for.
+
     Never raises on missing/None fields - every optional input degrades to
     a documented insufficient-data outcome.
     """
     cfg = config or ENGINE_CONFIG
+    bin_cfg = bin_config or BIN_FALLBACK_CONFIG
     as_of = as_of or datetime.now(timezone.utc)
     card_id = snapshot["source_card_id"]
     is_tradeable = snapshot.get("is_tradeable")
@@ -614,6 +777,34 @@ def evaluate_card(
             )
 
     if len(reasons):
+        # BIN-history fallback: attempted ONLY when every blocking reason
+        # present is about sales evidence being missing/stale, never about
+        # the sales data being unreliable in some other way (dispersion,
+        # divergence) or the card/price itself being unusable (untradeable,
+        # no live price, stale price) - see _SALES_EVIDENCE_MISSING_CODES.
+        blocking = set(reasons.blocking_codes)
+        can_attempt_bin_fallback = (
+            bin_observations is not None
+            and blocking
+            and blocking.issubset(_SALES_EVIDENCE_MISSING_CODES)
+        )
+        if can_attempt_bin_fallback:
+            bin_result = evaluate_bin_fallback(
+                card_id, bin_observations,
+                current_bin=current_bin, price_age_minutes=price_age_minutes,
+                max_acceptable_price_age_minutes=max_age,
+                as_of=as_of, config=bin_cfg,
+            )
+            if bin_result.qualifies:
+                return _bin_fallback_card_intelligence(
+                    card_id, bin_result, as_of=as_of, current_bin=current_bin,
+                    trend=trend, engine_config=cfg, bin_config=bin_cfg,
+                )
+            # Fallback attempted and also failed: fold its specific
+            # rejection reason(s) into the result so the scanner's existing
+            # blocking_reason_counts metric can distinguish "no sales AND no
+            # usable BIN history either" from a plain sales-only rejection.
+            reasons.extend(bin_result.reasons)
         return _insufficient(
             card_id, reasons, as_of=as_of, confidence=confidence,
             liquidity=liquidity, risk_level=risk_level,
@@ -950,4 +1141,7 @@ def evaluate_card(
         expires_at=as_of + timedelta(minutes=expiry_minutes),
         expiry_minutes=expiry_minutes,
         evaluated_bin=int(current_bin),
+        valuation_source="completed_sales",
+        evidence_quality="confirmed",
+        evidence_age_minutes=sales_age_minutes,
     )

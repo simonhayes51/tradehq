@@ -464,7 +464,15 @@ export function AnalysisModal({item,onClose,navigate,onWatch,watchState,backLabe
   // half of the AVOID-card contradiction (an Erling Haaland avoid read
   // "sell above 690,000 just to cover tax" when 690,000 was actually
   // the full-profit target; the true break-even was ~637,000).
-  const target=(!negativeCall&&isFutgg&&item.recommendedSellTarget!=null)?Number(item.recommendedSellTarget):modalTarget(item,entry,gain);const confidence=item.confidence==null?null:Math.max(0,Math.min(100,Math.round(Number(item.confidence))));const fair=Number(item.fairValue)||0;const reasons=[fair>entry?`${percent((fair-entry)/entry*100)} below recent value`:reason(item),negativeCall?"The recommendation is to avoid this card at the current price - the figures above are hypothetical, not a target":(gain>0?<><CoinValue value={gain} signed/> estimated after EA tax</>:`Current price does not leave enough margin`),`${item.risk||"Unknown"} risk · ${sellingSpeedLabel(item.liquidityScore)} selling speed`];
+  const target=(!negativeCall&&isFutgg&&item.recommendedSellTarget!=null)?Number(item.recommendedSellTarget):modalTarget(item,entry,gain);const confidence=item.confidence==null?null:Math.max(0,Math.min(100,Math.round(Number(item.confidence))));const fair=Number(item.fairValue)||0;
+  // Never inferred from anything else (a number, a risk tier, a
+  // confidence score all also differ on a BIN-derived call, but none of
+  // those differences is the actual signal a user must see) - only this
+  // one field, set by the backend, ever decides whether this badge shows.
+  // See app/services/futgg_bin_valuation.py's module docstring.
+  const isBinEstimate=item.evidenceQuality==="estimated";
+  const reasons=[fair>entry?`${percent((fair-entry)/entry*100)} below recent value`:reason(item),negativeCall?"The recommendation is to avoid this card at the current price - the figures above are hypothetical, not a target":(gain>0?<><CoinValue value={gain} signed/> estimated after EA tax</>:`Current price does not leave enough margin`),`${item.risk||"Unknown"} risk · ${sellingSpeedLabel(item.liquidityScore)} selling speed`];
+  if(isBinEstimate)reasons.push("Based on recent asking-price movement, not confirmed sales - treat this one with extra caution.");
 
   // One navigation model per surface. The page variant previously
   // rendered BOTH a circular X in the corner AND a "Back to player
@@ -509,7 +517,7 @@ export function AnalysisModal({item,onClose,navigate,onWatch,watchState,backLabe
         : <button className="dash-modal-close" onClick={onClose} aria-label="Close analysis"><X size={20}/></button>}
       <div className="dash-modal-card"><CardImage player={item.player} featured/></div>
       <div className="dash-modal-copy">
-        <div className="dash-modal-heading"><div><PlayerMeta player={item.player} source={item.source}/><h2>{nameOf(item.player)}</h2></div><span className="dash-modal-call"><b className={`call ${String(item.recommendation||"WATCH").toLowerCase()}`}>{item.recommendation||"WATCH"}</b><StatusLegend/></span></div>
+        <div className="dash-modal-heading"><div><PlayerMeta player={item.player} source={item.source}/><h2>{nameOf(item.player)}</h2></div><span className="dash-modal-call"><b className={`call ${String(item.recommendation||"WATCH").toLowerCase()}`}>{item.recommendation||"WATCH"}</b>{isBinEstimate?<span className="bin-estimate-badge" title="Based on listing-price movement, not confirmed sales">BIN history estimate</span>:null}<StatusLegend/></span></div>
         {/* The ONE live-price freshness line on this surface. The market
             section below used to render a second one from the same
             fields, so the page told you twice how old the price was. */}
@@ -670,7 +678,7 @@ function QueueCard({item,rank,onOpen,onWatch,watchState}){
   // print "—" three times, which reads as a data fault rather than as the
   // free allowance working. Say what it is instead.
   if(item.locked)return <LockedQueueCard item={item} rank={rank}/>;
-  const open=()=>onOpen(item);return <div className="queue-card" role="button" tabIndex={0} onClick={open} onKeyDown={event=>(event.key==="Enter"||event.key===" ")&&open()}><span className="rank">#{rank}</span><div className="queue-art"><CardImage player={item.player} compact/></div><div className="queue-name"><strong>{nameOf(item.player)}</strong><PlayerMeta player={item.player} source={item.source}/><small>{reason(item)}</small>{item.source==="futgg"?<MarketFreshness priceAgeSeconds={item.priceAgeSeconds} checkedAt={item.updatedAt} compact/>:null}</div><button className={`queue-watch ${watchState==="saved"?"saved":""}`} onClick={event=>{event.stopPropagation();onWatch(item)}} aria-label={watchState==="saved"?`${nameOf(item.player)} is on your watchlist`:`Add ${nameOf(item.player)} to watchlist`}><Star size={17} fill={watchState==="saved"?"currentColor":"none"}/></button><div className="queue-reason"><b>WHY THIS MOVE</b><span>{reason(item)}</span></div><div className="queue-signals"><TradeSignal label="BUY BELOW" value={item.entryPrice??item.currentBin} tone="entry"/><TradeSignal label="EXPECTED PROFIT" value={expectedProfit(item)} tone="profit" signed sub={`${roi(item)} after tax`}/></div><ConfidenceRing value={item.confidence} compact/><ChevronRight className="queue-arrow" size={18}/></div>}
+  const open=()=>onOpen(item);return <div className="queue-card" role="button" tabIndex={0} onClick={open} onKeyDown={event=>(event.key==="Enter"||event.key===" ")&&open()}><span className="rank">#{rank}</span><div className="queue-art"><CardImage player={item.player} compact/></div><div className="queue-name"><strong>{nameOf(item.player)}</strong>{item.evidenceQuality==="estimated"?<span className="bin-estimate-badge" title="Based on listing-price movement, not confirmed sales">BIN estimate</span>:null}<PlayerMeta player={item.player} source={item.source}/><small>{reason(item)}</small>{item.source==="futgg"?<MarketFreshness priceAgeSeconds={item.priceAgeSeconds} checkedAt={item.updatedAt} compact/>:null}</div><button className={`queue-watch ${watchState==="saved"?"saved":""}`} onClick={event=>{event.stopPropagation();onWatch(item)}} aria-label={watchState==="saved"?`${nameOf(item.player)} is on your watchlist`:`Add ${nameOf(item.player)} to watchlist`}><Star size={17} fill={watchState==="saved"?"currentColor":"none"}/></button><div className="queue-reason"><b>WHY THIS MOVE</b><span>{reason(item)}</span></div><div className="queue-signals"><TradeSignal label="BUY BELOW" value={item.entryPrice??item.currentBin} tone="entry"/><TradeSignal label="EXPECTED PROFIT" value={expectedProfit(item)} tone="profit" signed sub={`${roi(item)} after tax`}/></div><ConfidenceRing value={item.confidence} compact/><ChevronRight className="queue-arrow" size={18}/></div>}
 // Live-entry-state badge - the server-computed answer to "can I act on
 // this right now" (app/services/strategy_definitions.py's
 // _live_entry_state). Never derived client-side: the whole point is
@@ -827,6 +835,12 @@ function normaliseFutgg(raw){if(!raw)return null;const cardId=raw.card_id??raw.s
   // CURRENT price (classify_watch_candidate), never the prospective
   // trigger-price number evaluate_card() uses for expectedProfitAfterTax.
   aboveEntryPct:raw.above_entry_pct??null,realTimeExpectedProfitAfterTax:raw.real_time_expected_profit_after_tax??null,realTimeExpectedRoi:raw.real_time_expected_roi==null?null:Number(raw.real_time_expected_roi)*100,
+  // Evidence provenance (app/services/futgg_bin_valuation.py) - see
+  // PlayerPage.jsx's toFutggAnalysisItem for the same fields and fuller
+  // explanation. AnalysisModal reads evidenceQuality to decide whether to
+  // show the "BIN history estimate" badge - never inferred from anything
+  // else, since a BIN observation must never be presented as a sale.
+  valuationSource:raw.valuation_source,evidenceQuality:raw.evidence_quality,
   reasoning:reasons[0]||raw.headline_reason||"Market signal",player:{name:raw.name,displayName:raw.name,cardName:raw.name,nickname:null,rating:raw.rating,version:raw.rarity||"Card",position:raw.position||raw.primary_position,imageUrl:raw.image_url,cardBgImage:raw.card_design_image_url||null,cardCutoutImage:raw.image_url||raw.player_image_url||null,cardCutoutType:raw.price_tier&&raw.price_tier!=="special"?"base":"special",/* composited_image_url (background+cutout+rating+stats baked in by FUT.GG, mirrored to R2) always wins when present - it's shown as a plain <img> via CardImage()'s player.generatedCardUrl check, never composited/overlaid by PlayerCardArt, which would double the baked-in rating/stats text. Falls back to the pre-existing bgImage-gated logic only when a card hasn't been mirrored yet. */generatedCardUrl:raw.composited_image_url||(raw.card_design_image_url?null:(raw.image_url||raw.player_image_url||null)),nationImage:raw.nation_image_url||null,leagueImage:raw.league_image_url||null,clubImage:raw.club_image_url||null,stats:{pace:raw.pace,shooting:raw.shooting,passing:raw.passing,dribbling:raw.dribbling,defending:raw.defending,physicality:raw.physicality}}}}
 function normalise(item){if(!item)return null;if(item.player)return{...item,
   locked:item.locked===true,currentBin:item.currentBin??item.currentBinApprox??null,

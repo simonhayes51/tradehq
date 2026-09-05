@@ -64,10 +64,14 @@ INSERT INTO futgg_recommendation_snapshots (
     trend_state, trend_features,
     reason_codes, blocking_codes, reasons,
     engine_version, trend_version, engine_config,
-    expires_at, expiry_minutes
+    expires_at, expiry_minutes,
+    valuation_source, evidence_quality, bin_sample_count,
+    bin_history_span_hours, bin_reference_price, bin_trend_direction,
+    bin_volatility, evidence_age_minutes
 ) VALUES (
     $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
-    $21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40
+    $21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,
+    $41,$42,$43,$44,$45,$46,$47,$48
 )
 -- Must match futgg_rec_snap_card_minute_uniq in migration 040 exactly,
 -- including the AT TIME ZONE 'UTC' (which is there because date_trunc
@@ -159,6 +163,9 @@ async def record_recommendation(
                 ci.engine_version, ci.trend_version,
                 json.dumps(ENGINE_CONFIG.as_dict()),
                 ci.expires_at, ci.expiry_minutes,
+                ci.valuation_source, ci.evidence_quality, ci.bin_sample_count,
+                ci.bin_history_span_hours, _num(ci.bin_reference_price),
+                ci.bin_trend_direction, ci.bin_volatility, ci.evidence_age_minutes,
             )
     except Exception as exc:
         _log_write_failure(exc, ci.card_id)
