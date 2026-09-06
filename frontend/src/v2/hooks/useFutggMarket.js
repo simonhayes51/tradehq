@@ -19,6 +19,21 @@ import { api } from "../lib/api";
 // instead of hammering a route that plainly doesn't exist yet.
 const REQUEST_OPTS = { __skipAuthRedirect: true, __noRetry: true, timeout: 8_000 };
 
+// /opportunities, /trade-finder and its strategy tabs all run through the
+// backend's shared _segmented_candidates() scan - up to ~1700 candidates
+// batch-fetched and evaluated fresh on a cache miss. That legitimately
+// takes longer than the 8s every other endpoint here gets: a cache miss
+// plus a cold sales/BIN batch fetch was measured taking several seconds
+// end to end even after the backend's own fixes (a short server-side
+// cache for the candidate scan, yielding the event loop mid-evaluation).
+// At 8s, axios's own timeout aborts the request - which Chrome's Network
+// panel shows as "(canceled)", indistinguishable at a glance from the
+// backend being down, even though the request would have succeeded given
+// a few more seconds. These endpoints get a longer ceiling; every other
+// hook in this file (single-card lookups, cheap by comparison) keeps the
+// tighter 8s so a genuine outage there still surfaces quickly.
+const SCAN_REQUEST_OPTS = { __skipAuthRedirect: true, __noRetry: true, timeout: 20_000 };
+
 function cleanParams(params = {}) {
   const out = {};
   for (const [key, value] of Object.entries(params)) {
@@ -96,7 +111,7 @@ export function useFutggOpportunities(params = {}) {
   return useQuery({
     queryKey: ["v2", "futgg", "opportunities", clean],
     queryFn: async ({ signal }) =>
-      (await api.get("/api/v2/opportunities", { params: clean, signal, ...REQUEST_OPTS })).data,
+      (await api.get("/api/v2/opportunities", { params: clean, signal, ...SCAN_REQUEST_OPTS })).data,
     retry: false,
     staleTime: 30_000,
   });
@@ -112,7 +127,7 @@ export function useFutggOpportunityPreview() {
   return useQuery({
     queryKey: ["v2", "futgg", "opportunities", "preview"],
     queryFn: async ({ signal }) =>
-      (await api.get("/api/v2/opportunities/preview", { signal, ...REQUEST_OPTS })).data,
+      (await api.get("/api/v2/opportunities/preview", { signal, ...SCAN_REQUEST_OPTS })).data,
     retry: false,
     staleTime: 30_000,
   });
@@ -124,7 +139,7 @@ export function useFutggTradeFinder(params = {}) {
   return useQuery({
     queryKey: ["v2", "futgg", "trade-finder", clean],
     queryFn: async ({ signal }) =>
-      (await api.get("/api/v2/trade-finder", { params: clean, signal, ...REQUEST_OPTS })).data,
+      (await api.get("/api/v2/trade-finder", { params: clean, signal, ...SCAN_REQUEST_OPTS })).data,
     retry: false,
     staleTime: 30_000,
   });
@@ -141,7 +156,7 @@ export function useStrategyFinder(strategy, { enabled = true } = {}) {
   return useQuery({
     queryKey: ["v2", "futgg", "trade-finder", "strategy", strategy],
     queryFn: async ({ signal }) =>
-      (await api.get(`/api/v2/trade-finder/strategy/${strategy}`, { signal, ...REQUEST_OPTS })).data,
+      (await api.get(`/api/v2/trade-finder/strategy/${strategy}`, { signal, ...SCAN_REQUEST_OPTS })).data,
     enabled: enabled && !!strategy,
     retry: false,
     staleTime: 30_000,
