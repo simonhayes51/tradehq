@@ -3633,13 +3633,13 @@ if __name__ == "__main__":
         sys.exit(0)
     except Exception:
         log.exception("futgg_sales_sync failed")
-        sys.exit(0 if not DIAGNOSTIC_CARD_ID else 1)
-    # run_forever() (result is None) never returns except via
-    # KeyboardInterrupt/exception above, handled the same way as every
-    # other continuous worker in this repo - always exit 0 so a
-    # container-runtime restart policy doesn't treat a clean stop as a
-    # crash. The one-card diagnostic mode DOES have a meaningful
-    # success/failure result, and exits accordingly so it's scriptable.
+        # A fatal collector error must be visible to the process supervisor.
+        # Exiting successfully left Railway running a dead service with the
+        # previous heartbeat frozen for hours.
+        sys.exit(1)
+    # A deliberate shutdown remains successful. Unexpected exceptions above
+    # are failures so either the entrypoint watchdog or the container runtime
+    # can restart the collector.
     if result is None:
         sys.exit(0)
     sys.exit(0 if result else 1)
