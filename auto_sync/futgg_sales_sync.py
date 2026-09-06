@@ -146,6 +146,20 @@ IDLE_SLEEP = env_float("FUTGG_SALES_IDLE_SLEEP", 30.0, minimum=5.0)
 #: How many cards to pull per selection pass.
 SELECT_LIMIT = env_int("FUTGG_SALES_SELECT_LIMIT", 200, minimum=1)
 
+# Defence in depth for Railway env drift: the entrypoint caps the old
+# production FUTGG_SALES_SELECT_LIMIT=400 down before starting this
+# worker, but logs from 2026-09-06 still showed cycles selecting 117/120.
+# If the entrypoint is bypassed, an old image is half-rolled, or
+# FUTGG_SALES_SELECT_LIMIT_MAX is overridden, keep the signed endpoint
+# from running above the safe per-cycle cap in the worker itself.
+SELECT_LIMIT_HARD_CAP = env_int("FUTGG_SALES_SELECT_LIMIT_HARD_CAP", 90, minimum=1)
+if SELECT_LIMIT > SELECT_LIMIT_HARD_CAP:
+    log.warning(
+        "Capping FUTGG_SALES_SELECT_LIMIT from %d to hard cap %d inside worker",
+        SELECT_LIMIT, SELECT_LIMIT_HARD_CAP,
+    )
+    SELECT_LIMIT = SELECT_LIMIT_HARD_CAP
+
 #: Minimum share of SELECT_LIMIT reserved for each adaptive-priority
 #: tier every cycle, so a fast tier cannot starve a slow one
 #: indefinitely.
