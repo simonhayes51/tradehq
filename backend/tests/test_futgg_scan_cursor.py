@@ -84,20 +84,36 @@ class FakePool:
 
 
 class TestSelectCandidatesAppliesRecencyFilter:
-    def test_includes_not_exists_clause_when_cursor_table_present(self):
+    def test_default_never_hides_cards_from_live_callers(self):
+        # The default (no kwarg - exactly what _segmented_candidates() in
+        # futgg_market.py calls, which backs /opportunities, /trade-finder,
+        # /dashboard's free picks, and the Discord live-opportunity feed)
+        # must NEVER apply the recency filter, even when the cursor table
+        # exists - a live request needs the best current signal regardless
+        # of whether the background scanner touched the card 10 minutes
+        # ago. This is the regression this fix almost shipped.
         conn = FakeConn(cursor_table_exists=True)
         provider = FutggMarketDataProvider(FakePool(conn))
         run(provider.select_candidates_by_segment())
         segment_queries = [sql for sql, args in conn.fetch_calls if "is_tradeable IS DISTINCT FROM FALSE" in sql]
         assert segment_queries, "expected at least one per-segment query"
         for sql in segment_queries:
+            assert "futgg_scan_cursor" not in sql
+
+    def test_opt_in_includes_not_exists_clause_when_cursor_table_present(self):
+        conn = FakeConn(cursor_table_exists=True)
+        provider = FutggMarketDataProvider(FakePool(conn))
+        run(provider.select_candidates_by_segment(exclude_recently_evaluated=True))
+        segment_queries = [sql for sql, args in conn.fetch_calls if "is_tradeable IS DISTINCT FROM FALSE" in sql]
+        assert segment_queries, "expected at least one per-segment query"
+        for sql in segment_queries:
             assert "NOT EXISTS" in sql
             assert "futgg_scan_cursor" in sql
 
-    def test_omits_recency_filter_when_cursor_table_absent(self):
+    def test_opt_in_omits_recency_filter_when_cursor_table_absent(self):
         conn = FakeConn(cursor_table_exists=False)
         provider = FutggMarketDataProvider(FakePool(conn))
-        run(provider.select_candidates_by_segment())
+        run(provider.select_candidates_by_segment(exclude_recently_evaluated=True))
         segment_queries = [sql for sql, args in conn.fetch_calls if "is_tradeable IS DISTINCT FROM FALSE" in sql]
         assert segment_queries
         for sql in segment_queries:
@@ -108,7 +124,7 @@ class TestSelectCandidatesAppliesRecencyFilter:
 
         conn = FakeConn(cursor_table_exists=True)
         provider = FutggMarketDataProvider(FakePool(conn))
-        run(provider.select_candidates_by_segment())
+        run(provider.select_candidates_by_segment(exclude_recently_evaluated=True))
         segment_queries = [sql for sql, args in conn.fetch_calls if "is_tradeable IS DISTINCT FROM FALSE" in sql]
         refresh_minutes_seen = {s.refresh_minutes for s in SEGMENTS}
         for minutes in refresh_minutes_seen:

@@ -131,7 +131,7 @@ async def run_scan(provider, pool, *, persist: bool = True) -> ScanMetrics:
     started = time.monotonic()
     metrics = ScanMetrics(started_at=datetime.now(timezone.utc))
 
-    by_segment = await provider.select_candidates_by_segment()
+    by_segment = await provider.select_candidates_by_segment(exclude_recently_evaluated=True)
 
     # De-duplicate across segments, remembering which segment first
     # surfaced each card so per-segment attribution stays meaningful.

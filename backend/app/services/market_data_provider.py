@@ -764,7 +764,9 @@ class FutggMarketDataProvider(MarketDataProvider):
         """
         return await load_bin_observations(self._pool, card_ids)
 
-    async def select_candidates_by_segment(self) -> Dict[str, List[Dict[str, Any]]]:
+    async def select_candidates_by_segment(
+        self, *, exclude_recently_evaluated: bool = False,
+    ) -> Dict[str, List[Dict[str, Any]]]:
         """Run the segmented candidate scan.
 
         Returns {segment_name: [snapshot rows]}. Segments overlap by
@@ -773,27 +775,37 @@ class FutggMarketDataProvider(MarketDataProvider):
         confined the entire engine to the 500 most-traded cards - the most
         efficiently priced markets in the game - and never looked at the
         long tail where mispricing actually persists.
+
+        exclude_recently_evaluated=True skips any card the background
+        scanner (futgg_scanner.run_scan) evaluated more recently than its
+        segment's own refresh_minutes (see futgg_scan_cursor, migration
+        083) - use this ONLY for that scanner's own rotation pass, where
+        the goal is spreading evaluation across the whole catalogue over
+        time. Every live, user-facing caller (app/routers/v2/futgg_market.
+        py's _segmented_candidates, which backs /opportunities, /trade-
+        finder, /dashboard's free picks, and the Discord live-opportunity
+        feed) must leave this False: a live request needs the best CURRENT
+        signal regardless of whether the background scanner happened to
+        touch that card 10 minutes ago, and defaulting this on very nearly
+        shipped as a regression that would have hidden almost every card
+        from every live surface for up to 6 hours after each scanner pass
+        touched it - the scanner runs every 10 minutes and every segment's
+        refresh_minutes is >= 15, so this filter would have been in effect
+        almost permanently for those endpoints too.
         """
         from app.services.futgg_candidate_segments import SEGMENTS
 
         out: Dict[str, List[Dict[str, Any]]] = {}
         async with self._pool.acquire() as conn:
             columns = await resolve_snapshot_columns(conn)
-            cursor_exists = await self._scan_cursor_table_exists(conn)
+            cursor_exists = (
+                exclude_recently_evaluated and await self._scan_cursor_table_exists(conn)
+            )
             for segment in SEGMENTS:
                 # segment.where/order_by are static strings from a
                 # module-level whitelist - never user input. refresh_minutes
                 # is likewise a static int from that whitelist, safe to
                 # interpolate into the interval literal below.
-                #
-                # Without the NOT EXISTS clause this is a bare
-                # ORDER BY ... LIMIT N with no notion of "already looked at
-                # this recently" - every pass re-selects the same
-                # deterministic top-N rows per segment forever, and
-                # everything outside that top-N is never evaluated at all.
-                # See migration 083's comment for the production symptom
-                # this caused (coverage stuck at ~8% of the pool, pass
-                # after pass).
                 recency_filter = ""
                 if cursor_exists:
                     recency_filter = f"""

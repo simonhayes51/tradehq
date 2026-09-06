@@ -25,8 +25,10 @@ class FakeProvider:
     def __init__(self, rows_by_segment):
         self.rows_by_segment = rows_by_segment
         self.record_scan_cursor_calls = []
+        self.select_candidates_calls = []
 
-    async def select_candidates_by_segment(self):
+    async def select_candidates_by_segment(self, *, exclude_recently_evaluated=False):
+        self.select_candidates_calls.append(exclude_recently_evaluated)
         return self.rows_by_segment
 
     async def get_sales_by_ids(self, card_ids):
@@ -70,6 +72,10 @@ class TestScanCursorWiring:
         assert card_ids == [1, 2]
         assert isinstance(as_of, datetime)
         assert metrics.unique_cards_evaluated == 2
+        # run_scan is the background rotation pass - it must opt into the
+        # recency filter. Live-request callers (_segmented_candidates in
+        # futgg_market.py) never call run_scan and must never opt in.
+        assert provider.select_candidates_calls == [True]
 
     def test_persist_false_never_moves_the_cursor(self):
         rows = {"liquid": [{"source_card_id": 1}, {"source_card_id": 2}]}
