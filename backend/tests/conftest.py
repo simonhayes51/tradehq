@@ -27,6 +27,14 @@ def reset_segmented_candidates_cache():
         # card_ids (1, 2, 3, ...) with different evaluate_card() behaviour,
         # so a result cached by one test would otherwise leak into another.
         futgg_market_module._evaluate_card_cache.clear()
+        # _sales_for_rows()/_bin_observations_for_rows()'s own short-lived
+        # caches - same leak risk across tests as the two above.
+        futgg_market_module._sales_by_card_cache = None
+        futgg_market_module._sales_by_card_cache_ids = frozenset()
+        futgg_market_module._sales_by_card_cached_at = 0.0
+        futgg_market_module._bin_by_card_cache = None
+        futgg_market_module._bin_by_card_cache_ids = frozenset()
+        futgg_market_module._bin_by_card_cached_at = 0.0
 
     _reset()
     yield

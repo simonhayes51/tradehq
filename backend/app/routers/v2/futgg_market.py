@@ -531,6 +531,32 @@ async def list_players(
     }
 
 
+#: Short-lived cache for the sales/BIN batch fetches, same shape as
+#: _segmented_candidates' own cache above. Confirmed in production via
+#: Coolify's Postgres metrics: a single page load (dashboard,
+#: /opportunities, /trade-finder, the Strategy Finder tab, /track-record)
+#: fires within the same ~15 seconds, and every one of them independently
+#: re-queried sales/BIN history for up to ~1700 candidates - even on an
+#: evaluate_card() cache HIT, which never needed that data at all. That
+#: matched a >200% CPU spike on the Postgres service with no matching
+#: "refresh took Xs" warning in the same window, pointing at these
+#: redundant batch queries rather than the (separately slow, separately
+#: tracked) materialized view refresh.
+#:
+#: Cached as (requested card_id set, result) rather than just a TTL,
+#: because a caller's candidate set is usually the full
+#: _segmented_candidates() list or a filtered subset of it - reusing the
+#: cache whenever the current request only needs a subset of what's
+#: already cached avoids ever serving a card that was never actually
+#: fetched.
+_sales_by_card_cache: Optional[Dict[int, List[Dict[str, Any]]]] = None
+_sales_by_card_cache_ids: frozenset = frozenset()
+_sales_by_card_cached_at: float = 0.0
+_bin_by_card_cache: Optional[Dict[int, List[Any]]] = None
+_bin_by_card_cache_ids: frozenset = frozenset()
+_bin_by_card_cached_at: float = 0.0
+
+
 async def _sales_for_rows(provider, rows: List[Dict[str, Any]]) -> Dict[int, List[Dict[str, Any]]]:
     """Batch-fetch the raw sales series backing the trend layer.
 
@@ -541,23 +567,50 @@ async def _sales_for_rows(provider, rows: List[Dict[str, Any]]) -> Dict[int, Lis
     fetch fails, evaluation continues with no trend data, which caps
     signals rather than silently restoring the old behaviour.
     """
+    global _sales_by_card_cache, _sales_by_card_cache_ids, _sales_by_card_cached_at
+    card_ids = frozenset(int(r["source_card_id"]) for r in rows)
+    now = time.monotonic()
+    if (
+        _sales_by_card_cache is not None
+        and (now - _sales_by_card_cached_at) < _SEGMENTED_CANDIDATES_CACHE_SECONDS
+        and card_ids <= _sales_by_card_cache_ids
+    ):
+        return _sales_by_card_cache
     try:
-        return await provider.get_sales_by_ids([int(r["source_card_id"]) for r in rows])
+        result = await provider.get_sales_by_ids(list(card_ids))
     except Exception:
         log.warning("batch sales fetch failed; evaluating without trend data", exc_info=True)
         return {}
+    _sales_by_card_cache = result
+    _sales_by_card_cache_ids = card_ids
+    _sales_by_card_cached_at = now
+    return result
 
 
 async def _bin_observations_for_rows(provider, rows: List[Dict[str, Any]]) -> Dict[int, List[Any]]:
     """Batch-fetch raw BIN history backing the BIN-history fallback
     (app/services/futgg_bin_valuation.py). Mirrors _sales_for_rows above -
     same best-effort contract: a failed batch fetch degrades to "no BIN
-    fallback available this pass", never to a broken request."""
+    fallback available this pass", never to a broken request. Also
+    mirrors its short-lived cache, same reasoning."""
+    global _bin_by_card_cache, _bin_by_card_cache_ids, _bin_by_card_cached_at
+    card_ids = frozenset(int(r["source_card_id"]) for r in rows)
+    now = time.monotonic()
+    if (
+        _bin_by_card_cache is not None
+        and (now - _bin_by_card_cached_at) < _SEGMENTED_CANDIDATES_CACHE_SECONDS
+        and card_ids <= _bin_by_card_cache_ids
+    ):
+        return _bin_by_card_cache
     try:
-        return await provider.get_bin_observations_by_ids([int(r["source_card_id"]) for r in rows])
+        result = await provider.get_bin_observations_by_ids(list(card_ids))
     except Exception:
         log.warning("batch bin observation fetch failed; evaluating without BIN fallback", exc_info=True)
         return {}
+    _bin_by_card_cache = result
+    _bin_by_card_cache_ids = card_ids
+    _bin_by_card_cached_at = now
+    return result
 
 
 #: How many rows _score_and_filter() evaluates between yield points. This
