@@ -632,12 +632,44 @@ class TestBinHistoryFallbackAPI:
         assert player["current_executable_buy"] is None
         assert client.get("/api/v2/opportunities").json()["items"] == []
 
-    def test_opportunities_require_recent_completed_sales(self):
+    def test_opportunities_allow_liquid_sales_from_yesterday(self):
+        yesterday_row = _row(
+            source_card_id=79,
+            current_bin=40_000,
+            sales_median=55_000,
+            sales_trimmed_mean=55_000,
+            latest_sale_price=55_000,
+            sales_count=50,
+            sales_low=52_000,
+            sales_high=56_000,
+            sales_stddev=900,
+            latest_sale_at=AS_OF - timedelta(hours=36),
+            sales_window_latest_at=AS_OF - timedelta(hours=36),
+            sales_window_earliest_at=AS_OF - timedelta(hours=42),
+            sales_window_span_minutes=6 * 60,
+            sales_dispersion_ratio=0.02,
+        )
+        client = TestClient(_app_with(FakeProvider([yesterday_row])))
+        resp = client.get("/api/v2/opportunities")
+        assert resp.status_code == 200
+        assert [item["source_card_id"] for item in resp.json()["items"]] == [79]
+
+    def test_opportunities_reject_sales_older_than_two_days(self):
         stale_sales_row = _row(
             source_card_id=79,
-            latest_sale_at=AS_OF - timedelta(hours=25),
-            sales_window_latest_at=AS_OF - timedelta(hours=25),
-            sales_window_earliest_at=AS_OF - timedelta(hours=31),
+            current_bin=40_000,
+            sales_median=55_000,
+            sales_trimmed_mean=55_000,
+            latest_sale_price=55_000,
+            sales_count=50,
+            sales_low=52_000,
+            sales_high=56_000,
+            sales_stddev=900,
+            latest_sale_at=AS_OF - timedelta(hours=49),
+            sales_window_latest_at=AS_OF - timedelta(hours=49),
+            sales_window_earliest_at=AS_OF - timedelta(hours=55),
+            sales_window_span_minutes=6 * 60,
+            sales_dispersion_ratio=0.02,
         )
         client = TestClient(_app_with(FakeProvider([stale_sales_row])))
         resp = client.get("/api/v2/opportunities")
