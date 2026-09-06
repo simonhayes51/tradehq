@@ -131,6 +131,34 @@ class TestSelectCandidatesAppliesRecencyFilter:
             assert any(f"interval '{minutes} minutes'" in sql for sql in segment_queries)
 
 
+class TestSelectCandidatesExcludesSilverAndBronze:
+    # "Silver and Bronze cards don't need to be evaluated - the profit is
+    # pointless" - a standing product rule, not a speed hack, though it
+    # also materially shrinks evaluate_card()'s per-pass workload since
+    # silver/bronze make up a large share of the total card pool.
+    def test_every_segment_query_excludes_silver_and_bronze(self):
+        conn = FakeConn(cursor_table_exists=False)
+        provider = FutggMarketDataProvider(FakePool(conn))
+        run(provider.select_candidates_by_segment())
+        segment_queries = [sql for sql, args in conn.fetch_calls if "is_tradeable IS DISTINCT FROM FALSE" in sql]
+        assert segment_queries, "expected at least one per-segment query"
+        for sql in segment_queries:
+            assert "price_tier NOT IN" in sql
+            assert "'silver'" in sql
+            assert "'bronze'" in sql
+
+    def test_exclusion_applies_regardless_of_the_recency_filter(self):
+        # Must hold for both the scanner's own opt-in call and the
+        # default live-caller path - this is a pool-composition rule,
+        # unrelated to the rotation feature.
+        conn = FakeConn(cursor_table_exists=True)
+        provider = FutggMarketDataProvider(FakePool(conn))
+        run(provider.select_candidates_by_segment(exclude_recently_evaluated=True))
+        segment_queries = [sql for sql, args in conn.fetch_calls if "is_tradeable IS DISTINCT FROM FALSE" in sql]
+        for sql in segment_queries:
+            assert "price_tier NOT IN" in sql
+
+
 class TestRecordScanCursor:
     def test_upserts_every_card_id_when_table_present(self):
         conn = FakeConn(cursor_table_exists=True)

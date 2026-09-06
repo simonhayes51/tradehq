@@ -48,6 +48,18 @@ log = logging.getLogger("market_data_provider")
 # 7741003, recommendation_engine_v2.py's 7741007, etc.).
 REFRESH_ADVISORY_LOCK_KEY = 7741011
 
+# price_tier values below "gold" (see auto_sync/futgg_common.py's
+# classify_price_tier: 'special' | 'gold_rare' | 'gold_common' | 'silver' |
+# 'bronze') never produce a profit worth trading on - the coin values
+# involved are too small for the EA tax and normal price noise to leave
+# anything meaningful behind. Excluding them from the candidate scan
+# entirely (not just from the final signal) is a real, standing product
+# rule, not a speed hack that happens to also help performance - it just
+# also cuts evaluate_card()'s per-pass workload materially, since silver/
+# bronze make up a large share of the total card pool.
+EXCLUDED_PRICE_TIERS = ("silver", "bronze")
+EXCLUDED_PRICE_TIERS_SQL = ", ".join(f"'{tier}'" for tier in EXCLUDED_PRICE_TIERS)
+
 #: A refresh slower than this has already outlasted the refresher's
 #: default 120s poll, so it is both the reason the snapshot is stale and
 #: the reason nothing else could refresh it.
@@ -819,6 +831,7 @@ class FutggMarketDataProvider(MarketDataProvider):
                     SELECT {columns}
                     FROM futgg_market_snapshot
                     WHERE is_tradeable IS DISTINCT FROM FALSE
+                      AND price_tier NOT IN ({EXCLUDED_PRICE_TIERS_SQL})
                       AND ({segment.where})
                       {recency_filter}
                     ORDER BY {segment.order_by}
