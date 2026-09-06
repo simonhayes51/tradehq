@@ -193,6 +193,16 @@ async def run_scan(provider, pool, *, persist: bool = True) -> ScanMetrics:
     if persist and to_persist:
         metrics.recommendations_written = await record_many(pool, to_persist)
 
+    if persist and unique_rows:
+        # Stamp every card this pass actually evaluated - buy, watch, AND
+        # avoid/insufficient_data alike - as "recently looked at", so the
+        # next pass's segment queries (select_candidates_by_segment) can
+        # skip them and surface a different slice of the pool instead of
+        # reselecting this same deterministic top-N forever. persist=False
+        # runs (the metrics endpoint, staging probes) must not move this
+        # cursor, same as they don't write recommendation snapshots.
+        await provider.record_scan_cursor(list(unique_rows), as_of)
+
     metrics.unique_cards_evaluated = len(unique_rows)
     metrics.segments = list(segment_metrics.values())
     metrics.blocking_reason_counts = dict(blocked_by.most_common())

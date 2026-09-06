@@ -278,6 +278,9 @@ _snapshot_columns_sql: Optional[str] = None
 #: Whether the live view actually has bin_checked_at. Set by
 #: resolve_snapshot_columns; None means "not yet resolved".
 _snapshot_has_checked_at: Optional[bool] = None
+#: Whether futgg_scan_cursor (migration 083) exists on this database.
+#: None means "not yet resolved".
+_scan_cursor_table_present: Optional[bool] = None
 
 #: snapshot.get() keys futgg_intelligence.py reads that are NOT selected
 #: from futgg_market_snapshot at all - test_every_column_the_engine_reads
@@ -776,14 +779,36 @@ class FutggMarketDataProvider(MarketDataProvider):
         out: Dict[str, List[Dict[str, Any]]] = {}
         async with self._pool.acquire() as conn:
             columns = await resolve_snapshot_columns(conn)
+            cursor_exists = await self._scan_cursor_table_exists(conn)
             for segment in SEGMENTS:
                 # segment.where/order_by are static strings from a
-                # module-level whitelist - never user input.
+                # module-level whitelist - never user input. refresh_minutes
+                # is likewise a static int from that whitelist, safe to
+                # interpolate into the interval literal below.
+                #
+                # Without the NOT EXISTS clause this is a bare
+                # ORDER BY ... LIMIT N with no notion of "already looked at
+                # this recently" - every pass re-selects the same
+                # deterministic top-N rows per segment forever, and
+                # everything outside that top-N is never evaluated at all.
+                # See migration 083's comment for the production symptom
+                # this caused (coverage stuck at ~8% of the pool, pass
+                # after pass).
+                recency_filter = ""
+                if cursor_exists:
+                    recency_filter = f"""
+                      AND NOT EXISTS (
+                          SELECT 1 FROM futgg_scan_cursor sc
+                          WHERE sc.source_card_id = futgg_market_snapshot.source_card_id
+                            AND sc.last_evaluated_at > now() - interval '{segment.refresh_minutes} minutes'
+                      )
+                    """
                 sql = f"""
                     SELECT {columns}
                     FROM futgg_market_snapshot
                     WHERE is_tradeable IS DISTINCT FROM FALSE
                       AND ({segment.where})
+                      {recency_filter}
                     ORDER BY {segment.order_by}
                     LIMIT $1
                 """
@@ -792,6 +817,44 @@ class FutggMarketDataProvider(MarketDataProvider):
             for segment_rows in out.values():
                 await _attach_sbc_reward_watch(conn, segment_rows)
         return out
+
+    async def _scan_cursor_table_exists(self, conn: asyncpg.Connection) -> bool:
+        """Cached per process, mirroring resolve_snapshot_columns() above -
+        the table's existence only changes on a migration, i.e. a redeploy."""
+        global _scan_cursor_table_present
+        if _scan_cursor_table_present is not None:
+            return _scan_cursor_table_present
+        exists = await conn.fetchval(
+            "SELECT to_regclass('public.futgg_scan_cursor') IS NOT NULL"
+        )
+        _scan_cursor_table_present = bool(exists)
+        return _scan_cursor_table_present
+
+    async def record_scan_cursor(self, card_ids: Sequence[int], as_of: datetime) -> None:
+        """Stamp "last evaluated" for every card a scan pass looked at,
+        regardless of the signal it produced - this is what lets
+        select_candidates_by_segment() rotate away from cards it just
+        evaluated instead of reselecting the same top-N forever. See
+        migration 083.
+        """
+        if not card_ids:
+            return
+        try:
+            async with self._pool.acquire() as conn:
+                if not await self._scan_cursor_table_exists(conn):
+                    return
+                await conn.executemany(
+                    """
+                    INSERT INTO futgg_scan_cursor (source_card_id, last_evaluated_at)
+                    VALUES ($1, $2)
+                    ON CONFLICT (source_card_id)
+                    DO UPDATE SET last_evaluated_at = EXCLUDED.last_evaluated_at
+                    """,
+                    [(int(cid), as_of) for cid in card_ids],
+                )
+        except asyncpg.exceptions.UndefinedTableError:
+            global _scan_cursor_table_present
+            _scan_cursor_table_present = False
 
     # -------------------------------------------------------------------
     # List / search surface (backs /players, /opportunities, /trade-finder)
