@@ -138,7 +138,24 @@ SEGMENTS: List[Segment] = [
             f"AND sales_count >= {MOVED_MIN_SALES} "
             f"AND abs(current_bin - sales_median) / sales_median >= 0.08"
         ),
-        order_by="abs(current_bin - sales_median) / NULLIF(sales_median, 0) DESC",
+        # Raw deviation % alone still crowds out well-evidenced moves: a
+        # thin card with 6 sales and a wild, noisy 60% swing outranks a
+        # card with 50 real sales and a genuine 19% swing, even after the
+        # sales_count floor above (that floor removes single-sale noise,
+        # it does not stop a 6-24-sale card from producing a larger, less
+        # reliable ratio than a 50-sale one). Confirmed in production
+        # twice - card_ids 50562269 (50 sales, 22.8% gap) and 192119 (50
+        # sales, 18.9% gap) both evaluated to a live buy/strong_buy signal
+        # on their own /players/{id} lookup and both still failed to rank
+        # into this segment's top LIMIT rows after the sales_count floor
+        # alone. Weighting the ratio by sample size (capped at 50 - the
+        # same order of magnitude as LIQUID_MIN_SALES's idea of "enough
+        # evidence to trust") ranks well-sampled real moves above thin,
+        # noisy ones without touching evaluate_card()'s own gates at all.
+        order_by=(
+            "(abs(current_bin - sales_median) / NULLIF(sales_median, 0)) "
+            "* least(sales_count, 50) DESC"
+        ),
         limit=_env_int("FUTGG_SEG_MOVED_LIMIT", 400),
         refresh_minutes=_env_int("FUTGG_SEG_MOVED_REFRESH_MIN", 20),
         description="Cards whose live price has moved away from recent sales.",
