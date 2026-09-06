@@ -87,3 +87,20 @@ class TestScanCursorWiring:
         provider = FakeProvider({"liquid": []})
         run(scanner.run_scan(provider, FakePool(), persist=True))
         assert provider.record_scan_cursor_calls == []
+
+
+class TestBuySignalCardIdTracing:
+    # Added after a production investigation where a scan pass logged
+    # buy=1 but there was no way to tell WHICH card, so it couldn't be
+    # checked against what /api/v2/opportunities returned minutes later.
+    def test_records_the_card_ids_of_buy_and_strong_buy_signals_only(self, monkeypatch):
+        signals_by_card = {1: "buy", 2: "watch", 3: "strong_buy", 4: "avoid"}
+        monkeypatch.setattr(
+            scanner, "evaluate_card",
+            lambda row, **kw: _fake_ci(signals_by_card[int(row["source_card_id"])]),
+        )
+        rows = {"liquid": [{"source_card_id": cid} for cid in signals_by_card]}
+        provider = FakeProvider(rows)
+        metrics = run(scanner.run_scan(provider, FakePool(), persist=True))
+        assert sorted(metrics.buy_signal_card_ids) == [1, 3]
+        assert metrics.buy_signals_total == 2
