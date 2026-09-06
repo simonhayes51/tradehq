@@ -761,7 +761,7 @@ async def publish_live_opportunities(pool, server: ServerRecord, client: Optiona
     provider = FutggMarketDataProvider(core_pool)
     candidate_rows = await _segmented_candidates(provider)
     sales_by_card = await _sales_for_rows(provider, candidate_rows)
-    scored = _score_and_filter(
+    scored = await _score_and_filter(
         candidate_rows,
         signals={"buy", "strong_buy"},
         min_confidence=float(settings["min_confidence"]),
