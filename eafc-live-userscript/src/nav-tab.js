@@ -288,6 +288,14 @@ let panelShadow = null;
 let tabEl = null;
 let cachedNavBar = null;
 
+// Colors/radius/fonts below are lifted directly from the real site's own
+// design tokens (frontend/src/v2/styles/tokens.css) and its opportunities/
+// trade-finder CSS, so the panel reads as EAFC.Live rather than a
+// different-looking bolt-on. Notably: the real site uses the IDENTICAL
+// green for both "buy" and "strong_buy" signals (see trade-finder.css's
+// .finder-signal-pill.signal-buy,.signal-strong_buy rule) - there is no
+// separate blue "strong" treatment on the site, so the blue accent this
+// panel used to have for "strong" is dropped entirely rather than kept.
 const PANEL_STYLES = `
   :host { all: initial; }
   .eafc-live-full-panel {
@@ -305,9 +313,9 @@ const PANEL_STYLES = `
        can't be measured, rather than 0. */
     bottom: 64px;
     z-index: 2147483647;
-    background: #0b0e14;
-    color: #e8ecf1;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #08090a;
+    color: #f3f3f2;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     display: flex;
     flex-direction: column;
   }
@@ -316,24 +324,23 @@ const PANEL_STYLES = `
     align-items: center;
     justify-content: space-between;
     padding: max(14px, env(safe-area-inset-top)) 16px 14px;
-    border-bottom: 1px solid #2c3542;
-    background: #14181f;
+    border-bottom: 1px solid #222327;
+    background: #111214;
   }
-  .eafc-live-full-title { font-weight: 700; letter-spacing: 0.04em; font-size: 13px; color: #7fd8ff; }
+  .eafc-live-full-title { font-weight: 700; letter-spacing: 0.04em; font-size: 13px; color: #39ff8a; }
   .eafc-live-full-close {
-    cursor: pointer; color: #8a94a6; font-size: 20px; line-height: 1;
+    cursor: pointer; color: #8d8f95; font-size: 20px; line-height: 1;
     min-width: 36px; min-height: 36px; display: flex; align-items: center; justify-content: center;
-    border-radius: 8px;
+    border-radius: 4px;
   }
   .eafc-live-full-close:active { background: rgba(255,255,255,0.06); }
   .eafc-live-full-body { flex: 1; overflow-y: auto; padding: 12px 16px max(16px, env(safe-area-inset-bottom)); }
   .eafc-live-opp-card {
     display: flex; gap: 14px; align-items: center;
-    background: #14181f; border: 1px solid #2c3542; border-left: 3px solid #5fd98a;
-    border-radius: 10px; padding: 12px; margin-bottom: 10px;
+    background: #141414; border: 1px solid #2c2c2c; border-left: 3px solid #39ff8a;
+    border-radius: 4px; padding: 12px; margin-bottom: 10px;
     animation: eafc-live-card-in 0.25s ease-out both;
   }
-  .eafc-live-opp-card.strong { border-left-color: #7fd8ff; }
   @keyframes eafc-live-card-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
   /* Card art is portrait (FUT card proportions, not square) - a 54x54
      square box squeezed it down further than it needed to be and left
@@ -342,33 +349,32 @@ const PANEL_STYLES = `
      a thumbnail. */
   .eafc-live-opp-art {
     flex: 0 0 auto; width: 68px; height: 92px; object-fit: contain;
-    background: rgba(255,255,255,0.03); border-radius: 6px;
+    background: rgba(255,255,255,0.03); border-radius: 4px;
   }
   .eafc-live-opp-art-placeholder {
-    flex: 0 0 auto; width: 68px; height: 92px; border-radius: 6px;
+    flex: 0 0 auto; width: 68px; height: 92px; border-radius: 4px;
     background: rgba(255,255,255,0.04); display: flex; align-items: center;
-    justify-content: center; font-size: 22px; color: #3a4453;
+    justify-content: center; font-size: 22px; color: #5c5e64;
   }
   .eafc-live-opp-main { flex: 1; min-width: 0; }
   .eafc-live-opp-name {
     font-weight: 700; font-size: 14px; line-height: 1.25; margin-bottom: 6px;
     display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden;
   }
-  .eafc-live-opp-row { display: flex; justify-content: space-between; font-size: 12.5px; color: #b7c0cf; padding: 2px 0; }
-  .eafc-live-opp-row .label { color: #8a94a6; }
-  .eafc-live-opp-row .value { font-variant-numeric: tabular-nums; color: #e8ecf1; }
-  .eafc-live-opp-row .value.profit { color: #5fd98a; font-weight: 600; }
+  .eafc-live-opp-row { display: flex; justify-content: space-between; font-size: 12.5px; color: #a2a2a2; padding: 2px 0; }
+  .eafc-live-opp-row .label { color: #868686; }
+  .eafc-live-opp-row .value { font-variant-numeric: tabular-nums; color: #f3f3f2; }
+  .eafc-live-opp-row .value.profit { color: #39ff8a; font-weight: 600; }
   .eafc-live-opp-signal {
-    display: inline-block; margin-top: 7px; padding: 4px 9px; border-radius: 5px;
+    display: inline-block; margin-top: 7px; padding: 4px 9px; border-radius: 4px;
     font-size: 10.5px; font-weight: 700; letter-spacing: 0.02em;
-    background: rgba(95, 217, 138, 0.15); color: #5fd98a;
+    background: rgba(57, 255, 138, 0.14); color: #39ff8a;
   }
-  .eafc-live-opp-signal.strong { background: rgba(127, 216, 255, 0.15); color: #7fd8ff; }
-  .eafc-live-muted { color: #6b7484; font-size: 12px; text-align: center; padding: 24px 0; }
-  .eafc-live-debug { color: #4a90d9; font-size: 10px; text-align: center; font-family: monospace; padding: 0 16px 16px; word-break: break-word; }
+  .eafc-live-muted { color: #8d8f95; font-size: 12px; text-align: center; padding: 24px 0; }
+  .eafc-live-debug { color: #5c5e64; font-size: 10px; text-align: center; font-family: 'JetBrains Mono', monospace; padding: 0 16px 16px; word-break: break-word; }
   .eafc-live-spinner {
     width: 22px; height: 22px; margin: 24px auto 10px;
-    border: 2px solid #2c3542; border-top-color: #7fd8ff; border-radius: 50%;
+    border: 2px solid #222327; border-top-color: #39ff8a; border-radius: 50%;
     animation: eafc-live-spin 0.7s linear infinite;
   }
   @keyframes eafc-live-spin { to { transform: rotate(360deg); } }
@@ -449,8 +455,7 @@ async function openPanel() {
   const artStats = { withUrl: 0, loaded: 0, failed: 0, total: items.length, firstFailureDetail: null };
 
   items.forEach((item, index) => {
-    const isStrong = item.signal === "strong_buy";
-    const card = el("div", `eafc-live-opp-card${isStrong ? " strong" : ""}`);
+    const card = el("div", "eafc-live-opp-card");
     card.style.animationDelay = `${Math.min(index, 10) * 30}ms`;
 
     // composited_image_url is FUT.GG's own pre-composited card render
@@ -511,7 +516,7 @@ async function openPanel() {
     }
     const signal = el(
       "span",
-      `eafc-live-opp-signal${isStrong ? " strong" : ""}`,
+      "eafc-live-opp-signal",
       String(item.signal || "buy").replace(/_/g, " ").toUpperCase()
     );
     main.appendChild(signal);
@@ -561,7 +566,7 @@ const TAB_CSS = `
     justify-content: center;
     gap: 2px;
     min-width: 0;
-    color: #7fd8ff;
+    color: #39ff8a;
     cursor: pointer;
     /* EA's own tabs are presumably real interactive elements (<button>/
        <a>) - v1.4.0's clone worked because it inherited whatever made
@@ -581,7 +586,7 @@ const TAB_CSS = `
     white-space: nowrap;
     pointer-events: none;
   }
-  .eafc-live-nav-tab.eafc-live-tab-active { color: #fff; text-shadow: 0 0 8px rgba(127, 216, 255, 0.8); }
+  .eafc-live-nav-tab.eafc-live-tab-active { color: #fff; text-shadow: 0 0 8px rgba(57, 255, 138, 0.8); }
   .eafc-live-nav-tab:active { opacity: 0.7; }
 `;
 

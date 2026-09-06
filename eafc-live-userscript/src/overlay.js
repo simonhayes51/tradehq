@@ -64,12 +64,12 @@ const STYLES = `
     width: min(88vw, 270px);
     max-height: 60vh;
     overflow-y: auto;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     font-size: 13px;
-    color: #e8ecf1;
-    background: #14181f;
-    border: 1px solid #2c3542;
-    border-radius: 12px;
+    color: #f3f3f2;
+    background: #111214;
+    border: 1px solid #222327;
+    border-radius: 4px;
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
   }
   /* Collapsed: a small icon-only circle, not a full-width bar - even if
@@ -87,9 +87,9 @@ const STYLES = `
     align-items: center;
     justify-content: space-between;
     padding: 10px 12px;
-    background: #1b2230;
-    border-bottom: 1px solid #2c3542;
-    border-radius: 12px 12px 0 0;
+    background: #17181b;
+    border-bottom: 1px solid #222327;
+    border-radius: 4px 4px 0 0;
     cursor: pointer;
     user-select: none;
   }
@@ -110,33 +110,33 @@ const STYLES = `
     font-weight: 700;
     letter-spacing: 0.04em;
     font-size: 11px;
-    color: #7fd8ff;
+    color: #39ff8a;
   }
-  .eafc-live-status { font-size: 10px; color: #8a94a6; }
-  .eafc-live-status.connected { color: #5fd98a; }
-  .eafc-live-status.error { color: #e5734a; }
+  .eafc-live-status { font-size: 10px; color: #8d8f95; }
+  .eafc-live-status.connected { color: #39ff8a; }
+  .eafc-live-status.error { color: #ff5c5c; }
   .eafc-live-body { padding: 10px 12px 14px; }
-  .eafc-live-card-name { font-weight: 600; margin-bottom: 6px; color: #ffffff; }
-  .eafc-live-row { display: flex; justify-content: space-between; padding: 3px 0; color: #b7c0cf; }
-  .eafc-live-row .label { color: #8a94a6; }
-  .eafc-live-row .value { font-variant-numeric: tabular-nums; color: #e8ecf1; }
-  .eafc-live-divider { height: 1px; background: #2c3542; margin: 8px 0; }
+  .eafc-live-card-name { font-weight: 600; margin-bottom: 6px; color: #f3f3f2; }
+  .eafc-live-row { display: flex; justify-content: space-between; padding: 3px 0; color: #a2a2a2; }
+  .eafc-live-row .label { color: #8d8f95; }
+  .eafc-live-row .value { font-variant-numeric: tabular-nums; color: #f3f3f2; }
+  .eafc-live-divider { height: 1px; background: #222327; margin: 8px 0; }
   .eafc-live-verdict {
     margin-top: 8px;
     padding: 8px;
-    border-radius: 6px;
+    border-radius: 4px;
     font-weight: 600;
     font-size: 12px;
     text-align: center;
   }
-  .eafc-live-verdict.confirmed { background: rgba(95, 217, 138, 0.15); color: #5fd98a; }
-  .eafc-live-verdict.neutral { background: rgba(138, 148, 166, 0.12); color: #b7c0cf; }
-  .eafc-live-muted { color: #6b7484; font-size: 11px; margin-top: 4px; }
-  .eafc-live-debug { color: #4a90d9; font-size: 10px; margin-top: 6px; font-family: monospace; }
+  .eafc-live-verdict.confirmed { background: rgba(57, 255, 138, 0.14); color: #39ff8a; }
+  .eafc-live-verdict.neutral { background: rgba(141, 143, 149, 0.12); color: #a2a2a2; }
+  .eafc-live-muted { color: #8d8f95; font-size: 11px; margin-top: 4px; }
+  .eafc-live-debug { color: #5c5e64; font-size: 10px; margin-top: 6px; font-family: 'JetBrains Mono', monospace; }
   .eafc-live-controls { display: flex; align-items: center; gap: 4px; }
   .eafc-live-btn {
     cursor: pointer;
-    color: #8a94a6;
+    color: #8d8f95;
     font-size: 16px;
     line-height: 1;
     min-width: 32px;
@@ -144,9 +144,9 @@ const STYLES = `
     display: flex;
     align-items: center;
     justify-content: center;
-    border-radius: 6px;
+    border-radius: 4px;
   }
-  .eafc-live-btn:hover, .eafc-live-btn:active { color: #e8ecf1; background: rgba(255,255,255,0.06); }
+  .eafc-live-btn:hover, .eafc-live-btn:active { color: #f3f3f2; background: rgba(255,255,255,0.06); }
 `;
 
 let hostEl = null;
@@ -231,7 +231,7 @@ export function render(state) {
   // text) so there's still an at-a-glance signal without expanding.
   const collapsedIcon = el("span", "eafc-live-collapsed-icon", "⚡");
   collapsedIcon.style.color =
-    statusClass === "connected" ? "#5fd98a" : statusClass === "error" ? "#e5734a" : "#8a94a6";
+    statusClass === "connected" ? "#39ff8a" : statusClass === "error" ? "#ff5c5c" : "#8d8f95";
   header.appendChild(collapsedIcon);
 
   const controls = el("div", "eafc-live-controls");

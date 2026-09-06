@@ -21,6 +21,19 @@ export const CONFIG = {
   NOT_FOUND_CACHE_TTL_MS: 60 * 1000,
 
   // Network timeout for the companion API call, so a slow/unreachable
-  // backend can never hang the overlay or the page.
+  // backend can never hang the overlay or the page. This is a single
+  // fast per-card lookup, so a short timeout is correct here.
   REQUEST_TIMEOUT_MS: 6000,
+
+  // Network timeout for GET /opportunities specifically. That endpoint
+  // is backed by the same segmented candidate scan + evaluate_card()
+  // pass documented across backend/app/routers/v2/futgg_market.py - on a
+  // cold in-process cache it can legitimately take 10-20+ seconds, the
+  // same reasoning behind the website frontend's own
+  // SCAN_REQUEST_OPTS vs REQUEST_OPTS split (see
+  // frontend/src/v2/hooks/useFutggMarket.js). Reusing REQUEST_TIMEOUT_MS
+  // for this endpoint made the nav-tab panel time out and report "Could
+  // not load opportunities right now" well before the backend was
+  // actually done - the panel just never showed trades.
+  SCAN_REQUEST_TIMEOUT_MS: 20000,
 };
