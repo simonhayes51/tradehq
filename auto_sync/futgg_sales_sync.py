@@ -333,7 +333,7 @@ def failure_backoff_minutes(consecutive_failures: int) -> int:
 CIRCUIT_BREAKER_THRESHOLD = env_float("FUTGG_SALES_CIRCUIT_BREAKER_THRESHOLD", 0.8, minimum=0.0)
 CIRCUIT_BREAKER_MIN_SAMPLE = env_int("FUTGG_SALES_CIRCUIT_BREAKER_MIN_SAMPLE", 20, minimum=1)
 CIRCUIT_BREAKER_BACKOFF_SECONDS = env_float(
-    "FUTGG_SALES_CIRCUIT_BREAKER_BACKOFF_SECONDS", 300.0, minimum=0.0
+    "FUTGG_SALES_CIRCUIT_BREAKER_BACKOFF_SECONDS", 900.0, minimum=0.0
 )
 #: Production evidence: a cycle can trip again within seconds of
 #: resuming from a full CIRCUIT_BREAKER_BACKOFF_SECONDS wait - a fixed
@@ -345,7 +345,7 @@ CIRCUIT_BREAKER_BACKOFF_SECONDS = env_float(
 #: next_backoff_seconds() - the wait doubles on each consecutive trip,
 #: capped here, and resets the moment a cycle actually completes clean.
 CIRCUIT_BREAKER_MAX_BACKOFF_SECONDS = env_float(
-    "FUTGG_SALES_CIRCUIT_BREAKER_MAX_BACKOFF_SECONDS", 1800.0, minimum=0.0
+    "FUTGG_SALES_CIRCUIT_BREAKER_MAX_BACKOFF_SECONDS", 3600.0, minimum=0.0
 )
 CONSECUTIVE_FULL_THROTTLE_BATCHES = env_int(
     "FUTGG_SALES_FULL_THROTTLE_BATCHES_BEFORE_BREAKER", 2, minimum=1
@@ -2614,7 +2614,7 @@ async def sleep_within_budget(
     and never calls sleep_or_shutdown at all - "finish the run cleanly"
     rather than "sleep out however much of the budget is left and then
     discover the deadline at the next check" (a circuit-breaker backoff
-    of up to CIRCUIT_BREAKER_MAX_BACKOFF_SECONDS=1800s is exactly the
+    of up to CIRCUIT_BREAKER_MAX_BACKOFF_SECONDS=3600s is exactly the
     case this matters for: sleeping 20 of the last 25 remaining minutes
     of a 45-minute bounded run for a backoff that then has no time left
     to be useful is strictly worse than ending the run now).
@@ -3178,7 +3178,7 @@ async def run_forever() -> None:
                 if breaker_tripped:
                     run_totals["breaker_sleep_seconds"] += backoff_seconds
                     # An escalated backoff can now run up to
-                    # CIRCUIT_BREAKER_MAX_BACKOFF_SECONDS (30 min default),
+                    # CIRCUIT_BREAKER_MAX_BACKOFF_SECONDS (60 min default),
                     # long enough that a silent log stream reads as a
                     # stall rather than the worker doing exactly what it
                     # should. The "backing off Ns" figure in the TRIPPED
