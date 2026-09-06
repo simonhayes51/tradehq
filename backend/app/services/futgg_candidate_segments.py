@@ -78,13 +78,25 @@ class Segment:
 # candidate query silently never surfacing it.
 LIQUID_MIN_SALES = _env_int("FUTGG_SEG_LIQUID_MIN_SALES", 25)
 MEDIUM_MIN_SALES = _env_int("FUTGG_SEG_MEDIUM_MIN_SALES", 8)
+# "recently_moved" ranks purely by deviation magnitude with no liquidity
+# floor at all, so a card with one or two noisy/outlier sales (a trivially
+# huge, meaningless deviation ratio) can rank ahead of - and crowd out -a
+# card with real, well-sampled evidence behind a smaller but genuine move.
+# Confirmed in production: a 89-rated card with 50 sales and a real 22.8%
+# BIN-vs-median gap (a live strong_buy on its own /players/{id} lookup)
+# never appeared in this segment's top LIMIT rows at all. Aligned with
+# futgg_config.py's min_sales_for_signal (5): below that, evaluate_card()
+# cannot produce a completed-sales signal for the card anyway, so this
+# floor only removes rows this segment could never usefully rank high -
+# thin cards below it are still reachable via low_liquidity/never_evaluated.
+MOVED_MIN_SALES = _env_int("FUTGG_SEG_MOVED_MIN_SALES", 5)
 
 SEGMENTS: List[Segment] = [
     Segment(
         name="liquid",
         where=f"sales_count >= {LIQUID_MIN_SALES}",
         order_by="sales_count DESC NULLS LAST",
-        limit=_env_int("FUTGG_SEG_LIQUID_LIMIT", 200),
+        limit=_env_int("FUTGG_SEG_LIQUID_LIMIT", 400),
         refresh_minutes=_env_int("FUTGG_SEG_LIQUID_REFRESH_MIN", 15),
         description="Highly liquid cards - fast, efficient markets.",
     ),
@@ -118,13 +130,16 @@ SEGMENTS: List[Segment] = [
     Segment(
         name="recently_moved",
         # A BIN materially away from the recent-sales median is either an
-        # opportunity or a trend - both are worth an evaluation.
+        # opportunity or a trend - both are worth an evaluation. The
+        # sales_count floor keeps single-sale noise from crowding out
+        # well-sampled moves in the ranking (see MOVED_MIN_SALES above).
         where=(
-            "current_bin IS NOT NULL AND sales_median IS NOT NULL AND sales_median > 0 "
-            "AND abs(current_bin - sales_median) / sales_median >= 0.08"
+            f"current_bin IS NOT NULL AND sales_median IS NOT NULL AND sales_median > 0 "
+            f"AND sales_count >= {MOVED_MIN_SALES} "
+            f"AND abs(current_bin - sales_median) / sales_median >= 0.08"
         ),
         order_by="abs(current_bin - sales_median) / NULLIF(sales_median, 0) DESC",
-        limit=_env_int("FUTGG_SEG_MOVED_LIMIT", 200),
+        limit=_env_int("FUTGG_SEG_MOVED_LIMIT", 400),
         refresh_minutes=_env_int("FUTGG_SEG_MOVED_REFRESH_MIN", 20),
         description="Cards whose live price has moved away from recent sales.",
     ),
@@ -160,7 +175,10 @@ SEGMENTS_BY_NAME: Dict[str, Segment] = {s.name: s for s in SEGMENTS}
 
 # Hard ceiling on a single pass regardless of per-segment limits, so a
 # misconfigured environment cannot turn one scan into a full-table walk.
-MAX_TOTAL_CANDIDATES = _env_int("FUTGG_SEG_MAX_TOTAL", 1500)
+# Raised alongside the liquid/recently_moved limit increases above (default
+# per-segment limits now sum to 1800) so those larger segments aren't
+# silently truncated back down by this ceiling.
+MAX_TOTAL_CANDIDATES = _env_int("FUTGG_SEG_MAX_TOTAL", 2200)
 
 
 def segment_summary() -> List[Dict[str, Any]]:
