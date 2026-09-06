@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EAFC.Live Companion
 // @namespace    https://app.eafc.live/
-// @version      1.8.3
+// @version      1.9.0
 // @description  Read-only EAFC.Live trading intelligence overlay for the EA SPORTS FC 26 Web App Transfer Market. Never buys, bids, lists, or automates anything - observation only.
 // @author       EAFC.Live
 // @match        https://www.ea.com/*/ea-sports-fc/ultimate-team/web-app/*
@@ -10,6 +10,10 @@
 // @connect      *
 // @grant        GM_xmlhttpRequest
 // @grant        GM.xmlHttpRequest
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM.getValue
+// @grant        GM.setValue
 // @run-at       document-start
 // @downloadURL  https://app.eafc.live/companion/eafc-live.user.js
 // @updateURL    https://app.eafc.live/companion/eafc-live.user.js
@@ -97,8 +101,20 @@
     // is NEVER cached at all - see intelligence-cache.js.
     NOT_FOUND_CACHE_TTL_MS: 60 * 1e3,
     // Network timeout for the companion API call, so a slow/unreachable
-    // backend can never hang the overlay or the page.
-    REQUEST_TIMEOUT_MS: 6e3
+    // backend can never hang the overlay or the page. This is a single
+    // fast per-card lookup, so a short timeout is correct here.
+    REQUEST_TIMEOUT_MS: 6e3,
+    // Network timeout for GET /opportunities specifically. That endpoint
+    // is backed by the same segmented candidate scan + evaluate_card()
+    // pass documented across backend/app/routers/v2/futgg_market.py - on a
+    // cold in-process cache it can legitimately take 10-20+ seconds, the
+    // same reasoning behind the website frontend's own
+    // SCAN_REQUEST_OPTS vs REQUEST_OPTS split (see
+    // frontend/src/v2/hooks/useFutggMarket.js). Reusing REQUEST_TIMEOUT_MS
+    // for this endpoint made the nav-tab panel time out and report "Could
+    // not load opportunities right now" well before the backend was
+    // actually done - the panel just never showed trades.
+    SCAN_REQUEST_TIMEOUT_MS: 2e4
   };
 
   // src/intelligence-cache.js
@@ -153,6 +169,23 @@
   }
 
   // src/api-client.js
+  function getCompanionToken() {
+    try {
+      let stored = null;
+      if (typeof GM_getValue === "function") {
+        stored = GM_getValue("companionToken", null);
+      } else if (typeof GM !== "undefined" && GM && typeof GM.getValue === "function") {
+        stored = globalThis.__EAFC_LIVE_TOKEN__ || null;
+      }
+      if (!stored) return "";
+      const entry = typeof stored === "string" ? JSON.parse(stored) : stored;
+      if (!entry || !entry.token) return "";
+      if (entry.expiresAt && entry.expiresAt * 1e3 <= Date.now()) return "";
+      return entry.token;
+    } catch {
+      return "";
+    }
+  }
   function log2(...args) {
     if (typeof window !== "undefined" && window.EAFC_LIVE_DEBUG) console.log("[EAFC.Live]", ...args);
   }
@@ -206,7 +239,7 @@
       return String(err);
     }
   }
-  async function getJson(url, label) {
+  async function getJson(url, label, timeoutMs = CONFIG.REQUEST_TIMEOUT_MS) {
     const gmRequest = resolveGMRequest();
     if (!gmRequest) {
       const detail = "no GM_xmlhttpRequest / GM.xmlHttpRequest in this manager";
@@ -218,8 +251,25 @@
       response = await callGM(gmRequest, {
         method: "GET",
         url,
-        timeout: CONFIG.REQUEST_TIMEOUT_MS,
-        headers: { Accept: "application/json" }
+        timeout: timeoutMs,
+        headers: {
+          Accept: "application/json",
+          // The bearer token is the RELIABLE path. withCredentials below is
+          // the convenient one, and it is the one that cannot be trusted:
+          // support for that flag differs BETWEEN userscript managers, and
+          // this file already documents one live case where two managers
+          // disagreed about a GM API (see the GM.xmlHttpRequest note above).
+          // A header cannot be declined by any of them.
+          ...getCompanionToken() ? { Authorization: `Bearer ${getCompanionToken()}` } : {}
+        },
+        // Sends the EAFC.Live session cookie so an Elite member's overlay
+        // shows their trade plan. The companion endpoint used to be
+        // ungated, so this request being anonymous still returned the full
+        // plan; now an anonymous request gets the locked payload instead,
+        // which the overlay renders as a prompt rather than as an error.
+        // Never the EA session - this is a cross-origin request to
+        // api.eafc.live, not to EA.
+        withCredentials: true
       });
     } catch (err) {
       const detail = err && err.detail || "unknown request failure";
@@ -266,7 +316,11 @@
     return cache.get(sourceCardId);
   }
   function getOpportunities(pageSize = 20) {
-    return getJson(`${CONFIG.API_BASE_URL}/opportunities?page_size=${pageSize}`, "opportunities feed");
+    return getJson(
+      `${CONFIG.API_BASE_URL}/opportunities?page_size=${pageSize}`,
+      "opportunities feed",
+      CONFIG.SCAN_REQUEST_TIMEOUT_MS
+    );
   }
 
   // src/market-calc.js
@@ -509,9 +563,9 @@
        can't be measured, rather than 0. */
     bottom: 64px;
     z-index: 2147483647;
-    background: #0b0e14;
-    color: #e8ecf1;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #08090a;
+    color: #f3f3f2;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     display: flex;
     flex-direction: column;
   }
@@ -520,24 +574,23 @@
     align-items: center;
     justify-content: space-between;
     padding: max(14px, env(safe-area-inset-top)) 16px 14px;
-    border-bottom: 1px solid #2c3542;
-    background: #14181f;
+    border-bottom: 1px solid #222327;
+    background: #111214;
   }
-  .eafc-live-full-title { font-weight: 700; letter-spacing: 0.04em; font-size: 13px; color: #7fd8ff; }
+  .eafc-live-full-title { font-weight: 700; letter-spacing: 0.04em; font-size: 13px; color: #39ff8a; }
   .eafc-live-full-close {
-    cursor: pointer; color: #8a94a6; font-size: 20px; line-height: 1;
+    cursor: pointer; color: #8d8f95; font-size: 20px; line-height: 1;
     min-width: 36px; min-height: 36px; display: flex; align-items: center; justify-content: center;
-    border-radius: 8px;
+    border-radius: 4px;
   }
   .eafc-live-full-close:active { background: rgba(255,255,255,0.06); }
   .eafc-live-full-body { flex: 1; overflow-y: auto; padding: 12px 16px max(16px, env(safe-area-inset-bottom)); }
   .eafc-live-opp-card {
     display: flex; gap: 14px; align-items: center;
-    background: #14181f; border: 1px solid #2c3542; border-left: 3px solid #5fd98a;
-    border-radius: 10px; padding: 12px; margin-bottom: 10px;
+    background: #141414; border: 1px solid #2c2c2c; border-left: 3px solid #39ff8a;
+    border-radius: 4px; padding: 12px; margin-bottom: 10px;
     animation: eafc-live-card-in 0.25s ease-out both;
   }
-  .eafc-live-opp-card.strong { border-left-color: #7fd8ff; }
   @keyframes eafc-live-card-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
   /* Card art is portrait (FUT card proportions, not square) - a 54x54
      square box squeezed it down further than it needed to be and left
@@ -546,33 +599,32 @@
      a thumbnail. */
   .eafc-live-opp-art {
     flex: 0 0 auto; width: 68px; height: 92px; object-fit: contain;
-    background: rgba(255,255,255,0.03); border-radius: 6px;
+    background: rgba(255,255,255,0.03); border-radius: 4px;
   }
   .eafc-live-opp-art-placeholder {
-    flex: 0 0 auto; width: 68px; height: 92px; border-radius: 6px;
+    flex: 0 0 auto; width: 68px; height: 92px; border-radius: 4px;
     background: rgba(255,255,255,0.04); display: flex; align-items: center;
-    justify-content: center; font-size: 22px; color: #3a4453;
+    justify-content: center; font-size: 22px; color: #5c5e64;
   }
   .eafc-live-opp-main { flex: 1; min-width: 0; }
   .eafc-live-opp-name {
     font-weight: 700; font-size: 14px; line-height: 1.25; margin-bottom: 6px;
     display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden;
   }
-  .eafc-live-opp-row { display: flex; justify-content: space-between; font-size: 12.5px; color: #b7c0cf; padding: 2px 0; }
-  .eafc-live-opp-row .label { color: #8a94a6; }
-  .eafc-live-opp-row .value { font-variant-numeric: tabular-nums; color: #e8ecf1; }
-  .eafc-live-opp-row .value.profit { color: #5fd98a; font-weight: 600; }
+  .eafc-live-opp-row { display: flex; justify-content: space-between; font-size: 12.5px; color: #a2a2a2; padding: 2px 0; }
+  .eafc-live-opp-row .label { color: #868686; }
+  .eafc-live-opp-row .value { font-variant-numeric: tabular-nums; color: #f3f3f2; }
+  .eafc-live-opp-row .value.profit { color: #39ff8a; font-weight: 600; }
   .eafc-live-opp-signal {
-    display: inline-block; margin-top: 7px; padding: 4px 9px; border-radius: 5px;
+    display: inline-block; margin-top: 7px; padding: 4px 9px; border-radius: 4px;
     font-size: 10.5px; font-weight: 700; letter-spacing: 0.02em;
-    background: rgba(95, 217, 138, 0.15); color: #5fd98a;
+    background: rgba(57, 255, 138, 0.14); color: #39ff8a;
   }
-  .eafc-live-opp-signal.strong { background: rgba(127, 216, 255, 0.15); color: #7fd8ff; }
-  .eafc-live-muted { color: #6b7484; font-size: 12px; text-align: center; padding: 24px 0; }
-  .eafc-live-debug { color: #4a90d9; font-size: 10px; text-align: center; font-family: monospace; padding: 0 16px 16px; word-break: break-word; }
+  .eafc-live-muted { color: #8d8f95; font-size: 12px; text-align: center; padding: 24px 0; }
+  .eafc-live-debug { color: #5c5e64; font-size: 10px; text-align: center; font-family: 'JetBrains Mono', monospace; padding: 0 16px 16px; word-break: break-word; }
   .eafc-live-spinner {
     width: 22px; height: 22px; margin: 24px auto 10px;
-    border: 2px solid #2c3542; border-top-color: #7fd8ff; border-radius: 50%;
+    border: 2px solid #222327; border-top-color: #39ff8a; border-radius: 50%;
     animation: eafc-live-spin 0.7s linear infinite;
   }
   @keyframes eafc-live-spin { to { transform: rotate(360deg); } }
@@ -634,8 +686,7 @@
     }
     const artStats = { withUrl: 0, loaded: 0, failed: 0, total: items.length, firstFailureDetail: null };
     items.forEach((item, index) => {
-      const isStrong = item.signal === "strong_buy";
-      const card = el("div", `eafc-live-opp-card${isStrong ? " strong" : ""}`);
+      const card = el("div", "eafc-live-opp-card");
       card.style.animationDelay = `${Math.min(index, 10) * 30}ms`;
       const artUrl = item.composited_image_url || item.image_url;
       const artPlaceholder = el("div", "eafc-live-opp-art-placeholder", "\u26BD");
@@ -678,7 +729,7 @@
       }
       const signal = el(
         "span",
-        `eafc-live-opp-signal${isStrong ? " strong" : ""}`,
+        "eafc-live-opp-signal",
         String(item.signal || "buy").replace(/_/g, " ").toUpperCase()
       );
       main.appendChild(signal);
@@ -712,7 +763,7 @@
     justify-content: center;
     gap: 2px;
     min-width: 0;
-    color: #7fd8ff;
+    color: #39ff8a;
     cursor: pointer;
     /* EA's own tabs are presumably real interactive elements (<button>/
        <a>) - v1.4.0's clone worked because it inherited whatever made
@@ -732,7 +783,7 @@
     white-space: nowrap;
     pointer-events: none;
   }
-  .eafc-live-nav-tab.eafc-live-tab-active { color: #fff; text-shadow: 0 0 8px rgba(127, 216, 255, 0.8); }
+  .eafc-live-nav-tab.eafc-live-tab-active { color: #fff; text-shadow: 0 0 8px rgba(57, 255, 138, 0.8); }
   .eafc-live-nav-tab:active { opacity: 0.7; }
 `;
   function equalizeTabWidths(navBar) {
@@ -843,12 +894,12 @@
     width: min(88vw, 270px);
     max-height: 60vh;
     overflow-y: auto;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     font-size: 13px;
-    color: #e8ecf1;
-    background: #14181f;
-    border: 1px solid #2c3542;
-    border-radius: 12px;
+    color: #f3f3f2;
+    background: #111214;
+    border: 1px solid #222327;
+    border-radius: 4px;
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
   }
   /* Collapsed: a small icon-only circle, not a full-width bar - even if
@@ -866,9 +917,9 @@
     align-items: center;
     justify-content: space-between;
     padding: 10px 12px;
-    background: #1b2230;
-    border-bottom: 1px solid #2c3542;
-    border-radius: 12px 12px 0 0;
+    background: #17181b;
+    border-bottom: 1px solid #222327;
+    border-radius: 4px 4px 0 0;
     cursor: pointer;
     user-select: none;
   }
@@ -889,33 +940,33 @@
     font-weight: 700;
     letter-spacing: 0.04em;
     font-size: 11px;
-    color: #7fd8ff;
+    color: #39ff8a;
   }
-  .eafc-live-status { font-size: 10px; color: #8a94a6; }
-  .eafc-live-status.connected { color: #5fd98a; }
-  .eafc-live-status.error { color: #e5734a; }
+  .eafc-live-status { font-size: 10px; color: #8d8f95; }
+  .eafc-live-status.connected { color: #39ff8a; }
+  .eafc-live-status.error { color: #ff5c5c; }
   .eafc-live-body { padding: 10px 12px 14px; }
-  .eafc-live-card-name { font-weight: 600; margin-bottom: 6px; color: #ffffff; }
-  .eafc-live-row { display: flex; justify-content: space-between; padding: 3px 0; color: #b7c0cf; }
-  .eafc-live-row .label { color: #8a94a6; }
-  .eafc-live-row .value { font-variant-numeric: tabular-nums; color: #e8ecf1; }
-  .eafc-live-divider { height: 1px; background: #2c3542; margin: 8px 0; }
+  .eafc-live-card-name { font-weight: 600; margin-bottom: 6px; color: #f3f3f2; }
+  .eafc-live-row { display: flex; justify-content: space-between; padding: 3px 0; color: #a2a2a2; }
+  .eafc-live-row .label { color: #8d8f95; }
+  .eafc-live-row .value { font-variant-numeric: tabular-nums; color: #f3f3f2; }
+  .eafc-live-divider { height: 1px; background: #222327; margin: 8px 0; }
   .eafc-live-verdict {
     margin-top: 8px;
     padding: 8px;
-    border-radius: 6px;
+    border-radius: 4px;
     font-weight: 600;
     font-size: 12px;
     text-align: center;
   }
-  .eafc-live-verdict.confirmed { background: rgba(95, 217, 138, 0.15); color: #5fd98a; }
-  .eafc-live-verdict.neutral { background: rgba(138, 148, 166, 0.12); color: #b7c0cf; }
-  .eafc-live-muted { color: #6b7484; font-size: 11px; margin-top: 4px; }
-  .eafc-live-debug { color: #4a90d9; font-size: 10px; margin-top: 6px; font-family: monospace; }
+  .eafc-live-verdict.confirmed { background: rgba(57, 255, 138, 0.14); color: #39ff8a; }
+  .eafc-live-verdict.neutral { background: rgba(141, 143, 149, 0.12); color: #a2a2a2; }
+  .eafc-live-muted { color: #8d8f95; font-size: 11px; margin-top: 4px; }
+  .eafc-live-debug { color: #5c5e64; font-size: 10px; margin-top: 6px; font-family: 'JetBrains Mono', monospace; }
   .eafc-live-controls { display: flex; align-items: center; gap: 4px; }
   .eafc-live-btn {
     cursor: pointer;
-    color: #8a94a6;
+    color: #8d8f95;
     font-size: 16px;
     line-height: 1;
     min-width: 32px;
@@ -923,9 +974,9 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    border-radius: 6px;
+    border-radius: 4px;
   }
-  .eafc-live-btn:hover, .eafc-live-btn:active { color: #e8ecf1; background: rgba(255,255,255,0.06); }
+  .eafc-live-btn:hover, .eafc-live-btn:active { color: #f3f3f2; background: rgba(255,255,255,0.06); }
 `;
   var hostEl = null;
   var shadow = null;
@@ -971,7 +1022,7 @@
     const statusClass = state.kind === "result" ? "connected" : state.kind === "loading" || state.kind === "watching" ? "" : "error";
     const statusText = state.kind === "loading" ? "LOADING" : state.kind === "result" ? "CONNECTED" : state.kind === "watching" ? "WATCHING" : "NO DATA";
     const collapsedIcon = el2("span", "eafc-live-collapsed-icon", "\u26A1");
-    collapsedIcon.style.color = statusClass === "connected" ? "#5fd98a" : statusClass === "error" ? "#e5734a" : "#8a94a6";
+    collapsedIcon.style.color = statusClass === "connected" ? "#39ff8a" : statusClass === "error" ? "#ff5c5c" : "#8d8f95";
     header.appendChild(collapsedIcon);
     const controls = el2("div", "eafc-live-controls");
     controls.appendChild(el2("span", `eafc-live-status ${statusClass}`.trim(), statusText));
@@ -1121,9 +1172,9 @@
     const el3 = document.createElement("button");
     el3.type = "button";
     el3.textContent = verdict.label === "BUY" ? "\u2713 BUY" : "\u26A0 AVOID";
-    const bg = verdict.tone === "buy" ? "#123d24" : "#3d1414";
-    const fg = verdict.tone === "buy" ? "#5fd98a" : "#e5734a";
-    const border = verdict.tone === "buy" ? "#5fd98a" : "#e5734a";
+    const bg = verdict.tone === "buy" ? "rgba(57, 255, 138, 0.14)" : "rgba(255, 92, 92, 0.14)";
+    const fg = verdict.tone === "buy" ? "#39ff8a" : "#ff5c5c";
+    const border = verdict.tone === "buy" ? "#39ff8a" : "#ff5c5c";
     el3.style.cssText = [
       "position:absolute",
       "top:6px",
@@ -1137,7 +1188,7 @@
       "font-weight:700",
       "letter-spacing:0.02em",
       "padding:3px 6px",
-      "border-radius:5px",
+      "border-radius:4px",
       "cursor:pointer",
       "line-height:1",
       "white-space:nowrap",
