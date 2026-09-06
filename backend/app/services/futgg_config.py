@@ -44,7 +44,7 @@ from typing import Any, Dict, Mapping, Optional
 # unchanged snapshot. Format is "futgg-<major>.<minor>"; the outcome
 # grader groups by this exact string, so it must be stable and unique per
 # behavioural configuration.
-ENGINE_VERSION = "futgg-2.2"
+ENGINE_VERSION = "futgg-2.3"
 
 # Bumped independently of ENGINE_VERSION - see module docstring.
 TREND_VERSION = "trend-1.0"
@@ -317,8 +317,23 @@ class EngineConfig:
     # ---- Expiry -------------------------------------------------------
     # Base shelf-life of a recommendation before market conditions are
     # assumed to have moved on, scaled down by volatility/velocity and up
-    # by liquidity/confidence in expiry.py.
-    base_expiry_minutes: int = 45
+    # by liquidity/confidence in _compute_expiry_minutes (futgg_intelligence.py).
+    #
+    # Raised 45 -> 90 (2026-09-05): the entry bar (ROI/confidence
+    # thresholds) is unchanged and not the problem here - two genuinely
+    # qualifying strong_buys, confirmed live (Alexander Isak, Joan
+    # Jordan), came back with expiry_minutes of 22 and 17 after the
+    # liquidity/dispersion/distance-from-threshold factors shrank the old
+    # 45-minute base by ~50-60%. futgg_scanner only re-evaluates every
+    # ~10 minutes, so a genuine catch with a ~20-minute shelf life gave a
+    # user checking the feed every 20-30 minutes, as most do, a real
+    # chance of never seeing it at all - not because nothing qualified,
+    # but because it had already expired by the next look. Doubling the
+    # base roughly doubles every scaled result (confirmed by
+    # test_futgg_intelligence.py's own expiry tests), giving a genuine
+    # opportunity a realistic window to actually be seen without loosening
+    # what counts as one.
+    base_expiry_minutes: int = 90
     min_expiry_minutes: int = 5
     max_expiry_minutes: int = 360
     # A recommendation is invalidated (not merely expired) once the live
@@ -427,7 +442,7 @@ def _load_engine_config() -> EngineConfig:
         fair_value_bin_weight=_env_float("FUTGG_FAIR_VALUE_BIN_WEIGHT", 0.3),
         conservative_buy_margin=_env_float("FUTGG_CONSERVATIVE_BUY_MARGIN", 0.04),
         sell_target_margin=_env_float("FUTGG_SELL_TARGET_MARGIN", 0.03),
-        base_expiry_minutes=_env_int("FUTGG_BASE_EXPIRY_MINUTES", 45),
+        base_expiry_minutes=_env_int("FUTGG_BASE_EXPIRY_MINUTES", 90),
         invalidation_bin_drift_pct=_env_float("FUTGG_INVALIDATION_DRIFT_PCT", 0.05),
         unverifiable_discount_ratio=_env_float("FUTGG_UNVERIFIABLE_DISCOUNT_RATIO", 0.25),
         unverifiable_discount_guard_enabled=_env_bool("FUTGG_UNVERIFIABLE_DISCOUNT_GUARD", True),
