@@ -9,11 +9,17 @@ os.environ.setdefault("DATABASE_URL", "postgresql://x:y@localhost/z")
 
 from futgg_sales_sync import (  # noqa: E402
     _parse_sold_at, AdaptiveThrottle, build_sale_rows,
+    SELECT_LIMIT, SELECT_LIMIT_HARD_CAP,
     circuit_breaker_tripped, classify_page_capture_error, sales_interval_minutes,
     should_fall_back_to_page_capture,
 )
 
 NOW = datetime(2026, 8, 3, 23, 0, tzinfo=timezone.utc)
+
+
+class TestSelectionLimit:
+    def test_default_selection_is_hard_capped_for_signed_endpoint(self):
+        assert SELECT_LIMIT == SELECT_LIMIT_HARD_CAP == 90
 
 
 class TestPageCaptureClassification:
