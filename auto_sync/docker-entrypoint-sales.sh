@@ -117,12 +117,11 @@ fi
 # wall time, dwarfing AdaptiveThrottle's own per-batch pacing - which
 # already reacts to real 429 feedback in real time and, after the
 # rolling-window recovery fix (same date), no longer needs a large
-# static safety margin bolted on top of it to stay stable. Raised to
-# 120 as a conservative first step toward a ceiling actually sized
-# against demand (with CYCLE_SLEEP_MIN below also lowered) - AdaptiveThrottle
-# remains the real governor of request RATE; this only changes how much
-# work is queued up for it to work through per cycle.
-SALES_SELECT_LIMIT_MAX="${FUTGG_SALES_SELECT_LIMIT_MAX:-120}"
+# static safety margin bolted on top of it to stay stable. Keep the
+# cycle small enough that a productive pass is less likely to end by
+# exhausting FUT.GG's signed-endpoint rate window; AdaptiveThrottle remains
+# the real governor of request RATE.
+SALES_SELECT_LIMIT_MAX="${FUTGG_SALES_SELECT_LIMIT_MAX:-90}"
 if [ -n "${FUTGG_SALES_SELECT_LIMIT:-}" ]; then
     if [ "${FUTGG_SALES_SELECT_LIMIT}" -gt "${SALES_SELECT_LIMIT_MAX}" ] 2>/dev/null; then
         echo "Capping FUTGG_SALES_SELECT_LIMIT from ${FUTGG_SALES_SELECT_LIMIT} to ${SALES_SELECT_LIMIT_MAX}"
@@ -136,18 +135,11 @@ fi
 # completed-sales history. Force a real pause between signed batches so
 # a clean cycle does not immediately drain FUT.GG's rate window again.
 #
-# Lowered from 300 (2026-09-04 root-cause review, see SALES_SELECT_LIMIT_MAX's
-# own comment above for the full math) - 300s was never checked against
-# the ~1,327/hour steady-state demand and, paired with SELECT_LIMIT=60,
-# created a hard ~709-720 cards/hour ceiling regardless of throttle
-# health. 90s is a conservative first step, not a jump straight to this
-# script's own code-level default (CYCLE_SLEEP=5s in futgg_sales_sync.py)
-# - AdaptiveThrottle's per-batch delay is the mechanism that should react
-# to real 429 pressure; this static floor only needs to be large enough
-# to not itself be the bottleneck. Watch the per-invocation "run summary"
-# log line (cards/hour, throttle end state, breaker trips) after this
-# change before lowering further.
-SALES_CYCLE_SLEEP_MIN="${FUTGG_SALES_CYCLE_SLEEP_MIN:-90}"
+# The 2026-09-06 Railway trace showed 90s plus a 120-card cap repeatedly
+# produced one useful cycle followed by a wasted 429-only cycle. 180s is
+# deliberately slower on paper but should produce more useful reads by
+# letting FUT.GG's rate window recover between cycles.
+SALES_CYCLE_SLEEP_MIN="${FUTGG_SALES_CYCLE_SLEEP_MIN:-180}"
 SALES_CYCLE_SLEEP_FORCE="${FUTGG_SALES_CYCLE_SLEEP_FORCE:-true}"
 if [ "${SALES_CYCLE_SLEEP_FORCE,,}" != "false" ] && [ "${SALES_CYCLE_SLEEP_FORCE}" != "0" ]; then
     if [ "${FUTGG_SALES_CYCLE_SLEEP:-}" != "${SALES_CYCLE_SLEEP_MIN}" ]; then
@@ -157,6 +149,11 @@ if [ "${SALES_CYCLE_SLEEP_FORCE,,}" != "false" ] && [ "${SALES_CYCLE_SLEEP_FORCE
 elif [ -z "${FUTGG_SALES_CYCLE_SLEEP:-}" ]; then
     export FUTGG_SALES_CYCLE_SLEEP="${SALES_CYCLE_SLEEP_MIN}"
 fi
+
+: "${FUTGG_SALES_CIRCUIT_BREAKER_BACKOFF_SECONDS:=900}"
+: "${FUTGG_SALES_CIRCUIT_BREAKER_MAX_BACKOFF_SECONDS:=3600}"
+export FUTGG_SALES_CIRCUIT_BREAKER_BACKOFF_SECONDS
+export FUTGG_SALES_CIRCUIT_BREAKER_MAX_BACKOFF_SECONDS
 
 SALES_PID=""
 STOP_REQUESTED=0
