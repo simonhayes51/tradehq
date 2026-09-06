@@ -40,6 +40,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -152,6 +153,7 @@ async def _segmented_candidates(provider: "FutggMarketDataProvider") -> List[Dic
     switched over to it. No engine/threshold logic changes here - same
     evaluate_card(), same gates, only a larger and fairer candidate pool.
     """
+    started = time.monotonic()
     by_segment = await provider.select_candidates_by_segment()
     unique_rows: Dict[int, Dict[str, Any]] = {}
     for rows in by_segment.values():
@@ -159,6 +161,28 @@ async def _segmented_candidates(provider: "FutggMarketDataProvider") -> List[Dic
             card_id = int(row["source_card_id"])
             if card_id not in unique_rows:
                 unique_rows[card_id] = row
+    elapsed_ms = (time.monotonic() - started) * 1000
+    # The segment limits were raised (see futgg_candidate_segments.py) to
+    # fix genuine buy signals ranking outside the old, smaller cutoffs -
+    # but every caller here (/opportunities, /trade-finder, /dashboard's
+    # free picks, the Discord feed) runs this fresh on EVERY request, with
+    # no cache, and the frontend's own request timeout is 8s
+    # (useFutggMarket.js REQUEST_OPTS) with no retry - so a slow query here
+    # surfaces to users as "Opportunities aren't available right now",
+    # indistinguishable from the endpoint being down. Logged unconditionally
+    # (this is a low-QPS endpoint, not a hot path) so a timeout report can
+    # be checked against actual server-side timing instead of guessed at.
+    log.info(
+        "_segmented_candidates: %d unique rows across %d segments in %.0fms",
+        len(unique_rows), len(by_segment), elapsed_ms,
+    )
+    if elapsed_ms > 3000:
+        log.warning(
+            "_segmented_candidates took %.0fms - within striking distance of "
+            "the frontend's 8s request timeout once sales/bin batch fetches "
+            "and per-row evaluate_card() calls run on top of this",
+            elapsed_ms,
+        )
     return list(unique_rows.values())
 
 
