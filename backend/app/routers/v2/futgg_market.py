@@ -37,6 +37,7 @@ and why they are persisted.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -134,6 +135,33 @@ CANDIDATE_SCAN_LIMIT = 500
 CANDIDATE_SCAN_ORDER_BY = "sales_count DESC NULLS LAST"
 
 
+#: Short-lived cache for _segmented_candidates()'s raw row set (below).
+#: Confirmed in production: a single page load fires /opportunities,
+#: /trade-finder/strategy/*, and /dashboard within about a second of each
+#: other, and every one of them called this function independently -
+#: 5+ redundant full segment scans, each measured at 2.7-4.6 seconds,
+#: landing back-to-back on the same database. That's what "Opportunities
+#: aren't available right now" actually was: not a slow query in
+#: isolation, but the same expensive query being asked for N times over
+#: in the same instant with nothing sharing the answer.
+#:
+#: This cache only holds the raw CANDIDATE ROWS (which cards to consider),
+#: never an evaluation result - every caller still fetches its own fresh
+#: sales/bin data and runs evaluate_card() itself on every request, so
+#: signal freshness and per-viewer filtering are entirely unaffected. The
+#: rows themselves are already only as fresh as futgg_market_snapshot's
+#: own refresh cycle (observed taking 140-220s), so a several-second-old
+#: cached row set changes nothing about correctness - it only avoids
+#: re-asking the database the identical question multiple times in the
+#: same breath.
+_SEGMENTED_CANDIDATES_CACHE_SECONDS = int(
+    os.getenv("FUTGG_SEGMENTED_CANDIDATES_CACHE_SECONDS", "20")
+)
+_segmented_candidates_cache: Optional[List[Dict[str, Any]]] = None
+_segmented_candidates_cached_at: float = 0.0
+_segmented_candidates_lock = asyncio.Lock()
+
+
 async def _segmented_candidates(provider: "FutggMarketDataProvider") -> List[Dict[str, Any]]:
     """De-duplicated union of every candidate segment (see
     app/services/futgg_candidate_segments.py), the same source
@@ -153,37 +181,58 @@ async def _segmented_candidates(provider: "FutggMarketDataProvider") -> List[Dic
     switched over to it. No engine/threshold logic changes here - same
     evaluate_card(), same gates, only a larger and fairer candidate pool.
     """
-    started = time.monotonic()
-    by_segment = await provider.select_candidates_by_segment()
-    unique_rows: Dict[int, Dict[str, Any]] = {}
-    for rows in by_segment.values():
-        for row in rows:
-            card_id = int(row["source_card_id"])
-            if card_id not in unique_rows:
-                unique_rows[card_id] = row
-    elapsed_ms = (time.monotonic() - started) * 1000
-    # The segment limits were raised (see futgg_candidate_segments.py) to
-    # fix genuine buy signals ranking outside the old, smaller cutoffs -
-    # but every caller here (/opportunities, /trade-finder, /dashboard's
-    # free picks, the Discord feed) runs this fresh on EVERY request, with
-    # no cache, and the frontend's own request timeout is 8s
-    # (useFutggMarket.js REQUEST_OPTS) with no retry - so a slow query here
-    # surfaces to users as "Opportunities aren't available right now",
-    # indistinguishable from the endpoint being down. Logged unconditionally
-    # (this is a low-QPS endpoint, not a hot path) so a timeout report can
-    # be checked against actual server-side timing instead of guessed at.
-    log.info(
-        "_segmented_candidates: %d unique rows across %d segments in %.0fms",
-        len(unique_rows), len(by_segment), elapsed_ms,
-    )
-    if elapsed_ms > 3000:
-        log.warning(
-            "_segmented_candidates took %.0fms - within striking distance of "
-            "the frontend's 8s request timeout once sales/bin batch fetches "
-            "and per-row evaluate_card() calls run on top of this",
-            elapsed_ms,
+    global _segmented_candidates_cache, _segmented_candidates_cached_at
+
+    now = time.monotonic()
+    if (
+        _segmented_candidates_cache is not None
+        and (now - _segmented_candidates_cached_at) < _SEGMENTED_CANDIDATES_CACHE_SECONDS
+    ):
+        return _segmented_candidates_cache
+
+    async with _segmented_candidates_lock:
+        # Re-check inside the lock: a request that was waiting on this
+        # lock may have arrived while another request was already
+        # refreshing the cache, and should reuse that result rather than
+        # triggering a second redundant scan the moment the lock frees up.
+        now = time.monotonic()
+        if (
+            _segmented_candidates_cache is not None
+            and (now - _segmented_candidates_cached_at) < _SEGMENTED_CANDIDATES_CACHE_SECONDS
+        ):
+            return _segmented_candidates_cache
+
+        started = time.monotonic()
+        by_segment = await provider.select_candidates_by_segment()
+        unique_rows: Dict[int, Dict[str, Any]] = {}
+        for rows in by_segment.values():
+            for row in rows:
+                card_id = int(row["source_card_id"])
+                if card_id not in unique_rows:
+                    unique_rows[card_id] = row
+        elapsed_ms = (time.monotonic() - started) * 1000
+        # The segment limits were raised (see futgg_candidate_segments.py)
+        # to fix genuine buy signals ranking outside the old, smaller
+        # cutoffs - logged unconditionally (this cache means it now runs
+        # at most once every _SEGMENTED_CANDIDATES_CACHE_SECONDS, not on
+        # every request, so the volume is low) so a slow-query report can
+        # be checked against actual server-side timing instead of guessed
+        # at.
+        log.info(
+            "_segmented_candidates: %d unique rows across %d segments in %.0fms (cache miss)",
+            len(unique_rows), len(by_segment), elapsed_ms,
         )
-    return list(unique_rows.values())
+        if elapsed_ms > 3000:
+            log.warning(
+                "_segmented_candidates took %.0fms - within striking distance of "
+                "the frontend's 8s request timeout once sales/bin batch fetches "
+                "and per-row evaluate_card() calls run on top of this",
+                elapsed_ms,
+            )
+        result = list(unique_rows.values())
+        _segmented_candidates_cache = result
+        _segmented_candidates_cached_at = time.monotonic()
+        return result
 
 
 def _apply_filters_in_python(rows: List[Dict[str, Any]], f: "PlayerFilters") -> List[Dict[str, Any]]:
