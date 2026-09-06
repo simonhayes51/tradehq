@@ -644,6 +644,38 @@ class TestBinHistoryFallbackAPI:
         assert resp.status_code == 200
         assert resp.json()["items"] == []
 
+    def test_opportunities_reject_thin_sales_even_when_profitable(self):
+        thin_sales_row = _row(
+            source_card_id=80,
+            current_bin=6500,
+            sales_median=8000,
+            sales_trimmed_mean=8000,
+            latest_sale_price=8000,
+            sales_count=5,
+            sales_low=7900,
+            sales_high=8100,
+            sales_stddev=80,
+            latest_sale_at=AS_OF - timedelta(minutes=5),
+            sales_window_latest_at=AS_OF - timedelta(minutes=5),
+            sales_window_earliest_at=AS_OF - timedelta(days=8),
+            sales_window_span_minutes=8 * 24 * 60,
+            sales_dispersion_ratio=0.01,
+        )
+        client = TestClient(_app_with(FakeProvider([thin_sales_row])))
+        resp = client.get("/api/v2/opportunities")
+        assert resp.status_code == 200
+        assert resp.json()["items"] == []
+
+    def test_free_pick_pool_reuses_live_opportunity_quality_gate(self):
+        row = self._bin_row()
+        provider = FakeProvider(
+            [row], bin_observations_by_card={77: _bin_observations(price=10000)},
+        )
+        client = TestClient(_app_with(provider, viewer=FREE_VIEWER))
+        body = client.get("/api/v2/opportunities").json()
+        assert body["items"] == []
+        assert body["free_picks"]["unlocked"] == 0
+
     def test_confirmed_sales_result_reports_no_bin_fields(self):
         # The default fixture row (_row()) has a full, fresh sales series -
         # a sales-confirmed result must never carry BIN evidence fields,
