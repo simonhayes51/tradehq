@@ -19,8 +19,15 @@ def reset_segmented_candidates_cache():
     # cache miss, regardless of which module it lives in.
     import app.routers.v2.futgg_market as futgg_market_module
 
-    futgg_market_module._segmented_candidates_cache = None
-    futgg_market_module._segmented_candidates_cached_at = 0.0
+    def _reset():
+        futgg_market_module._segmented_candidates_cache = None
+        futgg_market_module._segmented_candidates_cached_at = 0.0
+        # _cached_evaluate_card()'s memoization (same production reasoning,
+        # keyed by card_id) - different tests reuse the same small set of
+        # card_ids (1, 2, 3, ...) with different evaluate_card() behaviour,
+        # so a result cached by one test would otherwise leak into another.
+        futgg_market_module._evaluate_card_cache.clear()
+
+    _reset()
     yield
-    futgg_market_module._segmented_candidates_cache = None
-    futgg_market_module._segmented_candidates_cached_at = 0.0
+    _reset()
