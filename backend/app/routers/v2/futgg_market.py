@@ -523,7 +523,7 @@ async def list_players(
     # Python first (see CANDIDATE_SCAN_LIMIT), so pagination happens
     # after scoring+filtering rather than pushing LIMIT/OFFSET into SQL.
     rows = await provider.search_players(filters, limit=CANDIDATE_SCAN_LIMIT, offset=0, order_by=CANDIDATE_SCAN_ORDER_BY)
-    scored = _score_and_filter(
+    scored = await _score_and_filter(
         rows, risk=risk, min_expected_profit=min_expected_profit,
         min_roi=min_roi, min_confidence=min_confidence, min_liquidity=min_liquidity,
         bin_by_card=await _bin_observations_for_rows(provider, rows),
@@ -566,7 +566,24 @@ async def _bin_observations_for_rows(provider, rows: List[Dict[str, Any]]) -> Di
         return {}
 
 
-def _score_and_filter(
+#: How many rows _score_and_filter() evaluates between yield points. This
+#: is a synchronous, CPU-bound loop (evaluate_card() is a plain function,
+#: not a coroutine) - with no yield at all, evaluating today's larger
+#: candidate pool (raised in an earlier commit to fix genuine buy signals
+#: falling outside the old, smaller segment limits) monopolizes the
+#: single asyncio event loop for the entire loop's duration. Confirmed in
+#: production: a browser request to /opportunities stalled at "Initial
+#: connection" for exactly the frontend's 8s timeout - not a slow
+#: response, a server that could not get around to accepting/servicing
+#: ANY connection, including brand new ones, while this loop (or the
+#: background scanner's equivalent, unbounded loop in futgg_scanner.py)
+#: ran solid. Yielding periodically lets the loop service other pending
+#: connections between chunks without changing anything about how any
+#: individual card is evaluated.
+_SCORE_AND_FILTER_YIELD_EVERY = 50
+
+
+async def _score_and_filter(
     rows: List[Dict[str, Any]], *, risk: Optional[str] = None,
     min_expected_profit: Optional[float] = None, min_roi: Optional[float] = None,
     min_confidence: Optional[float] = None, min_liquidity: Optional[float] = None,
@@ -579,7 +596,9 @@ def _score_and_filter(
     out = []
     sales_by_card = sales_by_card or {}
     bin_by_card = bin_by_card or {}
-    for row in rows:
+    for i, row in enumerate(rows):
+        if i and i % _SCORE_AND_FILTER_YIELD_EVERY == 0:
+            await asyncio.sleep(0)
         card_id = int(row["source_card_id"])
         try:
             ci = evaluate_card(
@@ -798,7 +817,7 @@ async def free_pick_candidates(provider: "FutggMarketDataProvider") -> List[Dict
         await _segmented_candidates(provider),
         _filters_from_query(None, None, None, None, None, None, None, None, None, None, None),
     )
-    scored = _score_and_filter(
+    scored = await _score_and_filter(
         rows, signals={"buy", "strong_buy"},
         min_liquidity=LIVE_OPPORTUNITY_MIN_LIQUIDITY_SCORE,
         require_confirmed_sales=True,
@@ -861,7 +880,7 @@ async def list_opportunities(
         max_price, min_price, max_price_age_minutes,
     )
     rows = _apply_filters_in_python(await _segmented_candidates(provider), filters)
-    scored = _score_and_filter(
+    scored = await _score_and_filter(
         rows, risk=risk, min_expected_profit=min_profit, min_roi=min_roi,
         min_confidence=min_confidence,
         min_liquidity=_live_opportunity_min_liquidity(min_liquidity),
@@ -949,7 +968,7 @@ async def opportunities_preview(
     docstring for why this is a separate, narrower serialisation rather
     than the same /opportunities payload with fields hidden client-side."""
     rows = await _segmented_candidates(provider)
-    scored = _score_and_filter(
+    scored = await _score_and_filter(
         rows, signals={"buy", "strong_buy"},
         min_liquidity=LIVE_OPPORTUNITY_MIN_LIQUIDITY_SCORE,
         require_confirmed_sales=True,
@@ -1081,7 +1100,7 @@ async def trade_finder(
     # aren't a looser opportunity, they're the engine saying this card
     # isn't one right now, and section 18's "never show AVOID as an
     # opportunity" applies here as much as to the curated feed.
-    scored = _score_and_filter(
+    scored = await _score_and_filter(
         rows, min_expected_profit=min_profit, min_roi=min_roi,
         min_confidence=min_confidence, min_liquidity=min_liquidity,
         signals={"buy", "strong_buy"} if require_executable else {"buy", "strong_buy", "watch"},
@@ -1577,7 +1596,7 @@ async def strategy_finder(
     sales_by_card = await _sales_for_rows(provider, rows)
     bin_by_card = await _bin_observations_for_rows(provider, rows)
 
-    scored = _score_and_filter(
+    scored = await _score_and_filter(
         rows, min_expected_profit=definition.min_profit, min_roi=definition.min_roi,
         min_confidence=definition.min_confidence, min_liquidity=definition.min_liquidity,
         # Every definition is require_executable=True (asserted in
@@ -1617,7 +1636,7 @@ async def strategy_finder(
     # rule from the hotfix on its own (tolerance, target/break-even
     # checks, real-time profit from the CURRENT price): a card that
     # fails any of them is excluded here, not merely hidden client-side.
-    watch_scored = _score_and_filter(
+    watch_scored = await _score_and_filter(
         rows, min_confidence=definition.min_confidence, min_liquidity=definition.min_liquidity,
         signals={"watch"}, sales_by_card=sales_by_card, bin_by_card=bin_by_card,
     )
