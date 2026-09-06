@@ -86,6 +86,17 @@ class ScanMetrics:
     # presents as a scan that keeps evaluating the same frozen rows and
     # looks, from here, exactly like a quiet market.
     snapshot_age_minutes: Optional[float] = None
+    # The actual card_ids behind buy_signals_total, not just the count -
+    # so a specific card that briefly qualified can be checked against
+    # what /api/v2/opportunities (or the Discord feed) returns a few
+    # minutes later, instead of only knowing "a buy signal existed
+    # somewhere" with no way to trace which one. See the investigation
+    # this was added for: a scan pass logged buy=1 and 8 minutes later
+    # /opportunities returned zero, with no way to confirm whether that
+    # was the same card falling out of _segmented_candidates()'s
+    # fixed-size per-segment ranking window, a genuine price move, or
+    # something else.
+    buy_signal_card_ids: List[int] = field(default_factory=list)
 
     @property
     def buy_signals_total(self) -> int:
@@ -113,6 +124,7 @@ class ScanMetrics:
             "pool_coverage_pct": self.pool_coverage_pct,
             "recommendations_written": self.recommendations_written,
             "buy_signals_total": self.buy_signals_total,
+            "buy_signal_card_ids": list(self.buy_signal_card_ids),
             "watch_signals_total": self.watch_signals_total,
             "blocking_reason_counts": dict(self.blocking_reason_counts),
             "valuation_path_counts": dict(self.valuation_path_counts),
@@ -156,6 +168,7 @@ async def run_scan(provider, pool, *, persist: bool = True) -> ScanMetrics:
     to_persist: List[Tuple[Dict[str, Any], Any]] = []
     blocked_by: Counter = Counter()
     valuation_path: Counter = Counter()
+    buy_signal_card_ids: List[int] = []
 
     for card_id, row in unique_rows.items():
         segment_name = seen[card_id]
@@ -175,6 +188,7 @@ async def run_scan(provider, pool, *, persist: bool = True) -> ScanMetrics:
         if ci.signal in ("buy", "strong_buy"):
             sm.buy_signals += 1
             sm.recommendations += 1
+            buy_signal_card_ids.append(card_id)
             to_persist.append((row, ci))
         elif ci.signal == "watch":
             sm.watch_signals += 1
@@ -207,6 +221,7 @@ async def run_scan(provider, pool, *, persist: bool = True) -> ScanMetrics:
     metrics.segments = list(segment_metrics.values())
     metrics.blocking_reason_counts = dict(blocked_by.most_common())
     metrics.valuation_path_counts = dict(valuation_path.most_common())
+    metrics.buy_signal_card_ids = buy_signal_card_ids
 
     try:
         async with pool.acquire() as conn:
@@ -333,6 +348,17 @@ async def refresher_loop(pool, poll_seconds: int = 600) -> None:
                 metrics.snapshot_age_minutes,
                 metrics.duration_seconds,
             )
+            if metrics.buy_signal_card_ids:
+                # The actual card_ids behind buy_signals_total above - lets
+                # a specific buy signal be traced against what
+                # /api/v2/opportunities or the Discord feed returns a few
+                # minutes later, instead of only knowing a count existed
+                # with no way to check whether the SAME card is what a
+                # live request did or didn't see.
+                log.info(
+                    "futgg scan: buy/strong_buy card_ids this pass: %s",
+                    ", ".join(str(cid) for cid in metrics.buy_signal_card_ids),
+                )
             # Only when the pass found nothing: the interesting case, and
             # the one that used to be unexplainable from the logs alone.
             if not metrics.recommendations_written and metrics.blocking_reason_counts:
