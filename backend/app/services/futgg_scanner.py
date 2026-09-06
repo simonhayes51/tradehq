@@ -34,6 +34,10 @@ from app.services.futgg_recommendation_store import record_many
 
 log = logging.getLogger("futgg_scanner")
 
+#: How many cards run_scan() evaluates between yield points - see the
+#: comment where this is used, in the main evaluation loop below.
+SCAN_YIELD_EVERY = 50
+
 
 @dataclass
 class SegmentMetrics:
@@ -170,7 +174,20 @@ async def run_scan(provider, pool, *, persist: bool = True) -> ScanMetrics:
     valuation_path: Counter = Counter()
     buy_signal_card_ids: List[int] = []
 
-    for card_id, row in unique_rows.items():
+    for i, (card_id, row) in enumerate(unique_rows.items()):
+        if i and i % SCAN_YIELD_EVERY == 0:
+            # evaluate_card() is a plain synchronous function - this loop
+            # is pure CPU with no natural await point, and a full pass
+            # (up to MAX_TOTAL_CANDIDATES rows) has been measured taking
+            # 25+ seconds. Without yielding, that monopolizes the single
+            # asyncio event loop for the whole duration, during which the
+            # web server cannot accept or service ANY other connection -
+            # confirmed in production as a browser request stalling at
+            # "Initial connection" for exactly the frontend's request
+            # timeout while a scan (or a live /opportunities request's own
+            # equivalent loop) was running. See the matching comment on
+            # _score_and_filter() in futgg_market.py.
+            await asyncio.sleep(0)
         segment_name = seen[card_id]
         sm = segment_metrics[segment_name]
         try:
