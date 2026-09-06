@@ -178,7 +178,7 @@ function describeGmError(err) {
  * list endpoint does not, so callers that don't need it just never see
  * that status).
  */
-async function getJson(url, label) {
+async function getJson(url, label, timeoutMs = CONFIG.REQUEST_TIMEOUT_MS) {
   const gmRequest = resolveGMRequest();
   if (!gmRequest) {
     // Neither API shape is available in this userscript manager (or the
@@ -194,7 +194,7 @@ async function getJson(url, label) {
     response = await callGM(gmRequest, {
       method: "GET",
       url,
-      timeout: CONFIG.REQUEST_TIMEOUT_MS,
+      timeout: timeoutMs,
       headers: {
         Accept: "application/json",
         // The bearer token is the RELIABLE path. withCredentials below is
@@ -279,7 +279,16 @@ export function getCardIntelligence(sourceCardId) {
  * userscript has no concept of one, same as the companion endpoint.
  * Not cached (the nav tab panel re-fetches fresh every time it's
  * opened, which is infrequent enough not to need it).
+ *
+ * Uses SCAN_REQUEST_TIMEOUT_MS, not REQUEST_TIMEOUT_MS - this is the
+ * segmented-scan-backed feed, not a single-card lookup, and the shorter
+ * timeout was firing before the backend could finish on a cold cache
+ * (see config.js's comment on SCAN_REQUEST_TIMEOUT_MS).
  */
 export function getOpportunities(pageSize = 20) {
-  return getJson(`${CONFIG.API_BASE_URL}/opportunities?page_size=${pageSize}`, "opportunities feed");
+  return getJson(
+    `${CONFIG.API_BASE_URL}/opportunities?page_size=${pageSize}`,
+    "opportunities feed",
+    CONFIG.SCAN_REQUEST_TIMEOUT_MS
+  );
 }

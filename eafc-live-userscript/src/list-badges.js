@@ -161,9 +161,9 @@ function makeBadgeEl(verdict, onClick) {
   const el = document.createElement("button");
   el.type = "button";
   el.textContent = verdict.label === "BUY" ? "✓ BUY" : "⚠ AVOID";
-  const bg = verdict.tone === "buy" ? "#123d24" : "#3d1414";
-  const fg = verdict.tone === "buy" ? "#5fd98a" : "#e5734a";
-  const border = verdict.tone === "buy" ? "#5fd98a" : "#e5734a";
+  const bg = verdict.tone === "buy" ? "rgba(57, 255, 138, 0.14)" : "rgba(255, 92, 92, 0.14)";
+  const fg = verdict.tone === "buy" ? "#39ff8a" : "#ff5c5c";
+  const border = verdict.tone === "buy" ? "#39ff8a" : "#ff5c5c";
   // position:absolute, anchored to the row CARD's own top-right corner
   // (see this file's header for why this replaced plain in-flow
   // insertion) - out of the row's own layout flow entirely, so it can't
@@ -183,7 +183,7 @@ function makeBadgeEl(verdict, onClick) {
     "font-weight:700",
     "letter-spacing:0.02em",
     "padding:3px 6px",
-    "border-radius:5px",
+    "border-radius:4px",
     "cursor:pointer",
     "line-height:1",
     "white-space:nowrap",
