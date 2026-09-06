@@ -67,6 +67,58 @@ class TestRecentlyMovedHasALiquidityFloor:
         assert _matches_where(segment.where, DONNARUMMA_ROW)
 
 
+def _score(order_by_sql: str, row: dict) -> float:
+    import re
+
+    expr = order_by_sql.replace(" DESC", "").replace(" ASC", "")
+    for key, value in row.items():
+        expr = re.sub(rf"\b{key}\b", repr(value), expr)
+    expr = re.sub(r"NULLIF\(([^,]+),\s*0\)", r"(\1)", expr)
+    expr = re.sub(r"\bleast\(", "min(", expr)
+    return float(eval(expr))  # noqa: S307 - static module-level SQL, test-only
+
+
+class TestRecentlyMovedRanksReliableMovesAboveNoise:
+    # Production case #2 (2026-09-06, same day as Donnarumma above):
+    # card_id 192119 (Thibaut Courtois), sales_count=50, current_bin 18.9%
+    # below sales_median, evaluated to signal="buy" live - and STILL
+    # didn't appear in /api/v2/opportunities even after the sales_count
+    # floor and doubled limit above. Raw-deviation-DESC ranking was the
+    # remaining problem: a thin card with a handful of sales and a larger,
+    # noisier swing ranks ahead of it. Weighting by sample size fixes the
+    # ordering itself, which no limit increase alone can fix.
+    COURTOIS_ROW = {
+        "current_bin": 4300,
+        "sales_median": 5300.0,
+        "sales_count": 50,
+    }
+
+    def test_courtois_style_row_outranks_a_thin_noisier_mover(self):
+        order_by = SEGMENTS_BY_NAME["recently_moved"].order_by
+        courtois_score = _score(order_by, self.COURTOIS_ROW)
+        thin_noisy_row = {
+            "current_bin": 400,
+            "sales_median": 1000.0,
+            "sales_count": 6,
+        }
+        thin_score = _score(order_by, thin_noisy_row)
+        assert courtois_score > thin_score
+
+    def test_raw_deviation_would_have_ranked_the_noisy_row_higher(self):
+        # Sanity check that this is a genuine behaviour change, not a
+        # tautology - under the OLD ordering (no sample-size weighting)
+        # the thin, noisy row actually outranks Courtois's real move.
+        raw_deviation = "abs(current_bin - sales_median) / NULLIF(sales_median, 0)"
+        courtois_raw = _score(raw_deviation, self.COURTOIS_ROW)
+        thin_noisy_row = {
+            "current_bin": 400,
+            "sales_median": 1000.0,
+            "sales_count": 6,
+        }
+        thin_raw = _score(raw_deviation, thin_noisy_row)
+        assert thin_raw > courtois_raw
+
+
 class TestSegmentLimitsWereRaised:
     # Not a magic-number lock-in - just a guard against silently
     # reverting the fix back to the limits that missed this card.
