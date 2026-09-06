@@ -158,7 +158,22 @@ elif [ -z "${FUTGG_SALES_CYCLE_SLEEP:-}" ]; then
     export FUTGG_SALES_CYCLE_SLEEP="${SALES_CYCLE_SLEEP_MIN}"
 fi
 
+SALES_PID=""
+STOP_REQUESTED=0
+RESTART_DELAY_SECONDS="${FUTGG_WORKER_RESTART_DELAY_SECONDS:-15}"
+
+start_bulk() {
+    echo "Starting bundled bulk price sync..."
+    PLAYWRIGHT_HEADLESS=true FUTGG_BULK_APPLY="${FUTGG_BULK_APPLY:-true}" python futgg_bulk_price_sync.py &
+    BULK_PID=$!
+}
+
 cleanup() {
+    if [ -n "$SALES_PID" ] && kill -0 "$SALES_PID" 2>/dev/null; then
+        echo "Stopping sales sync..."
+        kill "$SALES_PID" 2>/dev/null || true
+        wait "$SALES_PID" 2>/dev/null || true
+    fi
     if [ -n "$BULK_PID" ] && kill -0 "$BULK_PID" 2>/dev/null; then
         echo "Stopping bundled bulk price sync..."
         kill "$BULK_PID" 2>/dev/null || true
@@ -169,6 +184,58 @@ cleanup() {
         wait "$XVFB_PID" 2>/dev/null || true
     fi
 }
-trap cleanup EXIT INT TERM
 
-python futgg_sales_sync.py
+request_stop() {
+    STOP_REQUESTED=1
+    cleanup
+}
+
+trap request_stop INT TERM
+trap cleanup EXIT
+
+while [ "$STOP_REQUESTED" = "0" ]; do
+    echo "Starting FUT.GG sales sync..."
+    python futgg_sales_sync.py &
+    SALES_PID=$!
+
+    while kill -0 "$SALES_PID" 2>/dev/null; do
+        if ! kill -0 "$XVFB_PID" 2>/dev/null; then
+            echo "FATAL: Xvfb exited; stopping sales sync so the container can restart"
+            kill "$SALES_PID" 2>/dev/null || true
+            wait "$SALES_PID" 2>/dev/null || true
+            SALES_PID=""
+            exit 1
+        fi
+        if [ "${RUN_BULK_WITH_SALES,,}" != "false" ] && [ "$RUN_BULK_WITH_SALES" != "0" ] \
+            && { [ -z "$BULK_PID" ] || ! kill -0 "$BULK_PID" 2>/dev/null; }; then
+            if [ -n "$BULK_PID" ]; then
+                wait "$BULK_PID" 2>/dev/null || true
+            fi
+            echo "Bundled bulk price sync exited; restarting in ${RESTART_DELAY_SECONDS}s"
+            sleep "$RESTART_DELAY_SECONDS"
+            start_bulk
+        fi
+        sleep 5
+    done
+
+    if wait "$SALES_PID"; then
+        SALES_STATUS=0
+    else
+        SALES_STATUS=$?
+    fi
+    SALES_PID=""
+
+    if [ "$STOP_REQUESTED" != "0" ]; then
+        break
+    fi
+    if [ -n "${FUTGG_SALES_DIAGNOSTIC_CARD_ID:-}" ] \
+        || [ -n "${FUTGG_SALES_MAX_RUNTIME_MINUTES:-}" ] \
+        || [ -n "${FUTGG_SALES_MAX_CYCLES:-}" ]; then
+        exit "$SALES_STATUS"
+    fi
+
+    echo "FUT.GG sales sync exited unexpectedly with status ${SALES_STATUS}; restarting in ${RESTART_DELAY_SECONDS}s"
+    sleep "$RESTART_DELAY_SECONDS"
+done
+
+exit 0
