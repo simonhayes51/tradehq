@@ -666,7 +666,7 @@ async def get_dashboard(
     # one), which is what made Home's Top Card look random with no
     # underlying data change - not a random pick, an unstable sort.
     buy_scored = _filter_meaningful_profit(
-        _score_and_filter(candidate_rows, signals={"strong_buy", "buy"}, sales_by_card=sales_by_card)
+        await _score_and_filter(candidate_rows, signals={"strong_buy", "buy"}, sales_by_card=sales_by_card)
     )
     buy_scored.sort(
         key=lambda pair: (
@@ -676,7 +676,7 @@ async def get_dashboard(
         )
     )
 
-    avoid_scored = _score_and_filter(candidate_rows, signals={"avoid"}, sales_by_card=sales_by_card)
+    avoid_scored = await _score_and_filter(candidate_rows, signals={"avoid"}, sales_by_card=sales_by_card)
     avoid_scored.sort(
         key=lambda pair: (
             -(pair[0].get("snapshot_computed_at") or datetime.min.replace(tzinfo=timezone.utc)).timestamp(),
@@ -691,7 +691,7 @@ async def get_dashboard(
     # closest honest analog is "most recently refreshed candidates",
     # regardless of signal, ordered by when their snapshot was computed.
     recent_scored = sorted(
-        _score_and_filter(candidate_rows, sales_by_card=sales_by_card),
+        await _score_and_filter(candidate_rows, sales_by_card=sales_by_card),
         key=lambda pair: (
             -(pair[0].get("snapshot_computed_at") or datetime.min.replace(tzinfo=timezone.utc)).timestamp(),
             int(pair[0]["source_card_id"]),

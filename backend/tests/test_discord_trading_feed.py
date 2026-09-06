@@ -473,7 +473,7 @@ def test_publish_live_opportunities_posts_only_one_per_call(monkeypatch):
 
     monkeypatch.setattr(futgg_market, "_segmented_candidates", AsyncMock(return_value=rows))
     monkeypatch.setattr(futgg_market, "_sales_for_rows", AsyncMock(return_value={}))
-    monkeypatch.setattr(futgg_market, "_score_and_filter", MagicMock(return_value=scored))
+    monkeypatch.setattr(futgg_market, "_score_and_filter", AsyncMock(return_value=scored))
     monkeypatch.setattr(db, "get_core_pool", AsyncMock(return_value=object()))
 
     fake_client = MagicMock()
@@ -524,7 +524,7 @@ def test_publish_live_opportunities_skips_a_card_posted_too_recently(monkeypatch
 
     monkeypatch.setattr(futgg_market, "_segmented_candidates", AsyncMock(return_value=rows))
     monkeypatch.setattr(futgg_market, "_sales_for_rows", AsyncMock(return_value={}))
-    monkeypatch.setattr(futgg_market, "_score_and_filter", MagicMock(return_value=scored))
+    monkeypatch.setattr(futgg_market, "_score_and_filter", AsyncMock(return_value=scored))
     monkeypatch.setattr(db, "get_core_pool", AsyncMock(return_value=object()))
 
     fake_client = MagicMock()
@@ -566,7 +566,7 @@ def test_publish_live_opportunities_skips_outside_posting_window(monkeypatch):
 
     monkeypatch.setattr(futgg_market, "_segmented_candidates", AsyncMock(return_value=[]))
     monkeypatch.setattr(futgg_market, "_sales_for_rows", AsyncMock(return_value={}))
-    monkeypatch.setattr(futgg_market, "_score_and_filter", MagicMock(return_value=[]))
+    monkeypatch.setattr(futgg_market, "_score_and_filter", AsyncMock(return_value=[]))
     monkeypatch.setattr(db, "get_core_pool", AsyncMock(return_value=object()))
 
     fake_client = MagicMock()
