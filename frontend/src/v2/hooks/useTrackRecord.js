@@ -2,7 +2,12 @@
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../lib/api";
 
-const REQUEST_OPTS = { __skipAuthRedirect: true, __noRetry: true, timeout: 8_000 };
+// See useFutggMarket.js's SCAN_REQUEST_OPTS comment: the backend is
+// under real, currently-elevated load (segmented-candidate scans plus
+// unrelated DB contention), and this endpoint has been observed getting
+// caught by an 8s client timeout the same way /opportunities was -
+// Chrome shows the aborted request as "(canceled)", not as an error.
+const REQUEST_OPTS = { __skipAuthRedirect: true, __noRetry: true, timeout: 20_000 };
 
 // window: "7d" | "30d" | "90d" | "all" - must match
 // app/routers/v2/recommendations.py's _TRACK_RECORD_WINDOW_DAYS keys.
