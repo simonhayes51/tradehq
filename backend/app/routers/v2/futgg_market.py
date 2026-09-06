@@ -96,7 +96,11 @@ log = logging.getLogger("futgg_market")
 
 DEFAULT_PAGE_SIZE = 25
 MAX_PAGE_SIZE = 100
-MAX_OPPORTUNITY_EVIDENCE_AGE_MINUTES = 24 * 60
+# FC26 is thin late-cycle: a strict 24h sale-age gate can blank the
+# feed even when a card has a genuinely liquid sales window from
+# yesterday. The liquidity floor below still blocks the extinct/once-a-
+# week cards, so extending this window does not bring those back.
+MAX_OPPORTUNITY_EVIDENCE_AGE_MINUTES = 48 * 60
 LIVE_OPPORTUNITY_MIN_LIQUIDITY_SCORE = 0.30
 
 
