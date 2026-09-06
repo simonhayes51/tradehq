@@ -87,6 +87,23 @@ class ScanMetrics:
     # looks, from here, exactly like a quiet market.
     snapshot_age_minutes: Optional[float] = None
 
+    @property
+    def buy_signals_total(self) -> int:
+        """Sum of the per-segment buy/strong_buy counts.
+
+        recommendations_written persists buy+strong_buy+watch together
+        (see run_scan), so it answers "how many rows got frozen", not "how
+        many are actually opportunities" - that's this. Logged separately
+        so a pass that writes e.g. 176 snapshots that are 0 buy / 176 watch
+        stops looking, from the log line alone, like it disagrees with
+        /api/v2/opportunities returning zero when it doesn't.
+        """
+        return sum(s.buy_signals for s in self.segments)
+
+    @property
+    def watch_signals_total(self) -> int:
+        return sum(s.watch_signals for s in self.segments)
+
     def as_dict(self) -> Dict[str, Any]:
         return {
             "started_at": self.started_at.isoformat(),
@@ -95,6 +112,8 @@ class ScanMetrics:
             "total_player_pool": self.total_player_pool,
             "pool_coverage_pct": self.pool_coverage_pct,
             "recommendations_written": self.recommendations_written,
+            "buy_signals_total": self.buy_signals_total,
+            "watch_signals_total": self.watch_signals_total,
             "blocking_reason_counts": dict(self.blocking_reason_counts),
             "valuation_path_counts": dict(self.valuation_path_counts),
             "snapshot_age_minutes": self.snapshot_age_minutes,
@@ -295,10 +314,12 @@ async def refresher_loop(pool, poll_seconds: int = 600) -> None:
             metrics = await run_scan(provider, pool)
             log.info(
                 "futgg scan: evaluated=%d coverage=%s%% recommendations=%d "
-                "snapshot_age=%smin in %.1fs",
+                "(buy=%d watch=%d) snapshot_age=%smin in %.1fs",
                 metrics.unique_cards_evaluated,
                 metrics.pool_coverage_pct,
                 metrics.recommendations_written,
+                metrics.buy_signals_total,
+                metrics.watch_signals_total,
                 metrics.snapshot_age_minutes,
                 metrics.duration_seconds,
             )
