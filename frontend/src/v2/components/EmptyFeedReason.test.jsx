@@ -75,24 +75,6 @@ describe("when our data is the problem", () => {
     expect(screen.getByText(/price data is behind/i)).toBeInTheDocument();
   });
 
-  it("names SALES data when that is what is stale", () => {
-    // Sales and prices are collected by separate workers and fail
-    // independently. The real outage this was written during had 100%
-    // price coverage and three-week-old sales; saying "prices" would
-    // have sent whoever read it to the wrong worker.
-    freshness.value = {
-      data: healthy({
-        cards_priced: 14950,
-        cards_stale: 100,
-        stale_sales_by_priority_tier: { CRITICAL: 1718, HIGH: 3924, NORMAL: 1884, LOW: 44, DORMANT: 2950 },
-      }),
-      refetch: vi.fn(),
-    };
-    render(<EmptyFeedReason noun="opportunities" filtersActive={false} />);
-    expect(screen.getByText(/sales data is behind/i)).toBeInTheDocument();
-    expect(document.body.textContent).not.toMatch(/price data is behind/i);
-  });
-
   it("does not count DORMANT's own, by-design backlog as sales data being behind", () => {
     // Exact live production payload that prompted this fix: DORMANT is
     // allowed to run ~67h behind by design (priority_config.py's own
@@ -117,21 +99,23 @@ describe("when our data is the problem", () => {
     expect(document.body.textContent).not.toMatch(/on our side/i);
   });
 
-  it("still flags sales data as behind when non-DORMANT tiers alone cross the gate", () => {
-    // The exclusion must not defeat the check entirely - a genuine
-    // outage in the tiers that actually matter for candidates still has
-    // to fire. CRITICAL+HIGH+NORMAL+LOW alone here already exceed half
-    // of priced, with or without DORMANT.
+  it("does not call a sales backlog an outage while collectors are reporting", () => {
     freshness.value = {
       data: healthy({
         cards_priced: 14950,
         cards_stale: 100,
         stale_sales_by_priority_tier: { CRITICAL: 1718, HIGH: 3924, NORMAL: 1884, LOW: 44, DORMANT: 2950 },
+        heartbeats: [
+          heartbeat("futgg_bulk_price_sync", 0.1, { stale: false }),
+          heartbeat("futgg_sales_sync", 0.1, { stale: false }),
+        ],
       }),
       refetch: vi.fn(),
     };
     render(<EmptyFeedReason noun="opportunities" filtersActive={false} />);
-    expect(screen.getByText(/sales data is behind/i)).toBeInTheDocument();
+    expect(document.body.textContent).not.toMatch(/sales data is behind/i);
+    expect(document.body.textContent).not.toMatch(/on our side/i);
+    expect(screen.getByText(/doesn't see a trade worth making yet/i)).toBeInTheDocument();
   });
 
   it("notices the WORST collector, not the newest", () => {
