@@ -43,7 +43,7 @@ import logging
 import os
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import asyncpg
 
@@ -582,6 +582,41 @@ async def _bin_observations_for_rows(provider, rows: List[Dict[str, Any]]) -> Di
 #: individual card is evaluated.
 _SCORE_AND_FILTER_YIELD_EVERY = 50
 
+#: Short-lived memoization of evaluate_card()'s own result, keyed by
+#: card_id. The dominant cost in a page load was never the SQL segment
+#: scan (cached above) - it's running evaluate_card() itself once per
+#: candidate, and one page load fires the SAME candidate set through
+#: this function 5+ times over (dashboard's own three internal calls -
+#: buy_scored/avoid_scored/recent_scored - plus /opportunities,
+#: /trade-finder, and whichever Strategy Finder tab is open, all within
+#: the same few seconds). Without this, a single page load evaluated up
+#: to ~1700 candidates 5+ times over, which is what made tonight's
+#: correctness fix (raising the segment limits so genuine buy signals
+#: stop falling outside them) noticeably slower than before.
+#:
+#: Safe to key by card_id alone at this TTL: _segmented_candidates()
+#: above caches the underlying row objects for the same duration, so the
+#: row data behind a given card_id cannot change while this cache is
+#: still valid either - reusing a few-second-old CardIntelligence changes
+#: nothing about correctness that the row cache doesn't already accept.
+#: A card not in the cache (or evaluated from a call that reached it via
+#: a different, non-cached row - e.g. /players/{id}'s direct lookup,
+#: which never touches this cache at all) is simply evaluated fresh, so
+#: this can never make a card look staler than a live lookup would.
+_EVALUATE_CARD_CACHE_SECONDS = _SEGMENTED_CANDIDATES_CACHE_SECONDS
+_evaluate_card_cache: Dict[int, Tuple[float, Any]] = {}
+
+
+def _cached_evaluate_card(row, *, sales, bin_observations):
+    card_id = int(row["source_card_id"])
+    now = time.monotonic()
+    cached = _evaluate_card_cache.get(card_id)
+    if cached is not None and (now - cached[0]) < _EVALUATE_CARD_CACHE_SECONDS:
+        return cached[1]
+    ci = evaluate_card(row, sales=sales, bin_observations=bin_observations)
+    _evaluate_card_cache[card_id] = (now, ci)
+    return ci
+
 
 async def _score_and_filter(
     rows: List[Dict[str, Any]], *, risk: Optional[str] = None,
@@ -601,7 +636,7 @@ async def _score_and_filter(
             await asyncio.sleep(0)
         card_id = int(row["source_card_id"])
         try:
-            ci = evaluate_card(
+            ci = _cached_evaluate_card(
                 row, sales=sales_by_card.get(card_id, []),
                 bin_observations=bin_by_card.get(card_id),
             )
