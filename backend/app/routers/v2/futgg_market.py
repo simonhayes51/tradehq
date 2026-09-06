@@ -97,6 +97,7 @@ log = logging.getLogger("futgg_market")
 DEFAULT_PAGE_SIZE = 25
 MAX_PAGE_SIZE = 100
 MAX_OPPORTUNITY_EVIDENCE_AGE_MINUTES = 24 * 60
+LIVE_OPPORTUNITY_MIN_LIQUIDITY_SCORE = 0.30
 
 
 def _is_stale_for_tier(price_age_minutes: Optional[int], price_tier: Optional[str]) -> bool:
@@ -542,6 +543,10 @@ def _score_and_filter(
     return out
 
 
+def _live_opportunity_min_liquidity(requested: Optional[float]) -> float:
+    return max(float(requested or 0.0), LIVE_OPPORTUNITY_MIN_LIQUIDITY_SCORE)
+
+
 @router.get("/players/{card_id}")
 async def get_player_detail(
     card_id: int,
@@ -718,6 +723,7 @@ async def free_pick_candidates(provider: "FutggMarketDataProvider") -> List[Dict
     )
     scored = _score_and_filter(
         rows, signals={"buy", "strong_buy"},
+        min_liquidity=LIVE_OPPORTUNITY_MIN_LIQUIDITY_SCORE,
         require_confirmed_sales=True,
         max_evidence_age_minutes=MAX_OPPORTUNITY_EVIDENCE_AGE_MINUTES,
         sales_by_card=await _sales_for_rows(provider, rows),
@@ -780,7 +786,8 @@ async def list_opportunities(
     rows = _apply_filters_in_python(await _segmented_candidates(provider), filters)
     scored = _score_and_filter(
         rows, risk=risk, min_expected_profit=min_profit, min_roi=min_roi,
-        min_confidence=min_confidence, min_liquidity=min_liquidity,
+        min_confidence=min_confidence,
+        min_liquidity=_live_opportunity_min_liquidity(min_liquidity),
         signals={"buy", "strong_buy"},
         require_confirmed_sales=True,
         max_evidence_age_minutes=MAX_OPPORTUNITY_EVIDENCE_AGE_MINUTES,
@@ -867,6 +874,7 @@ async def opportunities_preview(
     rows = await _segmented_candidates(provider)
     scored = _score_and_filter(
         rows, signals={"buy", "strong_buy"},
+        min_liquidity=LIVE_OPPORTUNITY_MIN_LIQUIDITY_SCORE,
         require_confirmed_sales=True,
         max_evidence_age_minutes=MAX_OPPORTUNITY_EVIDENCE_AGE_MINUTES,
         sales_by_card=await _sales_for_rows(provider, rows),
