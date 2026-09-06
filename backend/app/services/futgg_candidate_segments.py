@@ -96,7 +96,20 @@ SEGMENTS: List[Segment] = [
         name="liquid",
         where=f"sales_count >= {LIQUID_MIN_SALES}",
         order_by="sales_count DESC NULLS LAST",
-        limit=_env_int("FUTGG_SEG_LIQUID_LIMIT", 400),
+        # 200 (the original default) is what let Donnarumma/Courtois-style
+        # cards rank outside every segment - fixed by raising this to 400
+        # and, separately, by the sample-size-weighted ordering on
+        # "recently_moved" below. But evaluating ~1700 candidates per pass
+        # costs real time (evaluate_card() is plain synchronous CPU work,
+        # ~15-20s for that many cards - confirmed in production), and
+        # excluding silver/bronze (see market_data_provider.py's
+        # EXCLUDED_PRICE_TIERS) barely reduced the actual evaluated count,
+        # because segments fill to their LIMIT from whatever pool remains
+        # regardless of how large that pool is. 250 is the compromise: still
+        # meaningfully above the value that missed real signals, while the
+        # ranking fix (not the limit) is what mainly keeps the best
+        # candidates from falling out now.
+        limit=_env_int("FUTGG_SEG_LIQUID_LIMIT", 250),
         refresh_minutes=_env_int("FUTGG_SEG_LIQUID_REFRESH_MIN", 15),
         description="Highly liquid cards - fast, efficient markets.",
     ),
@@ -156,7 +169,10 @@ SEGMENTS: List[Segment] = [
             "(abs(current_bin - sales_median) / NULLIF(sales_median, 0)) "
             "* least(sales_count, 50) DESC"
         ),
-        limit=_env_int("FUTGG_SEG_MOVED_LIMIT", 400),
+        # See "liquid" segment's own limit comment above - same trade-off,
+        # same reasoning: the ordering fix above is what actually protects
+        # Donnarumma/Courtois-style cards now, not a large limit.
+        limit=_env_int("FUTGG_SEG_MOVED_LIMIT", 250),
         refresh_minutes=_env_int("FUTGG_SEG_MOVED_REFRESH_MIN", 20),
         description="Cards whose live price has moved away from recent sales.",
     ),
@@ -192,10 +208,11 @@ SEGMENTS_BY_NAME: Dict[str, Segment] = {s.name: s for s in SEGMENTS}
 
 # Hard ceiling on a single pass regardless of per-segment limits, so a
 # misconfigured environment cannot turn one scan into a full-table walk.
-# Raised alongside the liquid/recently_moved limit increases above (default
-# per-segment limits now sum to 1800) so those larger segments aren't
-# silently truncated back down by this ceiling.
-MAX_TOTAL_CANDIDATES = _env_int("FUTGG_SEG_MAX_TOTAL", 2200)
+# Lowered back down alongside the liquid/recently_moved limit reductions
+# above (default per-segment limits now sum to 1500) - see those
+# segments' own comments for why evaluation volume, not just candidate
+# pool composition, needed to come back down.
+MAX_TOTAL_CANDIDATES = _env_int("FUTGG_SEG_MAX_TOTAL", 1800)
 
 
 def segment_summary() -> List[Dict[str, Any]]:
