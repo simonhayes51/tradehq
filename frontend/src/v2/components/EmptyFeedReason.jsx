@@ -99,30 +99,28 @@ export default function EmptyFeedReason({ noun = "opportunities", filtersActive,
   const data = freshness.data;
   const priced = Number(data?.cards_priced);
   const stalePrices = Number(data?.cards_stale);
-  const staleSales = staleSalesForCandidateTiers(data?.stale_sales_by_priority_tier);
   const silentHours = silentCollectorHours(data?.heartbeats);
 
   // "We have no priced cards at all" and "most of what we have is stale"
   // are both us, not the market. So is a collector that has stopped.
   const noData = Number.isFinite(priced) && priced === 0;
   const hasPriced = Number.isFinite(priced) && priced > 0;
-  // Sales and prices are collected by SEPARATE workers and fail
-  // independently - the outage this component was written during had
-  // 100% price coverage while the sales collector was rate-limited down
-  // to near-zero throughput. Saying "prices are behind" when sales are
-  // the problem sends whoever reads it to the wrong worker.
-  const salesStale = hasPriced && staleSales != null && staleSales > priced * 0.5;
+  // A large sales backlog is not, by itself, an outage. After the live
+  // opportunity gate was tightened, the right empty state for a current
+  // collector with no qualifying trades is "nothing cleared", not a red
+  // incident box. Only the backend heartbeat's own stale flag should turn
+  // that into a collector problem.
   const pricesStale = hasPriced && Number.isFinite(stalePrices) && stalePrices / priced > 0.5;
 
-  if (noData || salesStale || pricesStale || silentHours != null) {
-    const what = salesStale ? "sales data" : pricesStale ? "price data" : "market data";
+  if (noData || pricesStale || silentHours != null) {
+    const what = pricesStale ? "price data" : "market data";
     return (
       <EmptyState
         icon={<AlertTriangle size={25} />}
         error
         text={
           noData
-            ? "We don't have live prices right now, so there's nothing the engine can score. This is on our side — it should come back on its own."
+            ? "We don't have live prices right now, so there's nothing the engine can score. This is on our side, and it should come back on its own."
             : `Our ${what} is behind${
                 silentHours != null ? ` (a collector hasn't reported in for about ${Math.round(silentHours)}h)` : ""
               }, so the engine has nothing it can stand behind. This is on our side, not your filters.`
@@ -137,7 +135,7 @@ export default function EmptyFeedReason({ noun = "opportunities", filtersActive,
   return (
     <EmptyState
       icon={<TrendingUp size={25} />}
-      text={`No ${noun} clear the bar right now. Prices are current — the engine just doesn't see a trade worth making yet.`}
+      text={`No ${noun} clear the bar right now. Prices are current, the engine just doesn't see a trade worth making yet.`}
     />
   );
 }
