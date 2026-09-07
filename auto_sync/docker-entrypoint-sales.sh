@@ -104,24 +104,21 @@ fi
 # 429 limit. Keep an escape hatch, but cap the signed path by default now
 # that bulk prices are supplied separately.
 #
-# 60 (and CYCLE_SLEEP_MIN=300 below) were sized only to stop tripping
-# 429s, never checked against what the sales cadence actually needs.
-# Root-cause review (2026-09-04) found that pairing - 60 cards every
-# (~5s active work + 300s forced sleep) - creates a hard ceiling of
-# ~709-720 cards/hour EVEN AT A FULLY HEALTHY THROTTLE, against a
-# ~1,327/hour steady-state requirement derived from the effective-tier
-# population and cadence (CRITICAL 3h/HIGH 12h/NORMAL 24h/LOW 48h/
-# DORMANT ~66.7h - see futgg_sales_sync.py's SALES_INTERVALS). That
-# shortfall is structural, not a symptom of throttling or recovery
-# speed: once a cycle is healthy, the 300s static sleep is ~98% of its
-# wall time, dwarfing AdaptiveThrottle's own per-batch pacing - which
-# already reacts to real 429 feedback in real time and, after the
-# rolling-window recovery fix (same date), no longer needs a large
-# static safety margin bolted on top of it to stay stable. Keep the
-# cycle small enough that a productive pass is less likely to end by
-# exhausting FUT.GG's signed-endpoint rate window; AdaptiveThrottle remains
-# the real governor of request RATE.
-SALES_SELECT_LIMIT_MAX="${FUTGG_SALES_SELECT_LIMIT_MAX:-90}"
+# Reverted to 60 (2026-09-07) - back to Friday 2026-09-04's value. This
+# briefly went 60 -> 120 (2026-09-04 evening, commit 22b1b60) -> 90
+# (2026-09-06 Railway trace, this file's git history) chasing FUT.GG's
+# 429 limit and sales-cadence demand - real problems, but nobody
+# connected the sustained INGESTION-RATE increase to its effect
+# downstream: more rows landing in futgg_sales_history every hour means
+# more rows in whatever window futgg_market_snapshot's refresh scans,
+# and production evidence (2026-09-07) traced Postgres CPU pegging at
+# 86-172% - on a Coolify server shared with the backend app - directly
+# to that refresh converging with other periodic jobs under the higher
+# load. The Dockerfile's own ENV FUTGG_SALES_SELECT_LIMIT_MAX always
+# overrode whatever default lived here anyway (Docker ENV beats an
+# unset-var fallback), so this value and the Dockerfile's must be kept
+# in sync by hand - both reverted together.
+SALES_SELECT_LIMIT_MAX="${FUTGG_SALES_SELECT_LIMIT_MAX:-60}"
 if [ -n "${FUTGG_SALES_SELECT_LIMIT:-}" ]; then
     if [ "${FUTGG_SALES_SELECT_LIMIT}" -gt "${SALES_SELECT_LIMIT_MAX}" ] 2>/dev/null; then
         echo "Capping FUTGG_SALES_SELECT_LIMIT from ${FUTGG_SALES_SELECT_LIMIT} to ${SALES_SELECT_LIMIT_MAX}"
@@ -135,11 +132,15 @@ fi
 # completed-sales history. Force a real pause between signed batches so
 # a clean cycle does not immediately drain FUT.GG's rate window again.
 #
-# The 2026-09-06 Railway trace showed 90s plus a 120-card cap repeatedly
-# produced one useful cycle followed by a wasted 429-only cycle. 180s is
-# deliberately slower on paper but should produce more useful reads by
-# letting FUT.GG's rate window recover between cycles.
-SALES_CYCLE_SLEEP_MIN="${FUTGG_SALES_CYCLE_SLEEP_MIN:-180}"
+# Reverted to 300 (2026-09-07) - back to Friday 2026-09-04's value, for
+# the same reason as SALES_SELECT_LIMIT_MAX above: the ~1.85x sustained
+# ingestion-rate increase this and that constant produced is what grew
+# futgg_sales_history fast enough to make futgg_market_snapshot's
+# refresh a genuine Postgres CPU problem on a server shared with the
+# backend app. Revisit raising these again only alongside giving that
+# server more CPU headroom (or moving Postgres off it) - see this
+# session's own notes on 2026-09-07's investigation.
+SALES_CYCLE_SLEEP_MIN="${FUTGG_SALES_CYCLE_SLEEP_MIN:-300}"
 SALES_CYCLE_SLEEP_FORCE="${FUTGG_SALES_CYCLE_SLEEP_FORCE:-true}"
 if [ "${SALES_CYCLE_SLEEP_FORCE,,}" != "false" ] && [ "${SALES_CYCLE_SLEEP_FORCE}" != "0" ]; then
     if [ "${FUTGG_SALES_CYCLE_SLEEP:-}" != "${SALES_CYCLE_SLEEP_MIN}" ]; then
