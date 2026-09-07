@@ -1,32 +1,64 @@
-"""Precompute the expensive market-scoring slice used by /api/v2/dashboard.
+"""Serve Dashboard's market-wide scoring slice from persisted intelligence.
 
-The Home response also contains user-specific alerts, free-pick gating, events and
-SBC data, so caching the whole HTTP response would be incorrect. The expensive
-part is user-independent: building the segmented FUT.GG candidate pool and
-running evaluate_card() over it for buy/avoid/recent/regime calculations.
+Dashboard contains user-specific alerts, free-pick gating, events and SBC data,
+so caching its whole response would be wrong. The expensive user-independent
+part is the evaluated market pair set used for opportunities/avoid/regime.
 
-This module caches that evaluated pair set for five minutes with stale-while-
-revalidate semantics. Dashboard keeps constructing its normal per-user response,
-but its market-scoring helpers read this already-computed pair set instead of
-re-running ~1,300 synchronous evaluations in the request.
+The scanner now persists one current intelligence row for every successfully
+evaluated card. This module therefore prefers that persisted state and only
+falls back to the old live market-wide CPU pass while the new table is still
+warming after its first deployment or if persisted coverage drops below a
+conservative floor.
+
+That fallback is intentionally transitional. Once production shows stable
+coverage, it can be removed completely and Dashboard will never perform a
+market-wide evaluate_card() pass again.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
 log = logging.getLogger("dashboard_market_cache")
 
-CACHE_SECONDS = 300.0
+CACHE_SECONDS = float(os.getenv("DASHBOARD_MARKET_CACHE_SECONDS", "90"))
+CURRENT_MAX_AGE_MINUTES = int(os.getenv("DASHBOARD_CURRENT_INTELLIGENCE_MAX_AGE_MINUTES", "180"))
+MIN_PERSISTED_COVERAGE = float(os.getenv("DASHBOARD_CURRENT_INTELLIGENCE_MIN_COVERAGE", "0.60"))
+
 _lock = asyncio.Lock()
 _pairs: Optional[List[Tuple[Dict[str, Any], Any]]] = None
 _cached_at = 0.0
+_cache_source = "empty"
 _refresh_task: Optional[asyncio.Task] = None
 
 
-async def _compute(provider) -> List[Tuple[Dict[str, Any], Any]]:
+async def _load_persisted(provider):
+    """Load persisted intelligence for Dashboard's existing candidate universe.
+
+    Keeping the same segmented candidate IDs preserves the product's current
+    selection contract while replacing only the expensive evaluation stage.
+    """
+    from app.routers.v2 import futgg_market as market
+    from app.services.current_intelligence_surfaces import load_current_intelligence_pairs
+
+    rows = await market._segmented_candidates(provider)
+    if not rows:
+        return [], 1.0, 0
+    card_ids = [int(row["source_card_id"]) for row in rows]
+    pairs = await load_current_intelligence_pairs(
+        provider,
+        card_ids=card_ids,
+        max_age_minutes=CURRENT_MAX_AGE_MINUTES,
+    )
+    coverage = len(pairs) / len(card_ids)
+    return pairs, coverage, len(card_ids)
+
+
+async def _compute_live_fallback(provider) -> List[Tuple[Dict[str, Any], Any]]:
+    """Old safe path retained only while persisted current state warms up."""
     from app.routers.v2 import futgg_market as market
 
     started = time.monotonic()
@@ -38,24 +70,62 @@ async def _compute(provider) -> List[Tuple[Dict[str, Any], Any]]:
         sales_by_card=sales_by_card,
         bin_by_card=bin_by_card,
     )
-    log.info(
-        "dashboard market cache computed %d cards in %.2fs",
+    log.warning(
+        "dashboard current-intelligence coverage insufficient; live fallback scored %d cards in %.2fs",
         len(pairs),
         time.monotonic() - started,
     )
     return pairs
 
 
-async def _refresh(provider) -> List[Tuple[Dict[str, Any], Any]]:
-    global _pairs, _cached_at
+async def _compute(provider, *, allow_fallback: bool = True):
+    started = time.monotonic()
+    try:
+        persisted, coverage, candidate_count = await _load_persisted(provider)
+    except Exception:
+        # Expected during the brief migration-080 rollout window on the very
+        # first deploy. Do not turn a missing new table into a broken Home.
+        log.warning("dashboard persisted-intelligence read failed", exc_info=True)
+        persisted, coverage, candidate_count = [], 0.0, 0
+
+    if persisted and coverage >= MIN_PERSISTED_COVERAGE:
+        log.info(
+            "dashboard market state loaded %d/%d persisted cards (%.1f%%) in %.2fs",
+            len(persisted),
+            candidate_count,
+            coverage * 100.0,
+            time.monotonic() - started,
+        )
+        return persisted, "persisted"
+
+    if not allow_fallback:
+        log.info(
+            "dashboard persisted intelligence warming: %d/%d cards (%.1f%%; need %.0f%%)",
+            len(persisted),
+            candidate_count,
+            coverage * 100.0,
+            MIN_PERSISTED_COVERAGE * 100.0,
+        )
+        return persisted, "warming"
+
+    return await _compute_live_fallback(provider), "live_fallback"
+
+
+async def _refresh(provider, *, allow_fallback: bool = True):
+    global _pairs, _cached_at, _cache_source
     async with _lock:
-        # Another waiter may already have refreshed it.
         if _pairs is not None and time.monotonic() - _cached_at < CACHE_SECONDS:
             return _pairs
-        pairs = await _compute(provider)
-        _pairs = pairs
-        _cached_at = time.monotonic()
-        return pairs
+        pairs, source = await _compute(provider, allow_fallback=allow_fallback)
+        # A non-fallback warmup with too little state should not replace a last
+        # known good cache with a tiny partial universe.
+        if source == "warming" and _pairs is not None:
+            return _pairs
+        if pairs or source == "live_fallback":
+            _pairs = pairs
+            _cached_at = time.monotonic()
+            _cache_source = source
+        return _pairs or []
 
 
 def _schedule_refresh(provider) -> None:
@@ -67,19 +137,12 @@ def _schedule_refresh(provider) -> None:
         try:
             await _refresh(provider)
         except Exception:
-            log.warning("dashboard market cache background refresh failed", exc_info=True)
+            log.warning("dashboard market state background refresh failed", exc_info=True)
 
     _refresh_task = asyncio.create_task(runner())
 
 
 async def get_pairs(provider) -> List[Tuple[Dict[str, Any], Any]]:
-    """Return current evaluated market pairs without making users wait for refresh.
-
-    First ever call has no stale value to serve, so it computes synchronously.
-    Normal production startup prewarms this cache before users arrive. Once a
-    value exists, expiry triggers a background refresh and the request receives
-    the last good value immediately.
-    """
     if _pairs is None:
         return await _refresh(provider)
     if time.monotonic() - _cached_at >= CACHE_SECONDS:
@@ -88,19 +151,24 @@ async def get_pairs(provider) -> List[Tuple[Dict[str, Any], Any]]:
 
 
 async def prewarm(provider) -> None:
+    """Prewarm from persisted state only; never burn CPU merely to prewarm."""
     try:
-        await _refresh(provider)
+        await _refresh(provider, allow_fallback=False)
     except Exception:
-        log.warning("dashboard market cache prewarm failed", exc_info=True)
+        log.warning("dashboard persisted-state prewarm failed", exc_info=True)
+
+
+def cache_health() -> Dict[str, Any]:
+    return {
+        "source": _cache_source,
+        "cards": len(_pairs or []),
+        "age_seconds": round(time.monotonic() - _cached_at, 1) if _pairs is not None else None,
+        "ttl_seconds": CACHE_SECONDS,
+    }
 
 
 def install_dashboard_market_cache(application) -> None:
-    """Patch only Dashboard's imported helper references.
-
-    get_dashboard() keeps all of its existing auth, free-pick, alert, events,
-    SBC and response-shape logic. Only its three market helpers are replaced.
-    Other routes keep their existing implementations.
-    """
+    """Patch only Dashboard's imported market helper references."""
     from app.routers.v2 import dashboard as dashboard_module
     from app.services.snapshot_surface_routes import _pair_filter
 
@@ -109,15 +177,16 @@ def install_dashboard_market_cache(application) -> None:
         return [row for row, _ in pairs]
 
     async def cached_sales_for_rows(provider, rows):
-        # cached_score_and_filter below consumes already-evaluated CI objects,
-        # so Dashboard no longer needs raw sales rows in the HTTP request.
+        # cached_score_and_filter consumes persisted CardIntelligence objects;
+        # raw sales are no longer needed in the HTTP request.
         return {}
 
     async def cached_score_and_filter(rows, **kwargs):
-        # The cached pair set may be broader than the rows supplied by the
-        # caller, so preserve the original helper's row-subset semantics.
         allowed = {int(row["source_card_id"]) for row in rows}
-        pairs = [pair for pair in await get_pairs_from_cache_only() if int(pair[0]["source_card_id"]) in allowed]
+        pairs = [
+            pair for pair in (_pairs or [])
+            if int(pair[0]["source_card_id"]) in allowed
+        ]
         return _pair_filter(
             pairs,
             risk=kwargs.get("risk"),
@@ -130,30 +199,28 @@ def install_dashboard_market_cache(application) -> None:
             max_evidence_age_minutes=kwargs.get("max_evidence_age_minutes"),
         )
 
-    async def get_pairs_from_cache_only():
-        # cached_segmented_candidates is always called before any scoring pass
-        # in get_dashboard(), so this should be populated. Keep a defensive
-        # empty list rather than accidentally invoking expensive work with no
-        # provider available.
-        return _pairs or []
-
     dashboard_module._segmented_candidates = cached_segmented_candidates
     dashboard_module._sales_for_rows = cached_sales_for_rows
     dashboard_module._score_and_filter = cached_score_and_filter
-    log.info("dashboard market cache helpers installed")
+    log.info("dashboard persisted-intelligence helpers installed")
 
     @application.app.on_event("startup")
     async def _schedule_dashboard_market_prewarm() -> None:
         async def runner() -> None:
-            # Let DB pools/migrations and the lighter request caches settle.
-            await asyncio.sleep(8)
-            try:
-                from app.db import get_core_pool
-                from app.services.market_data_provider import FutggMarketDataProvider
+            from app.db import get_core_pool
+            from app.services.market_data_provider import FutggMarketDataProvider
 
-                pool = await get_core_pool()
-                await prewarm(FutggMarketDataProvider(pool))
-            except Exception:
-                log.warning("dashboard market cache startup prewarm failed", exc_info=True)
+            # First attempt catches an already-populated table on ordinary
+            # redeploys. A second attempt lands after the scanner's 45s startup
+            # delay on migration 080's first deploy.
+            for delay in (8, 55):
+                await asyncio.sleep(delay)
+                try:
+                    pool = await get_core_pool()
+                    await prewarm(FutggMarketDataProvider(pool))
+                    if _pairs:
+                        return
+                except Exception:
+                    log.warning("dashboard market state startup prewarm failed", exc_info=True)
 
         asyncio.create_task(runner())
