@@ -6,6 +6,9 @@ selected by the original function unchanged. The shadow selector performs DB
 reads and writes an observation row, but makes no FUT.GG request and never
 consumes a trigger queue. Any shadow failure is swallowed and logged so sales
 collection cannot fail because observability failed.
+
+Execution delegates to futgg_sales_sync.main(), not run_forever() directly, so
+the existing one-card diagnostic and bounded-run modes remain intact.
 """
 from __future__ import annotations
 
@@ -73,7 +76,7 @@ async def run() -> None:
     )
 
     try:
-        await sales.run_forever()
+        await sales.main()
     finally:
         sales.select_due = original_select_due
         if watchlist_pool is not None:
