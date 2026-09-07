@@ -19,6 +19,7 @@ from app.routers.v2.alerts import router as alerts_router
 from app.routers.v2.events import router as events_router
 from app.routers.v2.onboarding import router as onboarding_router
 from app.routers.v2.intelligence_health import router as intelligence_health_router
+from app.routers.v2.market_transitions import router as market_transitions_router
 
 router = APIRouter(prefix="/api/v2")
 router.include_router(health_router)
@@ -64,3 +65,6 @@ router.include_router(events_router)
 # so operational diagnostics never complicate the request path serving
 # opportunities/trade-finder/player pages.
 router.include_router(intelligence_health_router)
+# Elite/premium market-change feed. Only genuine state transitions are
+# returned; initial scanner population never appears as fake "news".
+router.include_router(market_transitions_router)
