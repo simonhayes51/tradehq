@@ -24,6 +24,15 @@ This bootstrap is deliberately small and removable. The long-term home for
 this logic is inside the underlying loaders themselves; keeping it here avoids
 a risky whole-file rewrite of the very large v2 market router during a live
 performance incident.
+
+Cold-start prewarm
+------------------
+The single-flight cache fixes duplicate reads, but the first human request
+could still be the unlucky caller that pays for the initial 1,300-card sales
+and BIN load. We now warm those same caches after startup, once the app is
+accepting traffic. That turns the normal first page load into cache reads
+instead of a synchronous database benchmark. Prewarm is best-effort only; any
+failure is logged and the existing on-demand path remains intact.
 """
 from __future__ import annotations
 
@@ -36,6 +45,7 @@ from typing import Any, Dict, FrozenSet, List, Tuple
 import uvicorn
 
 CACHE_SECONDS = float(os.getenv("FUTGG_REQUEST_BATCH_CACHE_SECONDS", "90"))
+PREWARM_DELAY_SECONDS = float(os.getenv("FUTGG_REQUEST_BATCH_PREWARM_DELAY_SECONDS", "5"))
 log = logging.getLogger("performance_bootstrap")
 
 
@@ -151,12 +161,53 @@ def install_market_batch_singleflight() -> None:
     log.info("installed market-history single-flight caches (ttl=%.0fs)", CACHE_SECONDS)
 
 
+def _install_prewarm(application) -> None:
+    """Warm the market-history caches shortly after startup.
+
+    Uses the exact segmented candidate selector and provider used by the live
+    v2 endpoints. Because the public loaders are already wrapped at this point,
+    this fills the same process-local caches the HTTP requests will later hit.
+    """
+    @application.app.on_event("startup")
+    async def _schedule_market_cache_prewarm() -> None:
+        async def _run() -> None:
+            await asyncio.sleep(PREWARM_DELAY_SECONDS)
+            started = time.monotonic()
+            try:
+                from app.db import get_core_pool
+                from app.routers.v2.futgg_market import _segmented_candidates
+                from app.services.market_data_provider import FutggMarketDataProvider
+
+                pool = await get_core_pool()
+                provider = FutggMarketDataProvider(pool)
+                rows = await _segmented_candidates(provider)
+                card_ids = [int(row["source_card_id"]) for row in rows]
+                if not card_ids:
+                    log.info("market cache prewarm skipped: no candidates")
+                    return
+
+                await asyncio.gather(
+                    provider.get_sales_by_ids(card_ids),
+                    provider.get_bin_observations_by_ids(card_ids),
+                )
+                log.info(
+                    "market cache prewarm complete: %d cards in %.1fs",
+                    len(card_ids),
+                    time.monotonic() - started,
+                )
+            except Exception:
+                log.warning("market cache prewarm failed; on-demand path remains available", exc_info=True)
+
+        asyncio.create_task(_run())
+
+
 def main() -> None:
     logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
     install_market_batch_singleflight()
 
     # Import the app only after the shared loaders have been wrapped.
     import main as application
+    _install_prewarm(application)
 
     workers = int(os.getenv("WEB_CONCURRENCY", "1"))
     if workers != 1:
