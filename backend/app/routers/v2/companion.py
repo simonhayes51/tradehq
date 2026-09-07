@@ -6,10 +6,9 @@ EAFC Live Companion API - backs the read-only browser extension
 Single endpoint: GET /api/v2/companion/card/{source_card_id}
 
 This is deliberately a thin, read-only reshaping of data that already
-exists. It does not compute a second recommendation engine - it calls
-the same provider.get_player() + evaluate_card() pair
-app/routers/v2/futgg_market.py's get_player_detail() uses, and re-shapes
-the result into the flat object the extension's overlay renders.
+exists. Fresh single-card evaluation is delegated to
+app.services.futgg_card_evaluation so Companion cannot drift away from
+Discord/player-detail/held-position evidence semantics.
 
 Why source_card_id is the join key
 -----------------------------------
@@ -33,7 +32,6 @@ client-side (see eafc-live-extension/src/eafc-api.js and market-calc.js).
 """
 from __future__ import annotations
 
-import logging
 import os
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
@@ -47,11 +45,11 @@ from app.auth.access import (
 )
 from app.auth import companion_token
 from app.services.free_picks import unlocked_pick_ids
-from app.services.futgg_intelligence import CardIntelligence, evaluate_card
+from app.services.futgg_card_evaluation import evaluate_fresh_card
+from app.services.futgg_intelligence import CardIntelligence
 from app.services.market_data_provider import FutggMarketDataProvider
 
 router = APIRouter(prefix="/companion", tags=["v2-companion"])
-log = logging.getLogger("companion")
 
 
 def _app_base_url() -> str:
@@ -134,18 +132,15 @@ async def get_companion_card(
     branch: no recommendation table, no second lookup - "ask again for a
     different card, or show nothing".
     """
-    row = await provider.get_player(source_card_id)
-    if row is None:
+    evaluated = await evaluate_fresh_card(
+        provider,
+        source_card_id,
+        requested_by="companion",
+    )
+    if evaluated is None:
         raise HTTPException(404, "No EAFC.Live intelligence for this card")
 
-    try:
-        sales = await provider.get_recent_sales(source_card_id)
-    except Exception:
-        log.warning("get_recent_sales failed for source_card_id=%s", source_card_id, exc_info=True)
-        sales = []
-
-    ci = evaluate_card(row, sales=sales)
-    payload = _build_companion_payload(row, ci)
+    payload = _build_companion_payload(evaluated.row, evaluated.intelligence)
 
     # This endpoint was the widest bypass in the product. It is one card
     # per request, unauthenticated, and it returned buy_below,
