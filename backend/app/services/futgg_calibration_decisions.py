@@ -37,6 +37,8 @@ async def record_decision(
 ) -> Dict[str, Any]:
     parameter = str(parameter or "").strip()
     from_engine_version = str(from_engine_version or "").strip()
+    to_engine_version = str(to_engine_version).strip() if to_engine_version is not None else None
+    source_commit = str(source_commit).strip() if source_commit is not None else None
     rationale = str(rationale or "").strip()
     status = str(status or "proposed").strip().lower()
 
@@ -52,6 +54,18 @@ async def record_decision(
         raise ValueError(f"horizon must be one of {sorted(_ALLOWED_HORIZONS)}")
     if window_days is not None and int(window_days) <= 0:
         raise ValueError("window_days must be positive")
+
+    # futgg_config's contract says a behavioural configuration change MUST bump
+    # ENGINE_VERSION. Do not let the audit trail legitimise the exact opposite.
+    if status == "accepted":
+        if not to_engine_version:
+            raise ValueError("accepted decisions require to_engine_version")
+        if to_engine_version == from_engine_version:
+            raise ValueError("accepted behavioural changes must bump engine_version")
+        if not source_commit:
+            raise ValueError("accepted decisions require source_commit")
+        if old_value == new_value:
+            raise ValueError("accepted decisions require a changed value")
 
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
