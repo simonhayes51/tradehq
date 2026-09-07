@@ -21,14 +21,29 @@ def _pool(request: Request):
     return getattr(request.app.state, "db_pool", None) or getattr(request.app.state, "pool", None)
 
 
-def _label(signal: str | None) -> str:
-    if not signal:
+def _label(value: str | None) -> str:
+    if not value:
         return "UNKNOWN"
-    return str(signal).replace("_", " ").upper()
+    return str(value).replace("_", " ").upper()
 
 
-def _headline(previous_signal: str | None, new_signal: str | None) -> str:
-    return f"{_label(previous_signal)} → {_label(new_signal)}"
+def _headline(
+    previous_signal: str | None,
+    new_signal: str | None,
+    previous_status: str | None = None,
+    new_status: str | None = None,
+) -> str:
+    """Describe what actually changed rather than printing BUY -> BUY.
+
+    Signal changes are the headline product event. Lifecycle-only changes are
+    still meaningful (for example ACTIVE -> EXPIRED) and are labelled under the
+    unchanged signal instead of pretending the recommendation itself changed.
+    """
+    if previous_signal != new_signal:
+        return f"{_label(previous_signal)} → {_label(new_signal)}"
+    if previous_status != new_status:
+        return f"{_label(new_signal)} · {_label(previous_status)} → {_label(new_status)}"
+    return _label(new_signal)
 
 
 @router.get("/market/changes")
@@ -83,7 +98,12 @@ async def recent_market_changes(
     for row in rows:
         item = dict(row)
         item["changed_at"] = row["changed_at"].isoformat()
-        item["headline"] = _headline(row["previous_signal"], row["new_signal"])
+        item["headline"] = _headline(
+            row["previous_signal"],
+            row["new_signal"],
+            row["previous_status"],
+            row["new_status"],
+        )
         item["fair_value"] = int(row["fair_value"]) if row["fair_value"] is not None else None
         item["expected_roi"] = float(row["expected_roi"]) if row["expected_roi"] is not None else None
         item["confidence_score"] = (
