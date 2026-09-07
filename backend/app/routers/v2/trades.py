@@ -90,14 +90,14 @@ async def open_trade(request: Request, trade: OpenTrade):
         await conn.execute(
             """INSERT INTO trades (
                 user_id, player, version, buy, sell, quantity, platform,
-                profit, ea_tax, notes, timestamp, trade_id, card_id,
+                profit, ea_tax, notes, timestamp, trade_id, card_id, card_source,
                 bought_at, sold_at, status, target_sell,
                 recommendation_status, recommendation_strategy,
                 recommendation_confidence, recommendation_expected_roi,
                 recommendation_buy_below, recommendation_sell_around,
                 recommendation_fair_value, recommendation_snapshot
             ) VALUES (
-                $1,$2,$3,$4,NULL,$5,$6,0,0,$7,$8,$9,$10,
+                $1,$2,$3,$4,NULL,$5,$6,0,0,$7,$8,$9,$10,'futgg',
                 $11,NULL,'open',$12,$13,$14,$15,$16,$17,$18,$19,$20::jsonb
             )""",
             user_id,
@@ -241,7 +241,8 @@ async def card_community(card_id: int, request: Request):
                 COUNT(*) FILTER (WHERE status='closed') AS already_sold,
                 ROUND(AVG(buy))::bigint AS average_buy,
                 ROUND(AVG(sell) FILTER (WHERE status='closed'))::bigint AS average_sell
-            FROM trades WHERE card_id=$1""",
+            FROM trades
+            WHERE card_id=$1 AND (card_source='futgg' OR card_source IS NULL)""",
             card_id,
         )
     data = dict(row or {})
