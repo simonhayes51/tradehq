@@ -114,3 +114,30 @@ def test_decision_rejects_unknown_status_and_bad_horizon():
             rationale="test",
             horizon="30d",
         ))
+
+
+def test_accepted_decision_must_bump_version_and_point_to_a_commit():
+    pool = _Pool()
+    with pytest.raises(ValueError, match="bump engine_version"):
+        run(decisions.record_decision(
+            pool,
+            parameter="min_confidence_for_buy_signal",
+            from_engine_version="futgg-2.3",
+            to_engine_version="futgg-2.3",
+            old_value=0.45,
+            new_value=0.60,
+            rationale="test",
+            status="accepted",
+            source_commit="deadbeef",
+        ))
+    with pytest.raises(ValueError, match="source_commit"):
+        run(decisions.record_decision(
+            pool,
+            parameter="min_confidence_for_buy_signal",
+            from_engine_version="futgg-2.3",
+            to_engine_version="futgg-2.4",
+            old_value=0.45,
+            new_value=0.60,
+            rationale="test",
+            status="accepted",
+        ))
