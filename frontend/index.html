@@ -2,17 +2,14 @@
 <html lang="en-GB">
   <head>
     <meta charset="UTF-8" />
-    <!-- user-scalable=no removed: blocking pinch-zoom is an accessibility
-         failure (WCAG 1.4.4) and iOS ignores it anyway -->
+    <!-- No user-scalable=no here on purpose - it fails WCAG 1.4.4 and iOS ignores it anyway -->
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#91db32" />
     <title>EAFC.Live — EA FC Trading Opportunities & Market Data</title>
     <meta name="description" content="Find EA FC Ultimate Team cards worth buying by comparing live prices with what cards are actually selling for. Real completed sales, fair value on every card, and live opportunities." />
-    <!-- eafc.live (this build's public-site host) is the canonical
-         marketing identity - app.eafc.live is the same build serving the
-         logged-in app, and must not claim to be it. No og:image exists
-         yet in this repo - omitted rather than a made-up one; needs a
-         real asset before this is complete (see the report). -->
+    <!-- eafc.live is the marketing identity; app.eafc.live runs the same
+         build but is the logged-in app, not the canonical site. No
+         og:image yet - leaving it out rather than faking one. -->
     <link rel="canonical" href="https://eafc.live/" />
     <meta property="og:title" content="EAFC.Live — EA FC Trading Opportunities & Market Data" />
     <meta property="og:description" content="Find cards worth buying by comparing live prices with what they're actually selling for." />
@@ -23,12 +20,10 @@
     <meta name="twitter:title" content="EAFC.Live — EA FC Trading Opportunities & Market Data" />
     <meta name="twitter:description" content="Find cards worth buying by comparing live prices with what they're actually selling for." />
     <script>
-      // One static index.html serves both eafc.live (public) and
-      // app.eafc.live (the app) - see src/lib/domains.js. A crawler that
-      // executes JS (Google does; link-unfurlers like Discord/Twitter's
-      // generally do NOT, so this doesn't help social-preview accuracy
-      // on app.eafc.live, only search-engine canonical/indexing) sees
-      // this correction before React mounts.
+      // This one index.html serves both eafc.live and app.eafc.live (see
+      // src/lib/domains.js), so fix the canonical/robots tags per-domain
+      // before React even mounts. Only helps search engines, not social
+      // previews - Discord/Twitter's unfurlers don't run JS.
       if (location.hostname !== "eafc.live" && location.hostname !== "www.eafc.live") {
         var canonical = document.querySelector('link[rel="canonical"]');
         if (canonical) canonical.setAttribute("href", "https://" + location.hostname + "/");
@@ -41,16 +36,15 @@
 
     <!-- PWA -->
     <link rel="manifest" href="/manifest.json" />
-    <!-- Icons are versioned in the filename (-v2, -v3, ...), not just
-         replaced in place at the same path: browsers, iOS's own
-         apple-touch-icon cache and any CDN in front all cache a static
-         /public asset by URL, so overwriting the file's bytes at the
-         same URL (as happened live on 2026-09-03) leaves every client
-         that already saw the old icon showing it indefinitely - the
-         exact bug already hit and fixed for the Discord embed logo (see
-         discord_embeds.py's brand_author). Bump the suffix here (and in
-         manifest.json / src/utils/pwa.js / TradeShareCardArt.jsx /
-         TradeSummaryCardArt.jsx) next time the icon artwork changes. -->
+    <!-- Icon filenames carry a version suffix (-v2, -v3...) instead of being
+         overwritten in place - browsers, iOS's apple-touch-icon cache, and
+         any CDN in front all cache by URL, so replacing the bytes at the
+         same path leaves everyone who's already seen it stuck on the old
+         icon forever (bit us for real on 2026-09-03, and again separately
+         for the Discord embed logo - see discord_embeds.py's
+         brand_author). Next icon change, bump the suffix here AND in
+         manifest.json, src/utils/pwa.js, TradeShareCardArt.jsx and
+         TradeSummaryCardArt.jsx. -->
     <link rel="icon" href="/icons/icon-192x192-v2.png" sizes="192x192" />
     <link rel="apple-touch-icon" href="/icons/icon-192x192-v2.png" />
 
