@@ -154,8 +154,35 @@ CANDIDATE_SCAN_ORDER_BY = "sales_count DESC NULLS LAST"
 #: cached row set changes nothing about correctness - it only avoids
 #: re-asking the database the identical question multiple times in the
 #: same breath.
+#: THE BUG THIS FIXES (2026-09-07). This TTL protects against redundant
+#: recomputation ONLY if it comfortably outlasts the cost of the thing it
+#: caches. evaluate_card() run over the full candidate pool (~1,300-1,400
+#: rows at current segment limits) costs 15-20s of raw, single-threaded
+#: CPU time when the cache is cold - see _SCORE_AND_FILTER_YIELD_EVERY's
+#: own comment. A 20s TTL is barely longer than that cost, not
+#: comfortably longer: it protects a single page load's own
+#: within-a-second burst of requests (dashboard + /opportunities +
+#: /trade-finder + Strategy Finder), but the moment two waves of
+#: requests are staggered by more than ~20s - exactly what happens when
+#: the frontend fires the dashboard bundle first and the
+#: opportunities/best_overall/track-record bundle 12-40s later - the
+#: cache has already gone cold, and that second wave pays the full
+#: ~17-20s CPU cost together. That is what production evidence
+#: (2026-09-07) showed: /opportunities, /trade-finder/strategy/
+#: best_overall, and /track-record consistently stalling ~17s in
+#: lockstep, entirely independent of every database-side fix made
+#: earlier that same night (materialized view refresh time, bin_history
+#: retention, SalesSync throughput) - because this cost has nothing to
+#: do with Postgres. It is pure Python CPU time, gated by a cache
+#: window too short to actually amortize it.
+#:
+#: The underlying data is only as fresh as futgg_scanner's own 600s
+#: (10 minute) poll interval regardless of this TTL - caching the
+#: computed result for 90s changes nothing about correctness that the
+#: background scanner's own cadence doesn't already accept, and is a
+#: small fraction of that 600s window.
 _SEGMENTED_CANDIDATES_CACHE_SECONDS = int(
-    os.getenv("FUTGG_SEGMENTED_CANDIDATES_CACHE_SECONDS", "20")
+    os.getenv("FUTGG_SEGMENTED_CANDIDATES_CACHE_SECONDS", "90")
 )
 _segmented_candidates_cache: Optional[List[Dict[str, Any]]] = None
 _segmented_candidates_cached_at: float = 0.0
