@@ -14,10 +14,13 @@ backfill from fabricating thousands of "market changes".
 from __future__ import annotations
 
 import json
+import logging
 from decimal import Decimal
 from typing import Any, Sequence
 
 from app.services.futgg_intelligence import CardIntelligence
+
+log = logging.getLogger("futgg_current_intelligence_store")
 
 
 def _num(value: Any):
@@ -160,16 +163,21 @@ def _transition_args(old: Any, snapshot: dict[str, Any], ci: CardIntelligence):
 
 
 async def upsert_many(pool, pairs: Sequence[tuple[dict[str, Any], CardIntelligence]]) -> int:
-    """Replace current state and record real state changes atomically.
+    """Replace current state, then best-effort record genuine state changes.
 
-    The transition comparison uses the state that existed immediately before
-    this batch. Only a newer evaluation can transition a row, and initial
-    population is deliberately silent.
+    Current intelligence is the authoritative product state and must not depend
+    on the optional transition/audit layer being healthy. Transition writes are
+    therefore deliberately outside the current-state transaction: if migration
+    081 is missing or that insert fails, current state still advances and the
+    fault is logged for observability.
     """
     if not pairs:
         return 0
 
     card_ids = [int(ci.card_id) for _, ci in pairs]
+    transitions = []
+    accepted = 0
+
     async with pool.acquire() as conn:
         async with conn.transaction():
             old_rows = await conn.fetch(
@@ -182,23 +190,33 @@ async def upsert_many(pool, pairs: Sequence[tuple[dict[str, Any], CardIntelligen
             )
             old_by_card = {int(row["source_card_id"]): row for row in old_rows}
 
-            await conn.executemany(_UPSERT, [_args(snapshot, ci) for snapshot, ci in pairs])
-
-            transitions = []
+            # Count only rows whose timestamp is eligible to become current.
+            # Initial rows are accepted; older out-of-order results are not.
+            accepted_pairs = []
             for snapshot, ci in pairs:
                 old = old_by_card.get(int(ci.card_id))
-                if old is None:
+                if old is not None and (ci.evaluated_at is None or old["evaluated_at"] > ci.evaluated_at):
                     continue
-                # Ignore a stale/out-of-order evaluation. The UPSERT itself
-                # has the same protection, so transition history cannot claim
-                # a change that current state refused to accept.
-                if ci.evaluated_at is None or old["evaluated_at"] > ci.evaluated_at:
-                    continue
-                if old["signal"] == ci.signal and old["status"] == ci.status:
-                    continue
-                transitions.append(_transition_args(old, snapshot, ci))
+                accepted_pairs.append((snapshot, ci))
+                if old is not None and (old["signal"] != ci.signal or old["status"] != ci.status):
+                    transitions.append(_transition_args(old, snapshot, ci))
 
-            if transitions:
+            if accepted_pairs:
+                await conn.executemany(
+                    _UPSERT,
+                    [_args(snapshot, ci) for snapshot, ci in accepted_pairs],
+                )
+                accepted = len(accepted_pairs)
+
+    if transitions:
+        try:
+            async with pool.acquire() as conn:
                 await conn.executemany(_TRANSITION_INSERT, transitions)
+        except Exception:
+            log.warning(
+                "current intelligence advanced but transition logging failed for %d rows",
+                len(transitions),
+                exc_info=True,
+            )
 
-    return len(pairs)
+    return accepted
