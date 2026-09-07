@@ -10,9 +10,9 @@ falls back to the old live market-wide CPU pass while the new table is still
 warming after its first deployment or if persisted coverage drops below a
 conservative floor.
 
-That fallback is intentionally transitional. Once production shows stable
-coverage, it can be removed completely and Dashboard will never perform a
-market-wide evaluate_card() pass again.
+That fallback is intentionally transitional and may run at most once to bootstrap
+an empty process. Once any complete pair set exists, refreshes are persisted-only
+so cache expiry cannot quietly reintroduce a recurring market-wide CPU pass.
 """
 from __future__ import annotations
 
@@ -58,7 +58,7 @@ async def _load_persisted(provider):
 
 
 async def _compute_live_fallback(provider) -> List[Tuple[Dict[str, Any], Any]]:
-    """Old safe path retained only while persisted current state warms up."""
+    """Old safe path retained only for an empty-process bootstrap."""
     from app.routers.v2 import futgg_market as market
 
     started = time.monotonic()
@@ -71,7 +71,7 @@ async def _compute_live_fallback(provider) -> List[Tuple[Dict[str, Any], Any]]:
         bin_by_card=bin_by_card,
     )
     log.warning(
-        "dashboard current-intelligence coverage insufficient; live fallback scored %d cards in %.2fs",
+        "dashboard current-intelligence coverage insufficient; one-time live fallback scored %d cards in %.2fs",
         len(pairs),
         time.monotonic() - started,
     )
@@ -124,7 +124,7 @@ async def _refresh(provider, *, allow_fallback: bool = True):
         # 10-20% slice would make Home look valid while silently omitting most
         # of its candidate universe. Keep the previous complete value if one
         # exists, otherwise stay empty until either coverage is sufficient or a
-        # real request chooses the transitional live fallback.
+        # real request chooses the one-time transitional live fallback.
         if source == "warming":
             return _pairs or []
 
@@ -141,7 +141,11 @@ def _schedule_refresh(provider) -> None:
 
     async def runner() -> None:
         try:
-            await _refresh(provider)
+            # Once there is any complete cached universe, background refreshes
+            # are persisted-only. If coverage is still warming we keep serving
+            # the last complete value rather than re-running evaluate_card()
+            # across the market every CACHE_SECONDS.
+            await _refresh(provider, allow_fallback=False)
         except Exception:
             log.warning("dashboard market state background refresh failed", exc_info=True)
 
@@ -150,7 +154,8 @@ def _schedule_refresh(provider) -> None:
 
 async def get_pairs(provider) -> List[Tuple[Dict[str, Any], Any]]:
     if _pairs is None:
-        return await _refresh(provider)
+        # Only this empty-process path may invoke the live fallback.
+        return await _refresh(provider, allow_fallback=True)
     if time.monotonic() - _cached_at >= CACHE_SECONDS:
         _schedule_refresh(provider)
     return _pairs
