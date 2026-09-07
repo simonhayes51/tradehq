@@ -30,12 +30,9 @@ the caller via get_current_user() + Depends(get_db) (core pool), so
 get_trades()/count_trades() below match that exactly.
 """
 
-import logging
 from typing import Any, Optional
 
 from app.db import get_core_pool, get_watchlist_pool
-
-log = logging.getLogger("discord_command_data")
 
 
 class NotLinked(Exception):
@@ -79,23 +76,26 @@ async def get_card(card_id: int) -> Optional[dict[str, Any]]:
 
 
 async def evaluate_card_by_id(card_id: int) -> Optional[tuple[dict[str, Any], Any]]:
-    """Returns (row, CardIntelligence) for a specific card_id - the exact
-    evaluate_card() the rest of the app uses, never a re-derived formula."""
-    from app.services.futgg_intelligence import evaluate_card
+    """Return the canonical fresh FUT.GG evaluation for one exact card.
+
+    Kept as a small compatibility wrapper because the Discord interaction
+    layer already imports this function. The evidence-gathering contract now
+    lives in futgg_card_evaluation.evaluate_fresh_card, shared with other
+    one-card callers instead of being reimplemented here.
+    """
+    from app.services.futgg_card_evaluation import evaluate_fresh_card
     from app.services.market_data_provider import FutggMarketDataProvider
 
     pool = await get_core_pool()
     provider = FutggMarketDataProvider(pool)
-    row = await provider.get_player(card_id)
-    if row is None:
+    evaluated = await evaluate_fresh_card(
+        provider,
+        int(card_id),
+        requested_by="discord",
+    )
+    if evaluated is None:
         return None
-    sales: list[dict[str, Any]] = []
-    try:
-        sales = await provider.get_recent_sales(card_id)
-    except Exception:
-        log.warning("get_recent_sales failed for card_id=%s", card_id, exc_info=True)
-    ci = evaluate_card(dict(row), sales=sales)
-    return dict(row), ci
+    return evaluated.row, evaluated.intelligence
 
 
 async def get_watchlist(user_id: str, *, limit: int = 10) -> list[dict[str, Any]]:
