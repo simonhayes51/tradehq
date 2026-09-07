@@ -10,7 +10,6 @@ from typing import Any, Dict, FrozenSet, List, Tuple
 import uvicorn
 
 CACHE_SECONDS = float(os.getenv("FUTGG_REQUEST_BATCH_CACHE_SECONDS", "90"))
-PREWARM_DELAY_SECONDS = float(os.getenv("FUTGG_REQUEST_BATCH_PREWARM_DELAY_SECONDS", "5"))
 log = logging.getLogger("performance_bootstrap")
 
 
@@ -19,6 +18,12 @@ def _subset(mapping: Dict[int, Any], ids: FrozenSet[int]) -> Dict[int, Any]:
 
 
 def install_market_batch_singleflight() -> None:
+    """Collapse duplicate fresh evidence reads inside one API process.
+
+    Bulk market surfaces no longer depend on these loaders on their request path,
+    but fresh single-card evaluation still does. Keeping single-flight protects a
+    burst of detail/Discord/Companion calls without preloading the whole market.
+    """
     from app.services import market_data_provider
     from app.services.bin_valuation_loader import (
         OBSERVATION_WINDOW_DAYS,
@@ -116,43 +121,6 @@ def install_market_batch_singleflight() -> None:
     log.info("installed market-history single-flight caches (ttl=%.0fs)", CACHE_SECONDS)
 
 
-def _install_prewarm(application) -> None:
-    @application.app.on_event("startup")
-    async def _schedule_market_cache_prewarm() -> None:
-        async def _run() -> None:
-            await asyncio.sleep(PREWARM_DELAY_SECONDS)
-            started = time.monotonic()
-            try:
-                from app.db import get_core_pool
-                from app.routers.v2.futgg_market import _segmented_candidates
-                from app.services.market_data_provider import FutggMarketDataProvider
-
-                pool = await get_core_pool()
-                provider = FutggMarketDataProvider(pool)
-                rows = await _segmented_candidates(provider)
-                card_ids = [int(row["source_card_id"]) for row in rows]
-                if not card_ids:
-                    log.info("market cache prewarm skipped: no candidates")
-                    return
-
-                await asyncio.gather(
-                    provider.get_sales_by_ids(card_ids),
-                    provider.get_bin_observations_by_ids(card_ids),
-                )
-                log.info(
-                    "market cache prewarm complete: %d cards in %.1fs",
-                    len(card_ids),
-                    time.monotonic() - started,
-                )
-            except Exception:
-                log.warning(
-                    "market cache prewarm failed; on-demand path remains available",
-                    exc_info=True,
-                )
-
-        asyncio.create_task(_run())
-
-
 def main() -> None:
     logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
     install_market_batch_singleflight()
@@ -160,14 +128,21 @@ def main() -> None:
     # Import the app only after the shared loaders have been wrapped.
     import main as application
 
-    # Heavy market-list endpoints consume scanner-persisted evaluations rather
-    # than re-running evaluate_card() across the market inside HTTP requests.
+    # Heavy market-list endpoints consume scanner-persisted actionable
+    # recommendations rather than re-running evaluate_card() across the market
+    # inside HTTP requests.
     from app.services.snapshot_surface_routes import install_snapshot_surface_routes
     install_snapshot_surface_routes(application)
 
-    # Home still needs the full signal universe (including AVOID/regime), so
-    # precompute that user-independent scoring slice off the request path while
-    # leaving per-user alerts, gating, free picks and event data live.
+    # The one-card detail surface is genuinely a fresh evaluation. Route it
+    # through the same canonical evidence path as Discord, Companion and held
+    # positions without sending bulk surfaces back through that path.
+    from app.services.fresh_card_routes import install_fresh_player_detail_route
+    install_fresh_player_detail_route(application)
+
+    # Home needs the full signal universe, including AVOID/regime. It now reads
+    # scanner-persisted current intelligence. A temporary live-scoring fallback
+    # remains only while migration 080/current-state coverage warms up.
     from app.services.dashboard_market_cache import install_dashboard_market_cache
     install_dashboard_market_cache(application)
 
@@ -181,7 +156,11 @@ def main() -> None:
     install_track_record_cache_route(application)
     install_track_record_prewarm(application)
 
-    _install_prewarm(application)
+    # Do NOT prewarm sales/BIN history for the whole segmented market here.
+    # Those bulk HTTP consumers are persisted-state readers now, so loading
+    # ~1,300 cards of evidence at every API restart is pure startup DB/memory
+    # pressure. Fresh one-card callers populate the single-flight cache on
+    # demand; the background scanner owns the market-wide evidence pass.
 
     workers = int(os.getenv("WEB_CONCURRENCY", "1"))
     if workers != 1:
