@@ -20,19 +20,16 @@ import { api } from "../lib/api";
 const REQUEST_OPTS = { __skipAuthRedirect: true, __noRetry: true, timeout: 8_000 };
 
 // /opportunities, /trade-finder and its strategy tabs all run through the
-// backend's shared _segmented_candidates() scan - up to ~1700 candidates
-// batch-fetched and evaluated fresh on a cache miss. That legitimately
-// takes longer than the 8s every other endpoint here gets: a cache miss
-// plus a cold sales/BIN batch fetch was measured taking several seconds
-// end to end even after the backend's own fixes (a short server-side
-// cache for the candidate scan, yielding the event loop mid-evaluation).
-// At 8s, axios's own timeout aborts the request - which Chrome's Network
-// panel shows as "(canceled)", indistinguishable at a glance from the
-// backend being down, even though the request would have succeeded given
-// a few more seconds. These endpoints get a longer ceiling; every other
-// hook in this file (single-card lookups, cheap by comparison) keeps the
-// tighter 8s so a genuine outage there still surfaces quickly.
+// backend's shared candidate/evaluation pipeline. A cold server-side pass
+// can still be expensive, so these endpoints retain a longer request
+// ceiling than cheap single-card lookups. More importantly, their React
+// Query stale time now matches the backend's 90s candidate/evaluation
+// cache: refetching after only 30s could deliberately arrive after an old
+// 20s cache had expired and trigger another full scoring wave. Keeping the
+// client and server cache windows aligned makes normal navigation reuse
+// the answer we just paid to compute instead of creating avoidable load.
 const SCAN_REQUEST_OPTS = { __skipAuthRedirect: true, __noRetry: true, timeout: 20_000 };
+const SCAN_STALE_TIME_MS = 90_000;
 
 function cleanParams(params = {}) {
   const out = {};
@@ -113,7 +110,8 @@ export function useFutggOpportunities(params = {}) {
     queryFn: async ({ signal }) =>
       (await api.get("/api/v2/opportunities", { params: clean, signal, ...SCAN_REQUEST_OPTS })).data,
     retry: false,
-    staleTime: 30_000,
+    staleTime: SCAN_STALE_TIME_MS,
+    refetchOnWindowFocus: false,
   });
 }
 
@@ -129,7 +127,8 @@ export function useFutggOpportunityPreview() {
     queryFn: async ({ signal }) =>
       (await api.get("/api/v2/opportunities/preview", { signal, ...SCAN_REQUEST_OPTS })).data,
     retry: false,
-    staleTime: 30_000,
+    staleTime: SCAN_STALE_TIME_MS,
+    refetchOnWindowFocus: false,
   });
 }
 
@@ -141,7 +140,8 @@ export function useFutggTradeFinder(params = {}) {
     queryFn: async ({ signal }) =>
       (await api.get("/api/v2/trade-finder", { params: clean, signal, ...SCAN_REQUEST_OPTS })).data,
     retry: false,
-    staleTime: 30_000,
+    staleTime: SCAN_STALE_TIME_MS,
+    refetchOnWindowFocus: false,
   });
 }
 
@@ -159,7 +159,8 @@ export function useStrategyFinder(strategy, { enabled = true } = {}) {
       (await api.get(`/api/v2/trade-finder/strategy/${strategy}`, { signal, ...SCAN_REQUEST_OPTS })).data,
     enabled: enabled && !!strategy,
     retry: false,
-    staleTime: 30_000,
+    staleTime: SCAN_STALE_TIME_MS,
+    refetchOnWindowFocus: false,
   });
 }
 
