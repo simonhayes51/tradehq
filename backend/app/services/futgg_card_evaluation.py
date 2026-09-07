@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 from app.services.futgg_intelligence import CardIntelligence, evaluate_card
+from app.services.futgg_sales_window import filter_valuation_sales
 from app.services.market_data_provider import FutggMarketDataProvider
 
 log = logging.getLogger("futgg_card_evaluation")
@@ -57,7 +58,7 @@ async def evaluate_fresh_card(
 
     sales = []
     try:
-        sales = await provider.get_recent_sales(int(card_id))
+        sales = filter_valuation_sales(await provider.get_recent_sales(int(card_id)))
     except Exception:
         log.warning(
             "fresh card sales read failed card_id=%s requested_by=%s",
