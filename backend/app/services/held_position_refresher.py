@@ -16,7 +16,8 @@ from typing import Any, Optional, Tuple
 import asyncpg
 
 from app.services import trading_math as tm
-from app.services.futgg_intelligence import CardIntelligence, evaluate_card as evaluate_futgg_card
+from app.services.futgg_card_evaluation import evaluate_fresh_card
+from app.services.futgg_intelligence import CardIntelligence
 from app.services.futgg_trend import DOWNTREND, FALLING_KNIFE
 from app.services.market_data_provider import FutggMarketDataProvider
 from app.services.recommendation_engine_v2 import evaluate_card as evaluate_legacy_card
@@ -96,37 +97,18 @@ async def _evaluate_futgg_position(
     card_id: int,
     purchase_price: int,
 ) -> Optional[Tuple[str, str]]:
-    market = await provider.get_player(card_id)
-    if market is None:
-        return None
-
-    market_row = dict(market)
-    sales = []
-    bin_observations = None
-    try:
-        sales = await provider.get_recent_sales(card_id)
-    except Exception:
-        log.warning(
-            "held_position_refresher: FUT.GG sales read failed for card_id=%s",
-            card_id,
-            exc_info=True,
-        )
-    try:
-        bin_by_card = await provider.get_bin_observations_by_ids([card_id])
-        bin_observations = bin_by_card.get(card_id)
-    except Exception:
-        log.warning(
-            "held_position_refresher: FUT.GG BIN-history read failed for card_id=%s",
-            card_id,
-            exc_info=True,
-        )
-
-    ci = evaluate_futgg_card(
-        market_row,
-        sales=sales,
-        bin_observations=bin_observations,
+    evaluated = await evaluate_fresh_card(
+        provider,
+        card_id,
+        requested_by="held_position_refresher",
     )
-    return _futgg_held_verdict(market_row, ci, purchase_price)
+    if evaluated is None:
+        return None
+    return _futgg_held_verdict(
+        evaluated.row,
+        evaluated.intelligence,
+        purchase_price,
+    )
 
 
 async def _evaluate_legacy_position(
