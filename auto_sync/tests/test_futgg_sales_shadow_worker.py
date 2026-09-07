@@ -25,13 +25,13 @@ def test_shadow_wrapper_returns_exact_live_due_rows_when_observation_succeeds(mo
     async def observe(conn, due, watchlist_conn=None):
         seen["due"] = due
 
-    async def fake_run_forever():
+    async def fake_main():
         result = await worker.sales.select_due(object())
         seen["result"] = result
 
     monkeypatch.delenv("WATCHLIST_DATABASE_URL", raising=False)
     monkeypatch.setattr(worker.sales, "select_due", original_select_due)
-    monkeypatch.setattr(worker.sales, "run_forever", fake_run_forever)
+    monkeypatch.setattr(worker.sales, "main", fake_main)
     monkeypatch.setattr(worker, "observe_after_due_selection", observe)
 
     run(worker.run())
@@ -51,18 +51,24 @@ def test_shadow_failure_cannot_change_or_fail_live_due_selection(monkeypatch):
     async def exploding_observe(conn, due, watchlist_conn=None):
         raise RuntimeError("shadow DB unavailable")
 
-    async def fake_run_forever():
+    async def fake_main():
         seen["result"] = await worker.sales.select_due(object())
 
     monkeypatch.delenv("WATCHLIST_DATABASE_URL", raising=False)
     monkeypatch.setattr(worker.sales, "select_due", original_select_due)
-    monkeypatch.setattr(worker.sales, "run_forever", fake_run_forever)
+    monkeypatch.setattr(worker.sales, "main", fake_main)
     monkeypatch.setattr(worker, "observe_after_due_selection", exploding_observe)
 
     run(worker.run())
 
     assert seen["result"] is due_rows
     assert worker.sales.select_due is original_select_due
+
+
+def test_wrapper_delegates_to_sales_main_so_diagnostic_mode_is_preserved():
+    text = (Path(__file__).resolve().parents[1] / "futgg_sales_shadow_worker.py").read_text()
+    assert "await sales.main()" in text
+    assert "await sales.run_forever()" not in text
 
 
 def test_entrypoint_launches_shadow_worker_under_existing_supervisor():
