@@ -142,7 +142,7 @@ fi
 # session's own notes on 2026-09-07's investigation.
 SALES_CYCLE_SLEEP_MIN="${FUTGG_SALES_CYCLE_SLEEP_MIN:-300}"
 SALES_CYCLE_SLEEP_FORCE="${FUTGG_SALES_CYCLE_SLEEP_FORCE:-true}"
-if [ "${SALES_CYCLE_SLEEP_FORCE,,}" != "false" ] && [ "${SALES_CYCLE_SLEEP_FORCE}" != "0" ]; then
+if [ "${SALES_CYCLE_SLEEP_FORCE,,}" != "false" ] && [ "$SALES_CYCLE_SLEEP_FORCE" != "0" ]; then
     if [ "${FUTGG_SALES_CYCLE_SLEEP:-}" != "${SALES_CYCLE_SLEEP_MIN}" ]; then
         echo "Setting FUTGG_SALES_CYCLE_SLEEP to ${SALES_CYCLE_SLEEP_MIN} for signed-endpoint recovery"
         export FUTGG_SALES_CYCLE_SLEEP="${SALES_CYCLE_SLEEP_MIN}"
@@ -192,8 +192,8 @@ trap request_stop INT TERM
 trap cleanup EXIT
 
 while [ "$STOP_REQUESTED" = "0" ]; do
-    echo "Starting FUT.GG sales sync..."
-    python futgg_sales_sync.py &
+    echo "Starting FUT.GG sales sync with read-only information shadow..."
+    python futgg_sales_shadow_worker.py &
     SALES_PID=$!
 
     while kill -0 "$SALES_PID" 2>/dev/null; do
