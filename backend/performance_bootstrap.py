@@ -165,6 +165,12 @@ def main() -> None:
     from app.services.snapshot_surface_routes import install_snapshot_surface_routes
     install_snapshot_surface_routes(application)
 
+    # Home still needs the full signal universe (including AVOID/regime), so
+    # precompute that user-independent scoring slice off the request path while
+    # leaving per-user alerts, gating, free picks and event data live.
+    from app.services.dashboard_market_cache import install_dashboard_market_cache
+    install_dashboard_market_cache(application)
+
     # Track Record is historical evidence. Cache the audited result and warm
     # the common windows after startup so a page view never has to replay tens
     # of sent Proof Ledger days synchronously.
