@@ -29,6 +29,7 @@ def install_market_batch_singleflight() -> None:
         OBSERVATION_WINDOW_DAYS,
         load_hourly_bin_valuation_observations,
     )
+    from app.services.futgg_sales_window import filter_valuation_sales
 
     bin_lock = asyncio.Lock()
     bin_cache: Dict[Tuple[int, int], Dict[str, Any]] = {}
@@ -107,11 +108,20 @@ def install_market_batch_singleflight() -> None:
                     list(missing),
                     limit_per_card=int(limit_per_card),
                 )
+                # The SQL loader still returns its historical 14-day window,
+                # while migrations 084/085 define the market snapshot over the
+                # newest 50 sales in seven days. Filter centrally here so every
+                # batch engine caller (scanner + transitional live fallback)
+                # uses the same evidence horizon as the snapshot aggregates.
+                fetched = {
+                    int(card_id): filter_valuation_sales(rows)
+                    for card_id, rows in fetched.items()
+                }
                 entry["data"].update(fetched)
                 entry["ids"] = entry["ids"] | missing
                 entry["at"] = time.monotonic()
                 log.info(
-                    "shared sales batch fetched %d missing cards in %.0fms",
+                    "shared 7d sales batch fetched %d missing cards in %.0fms",
                     len(missing),
                     (time.monotonic() - started) * 1000,
                 )
