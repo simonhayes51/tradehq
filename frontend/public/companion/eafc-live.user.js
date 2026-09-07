@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EAFC.Live Companion
 // @namespace    https://app.eafc.live/
-// @version      1.9.0
+// @version      1.9.1
 // @description  Read-only EAFC.Live trading intelligence overlay for the EA SPORTS FC 26 Web App Transfer Market. Never buys, bids, lists, or automates anything - observation only.
 // @author       EAFC.Live
 // @match        https://www.ea.com/*/ea-sports-fc/ultimate-team/web-app/*
@@ -620,6 +620,7 @@
     font-size: 10.5px; font-weight: 700; letter-spacing: 0.02em;
     background: rgba(57, 255, 138, 0.14); color: #39ff8a;
   }
+  .eafc-live-opp-hint { color: #8d8f95; font-size: 11px; line-height: 1.35; margin-top: 4px; }
   .eafc-live-muted { color: #8d8f95; font-size: 12px; text-align: center; padding: 24px 0; }
   .eafc-live-debug { color: #5c5e64; font-size: 10px; text-align: center; font-family: 'JetBrains Mono', monospace; padding: 0 16px 16px; word-break: break-word; }
   .eafc-live-spinner {
@@ -722,10 +723,21 @@
         r.appendChild(el("span", `value${valueClass ? " " + valueClass : ""}`, value));
         main.appendChild(r);
       };
-      row("Current BIN", fmt(item.current_bin));
-      row("Buy Below", fmt(item.recommended_buy_max ?? item.buy_below));
+      if (item.current_bin != null) {
+        row("Current BIN", fmt(item.current_bin));
+      } else if (item.current_bin_approx != null) {
+        row("Current BIN", `~${fmt(item.current_bin_approx)}`);
+      }
+      const buyTarget = item.recommended_buy_max ?? item.buy_below;
+      if (buyTarget != null) {
+        row("Buy Below", fmt(buyTarget));
+      }
       if (item.expected_profit_after_tax != null) {
         row("Expected Profit", `+${fmt(Math.round(item.expected_profit_after_tax))}`, "profit");
+      } else if (item.locked) {
+        main.appendChild(
+          el("div", "eafc-live-opp-hint", item.headline_reason || "Buy target unlocks with Elite on the site.")
+        );
       }
       const signal = el(
         "span",

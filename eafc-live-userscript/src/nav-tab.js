@@ -370,6 +370,7 @@ const PANEL_STYLES = `
     font-size: 10.5px; font-weight: 700; letter-spacing: 0.02em;
     background: rgba(57, 255, 138, 0.14); color: #39ff8a;
   }
+  .eafc-live-opp-hint { color: #8d8f95; font-size: 11px; line-height: 1.35; margin-top: 4px; }
   .eafc-live-muted { color: #8d8f95; font-size: 12px; text-align: center; padding: 24px 0; }
   .eafc-live-debug { color: #5c5e64; font-size: 10px; text-align: center; font-family: 'JetBrains Mono', monospace; padding: 0 16px 16px; word-break: break-word; }
   .eafc-live-spinner {
@@ -509,10 +510,29 @@ async function openPanel() {
       r.appendChild(el("span", `value${valueClass ? " " + valueClass : ""}`, value));
       main.appendChild(r);
     };
-    row("Current BIN", fmt(item.current_bin));
-    row("Buy Below", fmt(item.recommended_buy_max ?? item.buy_below));
+    // A signed-out/non-Elite viewer never gets current_bin/recommended_buy_max
+    // at all - the backend redacts those to current_bin_approx (rounded to
+    // the nearest 1,000) for exactly this endpoint (see
+    // backend/app/auth/access.py's preview_opportunity()). The userscript
+    // has no way to carry an Elite member's site session into EA's page
+    // context, so it is always this "locked" viewer, same as an anonymous
+    // site visitor - showing a bare "-" here read as broken rather than as
+    // the paywall doing its job.
+    if (item.current_bin != null) {
+      row("Current BIN", fmt(item.current_bin));
+    } else if (item.current_bin_approx != null) {
+      row("Current BIN", `~${fmt(item.current_bin_approx)}`);
+    }
+    const buyTarget = item.recommended_buy_max ?? item.buy_below;
+    if (buyTarget != null) {
+      row("Buy Below", fmt(buyTarget));
+    }
     if (item.expected_profit_after_tax != null) {
       row("Expected Profit", `+${fmt(Math.round(item.expected_profit_after_tax))}`, "profit");
+    } else if (item.locked) {
+      main.appendChild(
+        el("div", "eafc-live-opp-hint", item.headline_reason || "Buy target unlocks with Elite on the site.")
+      );
     }
     const signal = el(
       "span",
