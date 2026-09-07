@@ -686,6 +686,34 @@ _SCORE_AND_FILTER_YIELD_EVERY = 50
 _EVALUATE_CARD_CACHE_SECONDS = _SEGMENTED_CANDIDATES_CACHE_SECONDS
 _evaluate_card_cache: Dict[int, Tuple[float, Any]] = {}
 
+#: THE BUG THIS FIXES (2026-09-07). _evaluate_card_cache above shares
+#: RESULTS across calls, but nothing serialized the calls themselves -
+#: one page load fires /dashboard, /opportunities, /trade-finder/
+#: strategy/best_overall, and /track-record within moments of each
+#: other, and every one of them calls this function. If two of those
+#: requests both arrive while the cache is still cold (exactly what
+#: happens right after it expires, or after any restart), each one
+#: independently loops through the SAME ~1,300+ candidates, calling the
+#: same synchronous, CPU-bound evaluate_card() for the same card_ids in
+#: parallel - true duplicate work, not shared, because a cache miss
+#: doesn't reserve anything for the caller who caused it. On a single-
+#: threaded event loop that isn't "some concurrency", it's N full
+#: 15-20s CPU-bound passes competing for the same one CPU, which is
+#: long enough to starve even trivially cheap, unrelated requests
+#: (confirmed in production: /api/v2/market/freshness - a plain DB
+#: stats query - timing out at its own 8s client limit during exactly
+#: this pileup) and can push the heavier requests past their own
+#: client-side timeouts entirely, surfacing as canceled requests
+#: instead of merely slow ones.
+#:
+#: This lock serializes _score_and_filter() calls process-wide. That
+#: costs nothing on a single-threaded event loop - concurrency there
+#: never made CPU-bound work faster, only more interleaved - and it
+#: means every caller after the first, for the same cache window, finds
+#: every card_id it needs already sitting in _evaluate_card_cache and
+#: finishes almost immediately instead of redoing the same work.
+_score_and_filter_lock = asyncio.Lock()
+
 
 def _cached_evaluate_card(row, *, sales, bin_observations):
     card_id = int(row["source_card_id"])
@@ -711,46 +739,51 @@ async def _score_and_filter(
     out = []
     sales_by_card = sales_by_card or {}
     bin_by_card = bin_by_card or {}
-    for i, row in enumerate(rows):
-        if i and i % _SCORE_AND_FILTER_YIELD_EVERY == 0:
-            await asyncio.sleep(0)
-        card_id = int(row["source_card_id"])
-        try:
-            ci = _cached_evaluate_card(
-                row, sales=sales_by_card.get(card_id, []),
-                bin_observations=bin_by_card.get(card_id),
-            )
-        except Exception:
-            # One malformed/unanticipated row must never take the whole
-            # list down for every user - futgg_scanner.run_scan() already
-            # isolates per-card failures the same way; this endpoint-level
-            # loop had no equivalent isolation, which is exactly how one
-            # bad row emptied the entire feed on 2026-09-05.
-            log.warning("evaluate_card failed for card_id=%s", card_id, exc_info=True)
-            continue
-        if require_confirmed_sales and (
-            ci.valuation_source != "completed_sales" or ci.evidence_quality != "confirmed"
-        ):
-            continue
-        if max_evidence_age_minutes is not None and (
-            ci.evidence_age_minutes is None or ci.evidence_age_minutes > max_evidence_age_minutes
-        ):
-            continue
-        if signals is not None and ci.signal not in signals:
-            continue
-        if risk is not None and ci.risk_level != risk:
-            continue
-        if min_expected_profit is not None and (
-            ci.expected_profit_after_tax is None or float(ci.expected_profit_after_tax) < min_expected_profit
-        ):
-            continue
-        if min_roi is not None and (ci.expected_roi is None or float(ci.expected_roi) < min_roi):
-            continue
-        if min_confidence is not None and (ci.confidence_score is None or ci.confidence_score < min_confidence):
-            continue
-        if min_liquidity is not None and (ci.liquidity_score is None or ci.liquidity_score < min_liquidity):
-            continue
-        out.append((row, ci))
+    # See _score_and_filter_lock's own comment: serializes concurrent
+    # callers so the second (third, fourth...) one for the same cache
+    # window finds evaluate_card()'s results already cached instead of
+    # redoing the same CPU-bound work in wasteful parallel duplication.
+    async with _score_and_filter_lock:
+        for i, row in enumerate(rows):
+            if i and i % _SCORE_AND_FILTER_YIELD_EVERY == 0:
+                await asyncio.sleep(0)
+            card_id = int(row["source_card_id"])
+            try:
+                ci = _cached_evaluate_card(
+                    row, sales=sales_by_card.get(card_id, []),
+                    bin_observations=bin_by_card.get(card_id),
+                )
+            except Exception:
+                # One malformed/unanticipated row must never take the whole
+                # list down for every user - futgg_scanner.run_scan() already
+                # isolates per-card failures the same way; this endpoint-level
+                # loop had no equivalent isolation, which is exactly how one
+                # bad row emptied the entire feed on 2026-09-05.
+                log.warning("evaluate_card failed for card_id=%s", card_id, exc_info=True)
+                continue
+            if require_confirmed_sales and (
+                ci.valuation_source != "completed_sales" or ci.evidence_quality != "confirmed"
+            ):
+                continue
+            if max_evidence_age_minutes is not None and (
+                ci.evidence_age_minutes is None or ci.evidence_age_minutes > max_evidence_age_minutes
+            ):
+                continue
+            if signals is not None and ci.signal not in signals:
+                continue
+            if risk is not None and ci.risk_level != risk:
+                continue
+            if min_expected_profit is not None and (
+                ci.expected_profit_after_tax is None or float(ci.expected_profit_after_tax) < min_expected_profit
+            ):
+                continue
+            if min_roi is not None and (ci.expected_roi is None or float(ci.expected_roi) < min_roi):
+                continue
+            if min_confidence is not None and (ci.confidence_score is None or ci.confidence_score < min_confidence):
+                continue
+            if min_liquidity is not None and (ci.liquidity_score is None or ci.liquidity_score < min_liquidity):
+                continue
+            out.append((row, ci))
     return out
 
 
