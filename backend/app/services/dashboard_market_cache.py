@@ -116,16 +116,22 @@ async def _refresh(provider, *, allow_fallback: bool = True):
     async with _lock:
         if _pairs is not None and time.monotonic() - _cached_at < CACHE_SECONDS:
             return _pairs
+
         pairs, source = await _compute(provider, allow_fallback=allow_fallback)
-        # A non-fallback warmup with too little state should not replace a last
-        # known good cache with a tiny partial universe.
-        if source == "warming" and _pairs is not None:
-            return _pairs
-        if pairs or source == "live_fallback":
-            _pairs = pairs
-            _cached_at = time.monotonic()
-            _cache_source = source
-        return _pairs or []
+
+        # Never promote a partial warmup population into the live cache. On the
+        # first migration deploy this table fills over scanner passes; caching a
+        # 10-20% slice would make Home look valid while silently omitting most
+        # of its candidate universe. Keep the previous complete value if one
+        # exists, otherwise stay empty until either coverage is sufficient or a
+        # real request chooses the transitional live fallback.
+        if source == "warming":
+            return _pairs or []
+
+        _pairs = pairs
+        _cached_at = time.monotonic()
+        _cache_source = source
+        return _pairs
 
 
 def _schedule_refresh(provider) -> None:
@@ -212,13 +218,14 @@ def install_dashboard_market_cache(application) -> None:
 
             # First attempt catches an already-populated table on ordinary
             # redeploys. A second attempt lands after the scanner's 45s startup
-            # delay on migration 080's first deploy.
+            # delay on migration 080's first deploy. Partial state is never
+            # cached by prewarm, so the second attempt remains meaningful.
             for delay in (8, 55):
                 await asyncio.sleep(delay)
                 try:
                     pool = await get_core_pool()
                     await prewarm(FutggMarketDataProvider(pool))
-                    if _pairs:
+                    if _pairs is not None:
                         return
                 except Exception:
                     log.warning("dashboard market state startup prewarm failed", exc_info=True)
