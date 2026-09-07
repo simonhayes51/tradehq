@@ -5,6 +5,11 @@ futgg_recommendation_snapshots table is an immutable audit/Track Record corpus
 and should remain limited to calls worth grading. This module owns one mutable
 row per card representing what the engine thinks *now*, including
 hold/sell/avoid/insufficient_data.
+
+It also records genuine state transitions. A transition exists only when a card
+already had current state and a newer evaluation changes signal or status. The
+first population of a card is not a transition, which prevents a deployment or
+backfill from fabricating thousands of "market changes".
 """
 from __future__ import annotations
 
@@ -80,6 +85,17 @@ ON CONFLICT (source_card_id) DO UPDATE SET
 WHERE futgg_current_intelligence.evaluated_at <= EXCLUDED.evaluated_at
 """
 
+_TRANSITION_INSERT = """
+INSERT INTO futgg_intelligence_transitions (
+    source_card_id, changed_at,
+    previous_signal, new_signal, previous_status, new_status,
+    current_bin, fair_value, expected_roi, confidence_score,
+    risk_level, trend_state, reason_codes, blocking_codes, engine_version
+) VALUES (
+    $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15
+)
+"""
+
 
 def _args(snapshot: dict[str, Any], ci: CardIntelligence):
     return (
@@ -123,15 +139,66 @@ def _args(snapshot: dict[str, Any], ci: CardIntelligence):
     )
 
 
-async def upsert_many(pool, pairs: Sequence[tuple[dict[str, Any], CardIntelligence]]) -> int:
-    """Replace current state for each evaluated card in one DB acquisition.
+def _transition_args(old: Any, snapshot: dict[str, Any], ci: CardIntelligence):
+    return (
+        int(ci.card_id),
+        ci.evaluated_at,
+        old["signal"],
+        ci.signal,
+        old["status"],
+        ci.status,
+        snapshot.get("current_bin"),
+        _num(ci.fair_value),
+        _num(ci.expected_roi),
+        ci.confidence_score,
+        ci.risk_level,
+        ci.trend_state,
+        list(ci.reason_codes or []),
+        list(ci.blocking_codes or []),
+        ci.engine_version,
+    )
 
-    Returns the number of input evaluations attempted. A scanner pass should
-    treat this as current-state bookkeeping, not as recommendation-history
-    creation; the immutable recommendation store remains a separate write.
+
+async def upsert_many(pool, pairs: Sequence[tuple[dict[str, Any], CardIntelligence]]) -> int:
+    """Replace current state and record real state changes atomically.
+
+    The transition comparison uses the state that existed immediately before
+    this batch. Only a newer evaluation can transition a row, and initial
+    population is deliberately silent.
     """
     if not pairs:
         return 0
+
+    card_ids = [int(ci.card_id) for _, ci in pairs]
     async with pool.acquire() as conn:
-        await conn.executemany(_UPSERT, [_args(snapshot, ci) for snapshot, ci in pairs])
+        async with conn.transaction():
+            old_rows = await conn.fetch(
+                """
+                SELECT source_card_id, evaluated_at, signal, status
+                FROM futgg_current_intelligence
+                WHERE source_card_id = ANY($1::bigint[])
+                """,
+                card_ids,
+            )
+            old_by_card = {int(row["source_card_id"]): row for row in old_rows}
+
+            await conn.executemany(_UPSERT, [_args(snapshot, ci) for snapshot, ci in pairs])
+
+            transitions = []
+            for snapshot, ci in pairs:
+                old = old_by_card.get(int(ci.card_id))
+                if old is None:
+                    continue
+                # Ignore a stale/out-of-order evaluation. The UPSERT itself
+                # has the same protection, so transition history cannot claim
+                # a change that current state refused to accept.
+                if ci.evaluated_at is None or old["evaluated_at"] > ci.evaluated_at:
+                    continue
+                if old["signal"] == ci.signal and old["status"] == ci.status:
+                    continue
+                transitions.append(_transition_args(old, snapshot, ci))
+
+            if transitions:
+                await conn.executemany(_TRANSITION_INSERT, transitions)
+
     return len(pairs)
