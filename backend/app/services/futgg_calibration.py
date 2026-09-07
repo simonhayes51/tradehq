@@ -4,20 +4,22 @@ This module never changes a production threshold. It answers the prerequisite
 question: is there enough clean, version-consistent evidence to justify even
 reviewing one?
 
-Three guardrails are load-bearing:
+Guardrails are load-bearing:
   * only one engine_version and grader_version are analysed at a time;
   * a single engine_version must map to exactly one frozen engine_config JSON;
   * apparent bucket differences need sample size, a 95% interval, a two-sided
-    proportion test and a minimum practical effect before being flagged.
+    proportion test, family-wise multiple-comparison correction, and a minimum
+    practical effect before being flagged.
 
 That keeps "0.85 confidence won more than 0.70" from becoming a configuration
-change when the observation is just small-sample noise or mixed versions.
+change when the observation is just small-sample noise, mixed versions, or one
+false positive among several threshold comparisons.
 """
 from __future__ import annotations
 
 import math
 from datetime import timedelta
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from app.services.futgg_config import ENGINE_VERSION, GRADER_VERSION
 from app.services.futgg_recommendation_store import VALID_ENTRY_PRICE
@@ -207,7 +209,6 @@ def _ordered_comparisons(
     buckets: Sequence[Dict[str, Any]],
     *,
     min_sample: int,
-    alpha: float,
     min_effect_pp: float,
 ) -> List[Dict[str, Any]]:
     order = ORDERED_BUCKETS.get(dimension)
@@ -229,7 +230,6 @@ def _ordered_comparisons(
         high_rate = (100.0 * s_high / n_high) if n_high else 0.0
         delta = high_rate - low_rate
         enough = n_low >= min_sample and n_high >= min_sample
-        significant = bool(enough and p_value is not None and p_value <= alpha)
         practical = abs(delta) >= min_effect_pp
         comparisons.append({
             "lower_bucket": lower_name,
@@ -238,9 +238,10 @@ def _ordered_comparisons(
             "higher_sample": n_high,
             "profitable_call_rate_delta_pp": round(delta, 2),
             "p_value": round(p_value, 6) if p_value is not None else None,
-            "statistically_significant": significant,
+            "has_minimum_samples": enough,
             "practically_meaningful": practical,
-            "candidate_for_review": bool(significant and practical),
+            "statistically_significant": False,
+            "candidate_for_review": False,
             "direction": (
                 "higher_bucket_better" if delta >= min_effect_pp
                 else "lower_bucket_better" if delta <= -min_effect_pp
@@ -248,6 +249,28 @@ def _ordered_comparisons(
             ),
         })
     return comparisons
+
+
+def _apply_bonferroni(comparisons: Dict[str, List[Dict[str, Any]]], *, alpha: float) -> Dict[str, Any]:
+    """Control family-wise false positives across all ordered threshold tests."""
+    eligible = [
+        item
+        for items in comparisons.values()
+        for item in items
+        if item["has_minimum_samples"] and item["p_value"] is not None
+    ]
+    tests = len(eligible)
+    adjusted_alpha = (alpha / tests) if tests else alpha
+    for item in eligible:
+        significant = float(item["p_value"]) <= adjusted_alpha
+        item["statistically_significant"] = significant
+        item["candidate_for_review"] = bool(significant and item["practically_meaningful"])
+    return {
+        "method": "bonferroni_familywise",
+        "eligible_tests": tests,
+        "raw_alpha": alpha,
+        "adjusted_alpha": adjusted_alpha,
+    }
 
 
 async def calibration_report(
@@ -287,12 +310,12 @@ async def calibration_report(
             dimension,
             buckets,
             min_sample=min_sample,
-            alpha=alpha,
             min_effect_pp=min_effect_pp,
         )
         for dimension, buckets in dimensions.items()
         if dimension in ORDERED_BUCKETS
     }
+    multiplicity = _apply_bonferroni(comparisons, alpha=alpha)
 
     review_candidates = [
         {"dimension": dimension, **comparison}
@@ -321,6 +344,7 @@ async def calibration_report(
             "confidence_level_pct": round((1.0 - alpha) * 100.0, 1),
             "minimum_practical_effect_pp": min_effect_pp,
             "primary_metric": "profitable_call_rate_pct",
+            "multiple_comparison_control": multiplicity,
         },
         "version_integrity": {
             "config_clean": config_clean,
@@ -335,6 +359,5 @@ async def calibration_report(
         "blockers": blockers,
         "dimensions": dimensions,
         "ordered_comparisons": comparisons,
-        # These are evidence prompts, never automatic config changes.
         "review_candidates": review_candidates if not blockers else [],
     }
