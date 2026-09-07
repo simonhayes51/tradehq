@@ -13,6 +13,7 @@ from fastapi import HTTPException
 from fastapi.routing import APIRoute
 
 from app.services.futgg_card_evaluation import evaluate_fresh_card
+from app.services.futgg_exit_quality import exit_quality_for_card
 
 log = logging.getLogger("fresh_card_routes")
 
@@ -43,14 +44,35 @@ def install_fresh_player_detail_route(application) -> None:
             except Exception:
                 log.warning("bump_price_priority failed for card_id=%s", card_id, exc_info=True)
 
+        unlocked = []
+        if not viewer.has("opportunity_feed") and viewer.is_free:
+            unlocked = await unlocked_pick_ids()
+        exit_quality_unlocked = viewer.has("opportunity_feed") or card_id in set(unlocked)
+
         payload = {
             "source": "futgg",
             **market._item_with_intelligence(row, ci),
             "player": market._serialize_player(row),
             "intelligence": market._serialize_intelligence(ci),
         }
+
+        if exit_quality_unlocked:
+            try:
+                payload["exit_quality"] = await exit_quality_for_card(
+                    provider._pool,
+                    row,
+                    ci,
+                )
+            except Exception:
+                # Historical evidence is an enrichment, never a reason to turn
+                # a valid live card page into a 500.
+                log.warning("exit quality lookup failed for card_id=%s", card_id, exc_info=True)
+                payload["exit_quality"] = {
+                    "status": "unavailable",
+                    "message": "Historical exit evidence is temporarily unavailable.",
+                }
+
         if not viewer.has("opportunity_feed"):
-            unlocked = await unlocked_pick_ids() if viewer.is_free else []
             payload = market.serialise_card_detail(payload, viewer, unlocked_ids=unlocked)
         return payload
 
