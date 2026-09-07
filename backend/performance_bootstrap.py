@@ -197,6 +197,14 @@ def main() -> None:
 
     # Import the app only after the shared loaders have been wrapped.
     import main as application
+
+    # Replace only the final callables for the expensive market-list routes.
+    # FastAPI's already-built dependency/query parsing stays intact; the
+    # handlers now read scanner-persisted recommendations instead of running
+    # evaluate_card() across the whole market inside the request.
+    from app.services.snapshot_surface_routes import install_snapshot_surface_routes
+    install_snapshot_surface_routes(application)
+
     _install_prewarm(application)
 
     workers = int(os.getenv("WEB_CONCURRENCY", "1"))
