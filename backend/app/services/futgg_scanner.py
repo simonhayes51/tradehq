@@ -1,7 +1,8 @@
 # app/services/futgg_scanner.py
 """
 The evaluation pass: segmented candidate selection -> trend-aware
-evaluation -> persisted recommendation snapshots.
+evaluation -> persisted recommendation snapshots + one current-state row per
+successfully evaluated card.
 
 This is what closes the loop between the pieces. Each pass:
 
@@ -11,8 +12,12 @@ This is what closes the loop between the pieces. Each pass:
   2. Batch-fetches raw sales for the whole candidate set in one query,
      so the trend layer gets real per-sale rows without N+1 round trips.
   3. Evaluates each card with its sales series attached.
-  4. Freezes every actionable result as a recommendation snapshot, which
-     is what the outcome grader will later grade.
+  4. Freezes actionable/watch calls as immutable recommendation snapshots,
+     which is what the outcome grader later grades.
+  5. Upserts EVERY successful evaluation into futgg_current_intelligence,
+     so bulk/current-state consumers can read HOLD/SELL/AVOID/
+     INSUFFICIENT_DATA as well as actionable calls without polluting the
+     historical Track Record corpus.
 
 Metrics are collected per pass and per segment, because "is the long tail
 actually being evaluated" is a question that needs an answer in
@@ -29,6 +34,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.services.futgg_candidate_segments import MAX_TOTAL_CANDIDATES, segment_summary
+from app.services.futgg_current_intelligence_store import upsert_many as upsert_current_intelligence
 from app.services.futgg_intelligence import evaluate_card
 from app.services.futgg_recommendation_store import record_many
 
@@ -61,6 +67,7 @@ class ScanMetrics:
     total_player_pool: int = 0
     pool_coverage_pct: Optional[float] = None
     recommendations_written: int = 0
+    current_state_written: int = 0
     segments: List[SegmentMetrics] = field(default_factory=list)
     # Why the cards that produced nothing produced nothing. A pass that
     # writes zero recommendations is not self-explaining otherwise, and
@@ -94,24 +101,18 @@ class ScanMetrics:
     # so a specific card that briefly qualified can be checked against
     # what /api/v2/opportunities (or the Discord feed) returns a few
     # minutes later, instead of only knowing "a buy signal existed
-    # somewhere" with no way to trace which one. See the investigation
-    # this was added for: a scan pass logged buy=1 and 8 minutes later
-    # /opportunities returned zero, with no way to confirm whether that
-    # was the same card falling out of _segmented_candidates()'s
-    # fixed-size per-segment ranking window, a genuine price move, or
-    # something else.
+    # somewhere" with no way to trace which one.
     buy_signal_card_ids: List[int] = field(default_factory=list)
 
     @property
     def buy_signals_total(self) -> int:
         """Sum of the per-segment buy/strong_buy counts.
 
-        recommendations_written persists buy+strong_buy+watch together
-        (see run_scan), so it answers "how many rows got frozen", not "how
-        many are actually opportunities" - that's this. Logged separately
-        so a pass that writes e.g. 176 snapshots that are 0 buy / 176 watch
-        stops looking, from the log line alone, like it disagrees with
-        /api/v2/opportunities returning zero when it doesn't.
+        recommendations_written persists buy+strong_buy+watch together,
+        so it answers "how many historical rows got frozen", not "how
+        many are actually opportunities" - that's this. current_state_written
+        is separate again: that is every successful evaluation, including
+        avoid/hold/sell/insufficient_data.
         """
         return sum(s.buy_signals for s in self.segments)
 
@@ -127,6 +128,7 @@ class ScanMetrics:
             "total_player_pool": self.total_player_pool,
             "pool_coverage_pct": self.pool_coverage_pct,
             "recommendations_written": self.recommendations_written,
+            "current_state_written": self.current_state_written,
             "buy_signals_total": self.buy_signals_total,
             "buy_signal_card_ids": list(self.buy_signal_card_ids),
             "watch_signals_total": self.watch_signals_total,
@@ -140,9 +142,9 @@ class ScanMetrics:
 async def run_scan(provider, pool, *, persist: bool = True) -> ScanMetrics:
     """Run one full evaluation pass.
 
-    `persist=False` runs the whole pipeline without writing snapshots -
-    used by the metrics endpoint and by staging, so coverage can be
-    inspected without polluting the outcome-grading corpus.
+    `persist=False` runs the whole pipeline without writing either historical
+    recommendations or mutable current state - used by diagnostics/staging so
+    an inspection cannot move production state.
     """
     started = time.monotonic()
     metrics = ScanMetrics(started_at=datetime.now(timezone.utc))
@@ -170,6 +172,7 @@ async def run_scan(provider, pool, *, persist: bool = True) -> ScanMetrics:
 
     as_of = datetime.now(timezone.utc)
     to_persist: List[Tuple[Dict[str, Any], Any]] = []
+    all_evaluated: List[Tuple[Dict[str, Any], Any]] = []
     blocked_by: Counter = Counter()
     valuation_path: Counter = Counter()
     buy_signal_card_ids: List[int] = []
@@ -180,13 +183,7 @@ async def run_scan(provider, pool, *, persist: bool = True) -> ScanMetrics:
             # is pure CPU with no natural await point, and a full pass
             # (up to MAX_TOTAL_CANDIDATES rows) has been measured taking
             # 25+ seconds. Without yielding, that monopolizes the single
-            # asyncio event loop for the whole duration, during which the
-            # web server cannot accept or service ANY other connection -
-            # confirmed in production as a browser request stalling at
-            # "Initial connection" for exactly the frontend's request
-            # timeout while a scan (or a live /opportunities request's own
-            # equivalent loop) was running. See the matching comment on
-            # _score_and_filter() in futgg_market.py.
+            # asyncio event loop for the whole duration.
             await asyncio.sleep(0)
         segment_name = seen[card_id]
         sm = segment_metrics[segment_name]
@@ -200,6 +197,7 @@ async def run_scan(provider, pool, *, persist: bool = True) -> ScanMetrics:
             log.warning("evaluate_card failed for card_id=%s", card_id, exc_info=True)
             continue
         sm.evaluated += 1
+        all_evaluated.append((row, ci))
         if ci.valuation_source:
             valuation_path[ci.valuation_source] += 1
         if ci.signal in ("buy", "strong_buy"):
@@ -213,28 +211,29 @@ async def run_scan(provider, pool, *, persist: bool = True) -> ScanMetrics:
         else:
             # Nothing actionable. Record what stopped it. blocking_codes
             # is the subset of reason codes that actually gated the
-            # result, so this counts causes rather than commentary; a
-            # card blocked by several gates contributes to each, which is
-            # what you want when deciding which gate to look at first.
+            # result, so this counts causes rather than commentary.
             for code in (ci.blocking_codes or ["no_blocking_code"]):
                 blocked_by[code] += 1
         if ci.trend_state in ("falling_knife", "downtrend") and ci.signal == "avoid":
             sm.blocked_by_trend += 1
 
+    if persist and all_evaluated:
+        # Mutable current state for every successful evaluation. This write
+        # is intentionally separate from the immutable recommendation corpus.
+        metrics.current_state_written = await upsert_current_intelligence(pool, all_evaluated)
+
     if persist and to_persist:
         metrics.recommendations_written = await record_many(pool, to_persist)
 
-    if persist and unique_rows:
-        # Stamp every card this pass actually evaluated - buy, watch, AND
-        # avoid/insufficient_data alike - as "recently looked at", so the
-        # next pass's segment queries (select_candidates_by_segment) can
-        # skip them and surface a different slice of the pool instead of
-        # reselecting this same deterministic top-N forever. persist=False
-        # runs (the metrics endpoint, staging probes) must not move this
-        # cursor, same as they don't write recommendation snapshots.
-        await provider.record_scan_cursor(list(unique_rows), as_of)
+    if persist and all_evaluated:
+        # Stamp only cards that were actually evaluated successfully - not a
+        # malformed row that happened to be selected but threw before an
+        # intelligence result existed.
+        await provider.record_scan_cursor(
+            [int(row["source_card_id"]) for row, _ in all_evaluated], as_of
+        )
 
-    metrics.unique_cards_evaluated = len(unique_rows)
+    metrics.unique_cards_evaluated = len(all_evaluated)
     metrics.segments = list(segment_metrics.values())
     metrics.blocking_reason_counts = dict(blocked_by.most_common())
     metrics.valuation_path_counts = dict(valuation_path.most_common())
@@ -269,10 +268,10 @@ async def run_scan(provider, pool, *, persist: bool = True) -> ScanMetrics:
 async def coverage_report(pool) -> Dict[str, Any]:
     """Evaluation-coverage metrics for the internal dashboard.
 
-    Answers the questions the segmented scan exists to make answerable:
-    how much of the pool are we actually looking at, how stale is the
-    least-recently-evaluated card, and are recommendations coming from
-    across the liquidity range or only from the top of it.
+    Coverage now reads futgg_current_intelligence, because that table records
+    every successful evaluation. The old recommendation-snapshot denominator
+    only counted buy/strong_buy/watch and therefore systematically understated
+    how much of the market the scanner had actually inspected.
     """
     async with pool.acquire() as conn:
         pool_size = await conn.fetchval(
@@ -280,36 +279,46 @@ async def coverage_report(pool) -> Dict[str, Any]:
         )
         evaluated_24h = await conn.fetchval(
             """
-            SELECT count(DISTINCT source_card_id)
-            FROM futgg_recommendation_snapshots
+            SELECT count(*)
+            FROM futgg_current_intelligence
             WHERE evaluated_at >= now() - interval '24 hours'
             """
         )
         avg_staleness = await conn.fetchval(
             """
-            SELECT avg(EXTRACT(EPOCH FROM (now() - last_seen)) / 60.0)
-            FROM (
-                SELECT source_card_id, max(evaluated_at) AS last_seen
-                FROM futgg_recommendation_snapshots
-                GROUP BY source_card_id
-            ) t
+            SELECT avg(EXTRACT(EPOCH FROM (now() - evaluated_at)) / 60.0)
+            FROM futgg_current_intelligence
             """
         )
         by_liquidity = await conn.fetch(
             """
             SELECT
                 CASE
-                    WHEN s.sales_count >= 25 THEN 'liquid'
-                    WHEN s.sales_count >= 8 THEN 'medium'
-                    WHEN s.sales_count > 0 THEN 'low'
+                    WHEN sales_sample_size >= 25 THEN 'liquid'
+                    WHEN sales_sample_size >= 8 THEN 'medium'
+                    WHEN sales_sample_size > 0 THEN 'low'
                     ELSE 'none'
                 END AS bucket,
                 count(*) AS evaluations,
-                count(*) FILTER (WHERE s.signal IN ('buy','strong_buy')) AS recommendations
-            FROM futgg_recommendation_snapshots s
-            WHERE s.evaluated_at >= now() - interval '24 hours'
+                count(*) FILTER (WHERE signal IN ('buy','strong_buy')) AS recommendations
+            FROM futgg_current_intelligence
+            WHERE evaluated_at >= now() - interval '24 hours'
             GROUP BY 1
             ORDER BY 1
+            """
+        )
+        signal_rows = await conn.fetch(
+            """
+            SELECT signal, count(*) AS card_count
+            FROM futgg_current_intelligence
+            GROUP BY signal
+            ORDER BY signal
+            """
+        )
+        current_state_age = await conn.fetchval(
+            """
+            SELECT EXTRACT(EPOCH FROM (now() - max(evaluated_at))) / 60.0
+            FROM futgg_current_intelligence
             """
         )
 
@@ -322,6 +331,10 @@ async def coverage_report(pool) -> Dict[str, Any]:
         "avg_minutes_since_last_evaluation": (
             round(float(avg_staleness), 1) if avg_staleness is not None else None
         ),
+        "current_state_age_minutes": (
+            round(float(current_state_age), 1) if current_state_age is not None else None
+        ),
+        "current_signals": {row["signal"]: int(row["card_count"]) for row in signal_rows},
         "by_liquidity_segment": [
             {
                 "segment": row["bucket"],
@@ -337,15 +350,12 @@ async def coverage_report(pool) -> Dict[str, Any]:
 async def refresher_loop(pool, poll_seconds: int = 600) -> None:
     """Periodic evaluation pass.
 
-    Without this loop the whole outcome pipeline is inert: nothing calls
-    evaluate_card() outside a user request, so no recommendation snapshot
-    is ever frozen and the grader has nothing to grade. The engine would
-    keep producing correct answers that nobody ever checks - which is the
-    exact failure the outcome loop exists to end.
+    The scanner owns both outputs of a market evaluation:
+      * immutable actionable/watch history for outcome grading; and
+      * mutable current intelligence for every evaluated card.
 
-    Deliberately tolerant of a database where migration 040 has not run
-    yet: the backend boots and serves fine without these tables, it just
-    records nothing until they exist.
+    Deliberately tolerant of a database where the required migrations have
+    not run yet: one pass fails and logs, but the backend itself stays alive.
     """
     from app.services.market_data_provider import FutggMarketDataProvider
 
@@ -355,10 +365,11 @@ async def refresher_loop(pool, poll_seconds: int = 600) -> None:
         try:
             metrics = await run_scan(provider, pool)
             log.info(
-                "futgg scan: evaluated=%d coverage=%s%% recommendations=%d "
+                "futgg scan: evaluated=%d coverage=%s%% current_state=%d recommendations=%d "
                 "(buy=%d watch=%d) snapshot_age=%smin in %.1fs",
                 metrics.unique_cards_evaluated,
                 metrics.pool_coverage_pct,
+                metrics.current_state_written,
                 metrics.recommendations_written,
                 metrics.buy_signals_total,
                 metrics.watch_signals_total,
@@ -366,18 +377,13 @@ async def refresher_loop(pool, poll_seconds: int = 600) -> None:
                 metrics.duration_seconds,
             )
             if metrics.buy_signal_card_ids:
-                # The actual card_ids behind buy_signals_total above - lets
-                # a specific buy signal be traced against what
-                # /api/v2/opportunities or the Discord feed returns a few
-                # minutes later, instead of only knowing a count existed
-                # with no way to check whether the SAME card is what a
-                # live request did or didn't see.
                 log.info(
                     "futgg scan: buy/strong_buy card_ids this pass: %s",
                     ", ".join(str(cid) for cid in metrics.buy_signal_card_ids),
                 )
-            # Only when the pass found nothing: the interesting case, and
-            # the one that used to be unexplainable from the logs alone.
+            # Only when the pass found no actionable/watch recommendations:
+            # the interesting case, and the one that used to be
+            # unexplainable from logs alone.
             if not metrics.recommendations_written and metrics.blocking_reason_counts:
                 top = list(metrics.blocking_reason_counts.items())[:6]
                 log.info(
