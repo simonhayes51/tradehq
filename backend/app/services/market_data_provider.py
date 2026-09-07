@@ -1146,6 +1146,20 @@ async def _refresh_on_connection(conn) -> bool:
             _concurrent_refresh_failures >= CONCURRENT_FAILURES_BEFORE_PLAIN_REFRESH
         )
         mode = "" if use_plain else "CONCURRENTLY "
+        # EXPLAIN ANALYZE against this exact query (2026-09-07) showed the
+        # sales_stats GroupAggregate spilling its sort to DISK ("Sort
+        # Method: external merge") because the session's default work_mem
+        # was too small to hold it - a real, avoidable cost stacked on top
+        # of the unavoidable work of scanning futgg_sales_history's 14-day
+        # window. Session-scoped (not LOCAL - REFRESH runs as its own
+        # implicit statement, not inside an explicit transaction block
+        # this connection controls), reset in the finally below so a
+        # pooled connection never carries this elevated setting into
+        # unrelated later queries.
+        try:
+            await conn.execute("SET work_mem = '256MB'")
+        except Exception:
+            log.warning("could not raise work_mem for refresh - continuing with the default", exc_info=True)
         started = time.monotonic()
         try:
             await asyncio.wait_for(
@@ -1178,10 +1192,15 @@ async def _refresh_on_connection(conn) -> bool:
                 "futgg_market_snapshot refresh took %.0fs - longer than the "
                 "refresher's own poll interval, so the snapshot was stale for "
                 "at least that long and every other refresh attempt in the "
-                "window was silently skipped. Check that "
-                "futgg_bin_history has its (source_card_id, captured_at) "
-                "index: the view's latest_bin CTE sorts the whole table "
-                "without it.",
+                "window was silently skipped. EXPLAIN ANALYZE (2026-09-07) "
+                "showed the dominant cost is NOT futgg_bin_history (that "
+                "index has existed since migration 053) - it's the "
+                "bounded_sales WindowAgg scanning futgg_sales_history's "
+                "full 14-day window (millions of rows) for every card. If "
+                "this recurs, check futgg_sales_history has been ANALYZEd "
+                "recently (pg_stat_user_tables.n_live_tup badly undercounted "
+                "the real row count last time this was checked) before "
+                "assuming a code change caused it.",
                 elapsed,
             )
         else:
@@ -1200,6 +1219,10 @@ async def _refresh_on_connection(conn) -> bool:
         # advisory locks held. A leaked lock was a candidate
         # explanation for the 117-minute stale snapshot seen in
         # production; this is the test that ruled it out.
+        try:
+            await conn.execute("RESET work_mem")
+        except Exception as exc:
+            log.warning("resetting work_mem after refresh failed: %s", exc)
         try:
             await conn.execute(
                 "SELECT pg_advisory_unlock($1)", REFRESH_ADVISORY_LOCK_KEY
