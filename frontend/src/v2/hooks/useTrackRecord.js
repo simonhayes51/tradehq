@@ -2,11 +2,11 @@
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../lib/api";
 
-// See useFutggMarket.js's SCAN_REQUEST_OPTS comment: the backend is
-// under real, currently-elevated load (segmented-candidate scans plus
-// unrelated DB contention), and this endpoint has been observed getting
-// caught by an 8s client timeout the same way /opportunities was -
-// Chrome shows the aborted request as "(canceled)", not as an error.
+// Track Record is aggregate/history data, not a live-price surface. It
+// should be allowed more time than a cheap lookup under load, but it also
+// should not be re-fired just because the browser window regains focus.
+// The result is already cached for five minutes below; honour that cache
+// instead of creating an avoidable extra database wave during navigation.
 const REQUEST_OPTS = { __skipAuthRedirect: true, __noRetry: true, timeout: 20_000 };
 
 // window: "7d" | "30d" | "90d" | "all" - must match
@@ -23,6 +23,7 @@ export function useTrackRecord(window = "90d") {
     })).data,
     retry: false,
     staleTime: 5 * 60_000,
+    refetchOnWindowFocus: false,
   });
 }
 
@@ -40,5 +41,6 @@ export function useRecentOutcomes(window = "90d", filter = "all", limit = 20, { 
     enabled,
     retry: false,
     staleTime: 5 * 60_000,
+    refetchOnWindowFocus: false,
   });
 }
