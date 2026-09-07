@@ -197,12 +197,20 @@ HEARTBEAT_MINUTES = env_int("FUTGG_BULK_HEARTBEAT_MINUTES", 15, minimum=1)
 
 #: Delete observations older than this. 0 disables pruning.
 #:
-#: bin_market_signal reads at most a 7-day window, so 14 days is already
-#: double what anything consumes. Without a bound the table simply grows
-#: forever, and futgg_market_snapshot's latest_bin CTE does a DISTINCT ON
-#: over ALL of it every refresh - so an unbounded table makes every
-#: snapshot refresh progressively slower for no benefit whatsoever.
-BIN_HISTORY_RETENTION_DAYS = env_int("FUTGG_BIN_HISTORY_RETENTION_DAYS", 14, minimum=0)
+#: bin_market_signal reads at most a 7-day window (OBSERVATION_WINDOW_DAYS
+#: in bin_market_signal.py) - nothing in the codebase ever queries a row
+#: older than that. This used to default to 14 (a deliberate 2x margin
+#: over that 7-day need), which was itself the bug: production evidence
+#: (2026-09-07) showed futgg_bin_history at 13.36M rows / 3.1GB and
+#: futgg_market_snapshot refreshes taking 170-220s - table size the prune
+#: job was successfully holding STEADY at, not a leak, just steady-state
+#: retention of twice as much dead weight as anything reads. Without a
+#: bound the table would grow forever regardless; futgg_market_snapshot's
+#: latest_bin CTE does a DISTINCT ON over ALL of it every refresh, so
+#: retaining anything beyond the 7-day read window makes every snapshot
+#: refresh progressively slower for zero benefit. Matches the actual
+#: consumer's window exactly now, rather than padding it.
+BIN_HISTORY_RETENTION_DAYS = env_int("FUTGG_BIN_HISTORY_RETENTION_DAYS", 7, minimum=0)
 #: Rows per DELETE. Pruning in chunks keeps each statement short so it
 #: never becomes the long lock-holder this change exists to eliminate.
 PRUNE_BATCH_ROWS = env_int("FUTGG_BIN_HISTORY_PRUNE_BATCH", 50_000, minimum=1000)
