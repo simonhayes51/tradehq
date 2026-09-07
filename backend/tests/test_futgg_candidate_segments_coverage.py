@@ -119,14 +119,27 @@ class TestRecentlyMovedRanksReliableMovesAboveNoise:
         assert thin_raw > courtois_raw
 
 
-class TestSegmentLimitsWereRaised:
-    # Not a magic-number lock-in - just a guard against silently
-    # reverting the fix back to the limits that missed this card.
-    def test_liquid_and_recently_moved_limits_are_larger_than_the_old_default(self):
-        assert SEGMENTS_BY_NAME["liquid"].limit > 200
-        assert SEGMENTS_BY_NAME["recently_moved"].limit > 200
+class TestSegmentLimitsAreBackToOriginal:
+    # 2026-09-06: raising these limits (200 -> 400) was the FIRST response
+    # to the Donnarumma/Courtois miss above, before the real cause (raw,
+    # unweighted ordering) was identified. The tests above prove the
+    # sample-size-weighted ranking fix protects both cards on its own,
+    # independent of the limit - so the raised limit was only ever a
+    # stand-in for that fix, not a second, independent requirement.
+    #
+    # 2026-09-07: evaluating ~1700 candidates per pass (the raised total)
+    # cost 15-20s+ in production, and got WORSE once the BIN-history
+    # fallback (futgg_intelligence.py) started doing extra per-card work
+    # inside evaluate_card() - the same candidate volume that used to be
+    # fast no longer was. With the ranking fix confirmed to hold at the
+    # original volume (see the tests above), paying for the extra
+    # headroom no longer buys anything but slower page loads - so back to
+    # 200, the actual original.
+    def test_liquid_and_recently_moved_limits_are_back_to_200(self):
+        assert SEGMENTS_BY_NAME["liquid"].limit == 200
+        assert SEGMENTS_BY_NAME["recently_moved"].limit == 200
 
-    def test_max_total_candidates_covers_the_new_segment_limit_sum(self):
+    def test_max_total_candidates_covers_the_segment_limit_sum(self):
         from app.services.futgg_candidate_segments import MAX_TOTAL_CANDIDATES, SEGMENTS
 
         assert MAX_TOTAL_CANDIDATES >= sum(s.limit for s in SEGMENTS)
