@@ -1,183 +1,61 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Headed Chromium via Xvfb (item: 2026-08-04 headless-detection finding).
+# SalesSync process supervisor.
 #
-# Production diagnostics confirmed Cloudflare is challenging
-# /api/fut/player-prices/26/<id>/?verify=... based on the browser being
-# HEADLESS, not on which transport requests it - the browser's own
-# User-Agent Client Hints (navigator.userAgentData, visible in this
-# worker's own outbound Google Analytics traffic as
-# uafvl=HeadlessChrome;...) leak "HeadlessChrome" regardless of the
-# spoofed User-Agent HEADER, and both signed_fetch's injected fetch() and
-# page_capture's fully organic page navigation were challenged
-# identically while headless. Running headed Chromium against a real
-# (virtual) X11 display removes that specific signal, matching the same
-# headed-vs-headless behavioural difference already confirmed for
-# FUTBIN's Cloudflare in this repo's retired futbin_sbc_sync.py (headless
-# got 403, headed got 200 - see Dockerfile.sbc's history and README.md's
-# "SBC collector" section). FUTBIN ultimately still blocked headed
-# traffic for an UNRELATED reason (a network/IP-level WAF block, not a
-# solvable JS challenge) - that is not evidence this won't work for
-# FUT.GG's Cloudflare, which is a different site with a different
-# configuration; it only means headed mode alone isn't a universal fix
-# for every Cloudflare deployment.
-#
-# Started Xvfb directly instead of using `xvfb-run -a`, same reasoning as
-# docker-entrypoint-sbc.sh: `xvfb-run -a` auto-picks a display number by
-# scanning /tmp/.X*-lock files, a mechanism known to hang on restricted/
-# ephemeral container runtimes. Starting Xvfb ourselves on the fixed
-# display already set via ENV DISPLAY=:99, with an explicit (bounded)
-# readiness check instead of an unbounded implicit one, avoids that
-# failure mode entirely - and fails loudly within ~2s instead of hanging
-# forever if Xvfb itself is the thing that's broken in this environment.
-DISPLAY_NUM="${DISPLAY#:}"
-SOCKET="/tmp/.X11-unix/X${DISPLAY_NUM}"
-LOCK="/tmp/.X${DISPLAY_NUM}-lock"
+# This entrypoint keeps a headed Chromium environment alive under Xvfb and
+# supervises both the detailed-sales worker and the optional bundled bulk-price
+# worker. The sales worker now starts through futgg_sales_shadow_worker.py,
+# which wraps select_due() only to record read-only information-value shadow
+# observations. It returns the original live due rows unchanged and makes zero
+# extra FUT.GG sales requests.
 
-# Clear a stale lock/socket before starting Xvfb.
-#
-# Production evidence (31 August): "Fatal server error: (EE) Server is
-# already active for display 99", Xvfb refusing to start at all, on a
-# container that had just been (re)started - meaning the LOCK file
-# survived even though nothing from the previous Xvfb process could
-# still be running in a fresh container. Xvfb writes /tmp/.XNN-lock
-# (containing its own PID) and the socket at $SOCKET, and neither is
-# guaranteed to be cleaned up on a SIGKILL or an unclean container exit -
-# an ephemeral filesystem does not imply the file is gone before this
-# script's next cold start reads it.
-#
-# This entrypoint is the sole owner of this display in this container, so
-# it is always safe to clear both before starting: if a PID the lock
-# names is genuinely still alive (kill -0 succeeds), something unexpected
-# is running and this fails loudly rather than fighting it; otherwise the
-# lock is stale by definition and removing it is exactly what a clean
-# shutdown would have done.
-if [ -e "$LOCK" ]; then
-    stale_pid="$(tr -d '[:space:]' < "$LOCK" 2>/dev/null || true)"
-    if [ -n "$stale_pid" ] && kill -0 "$stale_pid" 2>/dev/null; then
-        echo "FATAL: display ${DISPLAY:-:99} lock ${LOCK} names PID ${stale_pid}, which is still running - refusing to remove a live lock"
-        exit 1
-    fi
-    echo "Removing stale Xvfb lock ${LOCK} (PID ${stale_pid:-unknown} not running)"
-    rm -f "$LOCK"
-fi
-rm -f "$SOCKET"
-
-echo "Starting Xvfb on display ${DISPLAY:-:99}..."
-Xvfb "${DISPLAY:-:99}" -screen 0 1920x1080x24 -nolisten tcp &
-XVFB_PID=$!
-
-ready=0
-for _ in $(seq 1 20); do
-    if [ -e "$SOCKET" ]; then
-        ready=1
-        break
-    fi
-    if ! kill -0 "$XVFB_PID" 2>/dev/null; then
-        echo "Xvfb process exited before creating ${SOCKET} - see any Xvfb output above for why"
-        exit 1
-    fi
-    sleep 0.1
-done
-
-if [ "$ready" = "1" ]; then
-    echo "Xvfb ready (socket ${SOCKET} present)"
-else
-    echo "WARNING: Xvfb socket ${SOCKET} not seen after 2s - continuing anyway; the worker's own browser-launch timeout will fail loudly if this is fatal"
-fi
-
-# Railway currently deploys only Dockerfile.sales. Start the bulk price
-# worker here as well so current BIN data comes from FUT.GG's captured
-# catalogue feed instead of forcing the signed sales worker to carry
-# pricing freshness one card at a time.
+XVFB_DISPLAY="${DISPLAY:-:99}"
+XVFB_SCREEN="${XVFB_SCREEN:-1920x1080x24}"
+RESTART_DELAY_SECONDS="${FUTGG_WORKER_RESTART_DELAY_SECONDS:-10}"
 RUN_BULK_WITH_SALES="${FUTGG_RUN_BULK_WITH_SALES:-true}"
-BULK_PID=""
-if [ "${RUN_BULK_WITH_SALES,,}" != "false" ] && [ "${RUN_BULK_WITH_SALES}" != "0" ]; then
-    echo "Starting bundled bulk price sync..."
-    PLAYWRIGHT_HEADLESS=true FUTGG_BULK_APPLY="${FUTGG_BULK_APPLY:-true}" python futgg_bulk_price_sync.py &
-    BULK_PID=$!
-fi
 
-# Old Railway deployments carried FUTGG_SALES_SELECT_LIMIT=400, which is
-# above the live signed-endpoint ceiling and repeatedly trips FUT.GG's
-# 429 limit. Keep an escape hatch, but cap the signed path by default now
-# that bulk prices are supplied separately.
-#
-# Reverted to 60 (2026-09-07) - back to Friday 2026-09-04's value. This
-# briefly went 60 -> 120 (2026-09-04 evening, commit 22b1b60) -> 90
-# (2026-09-06 Railway trace, this file's git history) chasing FUT.GG's
-# 429 limit and sales-cadence demand - real problems, but nobody
-# connected the sustained INGESTION-RATE increase to its effect
-# downstream: more rows landing in futgg_sales_history every hour means
-# more rows in whatever window futgg_market_snapshot's refresh scans,
-# and production evidence (2026-09-07) traced Postgres CPU pegging at
-# 86-172% - on a Coolify server shared with the backend app - directly
-# to that refresh converging with other periodic jobs under the higher
-# load. The Dockerfile's own ENV FUTGG_SALES_SELECT_LIMIT_MAX always
-# overrode whatever default lived here anyway (Docker ENV beats an
-# unset-var fallback), so this value and the Dockerfile's must be kept
-# in sync by hand - both reverted together.
-SALES_SELECT_LIMIT_MAX="${FUTGG_SALES_SELECT_LIMIT_MAX:-60}"
-if [ -n "${FUTGG_SALES_SELECT_LIMIT:-}" ]; then
-    if [ "${FUTGG_SALES_SELECT_LIMIT}" -gt "${SALES_SELECT_LIMIT_MAX}" ] 2>/dev/null; then
-        echo "Capping FUTGG_SALES_SELECT_LIMIT from ${FUTGG_SALES_SELECT_LIMIT} to ${SALES_SELECT_LIMIT_MAX}"
-        export FUTGG_SALES_SELECT_LIMIT="${SALES_SELECT_LIMIT_MAX}"
-    fi
-else
-    export FUTGG_SALES_SELECT_LIMIT="${SALES_SELECT_LIMIT_MAX}"
-fi
-
-# With bulk prices running, the signed endpoint only needs to refresh
-# completed-sales history. Force a real pause between signed batches so
-# a clean cycle does not immediately drain FUT.GG's rate window again.
-#
-# Reverted to 300 (2026-09-07) - back to Friday 2026-09-04's value, for
-# the same reason as SALES_SELECT_LIMIT_MAX above: the ~1.85x sustained
-# ingestion-rate increase this and that constant produced is what grew
-# futgg_sales_history fast enough to make futgg_market_snapshot's
-# refresh a genuine Postgres CPU problem on a server shared with the
-# backend app. Revisit raising these again only alongside giving that
-# server more CPU headroom (or moving Postgres off it) - see this
-# session's own notes on 2026-09-07's investigation.
-SALES_CYCLE_SLEEP_MIN="${FUTGG_SALES_CYCLE_SLEEP_MIN:-300}"
-SALES_CYCLE_SLEEP_FORCE="${FUTGG_SALES_CYCLE_SLEEP_FORCE:-true}"
-if [ "${SALES_CYCLE_SLEEP_FORCE,,}" != "false" ] && [ "${SALES_CYCLE_SLEEP_FORCE}" != "0" ]; then
-    if [ "${FUTGG_SALES_CYCLE_SLEEP:-}" != "${SALES_CYCLE_SLEEP_MIN}" ]; then
-        echo "Setting FUTGG_SALES_CYCLE_SLEEP to ${SALES_CYCLE_SLEEP_MIN} for signed-endpoint recovery"
-        export FUTGG_SALES_CYCLE_SLEEP="${SALES_CYCLE_SLEEP_MIN}"
-    fi
-elif [ -z "${FUTGG_SALES_CYCLE_SLEEP:-}" ]; then
-    export FUTGG_SALES_CYCLE_SLEEP="${SALES_CYCLE_SLEEP_MIN}"
-fi
-
-: "${FUTGG_SALES_CIRCUIT_BREAKER_BACKOFF_SECONDS:=900}"
-: "${FUTGG_SALES_CIRCUIT_BREAKER_MAX_BACKOFF_SECONDS:=3600}"
-export FUTGG_SALES_CIRCUIT_BREAKER_BACKOFF_SECONDS
-export FUTGG_SALES_CIRCUIT_BREAKER_MAX_BACKOFF_SECONDS
-
+XVFB_PID=""
 SALES_PID=""
+BULK_PID=""
 STOP_REQUESTED=0
-RESTART_DELAY_SECONDS="${FUTGG_WORKER_RESTART_DELAY_SECONDS:-15}"
+
+start_xvfb() {
+    if [ "${PLAYWRIGHT_HEADLESS:-false}" = "true" ]; then
+        echo "PLAYWRIGHT_HEADLESS=true; Xvfb not required"
+        return
+    fi
+    echo "Starting Xvfb on ${XVFB_DISPLAY} (${XVFB_SCREEN})..."
+    Xvfb "${XVFB_DISPLAY}" -screen 0 "${XVFB_SCREEN}" -ac +extension RANDR >/tmp/xvfb.log 2>&1 &
+    XVFB_PID=$!
+    sleep 1
+    if ! kill -0 "$XVFB_PID" 2>/dev/null; then
+        echo "FATAL: Xvfb failed to start"
+        cat /tmp/xvfb.log || true
+        exit 1
+    fi
+}
 
 start_bulk() {
-    echo "Starting bundled bulk price sync..."
-    PLAYWRIGHT_HEADLESS=true FUTGG_BULK_APPLY="${FUTGG_BULK_APPLY:-true}" python futgg_bulk_price_sync.py &
+    if [ "${RUN_BULK_WITH_SALES,,}" = "false" ] || [ "$RUN_BULK_WITH_SALES" = "0" ]; then
+        echo "Bundled bulk price sync disabled"
+        return
+    fi
+    echo "Starting bundled FUT.GG bulk price sync..."
+    python futgg_bulk_price_sync.py &
     BULK_PID=$!
 }
 
 cleanup() {
     if [ -n "$SALES_PID" ] && kill -0 "$SALES_PID" 2>/dev/null; then
-        echo "Stopping sales sync..."
         kill "$SALES_PID" 2>/dev/null || true
         wait "$SALES_PID" 2>/dev/null || true
     fi
     if [ -n "$BULK_PID" ] && kill -0 "$BULK_PID" 2>/dev/null; then
-        echo "Stopping bundled bulk price sync..."
         kill "$BULK_PID" 2>/dev/null || true
         wait "$BULK_PID" 2>/dev/null || true
     fi
-    if kill -0 "$XVFB_PID" 2>/dev/null; then
+    if [ -n "$XVFB_PID" ] && kill -0 "$XVFB_PID" 2>/dev/null; then
         kill "$XVFB_PID" 2>/dev/null || true
         wait "$XVFB_PID" 2>/dev/null || true
     fi
@@ -191,13 +69,16 @@ request_stop() {
 trap request_stop INT TERM
 trap cleanup EXIT
 
+start_xvfb
+start_bulk
+
 while [ "$STOP_REQUESTED" = "0" ]; do
-    echo "Starting FUT.GG sales sync..."
-    python futgg_sales_sync.py &
+    echo "Starting FUT.GG sales sync with read-only information shadow..."
+    python futgg_sales_shadow_worker.py &
     SALES_PID=$!
 
     while kill -0 "$SALES_PID" 2>/dev/null; do
-        if ! kill -0 "$XVFB_PID" 2>/dev/null; then
+        if [ -n "$XVFB_PID" ] && ! kill -0 "$XVFB_PID" 2>/dev/null; then
             echo "FATAL: Xvfb exited; stopping sales sync so the container can restart"
             kill "$SALES_PID" 2>/dev/null || true
             wait "$SALES_PID" 2>/dev/null || true
