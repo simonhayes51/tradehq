@@ -27,10 +27,15 @@ def test_small_sample_never_becomes_review_candidate_even_with_big_delta():
         {"bucket": "0.60-0.75", "sample_size": 10, "profitable_calls": 3},
         {"bucket": "0.75-0.85", "sample_size": 10, "profitable_calls": 9},
     ]
-    out = cal._ordered_comparisons(
-        "confidence", buckets, min_sample=30, alpha=0.05, min_effect_pp=5.0
-    )
+    comparisons = {
+        "confidence": cal._ordered_comparisons(
+            "confidence", buckets, min_sample=30, min_effect_pp=5.0
+        )
+    }
+    policy = cal._apply_bonferroni(comparisons, alpha=0.05)
+    out = comparisons["confidence"]
     assert len(out) == 1
+    assert policy["eligible_tests"] == 0
     assert out[0]["statistically_significant"] is False
     assert out[0]["candidate_for_review"] is False
 
@@ -40,15 +45,56 @@ def test_material_and_significant_adjacent_difference_is_flagged_for_review():
         {"bucket": "0.60-0.75", "sample_size": 120, "profitable_calls": 54},
         {"bucket": "0.75-0.85", "sample_size": 120, "profitable_calls": 78},
     ]
-    out = cal._ordered_comparisons(
-        "confidence", buckets, min_sample=30, alpha=0.05, min_effect_pp=5.0
-    )
+    comparisons = {
+        "confidence": cal._ordered_comparisons(
+            "confidence", buckets, min_sample=30, min_effect_pp=5.0
+        )
+    }
+    policy = cal._apply_bonferroni(comparisons, alpha=0.05)
+    out = comparisons["confidence"]
     assert len(out) == 1
+    assert policy["eligible_tests"] == 1
     assert out[0]["profitable_call_rate_delta_pp"] == 20.0
     assert out[0]["statistically_significant"] is True
     assert out[0]["practically_meaningful"] is True
     assert out[0]["candidate_for_review"] is True
     assert out[0]["direction"] == "higher_bucket_better"
+
+
+def test_bonferroni_uses_the_whole_family_not_each_test_in_isolation():
+    comparisons = {
+        "confidence": [
+            {
+                "has_minimum_samples": True,
+                "p_value": 0.02,
+                "practically_meaningful": True,
+                "statistically_significant": False,
+                "candidate_for_review": False,
+            },
+            {
+                "has_minimum_samples": True,
+                "p_value": 0.001,
+                "practically_meaningful": True,
+                "statistically_significant": False,
+                "candidate_for_review": False,
+            },
+        ],
+        "liquidity": [
+            {
+                "has_minimum_samples": True,
+                "p_value": 0.03,
+                "practically_meaningful": True,
+                "statistically_significant": False,
+                "candidate_for_review": False,
+            }
+        ],
+    }
+    policy = cal._apply_bonferroni(comparisons, alpha=0.05)
+    assert policy["eligible_tests"] == 3
+    assert round(policy["adjusted_alpha"], 4) == 0.0167
+    assert comparisons["confidence"][0]["candidate_for_review"] is False
+    assert comparisons["confidence"][1]["candidate_for_review"] is True
+    assert comparisons["liquidity"][0]["candidate_for_review"] is False
 
 
 class _Conn:
