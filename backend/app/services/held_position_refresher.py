@@ -1,37 +1,144 @@
 # app/services/held_position_refresher.py
 #
-# Wires recommendation_engine_v2.py's held-position logic
-# (_evaluate_held_position / held_purchase_price) to real data. That logic
-# has existed since the engine was built but has never had a real caller -
-# there was no table recording "user owns this card, paid X, hasn't sold"
-# until migration 032 added trades.status='open'. This is that caller:
-# one pass over every open trade, re-evaluating it as a held position and
-# persisting the live verdict onto the trade row itself (migration 035's
-# current_recommendation_status/reasoning/evaluated_at), separate from the
-# recommendation_* columns migration 032 added, which snapshot what the
-# engine said at purchase time and never change afterward.
+# Refreshes the live HOLD/SELL verdict for every open portfolio trade.
 #
-# trades lives in the app's primary pool (DATABASE_URL), not player_pool
-# (PLAYER_DATABASE_URL) - evaluate_card needs a player_pool connection to
-# read fair_value_mv/sales_history/bin_history, so this loop bridges both.
+# The portfolio table now contains both newer FUT.GG card ids and older
+# legacy FUTBIN ids. The original implementation assumed every card lived in
+# player_pool.fut_players and therefore skipped valid FUT.GG positions such as
+# Mario Kempes 82092 / Kylian Mbappe 218335555. FUT.GG is now the primary
+# market/intelligence source for the product, so evaluate that path first and
+# retain the legacy recommendation_engine_v2 path only as a compatibility
+# fallback for genuinely old cards.
 from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Optional
+from decimal import Decimal
+from typing import Any, Optional, Tuple
 
 import asyncpg
 
-from app.services.recommendation_engine_v2 import evaluate_card
+from app.services import trading_math as tm
+from app.services.futgg_intelligence import CardIntelligence, evaluate_card as evaluate_futgg_card
+from app.services.futgg_trend import DOWNTREND, FALLING_KNIFE
+from app.services.market_data_provider import FutggMarketDataProvider
+from app.services.recommendation_engine_v2 import evaluate_card as evaluate_legacy_card
 
 log = logging.getLogger("held_position_refresher")
 
 REFRESH_LOCK_KEY = 7741010  # distinct from every other REFRESH_LOCK_KEY in this codebase
 
 
+def _futgg_held_verdict(
+    market_row: dict[str, Any],
+    ci: CardIntelligence,
+    purchase_price: int,
+) -> Tuple[str, str]:
+    """Convert current FUT.GG intelligence into a conservative HOLD/SELL
+    decision for a card the user already owns.
+
+    FUT.GG's engine is deliberately a mispricing detector, not a price
+    forecaster, so this must not pretend `recommended_sell_target` is a
+    guaranteed future price. A SELL is emitted only for an observable sell
+    condition: target reached, engine explicitly says sell/avoid, or a
+    profitable position has moved into a confirmed negative trend. Everything
+    else stays HOLD rather than fabricating a future-price forecast.
+    """
+    current_raw = market_row.get("current_bin")
+    if current_raw is None:
+        return "HOLD", "Live FUT.GG price is temporarily unavailable; no verified sell trigger can be confirmed."
+
+    current = int(current_raw)
+    purchase = int(purchase_price)
+    current_profit = tm.net_profit(current, purchase)
+    current_roi = tm.net_roi(current, purchase)
+    target = int(ci.recommended_sell_target) if ci.recommended_sell_target is not None else None
+
+    if target is not None and current >= target:
+        return (
+            "SELL",
+            f"Current BIN {current:,} has reached the live sell target of {target:,}."
+        )
+
+    if ci.signal in {"sell", "avoid"}:
+        detail = " ".join(ci.signal_reasons or [])
+        suffix = f" {detail}" if detail else ""
+        return "SELL", f"The live FUT.GG engine now rates this position {ci.signal.upper()}.{suffix}".strip()
+
+    if ci.trend_state in {FALLING_KNIFE, DOWNTREND} and current_profit is not None and current_profit > 0:
+        roi_text = f" ({float(current_roi) * 100:.1f}% after tax)" if current_roi is not None else ""
+        return (
+            "SELL",
+            f"The position is profitable now{roi_text}, but the live market trend has turned {ci.trend_state.replace('_', ' ')}."
+        )
+
+    target_text = f" Live sell target: {target:,}." if target is not None else ""
+    if current_profit is not None:
+        pnl_text = f" Current after-tax P/L at {current:,} BIN is {int(current_profit):+,} coins."
+    else:
+        pnl_text = ""
+
+    if ci.signal == "insufficient_data":
+        return (
+            "HOLD",
+            "No verified sell trigger is present, but current market evidence is insufficient for a stronger call."
+            + pnl_text
+            + target_text,
+        )
+
+    return (
+        "HOLD",
+        "No live FUT.GG sell trigger is present."
+        + pnl_text
+        + target_text,
+    )
+
+
+async def _evaluate_futgg_position(
+    provider: FutggMarketDataProvider,
+    card_id: int,
+    purchase_price: int,
+) -> Optional[Tuple[str, str]]:
+    market = await provider.get_player(card_id)
+    if market is None:
+        return None
+
+    market_row = dict(market)
+    sales = []
+    bin_observations = None
+    try:
+        sales = await provider.get_recent_sales(card_id)
+    except Exception:
+        log.warning(
+            "held_position_refresher: FUT.GG sales read failed for card_id=%s",
+            card_id,
+            exc_info=True,
+        )
+    try:
+        bin_by_card = await provider.get_bin_observations_by_ids([card_id])
+        bin_observations = bin_by_card.get(card_id)
+    except Exception:
+        log.warning(
+            "held_position_refresher: FUT.GG BIN-history read failed for card_id=%s",
+            card_id,
+            exc_info=True,
+        )
+
+    ci = evaluate_futgg_card(
+        market_row,
+        sales=sales,
+        bin_observations=bin_observations,
+    )
+    return _futgg_held_verdict(market_row, ci, purchase_price)
+
+
 async def refresh_held_positions(pool: asyncpg.Pool, player_pool: asyncpg.Pool) -> int:
-    """One pass over every open trade with a known card_id. Returns the
-    number of trades whose live verdict was updated."""
+    """One pass over every open trade with a known card_id.
+
+    FUT.GG/core is attempted first. Only when a card genuinely does not exist
+    in the FUT.GG market snapshot do we try the legacy fut_players engine.
+    Returns the number of trades whose live verdict was updated.
+    """
     written = 0
     async with pool.acquire() as conn:
         open_trades = await conn.fetch(
@@ -42,41 +149,64 @@ async def refresh_held_positions(pool: asyncpg.Pool, player_pool: asyncpg.Pool) 
             """
         )
 
+    futgg_provider = FutggMarketDataProvider(pool)
+
     for row in open_trades:
         trade_id = row["trade_id"]
         card_id = int(row["card_id"])
         platform = row["platform"] or "ps"
+        status: Optional[str] = None
+        reasoning: Optional[str] = None
+
         try:
-            async with player_pool.acquire() as eval_conn:
-                exists = await eval_conn.fetchval(
-                    "SELECT EXISTS (SELECT 1 FROM fut_players WHERE card_id = $1)",
-                    card_id,
-                )
-                if not exists:
-                    log.warning(
-                        "held_position_refresher: skipping trade_id=%s card_id=%s because card is missing from fut_players",
-                        trade_id, card_id,
+            futgg_result = await _evaluate_futgg_position(
+                futgg_provider,
+                card_id,
+                int(row["buy"]),
+            )
+            if futgg_result is not None:
+                status, reasoning = futgg_result
+            else:
+                # Compatibility path for positions created before FUT.GG
+                # became the product's canonical market source.
+                async with player_pool.acquire() as eval_conn:
+                    exists = await eval_conn.fetchval(
+                        "SELECT EXISTS (SELECT 1 FROM fut_players WHERE card_id = $1)",
+                        card_id,
                     )
-                    continue
-                result = await evaluate_card(
-                    eval_conn,
-                    card_id,
-                    platform=platform,
-                    is_held=True,
-                    held_purchase_price=int(row["buy"]),
-                    requested_by="held_position_refresher",
-                )
+                    if not exists:
+                        log.warning(
+                            "held_position_refresher: skipping trade_id=%s card_id=%s because card exists in neither futgg_market_snapshot nor legacy fut_players",
+                            trade_id,
+                            card_id,
+                        )
+                        continue
+
+                    legacy = await evaluate_legacy_card(
+                        eval_conn,
+                        card_id,
+                        platform=platform,
+                        is_held=True,
+                        held_purchase_price=int(row["buy"]),
+                        requested_by="held_position_refresher",
+                    )
+                    if legacy is None:
+                        continue
+                    status = legacy.held_decision or legacy.status
+                    reasoning = (
+                        " ".join(legacy.held_decision_reasons)
+                        if legacy.held_decision_reasons else None
+                    )
         except Exception:
-            log.exception("held_position_refresher: evaluation failed for trade_id=%s card_id=%s", trade_id, card_id)
+            log.exception(
+                "held_position_refresher: evaluation failed for trade_id=%s card_id=%s",
+                trade_id,
+                card_id,
+            )
             continue
 
-        if result is None:
-            # No fair_value_mv row for this card yet - leave the trade's
-            # existing verdict alone rather than overwrite it with nothing.
+        if status is None:
             continue
-
-        status = result.held_decision or result.status
-        reasoning = " ".join(result.held_decision_reasons) if result.held_decision_reasons else None
 
         async with pool.acquire() as conn:
             await conn.execute(
@@ -87,14 +217,20 @@ async def refresh_held_positions(pool: asyncpg.Pool, player_pool: asyncpg.Pool) 
                     current_evaluated_at = now()
                 WHERE trade_id = $1
                 """,
-                trade_id, status, reasoning,
+                trade_id,
+                status,
+                reasoning,
             )
         written += 1
 
     return written
 
 
-async def refresher_loop(pool: asyncpg.Pool, player_pool: asyncpg.Pool, interval_seconds: int = 900) -> None:
+async def refresher_loop(
+    pool: asyncpg.Pool,
+    player_pool: asyncpg.Pool,
+    interval_seconds: int = 900,
+) -> None:
     """Background task started from the app lifespan. Same advisory-lock
     pattern as fair_value.refresher_loop / event_impact.refresher_loop."""
     await asyncio.sleep(10)
