@@ -6,6 +6,7 @@ before any future reallocation of the existing detailed-sales request budget.
 """
 from __future__ import annotations
 
+import json
 from collections import Counter
 from typing import Any, Dict
 
@@ -18,6 +19,18 @@ router = APIRouter(tags=["v2-sales-shadow"])
 
 def _pool(request: Request):
     return getattr(request.app.state, "db_pool", None) or getattr(request.app.state, "pool", None)
+
+
+def _json_object(value: Any) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, dict) else {}
+        except (TypeError, ValueError):
+            return {}
+    return {}
 
 
 @router.get("/market/sales-information-shadow")
@@ -44,8 +57,6 @@ async def sales_information_shadow(
                 int(hours),
             )
     except Exception as exc:
-        # Migration 087 may not have landed yet. Admin diagnostics should say
-        # that plainly rather than making a healthy backend look broken.
         if exc.__class__.__name__ in {"UndefinedTableError", "UndefinedColumnError"}:
             return {
                 "status": "warming",
@@ -66,7 +77,7 @@ async def sales_information_shadow(
     reasons: Counter[str] = Counter()
     versions: Counter[str] = Counter()
     for row in rows:
-        reasons.update({str(k): int(v) for k, v in (row["reason_counts"] or {}).items()})
+        reasons.update({str(k): int(v) for k, v in _json_object(row["reason_counts"]).items()})
         versions[str(row["selector_version"])] += 1
 
     cycles = len(rows)
