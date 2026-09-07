@@ -156,6 +156,12 @@ def main() -> None:
     from app.services.dashboard_market_cache import install_dashboard_market_cache
     install_dashboard_market_cache(application)
 
+    # Add the scanner/current-intelligence state to the existing readiness
+    # report. It is a degraded operational check, not a load-balancer-fatal
+    # dependency, so stale intelligence is visible without taking the API down.
+    from app.services.intelligence_readiness import install_intelligence_readiness
+    install_intelligence_readiness()
+
     # Track Record is historical evidence. Cache the audited result and warm
     # the common windows after startup so a page view never has to replay tens
     # of sent Proof Ledger days synchronously.
