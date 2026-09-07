@@ -18,6 +18,7 @@ from app.routers.v2.investments import router as investments_router
 from app.routers.v2.alerts import router as alerts_router
 from app.routers.v2.events import router as events_router
 from app.routers.v2.onboarding import router as onboarding_router
+from app.routers.v2.intelligence_health import router as intelligence_health_router
 
 router = APIRouter(prefix="/api/v2")
 router.include_router(health_router)
@@ -58,3 +59,8 @@ router.include_router(onboarding_router)
 # rather than at /api/events - main.py already owns that path for the
 # market-events feed, which is a different thing entirely.
 router.include_router(events_router)
+# Admin-only cheap aggregates over the current scanner state and state
+# transitions. This is intentionally separate from the hot market router
+# so operational diagnostics never complicate the request path serving
+# opportunities/trade-finder/player pages.
+router.include_router(intelligence_health_router)
