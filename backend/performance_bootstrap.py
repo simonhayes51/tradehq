@@ -11,28 +11,27 @@ before any one of them has had a chance to fill it.
 
 This was visible in production on 2026-09-07: _segmented_candidates completed
 in ~0.5-1.9s while /opportunities and /trade-finder/strategy/best_overall still
-hit the 20s client timeout. Both endpoints fetch sales and up to seven days of
-BIN history for ~1,300 candidates before entering the serialized scoring loop.
+hit the 20s client timeout. Both endpoints fetch sales and BIN valuation
+history for ~1,300 candidates before entering the serialized scoring loop.
 
 Install process-wide single-flight + 90s subset-aware caches around those two
-loaders before importing main.py. Behaviour and data contracts are unchanged:
-we only share identical/redundant reads within a short window. If a later
-caller asks for cards not present in the current cache, only the missing card
-ids are fetched and merged.
+provider reads before importing main.py. Sales keep their existing bounded raw
+series. Recommendation BIN fallback uses a dedicated PostgreSQL loader that
+returns one median per hour instead of every five-minute observation, because
+futgg_bin_valuation.py immediately performs that same hourly reduction itself.
+The raw bin_market_signal loader is deliberately left untouched: its 30m/1h
+market-state windows genuinely require sub-hour observations.
 
-This bootstrap is deliberately small and removable. The long-term home for
-this logic is inside the underlying loaders themselves; keeping it here avoids
-a risky whole-file rewrite of the very large v2 market router during a live
-performance incident.
+If a later caller asks for cards not present in the current cache, only the
+missing card ids are fetched and merged.
 
 Cold-start prewarm
 ------------------
 The single-flight cache fixes duplicate reads, but the first human request
-could still be the unlucky caller that pays for the initial 1,300-card sales
-and BIN load. We now warm those same caches after startup, once the app is
-accepting traffic. That turns the normal first page load into cache reads
-instead of a synchronous database benchmark. Prewarm is best-effort only; any
-failure is logged and the existing on-demand path remains intact.
+could still be the unlucky caller that pays for the initial market-history
+load. We warm those same caches after startup, once the app is accepting
+traffic. Prewarm is best-effort only; any failure is logged and the existing
+on-demand path remains intact.
 """
 from __future__ import annotations
 
@@ -54,25 +53,23 @@ def _subset(mapping: Dict[int, Any], ids: FrozenSet[int]) -> Dict[int, Any]:
 
 
 def install_market_batch_singleflight() -> None:
-    # Import the BIN module first and replace its public loader before
-    # market_data_provider imports that name into its own module namespace.
-    from app.services import bin_market_signal
+    from app.services import market_data_provider
+    from app.services.bin_valuation_loader import (
+        OBSERVATION_WINDOW_DAYS,
+        load_hourly_bin_valuation_observations,
+    )
 
-    original_bin_loader = bin_market_signal.load_bin_observations
+    # Recommendation/scanner valuation path only. Do NOT replace
+    # bin_market_signal.load_bin_observations: that separate consumer needs
+    # raw sub-hour observations for its 30m/1h market-state windows.
     bin_lock = asyncio.Lock()
-    bin_cache: Dict[Tuple[int, int, int], Dict[str, Any]] = {}
+    bin_cache: Dict[Tuple[int, int], Dict[str, Any]] = {}
 
-    async def cached_bin_loader(
-        pool,
-        card_ids,
-        *,
-        days: int = bin_market_signal.OBSERVATION_WINDOW_DAYS,
-        limit_per_card: int = bin_market_signal.MAX_OBSERVATIONS_PER_CARD,
-    ):
+    async def cached_bin_loader(self, card_ids: List[int]):
         ids = frozenset(int(card_id) for card_id in card_ids)
         if not ids:
             return {}
-        key = (id(pool), int(days), int(limit_per_card))
+        key = (id(self._pool), OBSERVATION_WINDOW_DAYS)
         now = time.monotonic()
         entry = bin_cache.get(key)
         if entry is not None and now - entry["at"] < CACHE_SECONDS:
@@ -90,31 +87,24 @@ def install_market_batch_singleflight() -> None:
             missing = ids - entry["ids"]
             if missing:
                 started = time.monotonic()
-                fetched = await original_bin_loader(
-                    pool,
+                fetched = await load_hourly_bin_valuation_observations(
+                    self._pool,
                     list(missing),
-                    days=int(days),
-                    limit_per_card=int(limit_per_card),
+                    days=OBSERVATION_WINDOW_DAYS,
                 )
                 entry["data"].update(fetched)
-                # Include cards with no history as covered too, otherwise a
-                # negative result would be re-queried on every caller.
+                # Empty history is a cached result too. Otherwise cards with
+                # no observations would be re-queried on every request.
                 entry["ids"] = entry["ids"] | missing
                 entry["at"] = time.monotonic()
                 log.info(
-                    "shared BIN batch fetched %d missing cards in %.0fms",
+                    "shared hourly BIN valuation batch fetched %d missing cards in %.0fms",
                     len(missing),
                     (time.monotonic() - started) * 1000,
                 )
             return _subset(entry["data"], ids)
 
-    bin_market_signal.load_bin_observations = cached_bin_loader
-
-    # Import only after the BIN patch above, then explicitly replace its
-    # copied symbol as well so import order can never defeat the hotfix.
-    from app.services import market_data_provider
-
-    market_data_provider.load_bin_observations = cached_bin_loader
+    market_data_provider.FutggMarketDataProvider.get_bin_observations_by_ids = cached_bin_loader
 
     original_sales_loader = market_data_provider.FutggMarketDataProvider.get_sales_by_ids
     sales_lock = asyncio.Lock()
@@ -165,8 +155,8 @@ def _install_prewarm(application) -> None:
     """Warm the market-history caches shortly after startup.
 
     Uses the exact segmented candidate selector and provider used by the live
-    v2 endpoints. Because the public loaders are already wrapped at this point,
-    this fills the same process-local caches the HTTP requests will later hit.
+    v2 endpoints. Because the provider methods are already wrapped at this
+    point, this fills the same process-local caches the HTTP requests hit.
     """
     @application.app.on_event("startup")
     async def _schedule_market_cache_prewarm() -> None:
