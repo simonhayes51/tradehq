@@ -2,18 +2,15 @@
 #
 # Refreshes the live HOLD/SELL verdict for every open portfolio trade.
 #
-# The portfolio table now contains both newer FUT.GG card ids and older
-# legacy FUTBIN ids. The original implementation assumed every card lived in
-# player_pool.fut_players and therefore skipped valid FUT.GG positions such as
-# Mario Kempes 82092 / Kylian Mbappe 218335555. FUT.GG is now the primary
-# market/intelligence source for the product, so evaluate that path first and
-# retain the legacy recommendation_engine_v2 path only as a compatibility
-# fallback for genuinely old cards.
+# FUT.GG source_card_id and legacy FUTBIN fut_players.card_id are separate
+# namespaces. New trades carry trades.card_source explicitly. Historical rows
+# may still have card_source=NULL; only those rows use the compatibility probe,
+# and when a source is proven the row is classified so future passes do not
+# have to guess again.
 from __future__ import annotations
 
 import asyncio
 import logging
-from decimal import Decimal
 from typing import Any, Optional, Tuple
 
 import asyncpg
@@ -57,7 +54,7 @@ def _futgg_held_verdict(
     if target is not None and current >= target:
         return (
             "SELL",
-            f"Current BIN {current:,} has reached the live sell target of {target:,}."
+            f"Current BIN {current:,} is above the live sell target of {target:,}. Consider selling now to lock in the available return.",
         )
 
     if ci.signal in {"sell", "avoid"}:
@@ -69,7 +66,7 @@ def _futgg_held_verdict(
         roi_text = f" ({float(current_roi) * 100:.1f}% after tax)" if current_roi is not None else ""
         return (
             "SELL",
-            f"The position is profitable now{roi_text}, but the live market trend has turned {ci.trend_state.replace('_', ' ')}."
+            f"The position is profitable now{roi_text}, but the live market trend has turned {ci.trend_state.replace('_', ' ')}.",
         )
 
     target_text = f" Live sell target: {target:,}." if target is not None else ""
@@ -132,18 +129,51 @@ async def _evaluate_futgg_position(
     return _futgg_held_verdict(market_row, ci, purchase_price)
 
 
+async def _evaluate_legacy_position(
+    player_pool: asyncpg.Pool,
+    *,
+    card_id: int,
+    platform: str,
+    purchase_price: int,
+) -> Optional[Tuple[str, Optional[str]]]:
+    async with player_pool.acquire() as eval_conn:
+        exists = await eval_conn.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM fut_players WHERE card_id = $1)",
+            card_id,
+        )
+        if not exists:
+            return None
+
+        legacy = await evaluate_legacy_card(
+            eval_conn,
+            card_id,
+            platform=platform,
+            is_held=True,
+            held_purchase_price=purchase_price,
+            requested_by="held_position_refresher",
+        )
+        if legacy is None:
+            return None
+        return (
+            legacy.held_decision or legacy.status,
+            " ".join(legacy.held_decision_reasons)
+            if legacy.held_decision_reasons else None,
+        )
+
+
 async def refresh_held_positions(pool: asyncpg.Pool, player_pool: asyncpg.Pool) -> int:
     """One pass over every open trade with a known card_id.
 
-    FUT.GG/core is attempted first. Only when a card genuinely does not exist
-    in the FUT.GG market snapshot do we try the legacy fut_players engine.
-    Returns the number of trades whose live verdict was updated.
+    Explicit card_source is authoritative. Historical NULL-source rows are
+    probed FUT.GG-first, then legacy, and classified after a successful probe.
+    This preserves old positions without allowing a bare numeric id to keep
+    choosing a catalogue forever.
     """
     written = 0
     async with pool.acquire() as conn:
         open_trades = await conn.fetch(
             """
-            SELECT trade_id, card_id, buy, platform
+            SELECT trade_id, card_id, card_source, buy, platform
             FROM trades
             WHERE status = 'open' AND card_id IS NOT NULL AND buy IS NOT NULL
             """
@@ -154,54 +184,76 @@ async def refresh_held_positions(pool: asyncpg.Pool, player_pool: asyncpg.Pool) 
     for row in open_trades:
         trade_id = row["trade_id"]
         card_id = int(row["card_id"])
+        card_source = row["card_source"]
         platform = row["platform"] or "ps"
+        purchase_price = int(row["buy"])
         status: Optional[str] = None
         reasoning: Optional[str] = None
+        resolved_source: Optional[str] = card_source
 
         try:
-            futgg_result = await _evaluate_futgg_position(
-                futgg_provider,
-                card_id,
-                int(row["buy"]),
-            )
-            if futgg_result is not None:
-                status, reasoning = futgg_result
-            else:
-                # Compatibility path for positions created before FUT.GG
-                # became the product's canonical market source.
-                async with player_pool.acquire() as eval_conn:
-                    exists = await eval_conn.fetchval(
-                        "SELECT EXISTS (SELECT 1 FROM fut_players WHERE card_id = $1)",
+            if card_source == "futgg":
+                result = await _evaluate_futgg_position(futgg_provider, card_id, purchase_price)
+                if result is None:
+                    log.warning(
+                        "held_position_refresher: skipping trade_id=%s card_id=%s because explicit source=futgg but card is missing from futgg_market_snapshot",
+                        trade_id,
                         card_id,
                     )
-                    if not exists:
+                    continue
+                status, reasoning = result
+
+            elif card_source == "futbin":
+                result = await _evaluate_legacy_position(
+                    player_pool,
+                    card_id=card_id,
+                    platform=platform,
+                    purchase_price=purchase_price,
+                )
+                if result is None:
+                    log.warning(
+                        "held_position_refresher: skipping trade_id=%s card_id=%s because explicit source=futbin but card is missing from legacy fut_players",
+                        trade_id,
+                        card_id,
+                    )
+                    continue
+                status, reasoning = result
+
+            else:
+                # Compatibility path for historical positions created before
+                # the source namespace was persisted. Probe, then remember the
+                # proven source so this ambiguity disappears after one pass.
+                futgg_result = await _evaluate_futgg_position(
+                    futgg_provider,
+                    card_id,
+                    purchase_price,
+                )
+                if futgg_result is not None:
+                    status, reasoning = futgg_result
+                    resolved_source = "futgg"
+                else:
+                    legacy_result = await _evaluate_legacy_position(
+                        player_pool,
+                        card_id=card_id,
+                        platform=platform,
+                        purchase_price=purchase_price,
+                    )
+                    if legacy_result is None:
                         log.warning(
-                            "held_position_refresher: skipping trade_id=%s card_id=%s because card exists in neither futgg_market_snapshot nor legacy fut_players",
+                            "held_position_refresher: skipping trade_id=%s card_id=%s because unclassified card exists in neither FUT.GG nor legacy FUTBIN catalogue",
                             trade_id,
                             card_id,
                         )
                         continue
+                    status, reasoning = legacy_result
+                    resolved_source = "futbin"
 
-                    legacy = await evaluate_legacy_card(
-                        eval_conn,
-                        card_id,
-                        platform=platform,
-                        is_held=True,
-                        held_purchase_price=int(row["buy"]),
-                        requested_by="held_position_refresher",
-                    )
-                    if legacy is None:
-                        continue
-                    status = legacy.held_decision or legacy.status
-                    reasoning = (
-                        " ".join(legacy.held_decision_reasons)
-                        if legacy.held_decision_reasons else None
-                    )
         except Exception:
             log.exception(
-                "held_position_refresher: evaluation failed for trade_id=%s card_id=%s",
+                "held_position_refresher: evaluation failed for trade_id=%s card_id=%s source=%s",
                 trade_id,
                 card_id,
+                card_source or "unclassified",
             )
             continue
 
@@ -212,7 +264,8 @@ async def refresh_held_positions(pool: asyncpg.Pool, player_pool: asyncpg.Pool) 
             await conn.execute(
                 """
                 UPDATE trades
-                SET current_recommendation_status = $2,
+                SET card_source = COALESCE(card_source, $4),
+                    current_recommendation_status = $2,
                     current_recommendation_reasoning = $3,
                     current_evaluated_at = now()
                 WHERE trade_id = $1
@@ -220,6 +273,7 @@ async def refresh_held_positions(pool: asyncpg.Pool, player_pool: asyncpg.Pool) 
                 trade_id,
                 status,
                 reasoning,
+                resolved_source,
             )
         written += 1
 
