@@ -20,6 +20,7 @@ from app.routers.v2.events import router as events_router
 from app.routers.v2.onboarding import router as onboarding_router
 from app.routers.v2.intelligence_health import router as intelligence_health_router
 from app.routers.v2.market_transitions import router as market_transitions_router
+from app.routers.v2.calibration import router as calibration_router
 
 router = APIRouter(prefix="/api/v2")
 router.include_router(health_router)
@@ -68,3 +69,6 @@ router.include_router(intelligence_health_router)
 # Elite/premium market-change feed. Only genuine state transitions are
 # returned; initial scanner population never appears as fake "news".
 router.include_router(market_transitions_router)
+# Admin-only, read-only calibration evidence. This can flag statistically
+# supported threshold candidates for human review but never mutates live config.
+router.include_router(calibration_router)
