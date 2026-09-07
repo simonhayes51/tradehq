@@ -27,25 +27,31 @@ async def run() -> None:
 
     watchlist_dsn = (os.getenv("WATCHLIST_DATABASE_URL") or "").strip()
     core_dsn = (os.getenv("DATABASE_URL") or "").strip()
-    if watchlist_dsn:
+    watchlist_is_core = bool(watchlist_dsn and core_dsn and watchlist_dsn == core_dsn)
+
+    if watchlist_dsn and not watchlist_is_core:
         try:
-            # If both logical stores share one Postgres URL, a tiny separate pool
-            # is still safe and avoids trying to reuse select_due's already-held
-            # connection for an unrelated query while it is in scope.
             watchlist_pool = await asyncpg.create_pool(
                 dsn=watchlist_dsn,
                 min_size=1,
                 max_size=2,
                 command_timeout=20,
             )
-            log.info("sales information shadow: watchlist/alert source enabled")
+            log.info("sales information shadow: separate watchlist/alert source enabled")
         except Exception:
-            log.warning("sales information shadow: watchlist pool unavailable; continuing without alert source", exc_info=True)
+            log.warning(
+                "sales information shadow: watchlist pool unavailable; continuing without alert source",
+                exc_info=True,
+            )
+    elif watchlist_is_core:
+        log.info("sales information shadow: watchlist source shares core DB; no extra pool opened")
 
     async def observed_select_due(conn):
         due = await original_select_due(conn)
         try:
-            if watchlist_pool is None:
+            if watchlist_is_core:
+                await observe_after_due_selection(conn, due, watchlist_conn=conn)
+            elif watchlist_pool is None:
                 await observe_after_due_selection(conn, due, watchlist_conn=None)
             else:
                 async with watchlist_pool.acquire() as watchlist_conn:
