@@ -242,6 +242,34 @@ MAX_RUNTIME_MINUTES = env_int("FUTGG_SALES_MAX_RUNTIME_MINUTES", 0, minimum=0)
 #: Useful when you would rather cap work than wall-clock time.
 MAX_CYCLES = env_int("FUTGG_SALES_MAX_CYCLES", 0, minimum=0)
 
+#: Close and relaunch the whole browser+context (not just a crashed page -
+#: see SignedPageHandle.recreate()) after this many minutes of continuous
+#: use. 0 = never.
+#:
+#: Production incident (2026-09-07): the sales-sync container's CPU
+#: climbed steadily for ~2 hours, pinned at its ceiling, then the process
+#: was killed outright with no exception, no shutdown log line, nothing -
+#: Coolify's own CPU/memory graphs for the service showed a vertical
+#: cliff to 0 at the exact moment the log output stopped, the signature
+#: of an external SIGKILL rather than anything this script decided to do.
+#: It did not recover on its own; a manual restart was required.
+#:
+#: This worker deliberately keeps ONE headed Chromium browser, context,
+#: and (for signed_fetch) one anchor page alive for the entire process
+#: lifetime - by design, since re-navigating per card would be far more
+#: expensive and more exposed to Cloudflare's challenge (see
+#: SignedPageHandle's own docstring: "ONE navigation for the entire
+#: process lifetime"). SignedPageHandle.recreate() already replaces a
+#: single crashed/closed PAGE, but nothing before this ever recycled the
+#: browser/context itself - a slow accumulation inside one long-lived
+#: renderer (unclosed listeners, retained fetch() closures, general GC
+#: pressure from thousands of evaluate() calls) has no other way to be
+#: released short of a full relaunch. A scheduled recycle between cycles
+#: (never mid-batch) bounds how long any one browser instance runs,
+#: turning an unbounded slow leak into a periodic, cheap, and observable
+#: reset instead of an unplanned kill hours later.
+BROWSER_RECYCLE_MINUTES = env_int("FUTGG_SALES_BROWSER_RECYCLE_MINUTES", 90, minimum=0)
+
 #: Write to the database. Default on - matches futgg_bulk_price_sync.py's
 #: FUTGG_BULK_APPLY convention. Set to false for a dry run (e.g. alongside
 #: FUTGG_SALES_DIAGNOSTIC_CARD_ID) where nothing should be written.
@@ -2676,6 +2704,52 @@ async def acquire_advisory_lock_with_retry(
     return bool(got)
 
 
+async def _launch_browser_resources(
+    playwright, *, need_signed: bool, need_page_capture: bool, anchor: str,
+):
+    """Launch a fresh browser+context and, per the active transport(s), a
+    signed_fetch anchor page and/or a page_capture pool - the exact set of
+    long-lived Playwright objects run_forever keeps alive for as long as
+    one browser instance lasts. Shared by the initial startup and by
+    run_forever's periodic recycle (see BROWSER_RECYCLE_MINUTES) so both
+    paths build these resources identically.
+    """
+    browser = await playwright.chromium.launch(
+        headless=HEADLESS, args=["--no-sandbox", "--disable-dev-shm-usage"]
+    )
+    context = await browser.new_context(user_agent=USER_AGENT, locale="en-GB")
+
+    signed_page_handle = None
+    if need_signed:
+        signed_page = await context.new_page()
+        # ONE navigation for the entire process lifetime. Everything
+        # after this is fetch() from within the already-loaded page.
+        await signed_page.goto(anchor, wait_until="domcontentloaded", timeout=TIMEOUT_MS)
+        log.info("anchor page loaded (signed_fetch transport): %s", anchor)
+        # Wrapped so process_batch can transparently recreate this
+        # page in place after a crash (see SignedPageHandle) - a
+        # raw Page reference can't be replaced from inside a
+        # function call the way this shared, mutable handle can.
+        signed_page_handle = SignedPageHandle(signed_page, context, anchor)
+
+    capture_pages: list = []
+    if need_page_capture:
+        # One Page per PAGE_CONCURRENCY worker slot, opened once
+        # and reused across every card that worker ever handles -
+        # "reuse one browser/context/page where safe" (item 3).
+        # Same shared browser+context as signed_fetch either way,
+        # so a mid-run transport switch (auto mode) never needs a
+        # fresh browser.
+        for _ in range(PAGE_CONCURRENCY):
+            capture_pages.append(await context.new_page())
+        log.info(
+            "page_capture transport ready: %d page(s) (FUTGG_SALES_PAGE_CONCURRENCY)",
+            len(capture_pages),
+        )
+
+    return browser, context, signed_page_handle, capture_pages
+
+
 async def run_forever() -> None:
     from playwright.async_api import async_playwright
 
@@ -2738,40 +2812,16 @@ async def run_forever() -> None:
     need_page_capture = TRANSPORT_MODE in ("page_capture", "auto")
 
     async with async_playwright() as playwright:
-        browser = await playwright.chromium.launch(
-            headless=HEADLESS, args=["--no-sandbox", "--disable-dev-shm-usage"]
+        browser, context, signed_page_handle, capture_pages = await _launch_browser_resources(
+            playwright, need_signed=need_signed, need_page_capture=need_page_capture, anchor=anchor,
         )
+        # See BROWSER_RECYCLE_MINUTES's own docstring - tracks how long
+        # the CURRENT browser instance has been alive, reset on every
+        # recycle, so the periodic-recycle check below is a plain
+        # elapsed-time comparison rather than re-deriving it from
+        # run_started_at (which must keep counting across recycles).
+        browser_started_at = time.monotonic()
         try:
-            context = await browser.new_context(user_agent=USER_AGENT, locale="en-GB")
-
-            signed_page_handle = None
-            if need_signed:
-                signed_page = await context.new_page()
-                # ONE navigation for the entire process lifetime. Everything
-                # after this is fetch() from within the already-loaded page.
-                await signed_page.goto(anchor, wait_until="domcontentloaded", timeout=TIMEOUT_MS)
-                log.info("anchor page loaded (signed_fetch transport): %s", anchor)
-                # Wrapped so process_batch can transparently recreate this
-                # page in place after a crash (see SignedPageHandle) - a
-                # raw Page reference can't be replaced from inside a
-                # function call the way this shared, mutable handle can.
-                signed_page_handle = SignedPageHandle(signed_page, context, anchor)
-
-            capture_pages: list = []
-            if need_page_capture:
-                # One Page per PAGE_CONCURRENCY worker slot, opened once
-                # and reused across every card that worker ever handles -
-                # "reuse one browser/context/page where safe" (item 3).
-                # Same shared browser+context as signed_fetch either way,
-                # so a mid-run transport switch (auto mode) never needs a
-                # fresh browser.
-                for _ in range(PAGE_CONCURRENCY):
-                    capture_pages.append(await context.new_page())
-                log.info(
-                    "page_capture transport ready: %d page(s) (FUTGG_SALES_PAGE_CONCURRENCY)",
-                    len(capture_pages),
-                )
-
             persisted = await load_throttle_state(pool)
             throttle = AdaptiveThrottle(
                 BATCH_SIZE, BATCH_DELAY,
@@ -3172,6 +3222,33 @@ async def run_forever() -> None:
                         cycles_done, MAX_RUNTIME_MINUTES,
                     )
                     break
+
+                # Periodic browser recycle (see BROWSER_RECYCLE_MINUTES's
+                # own docstring) - between cycles only, never mid-batch,
+                # so a recycle can never abandon a batch already in
+                # flight. Closing the whole browser drops every page it
+                # owns (the signed_fetch anchor page and/or the
+                # page_capture pool) in one call; _launch_browser_resources
+                # then rebuilds exactly the set this transport needs, the
+                # same as the initial startup.
+                if (
+                    BROWSER_RECYCLE_MINUTES
+                    and (time.monotonic() - browser_started_at) >= BROWSER_RECYCLE_MINUTES * 60
+                ):
+                    log.info(
+                        "recycling browser after %.0f minute(s) "
+                        "(FUTGG_SALES_BROWSER_RECYCLE_MINUTES=%d)",
+                        (time.monotonic() - browser_started_at) / 60, BROWSER_RECYCLE_MINUTES,
+                    )
+                    try:
+                        await browser.close()
+                    except Exception:
+                        log.warning("error closing browser before recycle - continuing anyway", exc_info=True)
+                    browser, context, signed_page_handle, capture_pages = await _launch_browser_resources(
+                        playwright, need_signed=need_signed, need_page_capture=need_page_capture, anchor=anchor,
+                    )
+                    browser_started_at = time.monotonic()
+
                 backoff_seconds = (
                     next_backoff_seconds(consecutive_cycle_trips) if breaker_tripped else CYCLE_SLEEP
                 )
