@@ -45,6 +45,10 @@ def test_headline_is_a_real_state_transition_not_scan_copy():
     assert mt._headline("strong_buy", "avoid") == "STRONG BUY → AVOID"
 
 
+def test_status_only_change_does_not_render_buy_to_buy():
+    assert mt._headline("buy", "buy", "active", "expired") == "BUY · ACTIVE → EXPIRED"
+
+
 def test_transition_endpoint_serialises_card_and_live_price():
     changed = datetime(2026, 9, 7, 20, 30, tzinfo=timezone.utc)
     conn = _Conn([
