@@ -1,0 +1,1 @@
+Temporary safety marker: market_data_provider.py restore in progress after an interrupted edit. Do not deploy this commit.
