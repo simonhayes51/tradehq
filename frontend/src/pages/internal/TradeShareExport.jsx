@@ -9,7 +9,7 @@
 import { useEffect, useState } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import api from "../../axios";
-import TradeShareCardArt from "../../components/TradeShareCardArt";
+import TradeShareCardArt from "../../components/TradeShareCalledItArt";
 
 const IMAGE_SETTLE_TIMEOUT_MS = 6000;
 
@@ -63,14 +63,6 @@ export default function TradeShareExport() {
         return;
       }
       const thumb = document.querySelector("[data-trade-share-thumb]");
-      // Only "load" counts as settled, not "error": TradeShareCardArt's
-      // CardFrame now swaps a failed remote image_url to the local
-      // placeholder itself (see its own onError), which then fires a
-      // fresh load/error cycle for the SAME element. Resolving on the
-      // original "error" would let the screenshot fire mid-swap, before
-      // the placeholder has actually finished loading - the timeout
-      // below is the only backstop needed for the (effectively
-      // impossible) case where even the bundled local placeholder fails.
       const imageSettled = thumb
         ? Promise.race([
             new Promise((resolve) => {
