@@ -30,12 +30,22 @@ import futgg_sales_triggers as triggers
 
 log = logging.getLogger("futgg_sales_information_shadow")
 
-SELECTOR_VERSION = "information-shadow-1.2"
+SELECTOR_VERSION = "information-shadow-1.3"
 CURRENT_INTELLIGENCE_MAX_AGE_MINUTES = triggers.env_int(
     "FUTGG_TRIGGER_CURRENT_INTELLIGENCE_MAX_AGE_MIN", 30, minimum=1,
 )
 
 REASON_HELD_POSITION = "held_position"
+REASON_PREMIUM_STALE_SALES = "premium_stale_sales"
+PREMIUM_STALE_MIN_RATING = triggers.env_int(
+    "FUTGG_TRIGGER_PREMIUM_STALE_MIN_RATING", 95, minimum=1,
+)
+PREMIUM_STALE_MIN_BIN = triggers.env_int(
+    "FUTGG_TRIGGER_PREMIUM_STALE_MIN_BIN", 100000, minimum=1,
+)
+PREMIUM_STALE_AFTER_MINUTES = triggers.env_int(
+    "FUTGG_TRIGGER_PREMIUM_STALE_AFTER_MIN", 720, minimum=60,
+)
 USER_DRIVEN_REASONS = frozenset(set(triggers.USER_DRIVEN_REASONS) | {REASON_HELD_POSITION})
 
 
@@ -161,6 +171,60 @@ async def triggers_from_held_positions(conn: asyncpg.Connection) -> list[trigger
     ]
 
 
+async def triggers_from_premium_stale_sales(
+    conn: asyncpg.Connection | None,
+) -> list[triggers.TriggerHit]:
+    """Pull premium/high-value cards forward when their actual stored sale is old.
+
+    This deliberately keys on futgg_market_snapshot.latest_sale_at, the same
+    evidence surfaced to users as the card's latest sale, rather than
+    last_sales_status_at (which merely says when the worker last attempted a
+    read). A 98-rated multi-million-coin card with a 30+ hour-old stored sale is
+    therefore a direct information-value candidate even if its adaptive tier did
+    not otherwise make it due yet.
+    """
+    if conn is None:
+        return []
+    try:
+        rows = await conn.fetch(
+            """
+            SELECT m.source_card_id, m.rating, m.current_bin, m.latest_sale_at
+            FROM futgg_market_snapshot m
+            JOIN futgg_players p ON p.source_card_id = m.source_card_id
+            WHERE p.is_active
+              AND p.is_tradeable IS DISTINCT FROM FALSE
+              AND m.current_bin IS NOT NULL
+              AND m.current_bin >= $1
+              AND m.rating >= $2
+              AND m.latest_sale_at IS NOT NULL
+              AND m.latest_sale_at <= now() - ($3 * interval '1 minute')
+            ORDER BY m.rating DESC, m.current_bin DESC, m.latest_sale_at ASC
+            """,
+            PREMIUM_STALE_MIN_BIN,
+            PREMIUM_STALE_MIN_RATING,
+            PREMIUM_STALE_AFTER_MINUTES,
+        )
+    except (asyncpg.UndefinedTableError, asyncpg.UndefinedColumnError):
+        return []
+    except Exception:
+        log.warning("premium stale-sales trigger query failed; degrading to none", exc_info=True)
+        return []
+
+    return [
+        triggers.TriggerHit(
+            int(row["source_card_id"]),
+            REASON_PREMIUM_STALE_SALES,
+            {
+                "rating": int(row["rating"] or 0),
+                "current_bin": int(row["current_bin"] or 0),
+                "latest_sale_at": row["latest_sale_at"].isoformat() if row["latest_sale_at"] else None,
+                "stale_after_minutes": PREMIUM_STALE_AFTER_MINUTES,
+            },
+        )
+        for row in rows
+    ]
+
+
 def combine_information_hits(
     hits: Iterable[triggers.TriggerHit],
     *,
@@ -220,6 +284,7 @@ async def select_shadow(
     hits += await triggers.triggers_from_stale_evidence(core_conn)
     hits += await triggers.triggers_from_active_alerts(watchlist_conn)
     hits += await triggers_from_held_positions(core_conn)
+    hits += await triggers_from_premium_stale_sales(core_conn)
 
     cards = combine_information_hits(hits, exclude_ids=due_ids, limit=limit)
     return ShadowSelection(cards=tuple(cards), due_ids=due_ids)
@@ -228,7 +293,7 @@ async def select_shadow(
 async def record_shadow(conn: asyncpg.Connection, selection: ShadowSelection) -> None:
     """Best-effort observability only. Never affects the live selection.
 
-    v1.2 stores per-card reasons/details inside the existing JSONB notes column.
+    v1.3 stores per-card reasons/details inside the existing JSONB notes column.
     That lets the admin report answer which user/card signals are repeatedly
     missed by the live tier scheduler without adding another table or changing
     the request budget.

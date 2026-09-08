@@ -5,7 +5,8 @@ The live collector still uses the same FUT.GG request budget and the same
 select_due() baseline. A bounded slice of that already-selected maintenance
 capacity can now be reallocated to cards the information-value shadow has
 repeatedly shown are worth refreshing sooner: held/watchlisted cards, live
-recommendations, material price movers, recent releases and active-market cards.
+recommendations, material price movers, recent releases, premium stale cards
+and active-market cards.
 
 Two guardrails matter here:
 
@@ -37,6 +38,7 @@ import futgg_sales_sync as sales
 import futgg_sales_triggers as triggers
 from futgg_sales_information_shadow import (
     REASON_HELD_POSITION,
+    REASON_PREMIUM_STALE_SALES,
     SELECTOR_VERSION as SHADOW_SELECTOR_VERSION,
     ShadowSelection,
     USER_DRIVEN_REASONS,
@@ -54,7 +56,7 @@ LIVE_REBALANCE_SHARE = sales.env_float(
 LIVE_REBALANCE_MAX_SLOTS = sales.env_int(
     "FUTGG_SALES_INFORMATION_REBALANCE_MAX_SLOTS", 12, minimum=0
 )
-LIVE_SELECTOR_VERSION = "information-live-rebalance-1.0"
+LIVE_SELECTOR_VERSION = "information-live-rebalance-1.1"
 
 
 def _row_value(row: Any, key: str, default=None):
@@ -82,6 +84,7 @@ def _reason_rank(card) -> int:
         triggers.REASON_DISCORD_CANDIDATE,
         triggers.REASON_PROFIT_OPPORTUNITY,
         triggers.REASON_BULK_PRICE_CHANGE,
+        REASON_PREMIUM_STALE_SALES,
     }:
         return 1
     if reasons & {
@@ -129,7 +132,6 @@ def merge_rebalanced_rows(
     final_due = protected + chosen + kept_maintenance
     chosen_ids = [int(_row_value(row, "source_card_id")) for row in chosen]
 
-    # A hard invariant: rebalancing is budget-neutral per cycle.
     if len(final_due) != len(baseline_due):
         raise AssertionError("SalesSync information rebalancing changed cycle request count")
     return final_due, chosen_ids
@@ -139,13 +141,7 @@ async def _hydrate_rebalance_candidates(
     conn: asyncpg.Connection,
     selection: ShadowSelection,
 ) -> list[Any]:
-    """Turn shadow card ids into the exact row shape process_batch expects.
-
-    Cards in failure backoff are excluded so information-value scheduling cannot
-    defeat the collector's own retry/circuit-breaker protection. A current BIN
-    is required because there is no reason to spend a detailed-sales request on
-    a card the live market currently says is unavailable.
-    """
+    """Turn shadow card ids into the exact row shape process_batch expects."""
     if not selection.cards:
         return []
 
@@ -193,13 +189,14 @@ async def _record_live_observation(
     rebalanced_ids: list[int],
 ) -> None:
     """Record the same shadow evidence plus which candidates went live."""
+    rebalanced_set = set(rebalanced_ids)
     card_details = [
         {
             "card_id": int(card.card_id),
             "reasons": list(card.reasons),
             "details": card.details,
             "user_driven": any(reason in USER_DRIVEN_REASONS for reason in card.reasons),
-            "rebalanced_live": int(card.card_id) in set(rebalanced_ids),
+            "rebalanced_live": int(card.card_id) in rebalanced_set,
         }
         for card in selection.cards
     ]
@@ -302,8 +299,6 @@ async def run() -> None:
                 rebalanced_ids,
             )
         except Exception:
-            # Fail closed to the mature baseline scheduler. Information-value
-            # logic must never be able to stop sales collection.
             final_due = baseline_due
             log.warning(
                 "sales information rebalancing failed; baseline due selection retained",
