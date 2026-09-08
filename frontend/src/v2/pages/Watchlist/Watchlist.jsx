@@ -17,16 +17,9 @@ export default function Watchlist() {
   const query = useWatchlist();
   const items = Array.isArray(query.data) ? query.data : query.data?.items || [];
   const refresh = () => queryClient.invalidateQueries({ queryKey: ["v2", "watchlist"] });
-  // Every one of these used to be a bare `await x(); refresh();`. A
-  // failure left the row on screen with no explanation, so a removal that
-  // did not happen looked identical to one that did - the same class of
-  // silent failure that made alerts feel broken. Each now reports.
   const [busyItem, setBusyItem] = useState(null);
-  // Remove used to sit as a full main action next to Alert/Refresh -
-  // one accidental tap and a tracked card was gone with no confirmation.
-  // Two-step in place instead of a modal: first click reveals a
-  // "Confirm remove" state, any other click on the card resets it.
   const [confirmRemoveId, setConfirmRemoveId] = useState(null);
+
   async function remove(id, name) {
     setBusyItem(id);
     try {
@@ -40,6 +33,7 @@ export default function Watchlist() {
       setConfirmRemoveId(null);
     }
   }
+
   async function update(id) {
     setBusyItem(id);
     try {
@@ -52,9 +46,6 @@ export default function Watchlist() {
     }
   }
 
-  // Price/liquidity threshold alerts - separate from the watch list
-  // itself (backend: /api/watchlist-alerts, a live poll loop already
-  // running in main.py). v1 has had this UI for a while; v2 didn't.
   const alertsQuery = useQuery({
     queryKey: ["v2", "watchlist", "alerts"],
     queryFn: async () => {
@@ -101,8 +92,15 @@ export default function Watchlist() {
       refreshAlerts();
       setAlertsOpen(true);
       toast.success("Alert saved. We'll notify you when it triggers.");
-    } catch {
-      toast.error("Couldn't save that alert. Check the values and try again.");
+    } catch (requestError) {
+      // limit_reached is a deliberate plan boundary, not a broken save.
+      // axios has already emitted premium:blocked and the shell-level
+      // LimitReachedPrompt explains the allowance and upgrade path.
+      if (requestError?.response?.data?.detail?.error === "limit_reached") {
+        setAlertTarget(null);
+      } else {
+        toast.error("Couldn't save that alert. Check the values and try again.");
+      }
     } finally {
       setBusyAlert(false);
     }
@@ -142,10 +140,6 @@ export default function Watchlist() {
       {alertsOpen && (
         <section className="v2-alerts-panel">
           <h2>Your alert rules</h2>
-          {/* Says where the resulting notifications actually appear.
-              "show up on Home" was only half true and gave no way to act
-              on them - they now live in the bell menu, where they can be
-              read and dismissed. */}
           <p className="muted v2-alerts-panel-sub">
             The conditions we watch for. When one triggers, the notification appears in the bell
             menu at the top of Home, where you can read and dismiss it. Deleting a rule here stops
@@ -158,9 +152,6 @@ export default function Watchlist() {
               {alerts.map((a) => (
                 <li key={a.id}>
                   <div>
-                    {/* Never the raw id. The backend resolves the name;
-                        if it can't (a card that has left the catalogue),
-                        say so in words - an id here is developer UI. */}
                     <strong>{a.player_name || "Card no longer in our catalogue"}</strong>
                     <span className="muted"> ({String(a.platform || "ps").toUpperCase()})</span>
                     <div className="v2-alert-detail">
@@ -181,11 +172,6 @@ export default function Watchlist() {
       {query.isLoading ? <SkeletonCards count={6} gridClassName="v2-watch-grid" cardClassName="" /> : query.error?.response?.status === 401 ? <EmptyState icon={<Star size={28} />} text="Sign in to view your watchlist." action={<Link to="/login">Sign in</Link>} /> : query.isError ? <EmptyState icon={<Star size={28} />} error text="Your watchlist could not be loaded." action={<button onClick={() => query.refetch()}>Try again</button>} /> : items.length ? (
         <section className="v2-watch-grid">
           {items.map((item) => {
-            // Prices are last-checked, not live-polled - the list query
-            // has no refetchInterval, and the per-card price only moves
-            // when this card's own Refresh has been pressed (or a fresh
-            // read happened elsewhere). So Refresh is not redundant; it's
-            // the only thing that updates this row's price.
             const itemAlerts = alerts.filter((a) => String(a.card_id) === String(item.card_id) && String(a.platform || "ps") === String(item.platform || "ps"));
             const confirming = confirmRemoveId === item.id;
             return (
