@@ -3,40 +3,58 @@
  * corrections are easy to audit and do not churn the large legacy file. */
 
 @media (max-width: 800px) {
-  /* More is a compact bottom sheet: two short columns instead of either
-     giant cards or a long vertical list that hides most of the page. */
+  /* More is navigation, not a second dashboard card. A quiet backdrop and
+     simple full-width rows make the sheet read like a mobile menu. */
+  .mobile-more-backdrop {
+    position: fixed;
+    inset: 0 0 calc(76px + env(safe-area-inset-bottom)) 0;
+    z-index: 59;
+    display: block;
+    width: 100%;
+    padding: 0;
+    border: 0;
+    background: rgba(0,0,0,.52);
+    backdrop-filter: blur(2px);
+  }
   .mobile-more-menu {
     left: 0 !important;
     right: 0 !important;
     bottom: calc(76px + env(safe-area-inset-bottom)) !important;
-    max-height: min(42dvh, 340px);
+    z-index: 60 !important;
+    max-height: min(58dvh, 430px);
     overflow-y: auto;
-    padding: 12px 16px 14px !important;
-    border-left: 0 !important;
-    border-right: 0 !important;
-    border-bottom: 0 !important;
+    padding: 8px 18px 12px !important;
+    border: 0 !important;
+    border-top: 1px solid #303336 !important;
     border-radius: 16px 16px 0 0 !important;
     background: #101214 !important;
-    box-shadow: 0 -16px 36px rgba(0,0,0,.55) !important;
+    box-shadow: 0 -12px 34px rgba(0,0,0,.58) !important;
+  }
+  .mobile-more-head {
+    min-height: 40px;
+    margin: 0 !important;
+    padding: 0 2px !important;
+    border-bottom: 1px solid #26292c;
   }
   .mobile-more-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
-    gap: 8px !important;
+    grid-template-columns: 1fr !important;
+    gap: 0 !important;
   }
-  .v2-global-nav .mobile-more-grid .mobile-more-link {
-    min-height: 48px !important;
-    padding: 0 10px !important;
-    border: 1px solid var(--v2-border, #292b2e) !important;
-    border-radius: 8px !important;
-    background: #15171a !important;
-    gap: 9px !important;
-  }
+  .v2-global-nav .mobile-more-grid .mobile-more-link,
   .v2-global-nav .mobile-more-grid .mobile-more-link:last-child:nth-child(odd) {
-    grid-column: 1 / -1;
+    grid-column: auto !important;
+    min-height: 49px !important;
+    padding: 0 2px !important;
+    border: 0 !important;
+    border-bottom: 1px solid #26292c !important;
+    border-radius: 0 !important;
+    background: transparent !important;
+    gap: 12px !important;
+    color: #e8e8e8 !important;
   }
   .v2-global-nav .mobile-more-grid .mobile-more-link.active {
-    border-color: var(--v2-accent, #39ff8a) !important;
-    background: rgba(57,255,138,.09) !important;
+    border-color: #26292c !important;
+    background: linear-gradient(90deg,rgba(57,255,138,.10),transparent 72%) !important;
     color: #fff !important;
   }
   .v2-global-nav .mobile-more-grid .mobile-more-link svg {
@@ -44,32 +62,41 @@
     height: 19px !important;
     flex: 0 0 auto;
   }
-  .mobile-more-head {
-    margin-bottom: 8px !important;
-    padding: 0 2px !important;
+  .v2-global-nav .mobile-more-grid .mobile-more-link.active > svg:first-child {
+    color: var(--v2-accent, #39ff8a);
+  }
+  .mobile-more-chevron {
+    margin-left: auto;
+    color: #72777b !important;
   }
 
   /* Assistant replies were constrained to 70% of the screen, turning a
-     compact answer into a very tall column. chat.css owns the normal rule;
-     this is the final mobile guard after all route-level styles load. */
+     compact answer into a very tall column. */
   .v2-chat-bubble.assistant {
     max-width: 92% !important;
+  }
+
+  /* Safari occasionally paints the Discord image outside the rounded
+     avatar box. Clip the identity itself, not merely its border. */
+  .v2-account-identity .v2-account-avatar {
+    aspect-ratio: 1 / 1;
+    border-radius: 999px !important;
+    clip-path: circle(50% at 50% 50%);
+  }
+  .v2-account-identity .v2-account-avatar img {
+    border-radius: 999px !important;
   }
 }
 
 @media (max-width: 700px) {
-  /* Keep the Top Card identity and controls on a deterministic baseline.
-     BUY, info and confidence used to align independently and visibly step
-     up/down as the player name wrapped. */
+  /* Keep the Top Card identity and controls on a deterministic baseline. */
   .lead-head {
     display: grid !important;
     grid-template-columns: minmax(0,1fr) auto !important;
     align-items: end !important;
     gap: 12px !important;
   }
-  .lead-head > div:first-child {
-    min-width: 0;
-  }
+  .lead-head > div:first-child { min-width: 0; }
   .lead-status {
     display: flex !important;
     align-items: center !important;
@@ -78,36 +105,181 @@
     align-self: end !important;
     margin: 0 0 2px !important;
   }
-  .lead-status > * {
-    flex: 0 0 auto;
-    margin: 0 !important;
-  }
-
-  /* The freshness pill is a separate status line, not part of the title. */
+  .lead-status > * { flex: 0 0 auto; margin: 0 !important; }
   .lead-head + .v2-market-freshness,
-  .lead-copy > .v2-market-freshness {
-    margin-top: 14px !important;
-  }
+  .lead-copy > .v2-market-freshness { margin-top: 14px !important; }
 
-  /* The popup card art inherited desktop position:sticky. Once the user
-     scrolled to the chart, the card remained pinned and sat on top of the
-     graph. Page-mode intentionally has its own non-sticky hero already. */
+  /* Popup analysis is player-first on a phone. mobile-polish.css used a
+     92px absolute thumbnail and then stacked three 74px decision slabs.
+     That buried the first market evidence below the fold. Let the card and
+     identity share the first row, then make every decision/evidence section
+     span the full sheet. Page-mode keeps its separate standalone layout. */
+  .dash-analysis-modal:not(.page-mode) {
+    display: grid !important;
+    grid-template-columns: 132px minmax(0,1fr) !important;
+    grid-auto-flow: row;
+    align-items: start !important;
+    gap: 10px 14px !important;
+    max-height: calc(100dvh - 8px) !important;
+    padding: 14px 14px calc(16px + env(safe-area-inset-bottom)) !important;
+    border-radius: 18px 18px 0 0 !important;
+  }
   .dash-analysis-modal:not(.page-mode) .dash-modal-card {
     position: relative !important;
     top: auto !important;
+    left: auto !important;
+    grid-column: 1;
+    grid-row: 1;
     align-self: start !important;
     z-index: 0 !important;
+    width: 132px !important;
+    height: 166px !important;
+    min-height: 0 !important;
+    overflow: visible !important;
+    border: 0 !important;
+    border-radius: 10px !important;
+    background: radial-gradient(circle at 50% 46%,rgba(57,255,138,.10),transparent 65%) !important;
+  }
+  .dash-analysis-modal:not(.page-mode) .dash-modal-card .ft-card-img.featured,
+  .dash-analysis-modal:not(.page-mode) .dash-modal-card .player-card-art.featured {
+    width: 128px !important;
+    max-height: 164px !important;
+    object-fit: contain !important;
+  }
+  .dash-analysis-modal:not(.page-mode) .dash-modal-card > div {
+    max-width: 128px !important;
+    transform: none !important;
   }
 
-  /* The compact queue already has a dedicated WHY THIS MOVE row. The tiny
-     reason under the player name is the same sentence again and often gets
-     clipped with an ellipsis, so remove the duplicate on phones. */
-  .queue-card .queue-name > small {
-    display: none !important;
+  /* display:contents lets the copy's identity stay beside the card while
+     freshness, numbers and evidence become full-width rows below it. */
+  .dash-analysis-modal:not(.page-mode) .dash-modal-copy {
+    display: contents !important;
   }
-  .queue-card .queue-reason {
+  .dash-analysis-modal:not(.page-mode) .dash-modal-heading {
+    position: relative;
+    grid-column: 2;
+    grid-row: 1;
+    display: flex !important;
+    min-width: 0;
+    min-height: 166px !important;
+    padding: 24px 34px 8px 0 !important;
+    flex-direction: column;
+    align-items: flex-start !important;
+    justify-content: center !important;
+    gap: 8px !important;
+  }
+  .dash-analysis-modal:not(.page-mode) .dash-modal-heading > div:first-child {
     min-width: 0;
   }
+  .dash-analysis-modal:not(.page-mode) .dash-modal-heading h2 {
+    margin-top: 7px !important;
+    font-size: clamp(25px,7vw,32px) !important;
+    line-height: .98 !important;
+  }
+  .dash-analysis-modal:not(.page-mode) .dash-modal-heading .player-meta-pills {
+    max-width: none !important;
+    margin: 0 !important;
+  }
+  .dash-analysis-modal:not(.page-mode) .dash-modal-heading .call {
+    position: static !important;
+    margin: 0 !important;
+  }
+  .dash-analysis-modal:not(.page-mode) .dash-modal-call {
+    display: flex !important;
+    align-items: center;
+    gap: 7px;
+    flex-wrap: wrap;
+  }
+  .dash-analysis-modal:not(.page-mode) .dash-modal-close {
+    top: 12px !important;
+    right: 12px !important;
+    width: 36px !important;
+    height: 36px !important;
+  }
+  .dash-analysis-modal:not(.page-mode) .dash-modal-freshness {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    margin: 0 !important;
+    width: max-content;
+    max-width: 100%;
+  }
+  .dash-analysis-modal:not(.page-mode) .dash-modal-verdict {
+    grid-column: 1 / -1;
+    grid-row: 3;
+    margin: 0 !important;
+    padding: 5px 1px 2px !important;
+    border: 0 !important;
+    background: transparent !important;
+    color: #b9b9b9 !important;
+    font-size: 12px !important;
+    line-height: 1.45 !important;
+  }
+
+  /* Three headline decisions belong together. The old 1-up slab layout
+     made them visually louder than the player and pushed sales off-screen. */
+  .dash-analysis-modal:not(.page-mode) .dash-modal-numbers {
+    grid-column: 1 / -1;
+    grid-row: 4;
+    display: grid !important;
+    grid-template-columns: repeat(3,minmax(0,1fr)) !important;
+    gap: 6px !important;
+    margin-top: 2px;
+    overflow: visible !important;
+    border: 0 !important;
+    background: transparent !important;
+  }
+  .dash-analysis-modal:not(.page-mode) .dash-modal-numbers .metric {
+    display: block !important;
+    min-width: 0;
+    min-height: 82px !important;
+    padding: 9px 8px !important;
+    border: 1px solid #35383b !important;
+    border-radius: 7px !important;
+  }
+  .dash-analysis-modal:not(.page-mode) .dash-modal-numbers .metric > span,
+  .dash-analysis-modal:not(.page-mode) .dash-modal-numbers .metric > strong,
+  .dash-analysis-modal:not(.page-mode) .dash-modal-numbers .metric > small {
+    display: block !important;
+    grid-column: auto !important;
+    grid-row: auto !important;
+    padding: 0 !important;
+    text-align: left !important;
+  }
+  .dash-analysis-modal:not(.page-mode) .dash-modal-numbers .metric > span {
+    margin-bottom: 7px;
+    font-size: 8px !important;
+    letter-spacing: .055em;
+  }
+  .dash-analysis-modal:not(.page-mode) .dash-modal-numbers .metric > strong {
+    font-size: clamp(16px,4.8vw,20px) !important;
+    line-height: 1.05 !important;
+    white-space: nowrap;
+  }
+  .dash-analysis-modal:not(.page-mode) .dash-modal-numbers .metric > small {
+    margin-top: 5px;
+    font-size: 8.5px !important;
+    line-height: 1.2;
+  }
+  .dash-analysis-modal:not(.page-mode) .dash-modal-numbers .coin-value > img {
+    min-width: 11px !important;
+  }
+  .dash-analysis-modal:not(.page-mode) .dash-modal-lower {
+    grid-column: 1 / -1;
+    grid-row: 5;
+    display: block !important;
+    margin-top: 8px !important;
+  }
+
+  /* The popup card art must never stick over evidence while scrolling. */
+  .dash-analysis-modal:not(.page-mode) .dash-modal-card {
+    position: relative !important;
+    top: auto !important;
+  }
+
+  /* The compact queue already has a dedicated WHY THIS MOVE row. */
+  .queue-card .queue-name > small { display: none !important; }
+  .queue-card .queue-reason { min-width: 0; }
   .queue-card .queue-reason > span {
     display: -webkit-box !important;
     -webkit-box-orient: vertical;
@@ -116,8 +288,7 @@
     line-height: 1.4;
   }
 
-  /* Keep Recharts and its labels inside the modal's content box even on
-     narrow iPhones. This does not alter chart data or scale. */
+  /* Keep Recharts and its labels inside the modal's content box. */
   .dash-price-chart,
   .dash-chart-frame,
   .dash-price-chart .recharts-responsive-container,
@@ -125,12 +296,33 @@
     min-width: 0 !important;
     max-width: 100% !important;
   }
-  .dash-chart-frame {
-    overflow: hidden !important;
-  }
+  .dash-chart-frame { overflow: hidden !important; }
   .dash-chart-typical,
   .dash-chart-coverage {
     font-size: 10px !important;
     line-height: 1.45 !important;
+  }
+}
+
+@media (max-width: 390px) {
+  .dash-analysis-modal:not(.page-mode) {
+    grid-template-columns: 118px minmax(0,1fr) !important;
+    padding-inline: 12px !important;
+    gap: 9px 11px !important;
+  }
+  .dash-analysis-modal:not(.page-mode) .dash-modal-card {
+    width: 118px !important;
+    height: 150px !important;
+  }
+  .dash-analysis-modal:not(.page-mode) .dash-modal-card .ft-card-img.featured,
+  .dash-analysis-modal:not(.page-mode) .dash-modal-card .player-card-art.featured {
+    width: 114px !important;
+    max-height: 148px !important;
+  }
+  .dash-analysis-modal:not(.page-mode) .dash-modal-heading {
+    min-height: 150px !important;
+  }
+  .dash-analysis-modal:not(.page-mode) .dash-modal-numbers .metric > strong {
+    font-size: 16px !important;
   }
 }
