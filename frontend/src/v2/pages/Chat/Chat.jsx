@@ -25,9 +25,6 @@ import "./chat.css";
 
 const SUGGESTIONS = ["Should I buy Mbappe 92?", "Who should I buy for 40k?", "How accurate are your recommendations?"];
 
-// Only what the tools can actually answer. Anything outside this the
-// assistant is instructed to decline rather than answer from the model's
-// own (non-existent, and never current) market knowledge.
 const CAPABILITIES = [
   "Look up any card's live price, verdict, buy/sell targets and risk",
   "Find trades that fit a coin budget right now",
@@ -122,8 +119,16 @@ function renderInlineMarkdown(text) {
       : <span key={index}>{part}</span>);
 }
 
-function FormattedMessage({ content }) {
-  const lines = String(content ?? "").split(/\r?\n/);
+export function FormattedMessage({ content }) {
+  // The model sometimes returns a compact one-line summary such as
+  // "Over 90 days: - **332 wins** - **91.5% win rate**". It is valid-ish
+  // Markdown but without line breaks a plain renderer still looks like
+  // punctuation soup. Turn only bold-led list separators into real lines;
+  // normal hyphens, prices and prose are untouched.
+  const normalised = String(content ?? "")
+    .replace(/:\s+-\s+(?=\*\*)/g, ":\n- ")
+    .replace(/\s+-\s+(?=\*\*)/g, "\n- ");
+  const lines = normalised.split(/\r?\n/);
   return <div className="v2-chat-message-copy">
     {lines.map((line, index) => {
       const trimmed = line.trim();
