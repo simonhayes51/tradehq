@@ -44,9 +44,9 @@ _HOURLY_VALUATION_LATERAL_QUERY = """
 """
 
 # Bulk/scanner path: aggregate the same qualifying observations once rather than
-# executing hundreds of separate aggregate nodes. The composite covering index
-# installed by migration 089 supports the card/time filter and supplies
-# lowest_bin without changing the logical result.
+# executing hundreds of separate aggregate nodes. This relies on the existing
+# card/time BIN-history indexing and changes only the SQL execution shape, not
+# the evidence window or the values returned to the valuation engine.
 _HOURLY_VALUATION_SET_QUERY = """
     SELECT
         bh.source_card_id,
