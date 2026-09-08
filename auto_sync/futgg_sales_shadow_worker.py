@@ -3,10 +3,9 @@
 
 The live collector still uses the same FUT.GG request budget and the same
 select_due() baseline. A bounded slice of that already-selected maintenance
-capacity can now be reallocated to cards the information-value shadow has
-repeatedly shown are worth refreshing sooner: held/watchlisted cards, live
-recommendations, material price movers, recent releases, premium stale cards
-and active-market cards.
+capacity can be reallocated to cards where fresh sales evidence is worth more:
+user-driven cards, live recommendations, material BIN moves, recent releases,
+premium stale cards, active-market cards and an explicit Gold Rare rotation.
 
 Two guardrails matter here:
 
@@ -16,9 +15,10 @@ Two guardrails matter here:
   default 15% reserve is 9 cards, taken from the baseline cycle rather than
   appended to it.
 
-The same shadow observation is still written, now against the final live due
-set, so Admin can measure whether reallocation is actually fixing repeated
-misses rather than merely moving them around.
+A third guardrail prevents a trigger from becoming a request loop: a card checked
+recently cannot be rebalanced again, and queue rows are consumed once that card
+is actually promoted into a live cycle. This matters now that the old read-only
+shadow selector is feeding real selection rather than observation alone.
 
 Execution delegates to futgg_sales_sync.main(), not run_forever() directly, so
 the existing one-card diagnostic and bounded-run modes remain intact.
@@ -37,6 +37,7 @@ import asyncpg
 import futgg_sales_sync as sales
 import futgg_sales_triggers as triggers
 from futgg_sales_information_shadow import (
+    REASON_GOLD_RARE_ROTATION,
     REASON_HELD_POSITION,
     REASON_PREMIUM_STALE_SALES,
     SELECTOR_VERSION as SHADOW_SELECTOR_VERSION,
@@ -56,7 +57,13 @@ LIVE_REBALANCE_SHARE = sales.env_float(
 LIVE_REBALANCE_MAX_SLOTS = sales.env_int(
     "FUTGG_SALES_INFORMATION_REBALANCE_MAX_SLOTS", 12, minimum=0
 )
-LIVE_SELECTOR_VERSION = "information-live-rebalance-1.1"
+# Prevent the same still-visible trigger from spending a reserve slot again on
+# the next five-minute cycle after a successful read. Explicit request queues are
+# also consumed below, but this protects every trigger source uniformly.
+LIVE_REBALANCE_MIN_CHECK_AGE_MINUTES = sales.env_int(
+    "FUTGG_SALES_INFORMATION_REBALANCE_MIN_CHECK_AGE_MIN", 60, minimum=1
+)
+LIVE_SELECTOR_VERSION = "information-live-rebalance-1.2"
 
 
 def _row_value(row: Any, key: str, default=None):
@@ -84,11 +91,12 @@ def _reason_rank(card) -> int:
         triggers.REASON_DISCORD_CANDIDATE,
         triggers.REASON_PROFIT_OPPORTUNITY,
         triggers.REASON_BULK_PRICE_CHANGE,
+        triggers.REASON_NEW_RELEASE,
         REASON_PREMIUM_STALE_SALES,
     }:
         return 1
     if reasons & {
-        triggers.REASON_NEW_RELEASE,
+        REASON_GOLD_RARE_ROTATION,
         triggers.REASON_MARKET_ACTIVITY,
     }:
         return 2
@@ -137,11 +145,28 @@ def merge_rebalanced_rows(
     return final_due, chosen_ids
 
 
+def _checked_at_sort_value(row: Any) -> float:
+    """Oldest checks sort first; never-checked beats every real timestamp."""
+    checked = _row_value(row, "last_sales_status_at")
+    if checked is None:
+        return float("-inf")
+    try:
+        return float(checked.timestamp())
+    except (AttributeError, TypeError, ValueError):
+        return float("-inf")
+
+
 async def _hydrate_rebalance_candidates(
     conn: asyncpg.Connection,
     selection: ShadowSelection,
 ) -> list[Any]:
-    """Turn shadow card ids into the exact row shape process_batch expects."""
+    """Turn information candidates into the exact row shape process_batch expects.
+
+    The minimum-check-age gate is intentionally independent of trigger reason. A
+    stale user-visible sale does not mean the collector is stale if FUT.GG was
+    successfully checked recently, and a still-unconsumed price-change event must
+    not cause the same card to be requested every cycle.
+    """
     if not selection.cards:
         return []
 
@@ -150,8 +175,9 @@ async def _hydrate_rebalance_candidates(
         """
         SELECT p.source_card_id, p.rating, p.next_sales_due_at, p.source_url,
                p.sales_first_read_at, p.sales_consecutive_failures,
+               p.last_sales_status_at,
                COALESCE(cp.effective_tier, 'NORMAL') AS effective_tier,
-               m.current_bin
+               m.current_bin, m.rarity
         FROM futgg_players p
         LEFT JOIN card_priority cp ON cp.card_id = p.source_card_id
         LEFT JOIN futgg_market_snapshot m ON m.source_card_id = p.source_card_id
@@ -163,22 +189,77 @@ async def _hydrate_rebalance_candidates(
           AND p.source_url <> ''
           AND m.current_bin IS NOT NULL
           AND m.current_bin > 0
+          AND (
+              p.last_sales_status_at IS NULL
+              OR p.last_sales_status_at <= now() - ($2 * interval '1 minute')
+          )
         """,
         card_ids,
+        LIVE_REBALANCE_MIN_CHECK_AGE_MINUTES,
     )
     by_id = {int(row["source_card_id"]): row for row in rows}
     cards_by_id = {int(card.card_id): card for card in selection.cards}
 
     eligible_ids = [card_id for card_id in card_ids if card_id in by_id]
-    eligible_ids.sort(
-        key=lambda card_id: (
-            _reason_rank(cards_by_id[card_id]),
-            -int(_row_value(by_id[card_id], "rating", 0) or 0),
-            -float(_row_value(by_id[card_id], "current_bin", 0) or 0),
+
+    def sort_key(card_id: int):
+        row = by_id[card_id]
+        card = cards_by_id[card_id]
+        reasons = set(card.reasons)
+        gold_rotation = REASON_GOLD_RARE_ROTATION in reasons
+        return (
+            _reason_rank(card),
+            # Within the medium-priority background bucket, deliberate Gold
+            # Rare rotation wins over generic market activity.
+            0 if gold_rotation else 1,
+            # Gold Rare fairness is oldest-check-first. Do not let rating turn
+            # an "even rotation" back into repeatedly selecting the same stars.
+            _checked_at_sort_value(row) if gold_rotation else 0.0,
+            -float(_row_value(row, "current_bin", 0) or 0),
+            -int(_row_value(row, "rating", 0) or 0),
             card_id,
         )
-    )
+
+    eligible_ids.sort(key=sort_key)
     return [by_id[card_id] for card_id in eligible_ids]
+
+
+async def _consume_live_trigger_queues(
+    conn: asyncpg.Connection,
+    rebalanced_ids: list[int],
+) -> None:
+    """Mark queue-backed reasons consumed once they have won a live slot.
+
+    The old selector deliberately only peeked because it was shadow-only. Now
+    that the production wrapper acts on that selection, leaving queue rows open
+    would promote the same card again after the one-hour recent-check guard
+    elapsed. Consumption preserves the audit rows and matches the original
+    select_triggered() semantics: considered/acted-on, never deleted.
+    """
+    if not rebalanced_ids:
+        return
+    ids = [int(card_id) for card_id in rebalanced_ids]
+    statements = (
+        (
+            "futgg_sales_priority_requests",
+            "UPDATE futgg_sales_priority_requests SET consumed_at = now() "
+            "WHERE consumed_at IS NULL AND card_id = ANY($1::bigint[])",
+        ),
+        (
+            "futgg_price_change_events",
+            "UPDATE futgg_price_change_events SET consumed_at = now() "
+            "WHERE consumed_at IS NULL AND card_id = ANY($1::bigint[])",
+        ),
+    )
+    for table, sql in statements:
+        try:
+            await conn.execute(sql, ids)
+        except (asyncpg.UndefinedTableError, asyncpg.UndefinedColumnError):
+            continue
+        except Exception:
+            # Selection must remain fail-open to the baseline collector. A queue
+            # bookkeeping failure is observable but never worth dropping a cycle.
+            log.warning("failed to consume live SalesSync trigger queue %s", table, exc_info=True)
 
 
 async def _record_live_observation(
@@ -284,6 +365,7 @@ async def run() -> None:
                 candidates,
                 slots=slots,
             )
+            await _consume_live_trigger_queues(conn, rebalanced_ids)
             await _record_live_observation(
                 conn,
                 selection=selection,
@@ -308,10 +390,11 @@ async def run() -> None:
 
     sales.select_due = information_rebalanced_select_due
     log.info(
-        "installed information-value SalesSync rebalancing: enabled=%s share=%.2f max_slots=%d; request budget unchanged",
+        "installed information-value SalesSync rebalancing: enabled=%s share=%.2f max_slots=%d min_check_age=%dmin; request budget unchanged",
         LIVE_REBALANCE_ENABLED,
         LIVE_REBALANCE_SHARE,
         LIVE_REBALANCE_MAX_SLOTS,
+        LIVE_REBALANCE_MIN_CHECK_AGE_MINUTES,
     )
 
     try:
