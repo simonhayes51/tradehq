@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { ArrowUpRight, Briefcase, Home, Lock, MoreHorizontal, Server, SlidersHorizontal, Sparkles, Star, TrendingUp, User, Users, X } from "lucide-react";
+import { ArrowUpRight, Briefcase, ChevronRight, Home, Lock, MoreHorizontal, Server, SlidersHorizontal, Sparkles, Star, TrendingUp, User, Users, X } from "lucide-react";
 import { useEntitlements } from "../../context/EntitlementsContext";
 import { useAuth } from "../../context/AuthContext";
 import { useAiChatAvailability } from "../hooks/useAiChatAvailability";
@@ -67,6 +67,7 @@ export default function Sidebar() {
       <span className="nav-full-label">{item.label}</span>
       <span className="nav-short-label">{item.short}</span>
       {locked ? <Lock size={12} className="nav-lock" aria-hidden="true"/> : null}
+      {inMore && !locked ? <ChevronRight size={16} className="mobile-more-chevron" aria-hidden="true"/> : null}
       {locked ? <span className="sr-only">Elite feature</span> : null}
     </Link>;
   };
@@ -90,13 +91,16 @@ export default function Sidebar() {
     </nav>
 
     {moreOpen && mobileOverflowItems.length ? (
-      <div id="mobile-more-menu" className="mobile-more-menu" role="menu" aria-label="More navigation">
-        <div className="mobile-more-head"><strong>More</strong><span>{tierLabel}</span></div>
-        <div className="mobile-more-grid">
-          {mobileOverflowItems.map((item) => renderItem(item, { inMore: true }))}
+      <>
+        <button type="button" className="mobile-more-backdrop" aria-label="Close More menu" onClick={() => setMoreOpen(false)} />
+        <div id="mobile-more-menu" className="mobile-more-menu" role="menu" aria-label="More navigation">
+          <div className="mobile-more-head"><strong>More</strong><span>{tierLabel}</span></div>
+          <div className="mobile-more-grid">
+            {mobileOverflowItems.map((item) => renderItem(item, { inMore: true }))}
+          </div>
+          {!isElite ? <Link className="mobile-more-upgrade" to="/billing?unlock=elite" onClick={() => setMoreOpen(false)}><Sparkles size={16}/> Upgrade to Elite <ArrowUpRight size={14}/></Link> : null}
         </div>
-        {!isElite ? <Link className="mobile-more-upgrade" to="/billing?unlock=elite" onClick={() => setMoreOpen(false)}><Sparkles size={16}/> Upgrade to Elite <ArrowUpRight size={14}/></Link> : null}
-      </div>
+      </>
     ) : null}
 
     {isAuthenticated && !isElite
