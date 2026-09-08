@@ -186,17 +186,19 @@ def install_track_record_cache_route(application) -> None:
 
 
 def install_track_record_prewarm(application) -> None:
-    @application.app.on_event("startup")
-    async def _schedule_track_record_prewarm() -> None:
-        async def _run() -> None:
-            await asyncio.sleep(PREWARM_DELAY_SECONDS)
-            # Home defaults to 90d for Elite; Free is capped to 30d. Warm both
-            # sequentially so startup does not fan out two proof-ledger replays
-            # against Postgres at once.
-            for key in (("90d", 90), ("30d", 30)):
-                try:
-                    await _refresh(key)
-                except Exception:
-                    log.warning("track-record prewarm failed for %s", key, exc_info=True)
+    from app.services.managed_startup_tasks import register_startup_job
 
-        asyncio.create_task(_run())
+    async def track_record_prewarm_job() -> None:
+        await asyncio.sleep(PREWARM_DELAY_SECONDS)
+        # Home defaults to 90d for Elite; Free is capped to 30d. Warm both
+        # sequentially so startup does not fan out two proof-ledger replays
+        # against Postgres at once.
+        for key in (("90d", 90), ("30d", 30)):
+            try:
+                await _refresh(key)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.warning("track-record prewarm failed for %s", key, exc_info=True)
+
+    register_startup_job("track_record_prewarm", track_record_prewarm_job)
