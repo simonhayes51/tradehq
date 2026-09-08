@@ -9,6 +9,8 @@
 //
 // `feature` matches the backend's FEATURE_MIN_TIER key, so a gate here
 // and the 402 that would come back from the API name the same thing.
+import { FREE_LIMITS } from "./limits";
+
 export const GATED = {
   trade_finder: {
     feature: "trade_finder",
@@ -87,6 +89,6 @@ export const GATED = {
     title: "Full portfolio history is part of Elite",
     what: "Keep every trade you've logged and see your real profit over any period.",
     why: "Free keeps recent history so you can see the tool work; Elite keeps all of it.",
-    youGet: ["Unlimited open trades", "Your complete history, not the last 30 days", "Profit over any period"],
+    youGet: [`Up to ${FREE_LIMITS.eliteOpenTrades.toLocaleString()} open trades`, "Your complete history, not the last 30 days", "Profit over any period"],
   },
 };
