@@ -151,7 +151,11 @@ export default function DataQualityTab() {
               <Stat label="Live due / cycle" value={shadow.avg_live_due_per_cycle ?? "—"} detail="existing selector" />
               <Stat label="Shadow wanted / cycle" value={shadow.avg_shadow_priority_per_cycle ?? "—"} detail="not extra capacity" />
               <Stat label="Natural pickup ≤30m" value={pct(pickup.pickup_rate_pct)} tone={(pickup.pickup_rate_pct ?? 100) >= 70 ? POSITIVE : NEGATIVE} />
-              <Stat label="Still missed" value={coins(pickup.still_missed_after_window)} detail={`${coins(pickup.measured_shadow_card_events)} shadow card-events measured`} />
+              <Stat
+                label="Still missed"
+                value={coins(pickup.still_missed_after_window)}
+                detail={`${coins(pickup.measured_shadow_card_events)} mature · ${coins(pickup.pending_shadow_card_events || 0)} pending`}
+              />
               <Stat label="User-driven pickup" value={pct(pickup.user_driven_pickup_rate_pct)} tone={(pickup.user_driven_pickup_rate_pct ?? 100) >= 70 ? POSITIVE : NEGATIVE} />
               <Stat label="Held-position events" value={coins(shadow.held_position_shadow_events)} />
               <Stat label="Extra FUT.GG requests" value={shadow.extra_futgg_sales_requests ?? 0} tone={shadow.extra_futgg_sales_requests === 0 ? POSITIVE : NEGATIVE} />
