@@ -17,9 +17,10 @@ export function normaliseDashboard(data) {
   // panel, but Home labels this slice "Affecting your watchlist". When the
   // server says watchedCount is zero, showing an old Pelé alert under that
   // heading is simply false current-state UI, so suppress it here without
-  // deleting or changing the underlying alert history.
-  if (Number(data.watchedCount || 0) === 0 && Array.isArray(data.watchlistAlerts) && data.watchlistAlerts.length) {
-    return { ...data, watchlistAlerts: [] };
+  // deleting or changing the underlying alert history. The Home bell uses
+  // the same current-watchlist context, so clear its stale unread count too.
+  if (Number(data.watchedCount || 0) === 0) {
+    return { ...data, watchlistAlerts: [], unreadAlertCount: 0 };
   }
 
   return data;
