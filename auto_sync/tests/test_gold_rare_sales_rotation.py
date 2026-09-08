@@ -11,6 +11,7 @@ os.environ.setdefault("DATABASE_URL", "postgresql://x:y@localhost/z")
 
 import futgg_sales_information_shadow as shadow  # noqa: E402
 import futgg_sales_shadow_worker as worker  # noqa: E402
+import futgg_sales_triggers as triggers  # noqa: E402
 
 
 def run(coro):
@@ -49,17 +50,31 @@ def test_gold_rare_rotation_is_based_on_collector_check_age():
     assert len(hits) == 1
     assert hits[0].reason == shadow.REASON_GOLD_RARE_ROTATION
     assert hits[0].card_id == 27
-    assert conn.fetch_calls[0][1] == (shadow.GOLD_RARE_ROTATION_AFTER_MINUTES,)
+    assert conn.fetch_calls[0][1] == (
+        shadow.GOLD_RARE_ROTATION_AFTER_MINUTES,
+        shadow.GOLD_RARE_ROTATION_QUERY_LIMIT,
+    )
     sql = conn.fetch_calls[0][0].lower()
     assert "gold rare" in sql
     assert "last_sales_status_at" in sql
     assert "latest_sale_at" not in sql
+    assert "limit $2" in sql
 
 
 def test_gold_rare_rotation_sits_ahead_of_generic_stale_maintenance():
     gold = type("Card", (), {"reasons": (shadow.REASON_GOLD_RARE_ROTATION,)})()
     stale = type("Card", (), {"reasons": ("stale_evidence_critical",)})()
     assert worker._reason_rank(gold) < worker._reason_rank(stale)
+
+
+def test_selector_cap_cannot_hide_gold_rotation_behind_generic_activity():
+    hits = [
+        triggers.TriggerHit(1, triggers.REASON_MARKET_ACTIVITY, {}),
+        triggers.TriggerHit(2, triggers.REASON_STALE_EVIDENCE, {}),
+        triggers.TriggerHit(3, shadow.REASON_GOLD_RARE_ROTATION, {}),
+    ]
+    selected = shadow.combine_information_hits(hits, limit=1)
+    assert [card.card_id for card in selected] == [3]
 
 
 def test_oldest_gold_rare_check_sorts_first_even_when_cheaper():
