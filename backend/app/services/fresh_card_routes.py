@@ -8,6 +8,7 @@ rewriting the large market router during the migration.
 from __future__ import annotations
 
 import logging
+from typing import Iterable
 
 from fastapi import HTTPException
 from fastapi.routing import APIRoute
@@ -16,6 +17,23 @@ from app.services.futgg_card_evaluation import evaluate_fresh_card
 from app.services.futgg_exit_quality import exit_quality_for_card
 
 log = logging.getLogger("fresh_card_routes")
+
+
+def exit_quality_is_unlocked(viewer, card_id: int, unlocked_ids: Iterable[int] = ()) -> bool:
+    """Whether this viewer may receive empirical exit evidence.
+
+    Exit evidence is part of the executable trade plan, not ordinary player
+    search/fair-value data. Elite/full opportunity-feed access gets it for every
+    card. A Free viewer gets it only for one of the server-persisted daily picks
+    they already legitimately unlocked. Anonymous and other locked viewers never
+    receive the field at all, so there is nothing for the frontend to merely hide.
+    """
+    if viewer.has("opportunity_feed"):
+        return True
+    if not getattr(viewer, "is_free", False):
+        return False
+    unlocked = {int(value) for value in unlocked_ids}
+    return int(card_id) in unlocked
 
 
 def install_fresh_player_detail_route(application) -> None:
@@ -47,7 +65,7 @@ def install_fresh_player_detail_route(application) -> None:
         unlocked = []
         if not viewer.has("opportunity_feed") and viewer.is_free:
             unlocked = await unlocked_pick_ids()
-        exit_quality_unlocked = viewer.has("opportunity_feed") or card_id in set(unlocked)
+        exit_quality_unlocked = exit_quality_is_unlocked(viewer, card_id, unlocked)
 
         payload = {
             "source": "futgg",
