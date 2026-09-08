@@ -9,16 +9,32 @@
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../lib/api";
 
-export function normaliseDashboard(data) {
+function watchlistItems(data) {
+  if (Array.isArray(data)) return data;
+  return Array.isArray(data?.items) ? data.items : [];
+}
+
+export function normaliseDashboard(data, currentWatchlist) {
   if (!data || typeof data !== "object") return data;
 
-  // alerts_log intentionally keeps notification history after a card is
-  // removed from the watchlist. That is fine for the dedicated alerts
-  // panel, but Home labels this slice "Affecting your watchlist". When the
-  // server says watchedCount is zero, showing an old Pelé alert under that
-  // heading is simply false current-state UI, so suppress it here without
-  // deleting or changing the underlying alert history. The Home bell uses
-  // the same current-watchlist context, so clear its stale unread count too.
+  // Home says "Affecting your watchlist", so historical alerts for cards
+  // the member has since removed do not belong here. `alerts_log` keeps
+  // that history deliberately, and dashboard.watchedCount can be cached.
+  // When the live watchlist request succeeded, its card ids are the source
+  // of truth for this current-state Home section.
+  if (currentWatchlist !== undefined) {
+    const watched = watchlistItems(currentWatchlist);
+    const watchedIds = new Set(watched.map((item) => String(item.card_id ?? item.cardId ?? "")));
+    const alerts = (data.watchlistAlerts || []).filter((alert) => watchedIds.has(String(alert.cardId ?? alert.card_id ?? "")));
+    return {
+      ...data,
+      watchedCount: watched.length,
+      watchlistAlerts: alerts,
+      unreadAlertCount: watched.length === 0 ? 0 : data.unreadAlertCount,
+    };
+  }
+
+  // Safe fallback when the dedicated watchlist request itself failed.
   if (Number(data.watchedCount || 0) === 0) {
     return { ...data, watchlistAlerts: [], unreadAlertCount: 0 };
   }
@@ -29,7 +45,17 @@ export function normaliseDashboard(data) {
 export function useDashboard() {
   return useQuery({
     queryKey: ["v2", "dashboard"],
-    queryFn: async () => normaliseDashboard((await api.get("/api/v2/dashboard")).data),
+    queryFn: async () => {
+      const [dashboardResponse, currentWatchlist] = await Promise.all([
+        api.get("/api/v2/dashboard"),
+        api.get("/api/watchlist", {
+          __skipAuthRedirect: true,
+          __noRetry: true,
+          timeout: 8_000,
+        }).then((response) => response.data).catch(() => undefined),
+      ]);
+      return normaliseDashboard(dashboardResponse.data, currentWatchlist);
+    },
     staleTime: 30_000,
   });
 }
