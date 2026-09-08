@@ -68,15 +68,18 @@ def test_card_note_map_handles_json_and_old_rows():
     assert mapped[42]["reasons"] == ["watchlist"]
 
 
-def test_report_measures_natural_pickup_and_repeated_misses():
-    t0 = datetime(2026, 9, 8, 6, 0, tzinfo=timezone.utc)
+def test_report_measures_natural_pickup_repeated_misses_and_pending_events():
+    now = datetime.now(timezone.utc)
+    t0 = now - timedelta(hours=2)
     held = {"card_id": 2, "reasons": ["held_position"], "user_driven": True}
     watch = {"card_id": 3, "reasons": ["watchlist"], "user_driven": True}
+    fresh = {"card_id": 4, "reasons": ["watchlist"], "user_driven": True}
 
     observations = [
         _row(t0, due=(1,), triggered=(2, 3), cards=(held, watch)),
         _row(t0 + timedelta(minutes=5), due=(2,), triggered=(3,), cards=(watch,)),
         _row(t0 + timedelta(minutes=40), due=(), triggered=(3,), cards=(watch,)),
+        _row(now - timedelta(minutes=5), due=(), triggered=(4,), cards=(fresh,)),
     ]
     metadata = [{
         "source_card_id": 3,
@@ -85,7 +88,7 @@ def test_report_measures_natural_pickup_and_repeated_misses():
         "rarity": "Icon",
         "current_bin": 100000,
         "signal": "buy",
-        "evaluated_at": t0 + timedelta(minutes=39),
+        "evaluated_at": now - timedelta(minutes=10),
     }]
     conn = _Conn(observations, metadata)
     request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(pool=_Pool(conn))))
@@ -99,10 +102,12 @@ def test_report_measures_natural_pickup_and_repeated_misses():
 
     pickup = result["pickup_analysis"]
     assert pickup["measured_shadow_card_events"] == 4
+    assert pickup["pending_shadow_card_events"] == 1
     assert pickup["picked_up_by_live_scheduler"] == 1
     assert pickup["still_missed_after_window"] == 3
     assert pickup["pickup_rate_pct"] == 25.0
     assert pickup["user_driven_events_with_card_detail"] == 4
+    assert pickup["user_driven_pending_events"] == 1
     assert pickup["user_driven_picked_up"] == 1
 
     repeated = pickup["repeated_missed_cards"]
@@ -110,11 +115,12 @@ def test_report_measures_natural_pickup_and_repeated_misses():
     assert repeated[0]["card_id"] == 3
     assert repeated[0]["name"] == "Repeated Miss"
     assert repeated[0]["missed_events"] == 3
+    assert repeated[0]["pending_events"] == 0
     assert repeated[0]["reasons"] == {"watchlist": 3}
 
 
 def test_old_observations_still_count_pickup_without_fabricating_reason_detail():
-    t0 = datetime(2026, 9, 8, 6, 0, tzinfo=timezone.utc)
+    t0 = datetime.now(timezone.utc) - timedelta(hours=1)
     old = _row(t0, triggered=(9,), cards=(), selector="information-shadow-1.1")
     old["notes"] = {"live_scheduler_changed": False}
     later = _row(t0 + timedelta(minutes=5), due=(9,))
@@ -130,6 +136,7 @@ def test_old_observations_still_count_pickup_without_fabricating_reason_detail()
 
     pickup = result["pickup_analysis"]
     assert pickup["measured_shadow_card_events"] == 1
+    assert pickup["pending_shadow_card_events"] == 0
     assert pickup["picked_up_by_live_scheduler"] == 1
     assert pickup["user_driven_events_with_card_detail"] == 0
     assert pickup["user_driven_pickup_rate_pct"] is None
