@@ -19,6 +19,7 @@ import CollectorStatusTab from "./tabs/CollectorStatusTab";
 import DataQualityTab from "./tabs/DataQualityTab";
 import CalibrationTab from "./tabs/CalibrationTab";
 import InvestmentShadowTab from "./tabs/InvestmentShadowTab";
+import SbcReinforcementTab from "./tabs/SbcReinforcementTab";
 import MarketEventsTab from "./tabs/MarketEventsTab";
 import NextPromoTab from "./tabs/NextPromoTab";
 import SubscriptionsTab from "./tabs/SubscriptionsTab";
@@ -36,6 +37,7 @@ const TABS = [
   { key: "investment-shadow", label: "Investments", Component: InvestmentShadowTab },
   { key: "collectors", label: "Collector Status", Component: CollectorStatusTab },
   { key: "sbc-imports", label: "SBC Imports", Component: AdminSbcImports },
+  { key: "sbc-market", label: "SBC Market", Component: SbcReinforcementTab },
   { key: "player-cards", label: "Player Cards", Component: PlayerCardsTab },
   { key: "market-events", label: "Market Events", Component: MarketEventsTab },
   { key: "next-promo", label: "Next Promo", Component: NextPromoTab },
