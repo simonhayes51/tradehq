@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { ArrowUpRight, Briefcase, Home, Lock, MoreHorizontal, SlidersHorizontal, Sparkles, Star, TrendingUp, User, Users, X } from "lucide-react";
+import { ArrowUpRight, Briefcase, Home, Lock, MoreHorizontal, Server, SlidersHorizontal, Sparkles, Star, TrendingUp, User, Users, X } from "lucide-react";
 import { useEntitlements } from "../../context/EntitlementsContext";
 import { useAuth } from "../../context/AuthContext";
 import { useAiChatAvailability } from "../hooks/useAiChatAvailability";
+import { useDiscordFeedGuilds } from "../hooks/useDiscordFeedGuilds";
 import "../styles/mobile-nav.css";
 
 const ITEMS = [
@@ -18,6 +19,11 @@ const ITEMS = [
   { to: "/chat", label: "AI Chat", short: "Chat", icon: Sparkles, match: (p) => p.startsWith("/chat"), authOnly: true, requiresAiChat: true, eliteFeature: "ai_chat", mobileOverflow: true },
   { to: "/watchlist", label: "Watchlist", short: "Watch", icon: Star, match: (p) => p.startsWith("/watchlist"), authOnly: true, mobileOverflow: true },
   { to: "/portfolio", label: "Portfolio", short: "Portfolio", icon: Briefcase, match: (p) => p.startsWith("/portfolio") || p.startsWith("/club"), authOnly: true, mobileOverflow: true },
+  // Server Feed is guild-scoped and separately billed. It is deliberately
+  // NOT tied to isElite: a Free personal account can legitimately manage
+  // a paid Discord feed. Only show it once the live guild endpoint says
+  // this member actually has a configured feed to manage.
+  { to: "/discord-feed", label: "Server Feed", short: "Feed", icon: Server, match: (p) => p.startsWith("/discord-feed"), authOnly: true, requiresServerFeed: true, mobileOverflow: true },
   // Desktop reaches Account through the tier chip. Mobile reaches it from
   // More, so there is still one obvious route to billing/logout without
   // consuming another bottom-tab slot.
@@ -33,10 +39,13 @@ export default function Sidebar() {
   const isElite = plan === "elite" || isAdmin;
   const tierLabel = isElite ? "ELITE" : "FREE";
   const aiChat = useAiChatAvailability();
+  const serverFeeds = useDiscordFeedGuilds(isAuthenticated);
+  const hasServerFeed = Array.isArray(serverFeeds.data) && serverFeeds.data.length > 0;
   const items = ITEMS.filter(
     (item) =>
       (isAuthenticated || !item.authOnly) &&
-      (!item.requiresAiChat || aiChat.data?.configured === true),
+      (!item.requiresAiChat || aiChat.data?.configured === true) &&
+      (!item.requiresServerFeed || hasServerFeed),
   );
   const mobileOverflowItems = items.filter((item) => item.mobileOverflow);
   const moreActive = mobileOverflowItems.some((item) => item.match(pathname));

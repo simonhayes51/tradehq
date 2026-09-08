@@ -101,8 +101,15 @@ export default function Watchlist() {
       refreshAlerts();
       setAlertsOpen(true);
       toast.success("Alert saved. We'll notify you when it triggers.");
-    } catch {
-      toast.error("Couldn't save that alert. Check the values and try again.");
+    } catch (requestError) {
+      // A plan limit is not a failed save. axios has already emitted the
+      // structured premium:blocked event; ShellLayout's shared quota
+      // prompt explains the current allowance and the Elite alternative.
+      if (requestError?.response?.data?.detail?.error === "limit_reached") {
+        setAlertTarget(null);
+      } else {
+        toast.error("Couldn't save that alert. Check the values and try again.");
+      }
     } finally {
       setBusyAlert(false);
     }

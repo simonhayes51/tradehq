@@ -64,6 +64,10 @@ export default function PlayerPage() {
       // clicks Watch while signed out, signs up, and should land back on
       // this exact card, not Home - see AuthContext.login's returnTo.
       else if (requestError?.response?.status === 401) navigate(`/signup?from=${encodeURIComponent(`/players/${cardId}`)}`);
+      // A structured quota 402 has already raised the shell-level limit
+      // prompt. Reset the button rather than labelling a plan limit as a
+      // failed save underneath that prompt.
+      else if (requestError?.response?.data?.detail?.error === "limit_reached") setWatchState("");
       else setWatchState("error");
     }
   }
