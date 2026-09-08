@@ -51,9 +51,11 @@ def test_premium_stale_sales_trigger_targets_old_high_value_card():
         shadow.PREMIUM_STALE_MIN_RATING,
         shadow.PREMIUM_STALE_AFTER_MINUTES,
         shadow.PREMIUM_STALE_CHECK_AFTER_MINUTES,
+        shadow.PREMIUM_STALE_QUERY_LIMIT,
     )
     sql = conn.calls[0][0]
     assert "last_sales_status_at" in sql
+    assert "LIMIT $5" in sql
 
 
 def test_premium_stale_sales_reason_is_high_priority_background_work():
