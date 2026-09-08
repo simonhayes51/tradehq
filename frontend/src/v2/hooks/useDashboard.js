@@ -9,10 +9,26 @@
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../lib/api";
 
+export function normaliseDashboard(data) {
+  if (!data || typeof data !== "object") return data;
+
+  // alerts_log intentionally keeps notification history after a card is
+  // removed from the watchlist. That is fine for the dedicated alerts
+  // panel, but Home labels this slice "Affecting your watchlist". When the
+  // server says watchedCount is zero, showing an old Pelé alert under that
+  // heading is simply false current-state UI, so suppress it here without
+  // deleting or changing the underlying alert history.
+  if (Number(data.watchedCount || 0) === 0 && Array.isArray(data.watchlistAlerts) && data.watchlistAlerts.length) {
+    return { ...data, watchlistAlerts: [] };
+  }
+
+  return data;
+}
+
 export function useDashboard() {
   return useQuery({
     queryKey: ["v2", "dashboard"],
-    queryFn: async () => (await api.get("/api/v2/dashboard")).data,
+    queryFn: async () => normaliseDashboard((await api.get("/api/v2/dashboard")).data),
     staleTime: 30_000,
   });
 }
