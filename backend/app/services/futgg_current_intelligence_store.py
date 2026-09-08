@@ -41,11 +41,11 @@ INSERT INTO futgg_current_intelligence (
     reason_codes, blocking_codes, reasons, trend_features,
     engine_version, trend_version, expires_at, evaluated_bin,
     bin_sample_count, bin_history_span_hours, bin_reference_price,
-    bin_trend_direction, bin_volatility, updated_at
+    bin_trend_direction, bin_volatility, expected_profit_basis, updated_at
 ) VALUES (
     $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,
     $20,$21,$22,$23,$24,$25,$26,$27::jsonb,$28::jsonb,$29,$30,$31,$32,$33,
-    $34,$35,$36,$37,now()
+    $34,$35,$36,$37,$38,now()
 )
 ON CONFLICT (source_card_id) DO UPDATE SET
     evaluated_at = EXCLUDED.evaluated_at,
@@ -84,6 +84,7 @@ ON CONFLICT (source_card_id) DO UPDATE SET
     bin_reference_price = EXCLUDED.bin_reference_price,
     bin_trend_direction = EXCLUDED.bin_trend_direction,
     bin_volatility = EXCLUDED.bin_volatility,
+    expected_profit_basis = EXCLUDED.expected_profit_basis,
     updated_at = now()
 WHERE futgg_current_intelligence.evaluated_at <= EXCLUDED.evaluated_at
 """
@@ -139,6 +140,7 @@ def _args(snapshot: dict[str, Any], ci: CardIntelligence):
         _num(ci.bin_reference_price),
         ci.bin_trend_direction,
         ci.bin_volatility,
+        _num(ci.expected_profit_basis),
     )
 
 
