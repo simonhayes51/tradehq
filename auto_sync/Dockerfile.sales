@@ -100,4 +100,4 @@ ENV FUTGG_SALES_SELECT_LIMIT_MAX=60
 ENV FUTGG_SALES_CYCLE_SLEEP_MIN=300
 ENV FUTGG_SALES_CYCLE_SLEEP_FORCE=true
 
-CMD ["/app/docker-entrypoint-sales.sh"]
+CMD ["bash", "/app/fc27-sales-policy.sh"]
