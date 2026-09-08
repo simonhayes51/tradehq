@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sys
 from pathlib import Path
@@ -107,14 +108,17 @@ def test_live_due_cards_are_excluded_from_shadow_candidates():
     assert [card.card_id for card in cards] == [2]
 
 
-def test_recorded_shadow_explicitly_says_no_live_scheduler_change_or_extra_requests():
+def test_recorded_shadow_is_non_live_and_keeps_per_card_reason_evidence():
     conn = FakeConn()
     selection = shadow.ShadowSelection(
         cards=(
             triggers.TriggeredCard(
                 card_id=82092,
-                reasons=(shadow.REASON_HELD_POSITION,),
-                details={shadow.REASON_HELD_POSITION: {"position_count": 1}},
+                reasons=(shadow.REASON_HELD_POSITION, triggers.REASON_WATCHLIST),
+                details={
+                    shadow.REASON_HELD_POSITION: {"position_count": 1},
+                    triggers.REASON_WATCHLIST: {"watcher_count": 2},
+                },
             ),
         ),
         due_ids=(1, 2, 3),
@@ -125,5 +129,17 @@ def test_recorded_shadow_explicitly_says_no_live_scheduler_change_or_extra_reque
     assert "futgg_trigger_shadow_observations" in sql
     assert args[0] == 3
     assert args[1] == 1
-    assert '"live_scheduler_changed": false' in args[-1]
-    assert '"extra_sales_requests": 0' in args[-1]
+    assert args[-2] == "information-shadow-1.2"
+
+    notes = json.loads(args[-1])
+    assert notes["live_scheduler_changed"] is False
+    assert notes["extra_sales_requests"] == 0
+    assert notes["cards"] == [{
+        "card_id": 82092,
+        "reasons": [shadow.REASON_HELD_POSITION, triggers.REASON_WATCHLIST],
+        "details": {
+            shadow.REASON_HELD_POSITION: {"position_count": 1},
+            triggers.REASON_WATCHLIST: {"watcher_count": 2},
+        },
+        "user_driven": True,
+    }]
