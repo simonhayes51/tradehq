@@ -30,7 +30,7 @@ import futgg_sales_triggers as triggers
 
 log = logging.getLogger("futgg_sales_information_shadow")
 
-SELECTOR_VERSION = "information-shadow-1.1"
+SELECTOR_VERSION = "information-shadow-1.2"
 CURRENT_INTELLIGENCE_MAX_AGE_MINUTES = triggers.env_int(
     "FUTGG_TRIGGER_CURRENT_INTELLIGENCE_MAX_AGE_MIN", 30, minimum=1,
 )
@@ -89,12 +89,7 @@ async def _peek_priority_requests(conn: asyncpg.Connection) -> list[dict[str, An
 async def triggers_from_current_intelligence(
     conn: asyncpg.Connection | None,
 ) -> list[triggers.TriggerHit]:
-    """Current BUY/WATCH state, with Discord-candidate tagging for BUYs.
-
-    This deliberately mirrors futgg_sales_triggers.triggers_from_recommendations'
-    output shape while replacing its historical recommendation-snapshot query.
-    Exact-BIN equality prevents an old evaluation surviving a market move.
-    """
+    """Current BUY/WATCH state, with Discord-candidate tagging for BUYs."""
     if conn is None:
         return []
     try:
@@ -138,12 +133,7 @@ async def triggers_from_current_intelligence(
 
 
 async def triggers_from_held_positions(conn: asyncpg.Connection) -> list[triggers.TriggerHit]:
-    """Open positions are direct user exposure and deserve fresh evidence.
-
-    card_source was added specifically to remove the FUT.GG/FUTBIN id-space
-    ambiguity. Fail soft during a partially-migrated deploy rather than ever
-    guessing that an unlabelled historical id is FUT.GG.
-    """
+    """Open positions are direct user exposure and deserve fresh evidence."""
     try:
         rows = await conn.fetch(
             """
@@ -236,7 +226,22 @@ async def select_shadow(
 
 
 async def record_shadow(conn: asyncpg.Connection, selection: ShadowSelection) -> None:
-    """Best-effort observability only. Never affects the live selection."""
+    """Best-effort observability only. Never affects the live selection.
+
+    v1.2 stores per-card reasons/details inside the existing JSONB notes column.
+    That lets the admin report answer which user/card signals are repeatedly
+    missed by the live tier scheduler without adding another table or changing
+    the request budget.
+    """
+    card_details = [
+        {
+            "card_id": int(card.card_id),
+            "reasons": list(card.reasons),
+            "details": card.details,
+            "user_driven": any(reason in USER_DRIVEN_REASONS for reason in card.reasons),
+        }
+        for card in selection.cards
+    ]
     try:
         await conn.execute(
             """
@@ -256,10 +261,13 @@ async def record_shadow(conn: asyncpg.Connection, selection: ShadowSelection) ->
             [card.card_id for card in selection.cards],
             json.dumps(selection.reason_counts),
             SELECTOR_VERSION,
-            json.dumps({"live_scheduler_changed": False, "extra_sales_requests": 0}),
+            json.dumps({
+                "live_scheduler_changed": False,
+                "extra_sales_requests": 0,
+                "cards": card_details,
+            }),
         )
     except (asyncpg.UndefinedTableError, asyncpg.UndefinedColumnError):
-        # Migration 087 may still be landing while the worker starts.
         return
     except Exception:
         log.warning("information-value shadow observation write failed", exc_info=True)
