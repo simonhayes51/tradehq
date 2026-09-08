@@ -5,7 +5,7 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, Routes, Route } from "react-router-dom";
+import { MemoryRouter, Routes, Route, useLocation } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 const auth = vi.hoisted(() => ({
@@ -27,6 +27,11 @@ vi.mock("../lib/analytics", async (importOriginal) => ({
 
 import Signup from "./Signup";
 
+function WelcomeProbe() {
+  const location = useLocation();
+  return <p>ONBOARDING {location.search}</p>;
+}
+
 function renderSignup(route = "/signup") {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
   return render(
@@ -34,7 +39,7 @@ function renderSignup(route = "/signup") {
       <MemoryRouter initialEntries={[route]}>
         <Routes>
           <Route path="/signup" element={<Signup />} />
-          <Route path="/welcome" element={<p>ONBOARDING</p>} />
+          <Route path="/welcome" element={<WelcomeProbe />} />
           <Route path="/trade-finder" element={<p>TRADE FINDER</p>} />
         </Routes>
       </MemoryRouter>
@@ -125,13 +130,14 @@ describe("Signup routing", () => {
   it("sends a brand-new account to onboarding", () => {
     auth.value.isAuthenticated = true;
     renderSignup();
-    expect(screen.getByText("ONBOARDING")).toBeInTheDocument();
+    expect(screen.getByText(/^ONBOARDING/)).toBeInTheDocument();
   });
 
-  it("returns an already-signed-in visitor to the page that sent them", () => {
+  it("passes an existing destination through onboarding instead of skipping the new-account check", () => {
     auth.value.isAuthenticated = true;
     renderSignup("/signup?from=%2Ftrade-finder");
-    expect(screen.getByText("TRADE FINDER")).toBeInTheDocument();
+    expect(screen.getByText("ONBOARDING ?from=%2Ftrade-finder")).toBeInTheDocument();
+    expect(screen.queryByText("TRADE FINDER")).not.toBeInTheDocument();
   });
 
   it("carries the origin through to the sign-in link so it survives either route", () => {
