@@ -54,7 +54,47 @@ const ALLOWED_PROPS = new Set([
   "step",        // onboarding step index
   "count",       // a small integer, e.g. how many picks were unlocked
   "reason",      // a short enum-ish string, never free text from a user
+  "source",      // partner/source code, e.g. "discord-server-name"
+  "campaign",    // bounded campaign code, e.g. "fc27-launch"
 ]);
+
+const ATTRIBUTION_STORAGE_KEY = "eafc_launch_attribution";
+
+function cleanAttributionValue(value) {
+  if (typeof value !== "string") return "";
+  return value.trim().toLowerCase().replace(/[^a-z0-9._-]/g, "-").replace(/-+/g, "-").slice(0, 40);
+}
+
+function readAttribution() {
+  if (typeof window === "undefined") return {};
+
+  try {
+    const params = new URLSearchParams(window.location.search || "");
+    const source = cleanAttributionValue(params.get("ref") || params.get("utm_source") || "");
+    const campaign = cleanAttributionValue(params.get("utm_campaign") || "");
+
+    // First attributable landing wins for the browser. That means a user
+    // can arrive from a partner Discord, browse around, sign up later and
+    // still have signup/checkout events tied back to the original source.
+    // We deliberately store only short operator-defined codes, never the
+    // full referring URL or any user identifier.
+    if (source || campaign) {
+      const value = { source, campaign };
+      window.sessionStorage?.setItem(ATTRIBUTION_STORAGE_KEY, JSON.stringify(value));
+      return value;
+    }
+
+    const stored = window.sessionStorage?.getItem(ATTRIBUTION_STORAGE_KEY);
+    if (!stored) return {};
+    const parsed = JSON.parse(stored);
+    return {
+      source: cleanAttributionValue(parsed?.source || ""),
+      campaign: cleanAttributionValue(parsed?.campaign || ""),
+    };
+  } catch {
+    return {};
+  }
+}
 
 function sanitise(props = {}) {
   const out = {};
@@ -73,7 +113,8 @@ let warned = false;
 
 export function track(event, props = {}) {
   if (!event) return;
-  const payload = { event, props: sanitise(props) };
+  const attribution = readAttribution();
+  const payload = { event, props: sanitise({ ...attribution, ...props }) };
   try {
     // Fire and forget. An analytics failure must never be visible to a
     // user or block the action that triggered it.

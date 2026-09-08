@@ -43,7 +43,8 @@ export default function Terms() {
       </p>
       <ul>
         <li>You can cancel at any time from the Billing page.</li>
-        <li>If your checkout includes a free trial, cancelling before that trial ends stops it from renewing into a paid subscription.</li>
+        <li>If your checkout includes a free trial, the subscription renews into the selected paid plan when the trial ends unless you cancel before the end of the trial.</li>
+        <li>If you cancel during the free trial before it ends, you will not be charged for the first paid billing period.</li>
         <li>Cancelling an active paid subscription stops the next renewal — it does not end your Elite access immediately.</li>
         <li>If you cancel, your Elite access continues until the end of the billing period you've already paid for.</li>
       </ul>
