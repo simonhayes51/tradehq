@@ -10,6 +10,11 @@ for later analysis.
 Unlike futgg_sales_triggers.select_triggered(), the shadow path NEVER marks price
 change events or explicit refresh requests consumed. Observing a request is not
 fulfilling it.
+
+Current recommendation/Discord reasons are read from futgg_current_intelligence,
+not the immutable recommendation audit table. A card must still match the live
+market BIN, be unexpired and have a recent current evaluation before it can count
+as a live recommendation trigger.
 """
 from __future__ import annotations
 
@@ -25,7 +30,10 @@ import futgg_sales_triggers as triggers
 
 log = logging.getLogger("futgg_sales_information_shadow")
 
-SELECTOR_VERSION = "information-shadow-1.0"
+SELECTOR_VERSION = "information-shadow-1.1"
+CURRENT_INTELLIGENCE_MAX_AGE_MINUTES = triggers.env_int(
+    "FUTGG_TRIGGER_CURRENT_INTELLIGENCE_MAX_AGE_MIN", 30, minimum=1,
+)
 
 REASON_HELD_POSITION = "held_position"
 USER_DRIVEN_REASONS = frozenset(set(triggers.USER_DRIVEN_REASONS) | {REASON_HELD_POSITION})
@@ -76,6 +84,57 @@ async def _peek_priority_requests(conn: asyncpg.Connection) -> list[dict[str, An
         """
     )
     return [dict(row) for row in rows]
+
+
+async def triggers_from_current_intelligence(
+    conn: asyncpg.Connection | None,
+) -> list[triggers.TriggerHit]:
+    """Current BUY/WATCH state, with Discord-candidate tagging for BUYs.
+
+    This deliberately mirrors futgg_sales_triggers.triggers_from_recommendations'
+    output shape while replacing its historical recommendation-snapshot query.
+    Exact-BIN equality prevents an old evaluation surviving a market move.
+    """
+    if conn is None:
+        return []
+    try:
+        rows = await conn.fetch(
+            """
+            SELECT c.source_card_id, c.signal
+            FROM futgg_current_intelligence c
+            JOIN futgg_market_snapshot m ON m.source_card_id = c.source_card_id
+            WHERE c.signal IN ('buy', 'strong_buy', 'watch')
+              AND c.status NOT IN ('expired', 'invalidated')
+              AND (c.expires_at IS NULL OR c.expires_at > now())
+              AND c.evaluated_at >= now() - ($1 * interval '1 minute')
+              AND m.is_tradeable IS DISTINCT FROM FALSE
+              AND m.current_bin IS NOT NULL
+              AND m.current_bin = c.current_bin
+            """,
+            CURRENT_INTELLIGENCE_MAX_AGE_MINUTES,
+        )
+    except (asyncpg.UndefinedTableError, asyncpg.UndefinedColumnError):
+        return []
+    except Exception:
+        log.warning("current-intelligence shadow trigger query failed; degrading to none", exc_info=True)
+        return []
+
+    hits: list[triggers.TriggerHit] = []
+    for row in rows:
+        card_id = int(row["source_card_id"])
+        signal = str(row["signal"])
+        hits.append(triggers.TriggerHit(
+            card_id,
+            triggers.REASON_LIVE_RECOMMENDATION,
+            {"signal": signal, "source": "current_intelligence"},
+        ))
+        if signal in ("buy", "strong_buy"):
+            hits.append(triggers.TriggerHit(
+                card_id,
+                triggers.REASON_DISCORD_CANDIDATE,
+                {"signal": signal, "source": "current_intelligence"},
+            ))
+    return hits
 
 
 async def triggers_from_held_positions(conn: asyncpg.Connection) -> list[triggers.TriggerHit]:
@@ -165,7 +224,7 @@ async def select_shadow(
     hits += triggers.triggers_from_price_change_events(price_rows)
     hits += triggers.triggers_from_priority_requests(request_rows)
     hits += await triggers.triggers_from_watchlist(core_conn)
-    hits += await triggers.triggers_from_recommendations(core_conn)
+    hits += await triggers_from_current_intelligence(core_conn)
     hits += await triggers.triggers_from_new_releases(core_conn)
     hits += await triggers.triggers_from_market_activity(core_conn)
     hits += await triggers.triggers_from_stale_evidence(core_conn)
