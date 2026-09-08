@@ -80,10 +80,14 @@ export default function Signup() {
   }, [oauthError]);
 
   if (isAuthenticated) {
-    // New accounts go through onboarding; a returning user who lands here
-    // goes wherever they were headed. ONBOARDING decides which - see
-    // v2/pages/Onboarding.
-    return <Navigate to={from || "/welcome"} replace />;
+    // Every authenticated signup return passes through /welcome. That page
+    // owns the one authoritative "does this account still need onboarding?"
+    // check. Existing members are immediately forwarded to `from`; new
+    // members complete onboarding first and are then sent to the same
+    // destination. Going straight to `from` here skipped onboarding for
+    // every signup that began from Billing or another gated surface.
+    const welcome = from ? `/welcome?from=${encodeURIComponent(from)}` : "/welcome";
+    return <Navigate to={welcome} replace />;
   }
 
   function start() {

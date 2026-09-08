@@ -64,7 +64,13 @@ export default function LogTradeModal({ item, onClose, onSaved }) {
       setState("saved");
       onSaved?.(result);
     } catch (err) {
-      setError(err.message || "Could not log this purchase.");
+      // The shared client has already turned a structured limit_reached
+      // 402 into the shell-level account-limit prompt. Do not put
+      // "Request failed" underneath it and make a deliberate plan limit
+      // look like a broken trade save.
+      if (err?.response?.data?.detail?.error !== "limit_reached") {
+        setError(err?.userMessage || err?.message || "Could not log this purchase.");
+      }
       setState("idle");
     }
   }
