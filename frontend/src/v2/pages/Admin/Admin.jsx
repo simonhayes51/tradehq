@@ -6,13 +6,7 @@
 // client-side guess over what the server would actually decide), but
 // this page avoids separate "Admin access required" flashes by gating on
 // the same /api/admin/pipeline/health call the first tab needs anyway.
-//
-// User Management and API key tier changes are NOT duplicated here -
-// src/pages/AdminUsers.jsx (v1, at /admin/users) already owns that
-// live, working flow. This area only covers the v2-specific views that
-// don't exist anywhere yet.
 import { useState } from "react";
-import { Link } from "react-router-dom";
 import { useAdminPipelineHealth } from "../../hooks/useAdminPipelineHealth";
 import PipelineHealthTab from "./tabs/PipelineHealthTab";
 import CollectorStatusTab from "./tabs/CollectorStatusTab";
@@ -43,7 +37,7 @@ const TABS = [
   { key: "player-cards", label: "Player Cards", Component: PlayerCardsTab },
   { key: "market-events", label: "Market Events", Component: MarketEventsTab },
   { key: "next-promo", label: "Next Promo", Component: NextPromoTab },
-  { key: "subscriptions", label: "Subscriptions", Component: SubscriptionsTab },
+  { key: "subscriptions", label: "Access & Subs", Component: SubscriptionsTab },
   { key: "api-usage", label: "API Usage", Component: ApiUsageTab },
 ];
 
@@ -68,12 +62,7 @@ export default function Admin() {
 
   return (
     <div className="p-6 max-w-4xl mx-auto flex flex-col gap-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold">Admin</h1>
-        <Link to="/admin/users" className="text-xs text-[var(--v2-muted)] hover:text-[var(--v2-accent)]">
-          User Management (v1) &rarr;
-        </Link>
-      </div>
+      <h1 className="text-xl font-semibold">Admin</h1>
 
       <div role="tablist" aria-label="Admin sections" className="flex items-center gap-1 border-b border-[var(--v2-border)] overflow-x-auto">
         {TABS.map((t) => (
