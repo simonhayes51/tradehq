@@ -5,18 +5,19 @@ import { useEntitlements } from "../context/EntitlementsContext";
 
 /**
  * Blocks the entire widget when locked (children are NOT rendered).
- * Use for "hard" premium widgets.
+ * Use for hard paid widgets.
  */
 export default function PremiumGate({
   feature,            // e.g. "advanced_analytics"
   featureName,        // label, e.g. "Advanced Analytics"
   className = "",     // pass your card rounding if needed
   children,           // ignored when locked
-  fallback,           // fallback content to show instead of premium prompt
+  fallback,           // fallback content to show instead of the upgrade prompt
 }) {
   const { isPremium, features } = useEntitlements();
-  
-  // Check if user has premium access
+
+  // `isPremium` is the legacy entitlement field name; the customer-facing
+  // paid plan is Elite.
   const hasAccess = isPremium || (feature && features.includes(feature));
 
   if (hasAccess) return <>{children}</>;
@@ -29,10 +30,10 @@ export default function PremiumGate({
       <div className="flex-1 flex items-center justify-center">
         <div className="text-center">
           <div className="inline-flex items-center gap-2 text-yellow-300 font-semibold mb-1">
-            <Crown size={14} /> Premium Feature
+            <Crown size={14} /> Elite Feature
           </div>
           <div className="text-xs text-gray-300">
-            {featureName || "This widget"} is available on the Premium plan.
+            {featureName || "This widget"} is available on the Elite plan.
           </div>
         </div>
       </div>
