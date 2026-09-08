@@ -83,17 +83,21 @@ function Texture() {
 
 function Brand({ centered = false, large = false }) {
   const [logoFailed, setLogoFailed] = useState(false);
+  const iconSize = large ? 48 : 26;
+  const textSize = large ? 28 : 16;
+  const gap = logoFailed ? 0 : (large ? 14 : 10);
+
   return (
-    <div style={{ position: "relative", display: "flex", alignItems: "center", justifyContent: centered ? "center" : "flex-start", gap: logoFailed ? 0 : (large ? 11 : 8) }}>
+    <div style={{ position: "relative", display: "flex", alignItems: "center", justifyContent: centered ? "center" : "flex-start", gap }}>
       {!logoFailed ? (
         <img
           src={BRAND_ICON}
           alt="EAFC.Live"
           onError={() => setLogoFailed(true)}
-          style={{ width: large ? 32 : 20, height: large ? 32 : 20, borderRadius: large ? 7 : 5, display: "block", objectFit: "contain" }}
+          style={{ width: iconSize, height: iconSize, borderRadius: large ? 9 : 6, display: "block", objectFit: "contain", flexShrink: 0 }}
         />
       ) : null}
-      <span style={{ fontSize: large ? 20 : 13, fontWeight: 800, letterSpacing: "0.11em", color: MUTED }}>
+      <span style={{ fontSize: textSize, fontWeight: 900, letterSpacing: "0.09em", lineHeight: 1, color: MUTED }}>
         EAFC<span style={{ color: ACCENT }}>.LIVE</span>
       </span>
     </div>
@@ -130,10 +134,10 @@ function PlayerName({ name, size, width }) {
 function Portrait({ data, isProfit, resultColor, profitText, roiText, bought, sold, footer }) {
   const profitSize = scaledFontSize(178, profitText, 8, 0.6);
   return (
-    <div style={{ position: "relative", width: "100%", height: "100%", boxSizing: "border-box", padding: "30px 68px 26px", display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center" }}>
+    <div style={{ position: "relative", width: "100%", height: "100%", boxSizing: "border-box", padding: "28px 68px 26px", display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center" }}>
       <Brand centered large />
 
-      <div style={{ marginTop: 18, fontSize: 68, lineHeight: 0.96, fontWeight: 950, letterSpacing: "-0.025em", color: isProfit ? TEXT : LOSS, textTransform: "uppercase" }}>
+      <div style={{ marginTop: 14, fontSize: 68, lineHeight: 0.96, fontWeight: 950, letterSpacing: "-0.025em", color: isProfit ? TEXT : LOSS, textTransform: "uppercase" }}>
         {isProfit ? "WE CALLED IT." : "TRADE RESULT"}
       </div>
       {isProfit ? (
