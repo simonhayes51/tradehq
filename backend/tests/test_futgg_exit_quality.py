@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -45,8 +46,10 @@ class _Conn:
     def __init__(self, result):
         self.result = result
         self.args = None
+        self.query = None
 
     async def fetchrow(self, query, *args):
+        self.query = query
         self.args = args
         return self.result
 
@@ -85,6 +88,8 @@ def test_thin_history_returns_insufficient_instead_of_fake_confidence():
     pool = _Pool(None)
     result = run(eq.exit_quality_for_card(pool, {"price_tier": "special"}, _ci()))
     assert result["status"] == "insufficient_history"
+    assert result["exact_engine_config"] is True
+    assert "exact engine configuration" in result["message"]
     assert "target_hit_call_rate_pct" not in result
 
 
@@ -112,11 +117,29 @@ def test_exit_quality_reports_observed_rate_interval_and_time_not_synthetic_scor
     assert result["avg_realised_roi_pct"] == 7.1
     assert result["median_mae_pct"] == -2.8
     assert result["median_mfe_pct"] == 10.4
+    assert result["exact_engine_config"] is True
     lo, hi = result["target_hit_call_rate_ci95_pct"]
     assert lo < 68.0 < hi
     assert "score" not in result
     assert "not a guarantee" in result["interpretation"]
-    # Query is pinned to current engine/grader and the current cohort.
+
+    # Query is pinned to current engine/grader, exact frozen config and cohort.
+    assert "s.engine_config = $5::jsonb" in pool.conn.query
     assert pool.conn.args[0] == "24h"
-    assert pool.conn.args[4] == "0.60-0.75"
-    assert pool.conn.args[5] == "8-12%"
+    assert json.loads(pool.conn.args[4]) == eq.ENGINE_CONFIG.as_dict()
+    assert pool.conn.args[5] == "0.60-0.75"
+    assert pool.conn.args[6] == "8-12%"
+
+
+def test_explicit_config_override_is_passed_as_jsonb_not_just_version_label():
+    pool = _Pool(None)
+    custom = {"version": "futgg-2.3", "min_confidence_for_buy_signal": 0.8123}
+    run(eq.exit_quality_for_card(
+        pool,
+        {"price_tier": "special"},
+        _ci(),
+        engine_version="futgg-2.3",
+        engine_config=custom,
+    ))
+    assert json.loads(pool.conn.args[4]) == custom
+    assert "s.engine_config = $5::jsonb" in pool.conn.query
