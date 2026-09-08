@@ -16,6 +16,7 @@ import { Link } from "react-router-dom";
 import { useAdminPipelineHealth } from "../../hooks/useAdminPipelineHealth";
 import PipelineHealthTab from "./tabs/PipelineHealthTab";
 import CollectorStatusTab from "./tabs/CollectorStatusTab";
+import RoadmapReadinessTab from "./tabs/RoadmapReadinessTab";
 import DataQualityTab from "./tabs/DataQualityTab";
 import CalibrationTab from "./tabs/CalibrationTab";
 import InvestmentShadowTab from "./tabs/InvestmentShadowTab";
@@ -31,6 +32,7 @@ import AdminSbcImports from "../AdminSbcImports/AdminSbcImports";
 const TABS = [
   // First: it is the question the launch is actually judged on.
   { key: "conversion", label: "Conversion", Component: ConversionTab },
+  { key: "readiness", label: "Readiness", Component: RoadmapReadinessTab },
   { key: "pipeline", label: "Pipeline Health", Component: PipelineHealthTab },
   { key: "data-quality", label: "Data Quality", Component: DataQualityTab },
   { key: "calibration", label: "Calibration", Component: CalibrationTab },
