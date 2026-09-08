@@ -163,6 +163,12 @@ def main() -> None:
     from app.services.persisted_market_helpers import install_persisted_market_helpers
     install_persisted_market_helpers()
 
+    # Keep historical Proof Ledger calculations intact, but make the Free
+    # Discord overview's "open opportunities" count use exact-BIN current
+    # intelligence rather than lingering immutable recommendation snapshots.
+    from app.services.discord_current_state_overrides import install_discord_current_state_overrides
+    install_discord_current_state_overrides()
+
     # Add the scanner/current-intelligence state to the existing readiness
     # report. It is a degraded operational check, not a load-balancer-fatal
     # dependency, so stale intelligence is visible without taking the API down.
