@@ -1,0 +1,124 @@
+.limit-reached-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(0, 0, 0, .72);
+  backdrop-filter: blur(4px);
+}
+
+.limit-reached-dialog {
+  position: relative;
+  width: min(560px, 100%);
+  max-height: min(82vh, 720px);
+  overflow-y: auto;
+  border: 1px solid var(--v2-border, #222327);
+  border-radius: 8px;
+  background: var(--v2-card, #111214);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, .6);
+}
+
+.limit-reached-close {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--v2-border, #222327);
+  border-radius: 4px;
+  background: var(--v2-elevated, #17181b);
+  color: var(--v2-muted, #8d8f95);
+  cursor: pointer;
+}
+
+.limit-reached-close:hover {
+  border-color: var(--v2-accent, #39ff8a);
+  color: var(--v2-text, #f3f3f2);
+}
+
+.limit-reached-dialog .upgrade-prompt {
+  margin: 0;
+  border: 0;
+  background: transparent;
+}
+
+.limit-reached-count {
+  margin: 0;
+  padding: 16px 56px 0 20px;
+  color: var(--v2-warning, #f2c94c);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.limit-reached-absolute {
+  padding: 28px;
+}
+
+.limit-reached-icon {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  margin-bottom: 16px;
+  border: 1px solid var(--v2-border, #222327);
+  border-radius: 6px;
+  color: var(--v2-warning, #f2c94c);
+}
+
+.limit-reached-absolute h2 {
+  margin: 0 0 10px;
+}
+
+.limit-reached-absolute > p {
+  margin: 0;
+  color: var(--v2-muted, #8d8f95);
+  line-height: 1.55;
+}
+
+.limit-reached-absolute .limit-reached-count {
+  padding: 12px 0 0;
+}
+
+.limit-reached-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 22px;
+}
+
+.limit-reached-actions button,
+.limit-reached-actions a {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 42px;
+  padding: 0 14px;
+  border: 1px solid var(--v2-border, #222327);
+  border-radius: 4px;
+  background: var(--v2-elevated, #17181b);
+  color: var(--v2-text, #f3f3f2);
+  font-weight: 700;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.limit-reached-actions a {
+  border-color: rgba(57, 255, 138, .45);
+  color: var(--v2-accent, #39ff8a);
+}
+
+@media (max-width: 600px) {
+  .limit-reached-backdrop {
+    align-items: end;
+    padding: 12px 12px calc(82px + env(safe-area-inset-bottom));
+  }
+
+  .limit-reached-dialog {
+    width: 100%;
+    max-height: 72vh;
+  }
+}
