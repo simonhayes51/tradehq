@@ -35,6 +35,7 @@ def test_premium_stale_sales_trigger_targets_old_high_value_card():
             "rating": 98,
             "current_bin": 2_200_000,
             "latest_sale_at": latest,
+            "last_sales_status_at": latest,
         }
     ])
 
@@ -49,7 +50,10 @@ def test_premium_stale_sales_trigger_targets_old_high_value_card():
         shadow.PREMIUM_STALE_MIN_BIN,
         shadow.PREMIUM_STALE_MIN_RATING,
         shadow.PREMIUM_STALE_AFTER_MINUTES,
+        shadow.PREMIUM_STALE_CHECK_AFTER_MINUTES,
     )
+    sql = conn.calls[0][0]
+    assert "last_sales_status_at" in sql
 
 
 def test_premium_stale_sales_reason_is_high_priority_background_work():
@@ -57,7 +61,8 @@ def test_premium_stale_sales_reason_is_high_priority_background_work():
     assert worker._reason_rank(card) == 1
 
 
-def test_defaults_catch_bellingham_shape_after_twelve_hours():
+def test_defaults_catch_bellingham_shape_after_twelve_hours_without_request_loop():
     assert shadow.PREMIUM_STALE_MIN_RATING <= 98
     assert shadow.PREMIUM_STALE_MIN_BIN <= 2_200_000
     assert shadow.PREMIUM_STALE_AFTER_MINUTES == 720
+    assert shadow.PREMIUM_STALE_CHECK_AFTER_MINUTES >= worker.LIVE_REBALANCE_MIN_CHECK_AGE_MINUTES
