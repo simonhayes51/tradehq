@@ -85,9 +85,8 @@
 .v2-account-billing-facts dt { margin: 0; color: #909090; font-size: 10px; font-weight: 900; letter-spacing: .06em; text-transform: uppercase; }
 .v2-account-billing-facts dd { margin: 3px 0 0; font-weight: 800; font-size: 15px; }
 
-/* Section labels distinguishing "your stuff" (Watchlist, Portfolio)
-   from general Tools, so the two link grids aren't one undifferentiated
-   block. */
+/* Section labels distinguishing account destinations from the rest of
+   the account page. */
 .v2-account-section-label {
   margin: 20px 0 0;
   color: #909090;
@@ -97,6 +96,17 @@
   text-transform: uppercase;
 }
 .v2-account-section-label:first-of-type { margin-top: 16px; }
+
+/* The second labelled link grid is the retired V1 "Tools" block in
+   Account.jsx. Those destinations still mount the old app shell and are
+   no longer part of the current EAFC.Live product. Hide the heading and
+   its grid together so More only exposes current destinations. Browser
+   Companion is rendered separately immediately afterwards and remains
+   visible. */
+.v2-account-page > h2.v2-account-section-label:nth-of-type(2),
+.v2-account-page > h2.v2-account-section-label:nth-of-type(2) + section.v2-account-links {
+  display: none;
+}
 
 .v2-discord-feedback { margin: 10px 0 0; font-size: 12.5px; }
 .v2-discord-feedback.ok { color: #6fe5ae; }
