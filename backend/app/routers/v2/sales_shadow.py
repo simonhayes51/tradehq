@@ -1,14 +1,10 @@
-"""Admin report for the read-only information-value SalesSync shadow.
+"""Admin report for the information-value SalesSync selector.
 
-This endpoint reports observations only. It does not alter collector cadence,
-request limits, or selection. Its purpose is to provide the evidence required
-before any future reallocation of the existing detailed-sales request budget.
-
-In addition to aggregate trigger counts, the report answers the operational
-question that actually matters: when the shadow wanted a card the live selector
-did not choose, did the live selector naturally pick that card up shortly
-thereafter anyway? Repeated misses are surfaced separately so an eventual budget
-reallocation can target real blind spots rather than raw trigger volume.
+This endpoint reports the evidence used to decide whether information-value
+cards deserve some of the existing detailed-sales request budget. The live
+worker may now reallocate a bounded slice of that same budget, so this report
+also distinguishes same-cycle pickups from cards the baseline scheduler picked
+up later. Reallocation never increases the configured FUT.GG request count.
 
 A shadow event is never called a miss until its full pickup window has elapsed.
 Fresh events stay pending; an early pickup can still be credited immediately.
@@ -107,9 +103,12 @@ async def sales_information_shadow(
     reasons: Counter[str] = Counter()
     versions: Counter[str] = Counter()
     due_times_by_card: Dict[int, list] = defaultdict(list)
+    live_rebalance_cycles = 0
     for row in rows:
         reasons.update({str(k): int(v) for k, v in _json_object(row["reason_counts"]).items()})
         versions[str(row["selector_version"])] += 1
+        if _json_object(row["notes"]).get("live_scheduler_changed"):
+            live_rebalance_cycles += 1
         observed_at = row["observed_at"]
         for raw_card_id in row["due_card_ids"] or []:
             due_times_by_card[int(raw_card_id)].append(observed_at)
@@ -120,6 +119,7 @@ async def sales_information_shadow(
     measured_event_count = 0
     pending_event_count = 0
     pickup_count = 0
+    same_cycle_pickup_count = 0
     user_measured_count = 0
     user_pending_count = 0
     user_pickup_count = 0
@@ -129,15 +129,24 @@ async def sales_information_shadow(
         if observed_at.tzinfo is None:
             observed_at = observed_at.replace(tzinfo=timezone.utc)
         note_map = _card_note_map(row)
+        row_due_ids = {int(raw_id) for raw_id in (row["due_card_ids"] or [])}
         for raw_card_id in row["triggered_card_ids"] or []:
             card_id = int(raw_card_id)
             note = note_map.get(card_id, {})
             user_driven = bool(note.get("user_driven"))
 
+            # Under the live rebalancer, a triggered card can be inserted into
+            # THIS cycle's due set. The old bisect-right logic deliberately
+            # looked only at later observations, so same-cycle reallocation was
+            # incorrectly reported as a miss even though the scheduler had
+            # selected it immediately.
+            picked_up_same_cycle = card_id in row_due_ids
             due_times = due_times_by_card.get(card_id, [])
             idx = bisect_right(due_times, observed_at)
             next_due_at = due_times[idx] if idx < len(due_times) else None
-            picked_up = bool(next_due_at and next_due_at <= observed_at + pickup_delta)
+            picked_up = picked_up_same_cycle or bool(
+                next_due_at and next_due_at <= observed_at + pickup_delta
+            )
             mature = observed_at <= measurement_cutoff
             pending = not picked_up and not mature
 
@@ -152,6 +161,8 @@ async def sales_information_shadow(
 
             if picked_up:
                 pickup_count += 1
+                if picked_up_same_cycle:
+                    same_cycle_pickup_count += 1
                 if user_driven:
                     user_pickup_count += 1
 
@@ -161,6 +172,7 @@ async def sales_information_shadow(
                 "measured_events": 0,
                 "pending_events": 0,
                 "picked_up_events": 0,
+                "same_cycle_pickups": 0,
                 "missed_events": 0,
                 "user_driven_events": 0,
                 "reasons": Counter(),
@@ -171,6 +183,7 @@ async def sales_information_shadow(
             card["measured_events"] += int(picked_up or mature)
             card["pending_events"] += int(pending)
             card["picked_up_events"] += int(picked_up)
+            card["same_cycle_pickups"] += int(picked_up_same_cycle)
             card["missed_events"] += int(mature and not picked_up)
             card["user_driven_events"] += int(user_driven and (picked_up or mature))
             card["first_shadow_at"] = min(card["first_shadow_at"], observed_at)
@@ -230,6 +243,7 @@ async def sales_information_shadow(
             "measured_events": card["measured_events"],
             "pending_events": card["pending_events"],
             "picked_up_events": card["picked_up_events"],
+            "same_cycle_pickups": card["same_cycle_pickups"],
             "missed_events": card["missed_events"],
             "user_driven_events": card["user_driven_events"],
             "reasons": dict(card["reasons"].most_common()),
@@ -264,6 +278,7 @@ async def sales_information_shadow(
             "measured_shadow_card_events": measured_event_count,
             "pending_shadow_card_events": pending_event_count,
             "picked_up_by_live_scheduler": pickup_count,
+            "same_cycle_reallocated": same_cycle_pickup_count,
             "still_missed_after_window": missed_count,
             "pickup_rate_pct": (
                 round(100.0 * pickup_count / measured_event_count, 2)
@@ -278,15 +293,18 @@ async def sales_information_shadow(
             ),
             "repeated_missed_cards": repeated_missed_out,
             "note": (
-                "Fresh shadow events remain pending until the full pickup window elapses. "
-                "Per-card reason/user classification is available from selector v1.2 onward; "
-                "older observations still contribute to measured pickup/miss counts but may have empty reasons."
+                "Fresh information-value events remain pending until the full pickup window elapses. "
+                "Same-cycle reallocated cards count as immediate pickups. Per-card reason/user classification "
+                "is available from selector v1.2 onward."
             ),
         },
-        "live_scheduler_changed": False,
+        "live_scheduler_changed": live_rebalance_cycles > 0,
+        "live_rebalance_cycles": live_rebalance_cycles,
         "extra_futgg_sales_requests": 0,
         "decision_note": (
-            "Use repeated mature misses and low pickup rates to decide whether some of the existing 60 slots "
-            "should be reserved for information-value cards. Do not infer extra collector capacity."
+            "A bounded share of the existing cycle is now reallocated to information-value cards. "
+            "No extra FUT.GG request budget is added; continue watching repeated misses and pickup rate."
+            if live_rebalance_cycles > 0
+            else "Shadow-only evidence is still being collected; the live scheduler has not reallocated slots in this window."
         ),
     }
