@@ -44,7 +44,9 @@
     if (globalThis.EAFC_LIVE_DEBUG) console.log("[EAFC.Live]", ...args);
   }
 
-  const FC26_RE = /\/ut\/game\/fc26(\/|$)/;
+  // EA versions the Ultimate Team API path by game. Keep this scoped to
+  // /ut/game/fcNN while accepting the active season (FC26, FC27, future).
+  const FC_GAME_RE = /\/ut\/game\/fc\d+(\/|$)/i;
   const TRANSFERMARKET_RE = /\/transfermarket(\/|$|\?)/;
 
   function sanitizeAuctions(body) {
@@ -107,7 +109,7 @@
       const promise = originalFetch.apply(this, arguments);
       try {
         const url = typeof input === "string" ? input : input && input.url;
-        if (url && FC26_RE.test(url)) {
+        if (url && FC_GAME_RE.test(url)) {
           promise
             .then((response) => {
               noteRequest(url, response.status);
@@ -152,7 +154,7 @@
 
     OriginalXHR.prototype.send = function eafcLiveSend() {
       const url = this.__eafcLiveUrl;
-      if (url && FC26_RE.test(url)) {
+      if (url && FC_GAME_RE.test(url)) {
         this.addEventListener("loadend", function () {
           try {
             noteRequest(url, this.status);
@@ -173,7 +175,7 @@
   // UI renders inside an iframe, which this never saw" (manifest.json's
   // content_scripts don't set all_frames, so only the top-level document
   // is injected into by default).
-  console.log("[EAFC.Live] page-bridge installed - observing window.fetch/XHR for /ut/game/fc26 responses", {
+  console.log("[EAFC.Live] page-bridge installed - observing active /ut/game/fc*/ responses", {
     href: location.href,
     inIframe: window !== window.top,
   });
