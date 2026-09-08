@@ -160,6 +160,7 @@ def cache_health() -> Dict[str, Any]:
 def install_dashboard_market_cache(application) -> None:
     """Patch only Dashboard's imported market helper references."""
     from app.routers.v2 import dashboard as dashboard_module
+    from app.services.managed_startup_tasks import register_startup_job
     from app.services.snapshot_surface_routes import _pair_filter
 
     async def cached_segmented_candidates(provider):
@@ -194,24 +195,24 @@ def install_dashboard_market_cache(application) -> None:
     dashboard_module._score_and_filter = cached_score_and_filter
     log.info("dashboard persisted-only intelligence helpers installed")
 
-    @application.app.on_event("startup")
-    async def _schedule_dashboard_market_prewarm() -> None:
-        async def runner() -> None:
-            from app.db import get_core_pool
-            from app.services.market_data_provider import FutggMarketDataProvider
+    async def dashboard_market_prewarm_job() -> None:
+        from app.db import get_core_pool
+        from app.services.market_data_provider import FutggMarketDataProvider
 
-            # First attempt catches an already-populated table on ordinary
-            # redeploys. A second attempt lands after the scanner's 45s startup
-            # delay on a genuinely fresh database. Partial state is never
-            # promoted as complete.
-            for delay in (8, 55):
-                await asyncio.sleep(delay)
-                try:
-                    pool = await get_core_pool()
-                    await prewarm(FutggMarketDataProvider(pool))
-                    if _pairs is not None:
-                        return
-                except Exception:
-                    log.warning("dashboard market state startup prewarm failed", exc_info=True)
+        # First attempt catches an already-populated table on ordinary
+        # redeploys. A second attempt lands after the scanner's 45s startup
+        # delay on a genuinely fresh database. Partial state is never
+        # promoted as complete.
+        for delay in (8, 55):
+            await asyncio.sleep(delay)
+            try:
+                pool = await get_core_pool()
+                await prewarm(FutggMarketDataProvider(pool))
+                if _pairs is not None:
+                    return
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.warning("dashboard market state startup prewarm failed", exc_info=True)
 
-        asyncio.create_task(runner())
+    register_startup_job("dashboard_market_prewarm", dashboard_market_prewarm_job)
