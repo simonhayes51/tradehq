@@ -66,11 +66,6 @@ export default function Chat() {
       ) : entitlementsLoading ? (
         <div className="v2-page-state" role="status">Checking your plan…</div>
       ) : !isElite || locked ? (
-        // A Free member sees what the assistant can do, with real example
-        // questions, WITHOUT a model request being made on their behalf.
-        // The demo is the copy in GATED.ai_chat, not a fake conversation:
-        // a scripted exchange presented as the product would be lying
-        // about what they'd be buying.
         <UpgradePrompt {...GATED.ai_chat} />
       ) : (
         <div className="v2-chat-panel">
@@ -118,11 +113,34 @@ export default function Chat() {
   );
 }
 
+function renderInlineMarkdown(text) {
+  return String(text ?? "")
+    .split(/(\*\*[^*]+\*\*)/g)
+    .filter(Boolean)
+    .map((part, index) => part.startsWith("**") && part.endsWith("**")
+      ? <strong key={index}>{part.slice(2, -2)}</strong>
+      : <span key={index}>{part}</span>);
+}
+
+function FormattedMessage({ content }) {
+  const lines = String(content ?? "").split(/\r?\n/);
+  return <div className="v2-chat-message-copy">
+    {lines.map((line, index) => {
+      const trimmed = line.trim();
+      if (!trimmed) return <div key={index} className="v2-chat-message-gap" aria-hidden="true" />;
+      if (trimmed.startsWith("- ")) {
+        return <div key={index} className="v2-chat-message-bullet"><span aria-hidden="true">•</span><p>{renderInlineMarkdown(trimmed.slice(2))}</p></div>;
+      }
+      return <p key={index}>{renderInlineMarkdown(line)}</p>;
+    })}
+  </div>;
+}
+
 function ChatBubble({ message }) {
   const isUser = message.role === "user";
   return (
     <div className={`v2-chat-bubble ${isUser ? "user" : "assistant"}`}>
-      <p>{message.content}</p>
+      <FormattedMessage content={message.content} />
       {(message.toolResults || []).map((tr, i) => <ToolResult key={i} toolResult={tr} />)}
     </div>
   );
@@ -131,10 +149,6 @@ function ChatBubble({ message }) {
 function ToolResult({ toolResult }) {
   const { tool, result } = toolResult;
 
-  // These render the tool's OWN numbers as components, deliberately
-  // alongside the model's prose rather than trusting the prose to restate
-  // them correctly. Field names track app/routers/v2/ai_chat.py's
-  // _chat_safe_card(), which is the only shape the model ever sees.
   if (tool === "resolve_and_evaluate_card" && result?.card) {
     return <ToolCard card={result.card} />;
   }
@@ -177,9 +191,6 @@ function ToolResult({ toolResult }) {
   return null;
 }
 
-// Price age is shown, always. A snapshot presented without its age is a
-// claim that it is current, which is exactly the overstatement this
-// assistant is not allowed to make.
 function priceAgeLabel(minutes) {
   if (minutes == null) return null;
   const value = Number(minutes);
