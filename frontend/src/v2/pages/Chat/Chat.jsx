@@ -25,6 +25,9 @@ import "./chat.css";
 
 const SUGGESTIONS = ["Should I buy Mbappe 92?", "Who should I buy for 40k?", "How accurate are your recommendations?"];
 
+// Only what the tools can actually answer. Anything outside this the
+// assistant is instructed to decline rather than answer from the model's
+// own (non-existent, and never current) market knowledge.
 const CAPABILITIES = [
   "Look up any card's live price, verdict, buy/sell targets and risk",
   "Find trades that fit a coin budget right now",
@@ -63,6 +66,11 @@ export default function Chat() {
       ) : entitlementsLoading ? (
         <div className="v2-page-state" role="status">Checking your plan…</div>
       ) : !isElite || locked ? (
+        // A Free member sees what the assistant can do, with real example
+        // questions, WITHOUT a model request being made on their behalf.
+        // The demo is the copy in GATED.ai_chat, not a fake conversation:
+        // a scripted exchange presented as the product would be lying
+        // about what they'd be buying.
         <UpgradePrompt {...GATED.ai_chat} />
       ) : (
         <div className="v2-chat-panel">
@@ -154,6 +162,10 @@ function ChatBubble({ message }) {
 function ToolResult({ toolResult }) {
   const { tool, result } = toolResult;
 
+  // These render the tool's OWN numbers as components, deliberately
+  // alongside the model's prose rather than trusting the prose to restate
+  // them correctly. Field names track app/routers/v2/ai_chat.py's
+  // _chat_safe_card(), which is the only shape the model ever sees.
   if (tool === "resolve_and_evaluate_card" && result?.card) {
     return <ToolCard card={result.card} />;
   }
@@ -196,6 +208,9 @@ function ToolResult({ toolResult }) {
   return null;
 }
 
+// Price age is shown, always. A snapshot presented without its age is a
+// claim that it is current, which is exactly the overstatement this
+// assistant is not allowed to make.
 function priceAgeLabel(minutes) {
   if (minutes == null) return null;
   const value = Number(minutes);
