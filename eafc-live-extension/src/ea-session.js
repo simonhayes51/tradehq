@@ -4,13 +4,13 @@
 //
 // Tracks two harmless, non-secret facts purely by watching which
 // requests the Web App itself makes:
-//   1. which /ut/game/fc26 host the app is currently talking to - EA
+//   1. which /ut/game/fcNN host the app is currently talking to - EA
 //      rotates/selects this per-session (e.g. different utas.*.fut.ea.com
 //      edges), so hardcoding one is fragile; observing it from the app's
 //      own traffic is not.
 //   2. whether we appear to be authenticated at all - inferred only from
-//      "did a /ut/game/fc26 request come back with a 2xx", never by
-//      reading any auth header or cookie value.
+//      "did an active /ut/game/fcNN request come back with a 2xx", never
+//      by reading any auth header or cookie value.
 //
 // SECURITY: this module NEVER reads, stores, or exposes X-UT-SID,
 // X-UT-PHISHING-TOKEN, cookies, or any other EA credential. It looks
@@ -27,7 +27,7 @@
     lastObservedAt: null,
   };
 
-  const FC26_PATH_RE = /\/ut\/game\/fc26(\/|$)/;
+  const FC_GAME_PATH_RE = /\/ut\/game\/fc\d+(\/|$)/i;
 
   function noteRequest(urlString, status) {
     let parsed;
@@ -36,7 +36,7 @@
     } catch (_err) {
       return;
     }
-    if (!FC26_PATH_RE.test(parsed.pathname)) return;
+    if (!FC_GAME_PATH_RE.test(parsed.pathname)) return;
 
     state.apiHost = parsed.origin;
     state.lastObservedAt = Date.now();
