@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from app.services import sbc_market_reinforcement as reinforcement
 
@@ -25,10 +26,8 @@ def test_confirmation_needs_price_and_sales_activity():
     base = {"matched_cards": 40, "baseline_cards": 35, "current_cards": 38, "pending": False}
     status, _ = reinforcement.classify_shadow_reinforcement({**base, "price_change_pct": 4.2, "sales_activity_ratio": 1.35})
     assert status == "MARKET_CONFIRMED_CANDIDATE"
-
     status, _ = reinforcement.classify_shadow_reinforcement({**base, "price_change_pct": 4.2, "sales_activity_ratio": 1.05})
     assert status == "PRICE_ONLY"
-
     status, _ = reinforcement.classify_shadow_reinforcement({**base, "price_change_pct": -4.0, "sales_activity_ratio": 1.5})
     assert status == "CONFLICTING"
 
@@ -42,10 +41,7 @@ def test_new_event_is_pending_without_hitting_raw_history_queries():
 
     conn = Conn()
     evidence = run(reinforcement._segment_evidence(
-        conn,
-        list(range(20)),
-        datetime.now(timezone.utc) - timedelta(minutes=30),
-        window_hours=2,
+        conn, list(range(20)), datetime.now(timezone.utc) - timedelta(minutes=30), window_hours=2,
     ))
     assert evidence["pending"] is True
     assert conn.calls == 0
@@ -63,9 +59,7 @@ def test_history_queries_are_bounded_to_baseline_or_current_windows():
 
     conn = Conn()
     run(reinforcement._segment_evidence(
-        conn,
-        list(range(20)),
-        datetime.now(timezone.utc) - timedelta(hours=12),
+        conn, list(range(20)), datetime.now(timezone.utc) - timedelta(hours=12),
     ))
     assert len(conn.queries) == 2
     for query in conn.queries:
@@ -74,9 +68,10 @@ def test_history_queries_are_bounded_to_baseline_or_current_windows():
 
 
 def test_module_is_read_only_by_structure():
-    from pathlib import Path
-    source = Path("app/services/sbc_market_reinforcement.py").read_text().lower()
+    source_path = Path(__file__).resolve().parents[1] / "app" / "services" / "sbc_market_reinforcement.py"
+    source = source_path.read_text().lower()
     assert "update sbc_resource_demand" not in source
     assert "insert into sbc_resource_demand" not in source
-    assert '"writes_market_status":false' in source.replace(" ", "")
-    assert '"changes_priority_weight":false' in source.replace(" ", "")
+    compact = source.replace(" ", "")
+    assert '"writes_market_status":false' in compact
+    assert '"changes_priority_weight":false' in compact
