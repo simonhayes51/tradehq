@@ -15,6 +15,18 @@ log = logging.getLogger("intelligence_readiness")
 STALE_AFTER_MINUTES = 25.0
 _installed = False
 
+# Must match the scanner's standing product rule in
+# market_data_provider.py: silver/bronze are intentionally never evaluated
+# because their coin values cannot produce a useful trade after tax/noise.
+# Readiness must therefore measure coverage against the scanner-eligible pool,
+# not the entire tradeable catalogue. Counting silver/bronze in the denominator
+# made a healthy scanner look permanently stuck around ~38% coverage.
+_SCANNER_ELIGIBLE_PLAYER_WHERE = """
+    p.is_active
+    AND p.is_tradeable IS DISTINCT FROM FALSE
+    AND p.price_tier NOT IN ('silver', 'bronze')
+"""
+
 
 async def _check_intelligence_state(pool, readiness_module):
     if pool is None:
@@ -27,13 +39,15 @@ async def _check_intelligence_state(pool, readiness_module):
     try:
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
-                """
-                SELECT count(*) AS current_rows, max(evaluated_at) AS newest_evaluated_at
-                FROM futgg_current_intelligence
+                f"""
+                SELECT count(*) AS current_rows, max(ci.evaluated_at) AS newest_evaluated_at
+                FROM futgg_current_intelligence ci
+                JOIN futgg_players p ON p.source_card_id = ci.source_card_id
+                WHERE {_SCANNER_ELIGIBLE_PLAYER_WHERE}
                 """
             )
             player_pool = await conn.fetchval(
-                "SELECT count(*) FROM futgg_players WHERE is_active AND is_tradeable IS DISTINCT FROM FALSE"
+                f"SELECT count(*) FROM futgg_players p WHERE {_SCANNER_ELIGIBLE_PLAYER_WHERE}"
             )
     except Exception:
         # Migration 080 may not have landed yet, or the table may be briefly

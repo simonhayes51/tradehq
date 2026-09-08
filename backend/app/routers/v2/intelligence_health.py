@@ -1,15 +1,15 @@
 """Admin observability for the persisted FUT.GG intelligence pipeline.
 
 Cheap aggregate reads only. This endpoint exists so an operator can answer
-"is the scanner producing current intelligence, how much of the catalogue has
-it touched recently, are states actually changing, and is Home reading the
-persisted layer or its transitional fallback?" without replaying the engine or
-scanning the multi-million-row raw history tables.
+"is the scanner producing current intelligence, how much of the market it is
+actually designed to scan has it touched recently, are states changing, and is
+Home reading the persisted layer?" without replaying the engine.
 """
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict
+from datetime import datetime, timezone
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, Request
 
@@ -19,9 +19,33 @@ from app.services.dashboard_market_cache import cache_health as dashboard_cache_
 router = APIRouter(tags=["v2-intelligence-health"])
 log = logging.getLogger("intelligence_health")
 
+# Same standing product rule as market_data_provider.select_candidates_by_segment:
+# silver and bronze are intentionally excluded from the scanner because their
+# coin values cannot produce useful trades after tax/noise. Health percentages
+# must therefore use the scanner-eligible pool, not the whole tradeable catalogue.
+_SCANNER_ELIGIBLE_PLAYER_WHERE = """
+    p.is_active
+    AND p.is_tradeable IS DISTINCT FROM FALSE
+    AND p.price_tier NOT IN ('silver', 'bronze')
+"""
+
 
 def _pool(request: Request):
     return getattr(request.app.state, "db_pool", None) or getattr(request.app.state, "pool", None)
+
+
+def _freshness(name: str, value: Optional[datetime], stale_after_seconds: int) -> Dict[str, Any]:
+    if value is None:
+        return {"name": name, "status": "unknown", "computed_at": None, "age_seconds": None}
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    age = max(0.0, (datetime.now(timezone.utc) - value).total_seconds())
+    return {
+        "name": name,
+        "status": "ok" if age <= stale_after_seconds else "stale",
+        "computed_at": value.isoformat(),
+        "age_seconds": round(age),
+    }
 
 
 @router.get("/market/intelligence-health")
@@ -33,39 +57,46 @@ async def intelligence_health(
     if pool is None:
         return {"status": "unavailable", "reason": "pool_missing"}
 
+    snapshot_at = None
+    transition_at = None
     try:
         async with pool.acquire() as conn:
             summary = await conn.fetchrow(
-                """
+                f"""
                 SELECT
                     count(*) AS current_rows,
-                    count(*) FILTER (WHERE evaluated_at >= now() - interval '24 hours') AS evaluated_24h,
-                    count(*) FILTER (WHERE signal IN ('buy','strong_buy')) AS actionable_now,
-                    count(*) FILTER (WHERE signal = 'watch') AS watch_now,
-                    count(*) FILTER (WHERE signal = 'avoid') AS avoid_now,
-                    count(*) FILTER (WHERE signal = 'insufficient_data') AS insufficient_now,
-                    max(evaluated_at) AS newest_evaluated_at,
-                    min(evaluated_at) AS oldest_evaluated_at,
-                    EXTRACT(EPOCH FROM (now() - max(evaluated_at))) / 60.0 AS newest_age_minutes
-                FROM futgg_current_intelligence
+                    count(*) FILTER (WHERE ci.evaluated_at >= now() - interval '24 hours') AS evaluated_24h,
+                    count(*) FILTER (WHERE ci.signal IN ('buy','strong_buy')) AS actionable_now,
+                    count(*) FILTER (WHERE ci.signal = 'watch') AS watch_now,
+                    count(*) FILTER (WHERE ci.signal = 'avoid') AS avoid_now,
+                    count(*) FILTER (WHERE ci.signal = 'insufficient_data') AS insufficient_now,
+                    max(ci.evaluated_at) AS newest_evaluated_at,
+                    min(ci.evaluated_at) AS oldest_evaluated_at,
+                    EXTRACT(EPOCH FROM (now() - max(ci.evaluated_at))) / 60.0 AS newest_age_minutes
+                FROM futgg_current_intelligence ci
+                JOIN futgg_players p ON p.source_card_id = ci.source_card_id
+                WHERE {_SCANNER_ELIGIBLE_PLAYER_WHERE}
                 """
             )
             player_pool = await conn.fetchval(
-                "SELECT count(*) FROM futgg_players WHERE is_active AND is_tradeable IS DISTINCT FROM FALSE"
+                f"SELECT count(*) FROM futgg_players p WHERE {_SCANNER_ELIGIBLE_PLAYER_WHERE}"
             )
             signals = await conn.fetch(
-                """
-                SELECT signal, count(*) AS card_count
-                FROM futgg_current_intelligence
-                GROUP BY signal
-                ORDER BY signal
+                f"""
+                SELECT ci.signal, count(*) AS card_count
+                FROM futgg_current_intelligence ci
+                JOIN futgg_players p ON p.source_card_id = ci.source_card_id
+                WHERE {_SCANNER_ELIGIBLE_PLAYER_WHERE}
+                GROUP BY ci.signal
+                ORDER BY ci.signal
                 """
             )
+            snapshot_at = await conn.fetchval(
+                "SELECT max(snapshot_computed_at) FROM futgg_market_snapshot"
+            )
 
-            # Transition history is useful observability, but current state is
-            # the product dependency. If migration 081 is absent or the audit
-            # table is temporarily unreadable, health should still report the
-            # current-state picture instead of failing the whole endpoint.
+            # Transition history is observability only. Current state is the
+            # product dependency, so a missing audit migration cannot fail health.
             try:
                 transitions = await conn.fetchrow(
                     """
@@ -76,6 +107,7 @@ async def intelligence_health(
                     FROM futgg_intelligence_transitions
                     """
                 )
+                transition_at = transitions["latest_transition_at"]
                 recent = await conn.fetch(
                     """
                     SELECT source_card_id, changed_at, previous_signal, new_signal,
@@ -109,15 +141,26 @@ async def intelligence_health(
     evaluated_24h = int(summary["evaluated_24h"] or 0)
     newest_age = float(summary["newest_age_minutes"]) if summary["newest_age_minutes"] is not None else None
 
-    # The scanner normally runs every 10 minutes. This is diagnostic rather
-    # than a load-balancer readiness gate, so call out a >20m gap explicitly
-    # without taking the application out of service.
     status = "ok"
     reason = None
     if current_rows == 0:
         status, reason = "degraded", "no_current_intelligence"
     elif newest_age is None or newest_age > 20:
         status, reason = "degraded", "scanner_state_stale"
+
+    cache = dashboard_cache_health()
+    newest_at = summary["newest_evaluated_at"]
+    engines = [
+        _freshness("Market Snapshot", snapshot_at, 20 * 60),
+        _freshness("Current Intelligence", newest_at, 20 * 60),
+        _freshness("Intelligence Transitions", transition_at, 24 * 60 * 60),
+        {
+            "name": "Dashboard Current-State Cache",
+            "status": "ok" if cache.get("source") == "persisted" else "stale",
+            "computed_at": None,
+            "age_seconds": cache.get("age_seconds"),
+        },
+    ]
 
     return {
         "status": status,
@@ -127,7 +170,7 @@ async def intelligence_health(
         "current_coverage_pct": round(100.0 * current_rows / pool_size, 2) if pool_size else None,
         "evaluated_24h": evaluated_24h,
         "evaluated_24h_pct": round(100.0 * evaluated_24h / pool_size, 2) if pool_size else None,
-        "newest_evaluated_at": summary["newest_evaluated_at"].isoformat() if summary["newest_evaluated_at"] else None,
+        "newest_evaluated_at": newest_at.isoformat() if newest_at else None,
         "oldest_evaluated_at": summary["oldest_evaluated_at"].isoformat() if summary["oldest_evaluated_at"] else None,
         "newest_age_minutes": round(newest_age, 1) if newest_age is not None else None,
         "actionable_now": int(summary["actionable_now"] or 0),
@@ -138,8 +181,9 @@ async def intelligence_health(
         "transition_status": transition_status,
         "transitions_1h": int(transitions["transitions_1h"] or 0),
         "transitions_24h": int(transitions["transitions_24h"] or 0),
-        "latest_transition_at": transitions["latest_transition_at"].isoformat() if transitions["latest_transition_at"] else None,
-        "dashboard_market_cache": dashboard_cache_health(),
+        "latest_transition_at": transition_at.isoformat() if transition_at else None,
+        "dashboard_market_cache": cache,
+        "engines": engines,
         "recent_transitions": [
             {
                 **dict(row),

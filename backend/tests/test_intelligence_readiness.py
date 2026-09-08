@@ -17,8 +17,10 @@ class _Conn:
         self.newest = newest
         self.player_pool = player_pool
         self.fail = fail
+        self.queries = []
 
     async def fetchrow(self, query, *args):
+        self.queries.append(query)
         if self.fail:
             raise RuntimeError("boom")
         return {
@@ -27,6 +29,7 @@ class _Conn:
         }
 
     async def fetchval(self, query, *args):
+        self.queries.append(query)
         if self.fail:
             raise RuntimeError("boom")
         return self.player_pool
@@ -61,6 +64,19 @@ def test_current_intelligence_is_ok_when_recent():
     assert result["status"] == rd.OK
     assert result["detail"]["coverage_pct"] == 75.0
     assert result["detail"]["newest_age_minutes"] < ir.STALE_AFTER_MINUTES
+
+
+def test_readiness_denominator_matches_scanner_eligible_market():
+    conn = _Conn(
+        current_rows=100,
+        player_pool=100,
+        newest=datetime.now(timezone.utc) - timedelta(minutes=1),
+    )
+    result = run(ir._check_intelligence_state(_Pool(conn), rd))
+    sql = "\n".join(conn.queries)
+    assert "price_tier NOT IN ('silver', 'bronze')" in sql
+    assert "JOIN futgg_players" in sql
+    assert result["detail"]["coverage_pct"] == 100.0
 
 
 def test_empty_current_state_is_degraded_not_unavailable():
