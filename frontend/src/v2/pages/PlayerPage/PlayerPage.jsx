@@ -4,6 +4,7 @@ import { Shield } from "lucide-react";
 import { addWatch } from "../../../api/watchlist";
 import { useFutggPlayer } from "../../hooks/useFutggMarket";
 import { AnalysisModal } from "../HomeDashboard/HomeDashboard";
+import ExitEvidence from "./sections/ExitEvidence";
 import FutggMarketSection from "./sections/FutggMarketSection";
 import PublicCardPreview from "./PublicCardPreview";
 import { versionLabel } from "../../lib/format";
@@ -98,7 +99,7 @@ export default function PlayerPage() {
       click-triggered overlay - see AnalysisModal's own comment for why
       the default fixed/centred/self-scrolling modal chrome broke here
       (card art rendering behind the sidebar / far down the page). */}
-  return <AnalysisModal item={item} onClose={goBack} navigate={navigate} onWatch={watch} watchState={watchState} backLabel={backLabel} variant="page" extra={<FutggMarketSection cardId={cardId} />}/>;
+  return <AnalysisModal item={item} onClose={goBack} navigate={navigate} onWatch={watch} watchState={watchState} backLabel={backLabel} variant="page" extra={<><ExitEvidence evidence={futggQuery.data?.exit_quality}/><FutggMarketSection cardId={cardId}/></>}/>;
 }
 
 // Maps the engine's signal vocabulary onto the verdict the shared
