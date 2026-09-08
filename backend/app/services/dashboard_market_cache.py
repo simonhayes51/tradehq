@@ -4,15 +4,16 @@ Dashboard contains user-specific alerts, free-pick gating, events and SBC data,
 so caching its whole response would be wrong. The expensive user-independent
 part is the evaluated market pair set used for opportunities/avoid/regime.
 
-The scanner now persists one current intelligence row for every successfully
-evaluated card. This module therefore prefers that persisted state and only
-falls back to the old live market-wide CPU pass while the new table is still
-warming after its first deployment or if persisted coverage drops below a
-conservative floor.
+The scanner persists one current-intelligence row for every successfully
+evaluated card, including non-actionable states. Dashboard reads that persisted
+state only. It never falls back to evaluating the market inside the web process.
 
-That fallback is intentionally transitional and may run at most once to bootstrap
-an empty process. Once any complete pair set exists, refreshes are persisted-only
-so cache expiry cannot quietly reintroduce a recurring market-wide CPU pass.
+If persisted coverage is still warming, an existing complete cache stays live;
+on a genuinely cold/empty process Dashboard gets an empty market slice until
+coverage clears the conservative floor. That is preferable to reintroducing the
+~1,300-card synchronous evaluation path that previously starved FastAPI's event
+loop. Warming retries are throttled so concurrent Dashboard requests do not turn
+one missing population into a database read storm.
 """
 from __future__ import annotations
 
@@ -27,10 +28,12 @@ log = logging.getLogger("dashboard_market_cache")
 CACHE_SECONDS = float(os.getenv("DASHBOARD_MARKET_CACHE_SECONDS", "90"))
 CURRENT_MAX_AGE_MINUTES = int(os.getenv("DASHBOARD_CURRENT_INTELLIGENCE_MAX_AGE_MINUTES", "180"))
 MIN_PERSISTED_COVERAGE = float(os.getenv("DASHBOARD_CURRENT_INTELLIGENCE_MIN_COVERAGE", "0.60"))
+WARMING_RETRY_SECONDS = float(os.getenv("DASHBOARD_CURRENT_INTELLIGENCE_WARMING_RETRY_SECONDS", "15"))
 
 _lock = asyncio.Lock()
 _pairs: Optional[List[Tuple[Dict[str, Any], Any]]] = None
 _cached_at = 0.0
+_last_attempt_at = 0.0
 _cache_source = "empty"
 _refresh_task: Optional[asyncio.Task] = None
 
@@ -57,36 +60,15 @@ async def _load_persisted(provider):
     return pairs, coverage, len(card_ids)
 
 
-async def _compute_live_fallback(provider) -> List[Tuple[Dict[str, Any], Any]]:
-    """Old safe path retained only for an empty-process bootstrap."""
-    from app.routers.v2 import futgg_market as market
-
-    started = time.monotonic()
-    rows = await market._segmented_candidates(provider)
-    sales_by_card = await market._sales_for_rows(provider, rows)
-    bin_by_card = await market._bin_observations_for_rows(provider, rows)
-    pairs = await market._score_and_filter(
-        rows,
-        sales_by_card=sales_by_card,
-        bin_by_card=bin_by_card,
-    )
-    log.warning(
-        "dashboard current-intelligence coverage insufficient; one-time live fallback scored %d cards in %.2fs",
-        len(pairs),
-        time.monotonic() - started,
-    )
-    return pairs
-
-
-async def _compute(provider, *, allow_fallback: bool = True):
+async def _compute(provider):
     started = time.monotonic()
     try:
         persisted, coverage, candidate_count = await _load_persisted(provider)
     except Exception:
-        # Expected during the brief migration-080 rollout window on the very
-        # first deploy. Do not turn a missing new table into a broken Home.
+        # A missing/new table or temporary DB read failure must not send Home
+        # back through live evaluate_card(). Persisted state is the only source.
         log.warning("dashboard persisted-intelligence read failed", exc_info=True)
-        persisted, coverage, candidate_count = [], 0.0, 0
+        return [], "warming"
 
     if persisted and coverage >= MIN_PERSISTED_COVERAGE:
         log.info(
@@ -98,39 +80,37 @@ async def _compute(provider, *, allow_fallback: bool = True):
         )
         return persisted, "persisted"
 
-    if not allow_fallback:
-        log.info(
-            "dashboard persisted intelligence warming: %d/%d cards (%.1f%%; need %.0f%%)",
-            len(persisted),
-            candidate_count,
-            coverage * 100.0,
-            MIN_PERSISTED_COVERAGE * 100.0,
-        )
-        return persisted, "warming"
-
-    return await _compute_live_fallback(provider), "live_fallback"
+    log.info(
+        "dashboard persisted intelligence warming: %d/%d cards (%.1f%%; need %.0f%%)",
+        len(persisted),
+        candidate_count,
+        coverage * 100.0,
+        MIN_PERSISTED_COVERAGE * 100.0,
+    )
+    return persisted, "warming"
 
 
-async def _refresh(provider, *, allow_fallback: bool = True):
-    global _pairs, _cached_at, _cache_source
+async def _refresh(provider):
+    global _pairs, _cached_at, _last_attempt_at, _cache_source
     async with _lock:
-        if _pairs is not None and time.monotonic() - _cached_at < CACHE_SECONDS:
+        now = time.monotonic()
+        if _pairs is not None and now - _cached_at < CACHE_SECONDS:
             return _pairs
+        if _pairs is None and _last_attempt_at and now - _last_attempt_at < WARMING_RETRY_SECONDS:
+            return []
 
-        pairs, source = await _compute(provider, allow_fallback=allow_fallback)
+        _last_attempt_at = now
+        pairs, source = await _compute(provider)
+        _cache_source = source
 
-        # Never promote a partial warmup population into the live cache. On the
-        # first migration deploy this table fills over scanner passes; caching a
-        # 10-20% slice would make Home look valid while silently omitting most
-        # of its candidate universe. Keep the previous complete value if one
-        # exists, otherwise stay empty until either coverage is sufficient or a
-        # real request chooses the one-time transitional live fallback.
+        # Never promote a partial warmup population into the live cache. Keep
+        # the previous complete universe if one exists; otherwise remain empty
+        # until persisted coverage is genuinely sufficient.
         if source == "warming":
             return _pairs or []
 
         _pairs = pairs
         _cached_at = time.monotonic()
-        _cache_source = source
         return _pairs
 
 
@@ -141,11 +121,7 @@ def _schedule_refresh(provider) -> None:
 
     async def runner() -> None:
         try:
-            # Once there is any complete cached universe, background refreshes
-            # are persisted-only. If coverage is still warming we keep serving
-            # the last complete value rather than re-running evaluate_card()
-            # across the market every CACHE_SECONDS.
-            await _refresh(provider, allow_fallback=False)
+            await _refresh(provider)
         except Exception:
             log.warning("dashboard market state background refresh failed", exc_info=True)
 
@@ -154,27 +130,30 @@ def _schedule_refresh(provider) -> None:
 
 async def get_pairs(provider) -> List[Tuple[Dict[str, Any], Any]]:
     if _pairs is None:
-        # Only this empty-process path may invoke the live fallback.
-        return await _refresh(provider, allow_fallback=True)
+        return await _refresh(provider)
     if time.monotonic() - _cached_at >= CACHE_SECONDS:
         _schedule_refresh(provider)
     return _pairs
 
 
 async def prewarm(provider) -> None:
-    """Prewarm from persisted state only; never burn CPU merely to prewarm."""
+    """Prewarm persisted state only. This function cannot invoke live scoring."""
     try:
-        await _refresh(provider, allow_fallback=False)
+        await _refresh(provider)
     except Exception:
         log.warning("dashboard persisted-state prewarm failed", exc_info=True)
 
 
 def cache_health() -> Dict[str, Any]:
+    now = time.monotonic()
     return {
         "source": _cache_source,
         "cards": len(_pairs or []),
-        "age_seconds": round(time.monotonic() - _cached_at, 1) if _pairs is not None else None,
+        "age_seconds": round(now - _cached_at, 1) if _pairs is not None else None,
+        "last_attempt_age_seconds": round(now - _last_attempt_at, 1) if _last_attempt_at else None,
         "ttl_seconds": CACHE_SECONDS,
+        "warming_retry_seconds": WARMING_RETRY_SECONDS,
+        "live_fallback_enabled": False,
     }
 
 
@@ -213,7 +192,7 @@ def install_dashboard_market_cache(application) -> None:
     dashboard_module._segmented_candidates = cached_segmented_candidates
     dashboard_module._sales_for_rows = cached_sales_for_rows
     dashboard_module._score_and_filter = cached_score_and_filter
-    log.info("dashboard persisted-intelligence helpers installed")
+    log.info("dashboard persisted-only intelligence helpers installed")
 
     @application.app.on_event("startup")
     async def _schedule_dashboard_market_prewarm() -> None:
@@ -223,8 +202,8 @@ def install_dashboard_market_cache(application) -> None:
 
             # First attempt catches an already-populated table on ordinary
             # redeploys. A second attempt lands after the scanner's 45s startup
-            # delay on migration 080's first deploy. Partial state is never
-            # cached by prewarm, so the second attempt remains meaningful.
+            # delay on a genuinely fresh database. Partial state is never
+            # promoted as complete.
             for delay in (8, 55):
                 await asyncio.sleep(delay)
                 try:
