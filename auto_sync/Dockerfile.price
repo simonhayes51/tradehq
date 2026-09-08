@@ -1,32 +1,60 @@
-# PriceSync - bulk FUT.GG price/BIN ingest.
+# PriceSync - bulk FUT.GG price/BIN ingest (the whole ~27k-card catalogue
+# from one page load - see futgg_bulk_price_sync.py's own module
+# docstring for why this replaced per-card scraping).
 #
-# The bulk feed is only obtainable by loading a real FUT.GG page and
-# observing the page's own requests. Production diagnostics on 2026-09-08
-# showed FUT.GG returning Cloudflare's "Attention Required" page to this
-# worker while it ran as HeadlessChrome. SalesSync already avoids the same
-# headless signal by running headed Chromium against Xvfb, so PriceSync now
-# uses that same browser shape.
+# futgg_bulk_price_sync.py is already long-running: its __main__ calls
+# run_forever(), which holds one Playwright browser/page open for the
+# process lifetime and loops internally (ingest cycle -> sleep
+# FUTGG_BULK_INTERVAL_SECONDS -> repeat). It is NOT one-shot, so this
+# image runs it directly with no extra loop wrapper - wrapping an
+# already-looping process in another sleep loop would just double-sleep
+# between cycles for no benefit, and would throw away the warm
+# browser/page the script deliberately keeps alive between batches.
 #
-# Deploy as a normal continuous Coolify service, not a Scheduled Task.
+# Deploy this as a normal continuous Coolify service (NOT a Scheduled
+# Task) - see auto_sync/COOLIFY.md.
+#
+# Still needs the Playwright base image: the bulk feed itself
+# (r2.fut.gg's static price JSON) is only reachable by letting a real
+# fut.gg page load and listening for the requests it makes - see the
+# TRANSPORT section of futgg_bulk_price_sync.py's docstring for why a
+# plain HTTP client can't do this (r2.fut.gg 403s direct/CORS requests).
+#
+# FUTGG_BULK_APPLY defaults to true in the script itself
+# (futgg_bulk_price_sync.py's `APPLY = env_bool("FUTGG_BULK_APPLY", True)`)
+# - set explicitly here anyway so the Coolify service's own config is the
+# visible source of truth rather than relying on a script-level default a
+# future edit could silently change. Override to "false" only for a
+# read-only coverage-check run.
+#
+# SELF-HEALING REDISCOVERY: when the normal page stops yielding the feed
+# (FUT.GG restructured something, or the specific card this run picked no
+# longer works), the worker automatically retries against
+# FUTGG_DISCOVER_URL and adopts it going forward on success - see
+# futgg_bulk_price_sync.py's own module docstring for the full mechanism,
+# and auto_sync/COOLIFY.md for the required/optional env vars
+# (FUTGG_DISCOVER_URL, FUTGG_DISCOVERY_ENABLED,
+# FUTGG_DISCOVERY_RETRY_COUNT, FUTGG_DISCOVERY_FAILURE_BACKOFF_SECONDS).
+# FUTGG_DISCOVER_URL is deliberately NOT set here - it must be configured
+# per-deployment in Coolify, not baked into the image; without it,
+# automatic recovery cannot do anything (logged clearly, not silently
+# skipped) and the worker behaves exactly as it did before this feature
+# existed.
+#
+# No port: this worker only talks to fut.gg and DATABASE_URL, never
+# serves HTTP.
 
 FROM mcr.microsoft.com/playwright/python:v1.61.0-noble
-
-ENV PYTHONUNBUFFERED=1
-ENV DISPLAY=:99
 
 WORKDIR /app
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-RUN command -v Xvfb > /dev/null 2>&1 \
-    && echo "Xvfb present in base image" \
-    || echo "WARNING: Xvfb not found in base image - PriceSync will fail at runtime"
-
 COPY . .
-RUN chmod +x /app/docker-entrypoint-price.sh
 
-ENV PLAYWRIGHT_HEADLESS=false
+ENV PYTHONUNBUFFERED=1
+ENV PLAYWRIGHT_HEADLESS=true
 ENV FUTGG_BULK_APPLY=true
 
-CMD ["/app/docker-entrypoint-price.sh"]
+CMD ["python", "futgg_bulk_price_sync.py"]
