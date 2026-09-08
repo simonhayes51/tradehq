@@ -7,14 +7,21 @@ calls actually reach their recommended sell target, and how long did it take?"
 No synthetic 0-100 score is produced. The output is an observed target-hit rate,
 a Wilson 95% interval, sample size, time-to-target and MAE/MFE, with explicit
 cohort specificity. If history is too thin, the honest result is insufficient.
+
+Historical rows are pinned to BOTH the current engine/grader versions and the
+exact frozen engine_config JSON. A version label is not sufficient on its own:
+environment overrides can change a threshold without changing ENGINE_VERSION,
+and mixing those behaviours would make the user-facing exit statistic claim
+comparability that does not really exist.
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional
 
 from app.services.futgg_calibration import wilson_interval
-from app.services.futgg_config import ENGINE_VERSION, GRADER_VERSION
+from app.services.futgg_config import ENGINE_CONFIG, ENGINE_VERSION, GRADER_VERSION
 from app.services.futgg_recommendation_store import VALID_ENTRY_PRICE
 
 MIN_COHORT_SAMPLE = 30
@@ -109,23 +116,24 @@ WITH historical AS MATERIALIZED (
       AND s.evaluated_at >= now() - ($2::int * interval '1 day')
       AND s.engine_version = $3
       AND o.grader_version = $4
+      AND s.engine_config = $5::jsonb
       AND s.signal IN ('buy', 'strong_buy')
       AND o.outcome_status <> 'insufficient_observations'
       AND {VALID_ENTRY_PRICE}
 ), ranked_cohorts AS (
     SELECT 1 AS specificity, 'liquidity+target+trend+tier'::text AS cohort,
            * FROM historical
-    WHERE liquidity_bucket = $5 AND target_distance_bucket = $6
-      AND trend_state = $7 AND price_tier = $8
+    WHERE liquidity_bucket = $6 AND target_distance_bucket = $7
+      AND trend_state = $8 AND price_tier = $9
     UNION ALL
     SELECT 2, 'liquidity+target+trend', * FROM historical
-    WHERE liquidity_bucket = $5 AND target_distance_bucket = $6 AND trend_state = $7
+    WHERE liquidity_bucket = $6 AND target_distance_bucket = $7 AND trend_state = $8
     UNION ALL
     SELECT 3, 'liquidity+target', * FROM historical
-    WHERE liquidity_bucket = $5 AND target_distance_bucket = $6
+    WHERE liquidity_bucket = $6 AND target_distance_bucket = $7
     UNION ALL
     SELECT 4, 'liquidity', * FROM historical
-    WHERE liquidity_bucket = $5
+    WHERE liquidity_bucket = $6
     UNION ALL
     SELECT 5, 'overall', * FROM historical
 ), aggregated AS (
@@ -147,7 +155,7 @@ WITH historical AS MATERIALIZED (
 )
 SELECT *
 FROM aggregated
-WHERE total >= $9
+WHERE total >= $10
 ORDER BY specificity
 LIMIT 1
 """
@@ -163,11 +171,15 @@ async def exit_quality_for_card(
     min_sample: int = MIN_COHORT_SAMPLE,
     engine_version: str = ENGINE_VERSION,
     grader_version: str = GRADER_VERSION,
+    engine_config: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     if horizon not in {"24h", "48h", "7d"}:
         raise ValueError("horizon must be one of 24h, 48h, 7d")
 
     cohort = current_cohort(row, ci)
+    frozen_config = engine_config if engine_config is not None else ENGINE_CONFIG.as_dict()
+    config_json = json.dumps(frozen_config, sort_keys=True, separators=(",", ":"))
+
     async with pool.acquire() as conn:
         result = await conn.fetchrow(
             _QUERY,
@@ -175,6 +187,7 @@ async def exit_quality_for_card(
             max(1, int(window_days)),
             engine_version,
             grader_version,
+            config_json,
             cohort.liquidity_bucket,
             cohort.target_distance_bucket,
             cohort.trend_state,
@@ -195,7 +208,10 @@ async def exit_quality_for_card(
             "window_days": int(window_days),
             "minimum_sample": max(10, int(min_sample)),
             "current_cohort": current,
-            "message": "Not enough comparable graded recommendations yet to estimate exit performance reliably.",
+            "engine_version": engine_version,
+            "grader_version": grader_version,
+            "exact_engine_config": True,
+            "message": "Not enough comparable graded recommendations from this exact engine configuration yet to estimate exit performance reliably.",
         }
 
     total = int(result["total"] or 0)
@@ -242,5 +258,6 @@ async def exit_quality_for_card(
         ),
         "engine_version": engine_version,
         "grader_version": grader_version,
-        "interpretation": "Historical behaviour of comparable calls, not a guarantee or a forecast of this card.",
+        "exact_engine_config": True,
+        "interpretation": "Historical behaviour of comparable calls from this exact engine configuration, not a guarantee or a forecast of this card.",
     }
