@@ -1,6 +1,6 @@
 -- Migration 067: restore futgg_market_snapshot's indexes
 -- target: core
--- requires-table: futgg_market_snapshot
+-- requires-table: futgg_market_snapshot, fair_value_mv
 --
 -- INCIDENT: on 2026-08-22, futgg_market_snapshot had only 1 of its 9
 -- expected indexes, and fair_value_mv had only 2 of its 4. Root cause,
