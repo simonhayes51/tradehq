@@ -132,48 +132,44 @@ function PlayerName({ name, size, width }) {
 }
 
 function Portrait({ data, isProfit, resultColor, profitText, roiText, bought, sold, footer }) {
-  const profitSize = scaledFontSize(178, profitText, 8, 0.6);
+  const profitSize = scaledFontSize(196, profitText, 8, 0.6);
+
   return (
-    <div style={{ position: "relative", width: "100%", height: "100%", boxSizing: "border-box", padding: "28px 68px 26px", display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center" }}>
+    <div style={{ position: "relative", width: "100%", height: "100%", boxSizing: "border-box", padding: "28px 60px 24px", display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center" }}>
       <Brand centered large />
 
-      <div style={{ marginTop: 14, fontSize: 68, lineHeight: 0.96, fontWeight: 950, letterSpacing: "-0.025em", color: isProfit ? TEXT : LOSS, textTransform: "uppercase" }}>
+      <div style={{ marginTop: 16, fontSize: 74, lineHeight: 0.96, fontWeight: 950, letterSpacing: "-0.025em", color: isProfit ? TEXT : LOSS, textTransform: "uppercase" }}>
         {isProfit ? "WE CALLED IT." : "TRADE RESULT"}
       </div>
-      {isProfit ? (
-        <div style={{ marginTop: 8, fontSize: 15, fontWeight: 800, letterSpacing: "0.28em", color: MUTED, textTransform: "uppercase" }}>
-          EAFC.Live trade result
-        </div>
-      ) : null}
 
-      <div style={{ marginTop: isProfit ? 12 : 16 }}>
-        <CardArt data={data} width={440} height={530} />
+      <div style={{ marginTop: 12 }}>
+        <CardArt data={data} width={470} height={560} />
       </div>
 
-      <div style={{ marginTop: 0 }}>
-        <PlayerName name={data.player} size={31} width={900} />
+      <div style={{ marginTop: -2 }}>
+        <PlayerName name={data.player} size={35} width={920} />
       </div>
 
-      <div style={{ marginTop: 14, fontSize: 18, fontWeight: 800, letterSpacing: "0.24em", color: MUTED, textTransform: "uppercase" }}>
+      <div style={{ marginTop: 16, fontSize: 20, fontWeight: 800, letterSpacing: "0.24em", color: MUTED, textTransform: "uppercase" }}>
         {isProfit ? "Profit" : "Loss"}
       </div>
-      <div style={{ marginTop: 1, fontSize: profitSize, lineHeight: 0.86, fontWeight: 950, letterSpacing: "-0.045em", color: resultColor }}>
+      <div style={{ marginTop: 0, fontSize: profitSize, lineHeight: 0.84, fontWeight: 950, letterSpacing: "-0.05em", color: resultColor }}>
         {profitText}
       </div>
 
-      <div style={{ marginTop: 17, display: "flex", alignItems: "center", justifyContent: "center", gap: 25 }}>
-        <Price value={bought} label="Bought" size={54} />
-        <div style={{ paddingTop: 22, fontSize: 56, lineHeight: 1, fontWeight: 800, color: ACCENT }}>→</div>
-        <Price value={sold} label="Sold" size={54} />
+      <div style={{ marginTop: 14, display: "flex", alignItems: "center", justifyContent: "center", gap: 28 }}>
+        <Price value={bought} label="Bought" size={60} />
+        <div style={{ paddingTop: 24, fontSize: 62, lineHeight: 1, fontWeight: 800, color: ACCENT }}>→</div>
+        <Price value={sold} label="Sold" size={60} />
       </div>
 
       {roiText ? (
-        <div style={{ marginTop: 17, fontSize: 57, lineHeight: 1, fontWeight: 900, color: resultColor }}>
-          {roiText} <span style={{ fontSize: 20, color: MUTED, letterSpacing: "0.16em", verticalAlign: "middle" }}>ROI</span>
+        <div style={{ marginTop: 16, fontSize: 66, lineHeight: 1, fontWeight: 900, color: resultColor }}>
+          {roiText} <span style={{ fontSize: 24, color: MUTED, letterSpacing: "0.16em", verticalAlign: "middle" }}>ROI</span>
         </div>
       ) : null}
 
-      <div style={{ marginTop: 13, fontSize: 19, color: MUTED, letterSpacing: "0.025em" }}>{footer}</div>
+      <div style={{ marginTop: 12, fontSize: 21, color: MUTED, letterSpacing: "0.025em" }}>{footer}</div>
       <div style={{ marginTop: "auto" }}><Attribution /></div>
     </div>
   );
