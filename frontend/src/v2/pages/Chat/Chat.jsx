@@ -118,11 +118,42 @@ export default function Chat() {
   );
 }
 
+function renderInlineMarkdown(text) {
+  return String(text ?? "")
+    .split(/(\*\*[^*]+\*\*)/g)
+    .filter(Boolean)
+    .map((part, index) => part.startsWith("**") && part.endsWith("**")
+      ? <strong key={index}>{part.slice(2, -2)}</strong>
+      : <span key={index}>{part}</span>);
+}
+
+export function FormattedMessage({ content }) {
+  // The model sometimes returns a compact one-line summary such as
+  // "Over 90 days: - **332 wins** - **91.5% win rate**". It is valid-ish
+  // Markdown but without line breaks a plain renderer still looks like
+  // punctuation soup. Turn only bold-led list separators into real lines;
+  // normal hyphens, prices and prose are untouched.
+  const normalised = String(content ?? "")
+    .replace(/:\s+-\s+(?=\*\*)/g, ":\n- ")
+    .replace(/\s+-\s+(?=\*\*)/g, "\n- ");
+  const lines = normalised.split(/\r?\n/);
+  return <div className="v2-chat-message-copy">
+    {lines.map((line, index) => {
+      const trimmed = line.trim();
+      if (!trimmed) return <div key={index} className="v2-chat-message-gap" aria-hidden="true" />;
+      if (trimmed.startsWith("- ")) {
+        return <div key={index} className="v2-chat-message-bullet"><span aria-hidden="true">•</span><p>{renderInlineMarkdown(trimmed.slice(2))}</p></div>;
+      }
+      return <p key={index}>{renderInlineMarkdown(line)}</p>;
+    })}
+  </div>;
+}
+
 function ChatBubble({ message }) {
   const isUser = message.role === "user";
   return (
     <div className={`v2-chat-bubble ${isUser ? "user" : "assistant"}`}>
-      <p>{message.content}</p>
+      <FormattedMessage content={message.content} />
       {(message.toolResults || []).map((tr, i) => <ToolResult key={i} toolResult={tr} />)}
     </div>
   );

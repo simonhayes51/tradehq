@@ -18,6 +18,7 @@ import TrackRecord from "./pages/TrackRecord/TrackRecord";
 import Onboarding from "./pages/Onboarding/Onboarding";
 import Billing from "./pages/Billing/Billing";
 import DiscordFeed from "./pages/DiscordFeed/DiscordFeed";
+import "./styles/mobile-screenshot-fixes.css";
 
 export default function V2App() {
   return (

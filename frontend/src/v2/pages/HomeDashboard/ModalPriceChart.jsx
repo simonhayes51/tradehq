@@ -31,6 +31,38 @@ const RANGES = {
 // the toggle appeared to do nothing at all.
 const MAX_RANGE_DAYS = 14;
 
+function median(values) {
+  const sorted = values.slice().sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+}
+
+// FUT.GG's approximate timestamps legitimately collide: a page capture
+// can contain many completed sales whose source age resolves to the same
+// minute. Joining every raw row gives the chart vertical needles. The
+// range config already defines the intended chart resolution (1h/4h/12h),
+// so draw one median point per bucket. Raw sales remain untouched for the
+// statistical readout below the plot.
+export function bucketApproximateSales(points, bucketHours) {
+  if (!Array.isArray(points) || points.length <= 1) return points || [];
+  const bucketMs = Math.max(1, Number(bucketHours) || 1) * 3600 * 1000;
+  const groups = new Map();
+  points.forEach((point) => {
+    const key = Math.floor(point.time / bucketMs) * bucketMs;
+    const group = groups.get(key) || [];
+    group.push(point);
+    groups.set(key, group);
+  });
+  return [...groups.values()].map((group) => {
+    const times = group.map((point) => point.time).sort((a, b) => a - b);
+    return {
+      time: times[Math.floor(times.length / 2)],
+      price: median(group.map((point) => point.price)),
+      approximate: true,
+    };
+  }).sort((a, b) => a.time - b.time);
+}
+
 export default function ModalPriceChart({ cardId, entryPrice, targetPrice, fairValue, source }) {
   const [range, setRange] = useState("7d");
   const config = RANGES[range];
@@ -51,7 +83,7 @@ export default function ModalPriceChart({ cardId, entryPrice, targetPrice, fairV
   // see get_player_sales. Used only to explain an empty window.
   const data = isFutgg ? futggQuery.data : null;
 
-  const points = useMemo(() => {
+  const rawPoints = useMemo(() => {
     if (isFutgg) {
       // No client-side cutoff any more - the server already returned this
       // range, and re-filtering here is what made the picker inert.
@@ -63,14 +95,21 @@ export default function ModalPriceChart({ cardId, entryPrice, targetPrice, fairV
     return (legacyQuery.data?.candles || []).map((c) => ({
       time: Number(c.time) * 1000,
       price: Number(c.close),
-    })).filter((point) => Number.isFinite(point.price));
+    })).filter((point) => Number.isFinite(point.price) && Number.isFinite(point.time));
   }, [isFutgg, futggQuery.data, legacyQuery.data]);
+
+  // Plot FUT.GG data at the resolution the selected range already
+  // declares. Legacy data is pre-bucketed candles, so it stays as-is.
+  const points = useMemo(
+    () => isFutgg ? bucketApproximateSales(rawPoints, config.bucketHours) : rawPoints,
+    [isFutgg, rawPoints, config.bucketHours],
+  );
 
   // Tick format follows the span the data ACTUALLY covers, not the range
   // that was asked for. Every label read "Thu 6" when a whole window sat
   // inside one day, so a dozen identical labels overprinted each other
   // into an unreadable smear.
-  const spanMs = points.length > 1 ? points[points.length - 1].time - points[0].time : 0;
+  const spanMs = rawPoints.length > 1 ? rawPoints[rawPoints.length - 1].time - rawPoints[0].time : 0;
   const formatTick = tickFormatterForSpan(spanMs);
   const axisTicks = useMemo(() => evenTicks(points), [points]);
 
@@ -85,7 +124,8 @@ export default function ModalPriceChart({ cardId, entryPrice, targetPrice, fairV
   // median drawn as a reference line and the interquartile range as a
   // shaded band. Outlying points are still plotted, clipped to the edge,
   // and counted in the note below the chart - disclosed, not hidden.
-  const stats = useMemo(() => salesStats(points.map((p) => p.price)), [points]);
+  // Stats stay based on every real sale, not the display-only buckets.
+  const stats = useMemo(() => salesStats(rawPoints.map((p) => p.price)), [rawPoints]);
 
   // Which range buttons can actually be answered for this card. Derived
   // from the widest window's own data, not guessed.
@@ -124,7 +164,7 @@ export default function ModalPriceChart({ cardId, entryPrice, targetPrice, fairV
   // "7d selected but the card only has six hours of history" is a real,
   // common state that otherwise reads as a broken toggle.
   const coverageNote = useMemo(() => {
-    if (!isFutgg || points.length < 2) return null;
+    if (!isFutgg || rawPoints.length < 2) return null;
     const requestedMs = config.days * 24 * 3600 * 1000;
     if (spanMs >= requestedMs * 0.5) return null;
     // "exist for this card" was a claim about the market. What we
@@ -134,7 +174,7 @@ export default function ModalPriceChart({ cardId, entryPrice, targetPrice, fairV
     // recorded at all. So a 7d chart routinely contains one dense
     // cluster from a single visit, not a week of trading.
     return `We only hold ${humaniseSpan(spanMs)} of completed sales for this card - they are collected in bursts, not continuously.`;
-  }, [isFutgg, points.length, spanMs, config.days]);
+  }, [isFutgg, rawPoints.length, spanMs, config.days]);
 
   // An empty window has two very different causes and this used to state
   // only one of them. "No completed sales in the last 24h" reads as a
@@ -207,9 +247,9 @@ export default function ModalPriceChart({ cardId, entryPrice, targetPrice, fairV
             {/* Three reference lines sharing two corners overprinted each
                 other ("SELL" landing on top of "BUY"). Spread across the
                 available positions instead. */}
-            {entryPrice > 0 && <ReferenceLine y={entryPrice} stroke="#ffd34d" strokeDasharray="5 4" label={{ value: "BUY", fill: "#ffd34d", fontSize: 10, position: "insideBottomRight" }}/>}
-            {fairValue > 0 && <ReferenceLine y={fairValue} stroke="#65c7ff" strokeDasharray="3 4" label={{ value: "FAIR", fill: "#65c7ff", fontSize: 10, position: "insideTopLeft" }}/>}
-            {targetPrice > 0 && <ReferenceLine y={targetPrice} stroke="#3bffa4" strokeDasharray="5 4" label={{ value: "SELL", fill: "#3bffa4", fontSize: 10, position: "insideTopRight" }}/>}
+            {entryPrice > 0 && <ReferenceLine y={entryPrice} stroke="#ffd34d" strokeDasharray="5 4" label={{ value: "BUY", fill: "#ffd34d", fontSize: 10, position: "insideBottomRight" }}/>} 
+            {fairValue > 0 && <ReferenceLine y={fairValue} stroke="#65c7ff" strokeDasharray="3 4" label={{ value: "FAIR", fill: "#65c7ff", fontSize: 10, position: "insideTopLeft" }}/>} 
+            {targetPrice > 0 && <ReferenceLine y={targetPrice} stroke="#3bffa4" strokeDasharray="5 4" label={{ value: "SELL", fill: "#3bffa4", fontSize: 10, position: "insideTopRight" }}/>} 
             {stats
               ? <ReferenceLine y={stats.median} stroke="#c9c9c9" strokeDasharray="2 3" label={{ value: "MEDIAN", fill: "#c9c9c9", fontSize: 10, position: "insideBottomLeft" }} ifOverflow="extendDomain"/>
               : null}
