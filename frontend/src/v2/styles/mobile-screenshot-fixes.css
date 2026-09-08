@@ -1,0 +1,75 @@
+/* Mobile fixes from the September launch QA screenshot pass.
+ * Kept separate from the older mobile-polish.css so these narrowly-scoped
+ * corrections are easy to audit and do not churn the large legacy file. */
+
+@media (max-width: 800px) {
+  /* The More sheet should read as navigation, not another giant content
+     card floating over the page. Keep it compact and visually separate. */
+  .mobile-more-menu {
+    padding: 12px !important;
+    border-radius: 12px !important;
+    box-shadow: 0 18px 50px rgba(0,0,0,.72), 0 0 0 100vmax rgba(0,0,0,.28) !important;
+    clip-path: inset(-100vmax);
+  }
+  .v2-global-nav .mobile-more-grid .mobile-more-link {
+    min-height: 48px !important;
+    padding-inline: 10px !important;
+  }
+  .mobile-more-head {
+    margin-bottom: 8px !important;
+  }
+
+  /* Assistant replies were constrained to 70% of the screen, turning a
+     compact answer into a very tall column. chat.css owns the normal rule;
+     this is the final mobile guard after all route-level styles load. */
+  .v2-chat-bubble.assistant {
+    max-width: 92% !important;
+  }
+}
+
+@media (max-width: 700px) {
+  /* The popup card art inherited desktop position:sticky. Once the user
+     scrolled to the chart, the card remained pinned and sat on top of the
+     graph. Page-mode intentionally has its own non-sticky hero already. */
+  .dash-analysis-modal:not(.page-mode) .dash-modal-card {
+    position: relative !important;
+    top: auto !important;
+    align-self: start !important;
+    z-index: 0 !important;
+  }
+
+  /* The compact queue already has a dedicated WHY THIS MOVE row. The tiny
+     reason under the player name is the same sentence again and often gets
+     clipped with an ellipsis, so remove the duplicate on phones. */
+  .queue-card .queue-name > small {
+    display: none !important;
+  }
+  .queue-card .queue-reason {
+    min-width: 0;
+  }
+  .queue-card .queue-reason > span {
+    display: -webkit-box !important;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+    overflow: hidden;
+    line-height: 1.4;
+  }
+
+  /* Keep Recharts and its labels inside the modal's content box even on
+     narrow iPhones. This does not alter chart data or scale. */
+  .dash-price-chart,
+  .dash-chart-frame,
+  .dash-price-chart .recharts-responsive-container,
+  .dash-price-chart .recharts-wrapper {
+    min-width: 0 !important;
+    max-width: 100% !important;
+  }
+  .dash-chart-frame {
+    overflow: hidden !important;
+  }
+  .dash-chart-typical,
+  .dash-chart-coverage {
+    font-size: 10px !important;
+    line-height: 1.45 !important;
+  }
+}
