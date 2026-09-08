@@ -2,6 +2,7 @@ import { Navigate, Routes, Route, Link } from "react-router-dom";
 import "./styles/tokens.css";
 import "./styles/mobile-polish.css";
 import Nav from "./components/Nav";
+import LimitReachedPrompt from "./components/LimitReachedPrompt";
 import HomeDashboard from "./pages/HomeDashboard/HomeDashboard";
 import PlayerPage from "./pages/PlayerPage/PlayerPage";
 import AdminSbcImports from "./pages/AdminSbcImports/AdminSbcImports";
@@ -96,6 +97,7 @@ function ShellLayout({ children }) {
     <div className="v2-root">
       <Nav />
       <div className="v2-shell-content">{children}</div>
+      <LimitReachedPrompt />
     </div>
   );
 }
