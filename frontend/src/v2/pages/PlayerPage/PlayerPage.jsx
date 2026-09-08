@@ -13,32 +13,12 @@ export default function PlayerPage() {
   const { cardId } = useParams();
   const location = useLocation();
   const navigate = useNavigate();
-  // Single source: the FUT.GG-backed GET /api/v2/players/{cardId}.
-  // Every /players/:cardId link (Watchlist, Trade Finder,
-  // Opportunities, Market, SBC impact) passes a source_card_id, which is
-  // exactly what this endpoint keys on.
   const futggQuery = useFutggPlayer(cardId);
   const [watchState, setWatchState] = useState("");
-  const item = useMemo(
-    // FUT.GG is the ONLY source. The legacy FUTBIN /summary path is gone:
-    // it was not merely stale but actively wrong - it served Carles Puyol
-    // as 337,000 with an AVOID verdict while FUT.GG, the watchlist and
-    // the section below all said 11,250. fair_value_mv, which fed it, is
-    // broken on the current player database.
-    //
-    // Nothing falls back to it any more. A card with no FUT.GG row shows
-    // an honest empty state rather than a number from a dead pipeline.
-    () => toFutggAnalysisItem(futggQuery.data, cardId),
-    [futggQuery.data, cardId],
-  );
+  const item = useMemo(() => toFutggAnalysisItem(futggQuery.data, cardId), [futggQuery.data, cardId]);
   const settled = !futggQuery.isLoading;
   const origin = location.state?.from;
   const returnPath = origin === "trade-finder" ? "/trade-finder" : "/players";
-  // Discord's "View in EAFC.Live" button on a Server Feed opportunity
-  // post links here with ?src=discord_feed (see discord_trading_feed.py's
-  // build_opportunity_post_embed) so the signed-out preview below can
-  // acknowledge the visitor already saw this exact trade's numbers in
-  // Discord, instead of reading as re-hiding what was just given away.
   const fromDiscordFeed = new URLSearchParams(location.search).get("src") === "discord_feed";
   const backLabel = origin === "trade-finder" ? "Back to Trade Finder" : "Back to player search";
 
@@ -60,19 +40,15 @@ export default function PlayerPage() {
       setWatchState("saved");
     } catch (requestError) {
       if (requestError?.response?.status === 409) setWatchState("saved");
-      // A shared player-page link is the acquisition loop: a friend
-      // clicks Watch while signed out, signs up, and should land back on
-      // this exact card, not Home - see AuthContext.login's returnTo.
       else if (requestError?.response?.status === 401) navigate(`/signup?from=${encodeURIComponent(`/players/${cardId}`)}`);
+      // A quota 402 has already raised the shell-level LimitReachedPrompt.
+      // Reset the button instead of turning a deliberate Free-plan limit
+      // into a generic failed-save state underneath that prompt.
+      else if (requestError?.response?.data?.detail?.error === "limit_reached") setWatchState("");
       else setWatchState("error");
     }
   }
 
-  // `requires_account` is the server's own answer (app/auth/access.py's
-  // public_card_preview), not something inferred from the auth context:
-  // the payload and the page must agree about what was actually sent, and
-  // the payload is the one that is right. A 401 from the detail endpoint
-  // means the same thing.
   const needsAccount =
     futggQuery.data?.requires_account === true
     || futggQuery.error?.response?.status === 401;
@@ -94,20 +70,9 @@ export default function PlayerPage() {
   }
   if (!item) return <div className="quick-analysis-page"><div className="quick-error"><p>Loading the latest analysis…</p><button onClick={goBack}>{backLabel}</button></div></div>;
 
-  {/* variant="page": this route is a standalone page (own URL, own back
-      button, indefinitely long FutggMarketSection content below), not a
-      click-triggered overlay - see AnalysisModal's own comment for why
-      the default fixed/centred/self-scrolling modal chrome broke here
-      (card art rendering behind the sidebar / far down the page). */}
   return <AnalysisModal item={item} onClose={goBack} navigate={navigate} onWatch={watch} watchState={watchState} backLabel={backLabel} variant="page" extra={<><ExitEvidence evidence={futggQuery.data?.exit_quality}/><FutggMarketSection cardId={cardId}/></>}/>;
 }
 
-// Maps the engine's signal vocabulary onto the verdict the shared
-// AnalysisModal renders. Restored after being removed by accident: it sat
-// between toAnalysisItem and toFutggAnalysisItem, and deleting the former
-// took this with it. The result was a ReferenceError thrown only when a
-// card actually rendered - so the build passed, and every player page
-// died with "Something went wrong".
 const _FUTGG_SIGNAL_RECOMMENDATION = {
   strong_buy: "BUY",
   buy: "BUY",
@@ -126,33 +91,10 @@ function toFutggAnalysisItem(raw, cardId) {
     cardId,
     source: "futgg",
     recommendation: _FUTGG_SIGNAL_RECOMMENDATION[raw.signal] || "WAIT",
-    // Deliberately NOT `?? raw.current_bin`. entryPrice is meant to be a
-    // genuine recommended-entry price - on insufficient_data the engine
-    // returns recommended_buy_max: null (there is no such price), and
-    // falling back to current_bin here silently turned "we don't have a
-    // real target" into "the target IS whatever it costs right now",
-    // which is exactly the "BUY BELOW 895,000 beside a blank profit"
-    // bug AnalysisModal's `ceiling` was already fixed against (see its
-    // own comment) - just reintroduced through this separate field,
-    // which fed the "Wait for a better entry below X" verdict text and
-    // the chart's BUY reference line directly, bypassing that fix.
     entryPrice: raw.recommended_buy_max ?? null,
-    // Kept for AdvancedRationale (Layer 2), which reads the raw FUT.GG
-    // field names directly rather than duplicating them onto this shape -
-    // see HomeDashboard.jsx's normaliseFutgg for the same pattern.
     raw,
     liquidityScore: raw.liquidity_score,
     trendDescription: raw.trend_description,
-    // AnalysisModal's "Buy Below" TILE reads item.buyBelow/
-    // item.recommendedBuyMax/item.expectedProfitBasis (its own `ceiling`/
-    // `basis` computation), a SEPARATE field path from entryPrice above
-    // (which only drives the verdict TEXT via realEntry). Leaving these
-    // three unset left the tile permanently blank ("Not enough data to
-    // set one") even when entryPrice/the verdict text had a real number -
-    // seen live on a 96 Haaland: "Wait for a better entry below 655,000"
-    // directly beside a blank Buy Below tile. Mirrors the backend's own
-    // field names 1:1 (see futgg_market.py's _serialize_intelligence) so
-    // the tile and the verdict text always agree.
     buyBelow: raw.buy_below ?? null,
     recommendedBuyMax: raw.recommended_buy_max ?? null,
     expectedProfitBasis: raw.expected_profit_basis ?? null,
@@ -170,11 +112,6 @@ function toFutggAnalysisItem(raw, cardId) {
     reasoning: reasons[0] || "Market signal",
     updatedAt: raw.current_bin_captured_at,
     priceAgeSeconds: raw.price_age_seconds,
-    // Evidence provenance (app/services/futgg_bin_valuation.py) - a
-    // BIN-derived estimate must always be visibly distinct from a
-    // confirmed sale, never inferred client-side. AnalysisModal reads
-    // evidenceQuality directly to decide whether to show the "BIN
-    // history estimate" badge.
     valuationSource: raw.valuation_source,
     evidenceQuality: raw.evidence_quality,
     binSampleCount: raw.bin_sample_count,
@@ -188,12 +125,6 @@ function toFutggAnalysisItem(raw, cardId) {
       position: raw.position || raw.primary_position,
       version: versionLabel(raw.rarity),
       imageUrl: raw.image_url,
-      // composited_image_url (FUT.GG's own pre-composited full-card
-      // image, mirrored to R2) always wins when present - shown as a
-      // plain <img>, never handed to PlayerCardArt's bgImage/cutoutImage
-      // compositing, which draws its own rating/position/stats text on
-      // top and would double it up since this image already has it baked
-      // in. See PlayerCardImage.jsx's own docstring for the same rule.
       generatedCardUrl: raw.composited_image_url || (raw.card_design_image_url ? null : (raw.image_url || raw.player_image_url || null)),
       cardBgImage: raw.card_design_image_url || null,
       cardCutoutImage: raw.image_url || raw.player_image_url || null,
