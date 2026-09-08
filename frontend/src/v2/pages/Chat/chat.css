@@ -150,6 +150,8 @@
   cursor: default;
 }
 
+/* Capability list on the empty state: says up front what the assistant
+   can answer, so a user doesn't discover its limits by being declined. */
 .v2-chat-capabilities {
   margin: 10px 0 14px;
   padding: 0;
