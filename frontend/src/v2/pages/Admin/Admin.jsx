@@ -4,9 +4,8 @@
 // hook still hits a require_admin-gated endpoint independently (defense
 // in depth, matching the plan's principle of never trusting a
 // client-side guess over what the server would actually decide), but
-// this page avoids six separate "Admin access required" flashes by
-// gating on the same /api/admin/pipeline/health call the first tab
-// needs anyway.
+// this page avoids separate "Admin access required" flashes by gating on
+// the same /api/admin/pipeline/health call the first tab needs anyway.
 //
 // User Management and API key tier changes are NOT duplicated here -
 // src/pages/AdminUsers.jsx (v1, at /admin/users) already owns that
@@ -17,6 +16,7 @@ import { Link } from "react-router-dom";
 import { useAdminPipelineHealth } from "../../hooks/useAdminPipelineHealth";
 import PipelineHealthTab from "./tabs/PipelineHealthTab";
 import CollectorStatusTab from "./tabs/CollectorStatusTab";
+import DataQualityTab from "./tabs/DataQualityTab";
 import MarketEventsTab from "./tabs/MarketEventsTab";
 import NextPromoTab from "./tabs/NextPromoTab";
 import SubscriptionsTab from "./tabs/SubscriptionsTab";
@@ -29,6 +29,7 @@ const TABS = [
   // First: it is the question the launch is actually judged on.
   { key: "conversion", label: "Conversion", Component: ConversionTab },
   { key: "pipeline", label: "Pipeline Health", Component: PipelineHealthTab },
+  { key: "data-quality", label: "Data Quality", Component: DataQualityTab },
   { key: "collectors", label: "Collector Status", Component: CollectorStatusTab },
   { key: "sbc-imports", label: "SBC Imports", Component: AdminSbcImports },
   { key: "player-cards", label: "Player Cards", Component: PlayerCardsTab },
