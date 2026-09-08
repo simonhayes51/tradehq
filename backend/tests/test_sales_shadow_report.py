@@ -46,7 +46,15 @@ class _Pool:
         return _Acquire(self.conn)
 
 
-def _row(at, *, due=(), triggered=(), cards=(), selector="information-shadow-1.2"):
+def _row(
+    at,
+    *,
+    due=(),
+    triggered=(),
+    cards=(),
+    selector="information-shadow-1.2",
+    live=False,
+):
     return {
         "observed_at": at,
         "due_count": len(due),
@@ -58,7 +66,7 @@ def _row(at, *, due=(), triggered=(), cards=(), selector="information-shadow-1.2
         "triggered_card_ids": list(triggered),
         "reason_counts": {},
         "selector_version": selector,
-        "notes": {"cards": list(cards)},
+        "notes": {"cards": list(cards), "live_scheduler_changed": live},
     }
 
 
@@ -104,6 +112,7 @@ def test_report_measures_natural_pickup_repeated_misses_and_pending_events():
     assert pickup["measured_shadow_card_events"] == 4
     assert pickup["pending_shadow_card_events"] == 1
     assert pickup["picked_up_by_live_scheduler"] == 1
+    assert pickup["same_cycle_reallocated"] == 0
     assert pickup["still_missed_after_window"] == 3
     assert pickup["pickup_rate_pct"] == 25.0
     assert pickup["user_driven_events_with_card_detail"] == 4
@@ -117,6 +126,45 @@ def test_report_measures_natural_pickup_repeated_misses_and_pending_events():
     assert repeated[0]["missed_events"] == 3
     assert repeated[0]["pending_events"] == 0
     assert repeated[0]["reasons"] == {"watchlist": 3}
+
+
+def test_same_cycle_rebalanced_card_counts_as_immediate_pickup():
+    now = datetime.now(timezone.utc)
+    t0 = now - timedelta(hours=1)
+    card = {
+        "card_id": 100815667,
+        "reasons": ["market_activity"],
+        "user_driven": False,
+        "rebalanced_live": True,
+    }
+    observations = [
+        _row(
+            t0,
+            due=(1, 100815667),
+            triggered=(100815667,),
+            cards=(card,),
+            selector="information-live-rebalance-1.0",
+            live=True,
+        )
+    ]
+    conn = _Conn(observations)
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(pool=_Pool(conn))))
+
+    result = run(sales_information_shadow(
+        request,
+        hours=24,
+        pickup_window_minutes=30,
+        _admin={"is_admin": True},
+    ))
+
+    pickup = result["pickup_analysis"]
+    assert pickup["measured_shadow_card_events"] == 1
+    assert pickup["picked_up_by_live_scheduler"] == 1
+    assert pickup["same_cycle_reallocated"] == 1
+    assert pickup["still_missed_after_window"] == 0
+    assert result["live_scheduler_changed"] is True
+    assert result["live_rebalance_cycles"] == 1
+    assert result["extra_futgg_sales_requests"] == 0
 
 
 def test_old_observations_still_count_pickup_without_fabricating_reason_detail():
@@ -138,5 +186,6 @@ def test_old_observations_still_count_pickup_without_fabricating_reason_detail()
     assert pickup["measured_shadow_card_events"] == 1
     assert pickup["pending_shadow_card_events"] == 0
     assert pickup["picked_up_by_live_scheduler"] == 1
+    assert pickup["same_cycle_reallocated"] == 0
     assert pickup["user_driven_events_with_card_detail"] == 0
     assert pickup["user_driven_pickup_rate_pct"] is None
