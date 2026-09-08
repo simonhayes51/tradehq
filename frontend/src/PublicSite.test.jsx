@@ -5,10 +5,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("./axios", () => ({ default: { post: vi.fn(() => Promise.resolve({})) } }));
 
 const billingPlans = vi.hoisted(() => ({ value: { data: undefined } }));
+const trackRecord = vi.hoisted(() => ({ value: { data: undefined } }));
 vi.mock("./v2/hooks/useBillingPlans", async (importOriginal) => ({
   ...(await importOriginal()),
   useBillingPlans: () => billingPlans.value,
 }));
+vi.mock("./v2/hooks/useTrackRecord", () => ({ useTrackRecord: () => trackRecord.value }));
 
 import PublicSite from "./PublicSite";
 
@@ -21,12 +23,15 @@ function renderSite() {
   );
 }
 
+function resetHomepage() {
+  window.location.hash = "#/";
+  Element.prototype.scrollIntoView = vi.fn();
+  billingPlans.value = { data: undefined };
+  trackRecord.value = { data: undefined };
+}
+
 describe("public homepage navigation", () => {
-  beforeEach(() => {
-    window.location.hash = "#/";
-    Element.prototype.scrollIntoView = vi.fn();
-    billingPlans.value = { data: undefined };
-  });
+  beforeEach(resetHomepage);
 
   it("keeps public section navigation inside the homepage", () => {
     renderSite();
@@ -43,11 +48,7 @@ describe("public homepage navigation", () => {
 });
 
 describe("public Discord journeys", () => {
-  beforeEach(() => {
-    window.location.hash = "#/";
-    Element.prototype.scrollIntoView = vi.fn();
-    billingPlans.value = { data: undefined };
-  });
+  beforeEach(resetHomepage);
 
   it("uses the Discord application install flow for Add to Discord and server-plan CTAs", () => {
     renderSite();
@@ -73,6 +74,7 @@ describe("public guides", () => {
   beforeEach(() => {
     Element.prototype.scrollIntoView = vi.fn();
     billingPlans.value = { data: undefined };
+    trackRecord.value = { data: undefined };
   });
 
   it("renders the guide hub as a public route", () => {
@@ -92,11 +94,7 @@ describe("public guides", () => {
 });
 
 describe("public personal pricing", () => {
-  beforeEach(() => {
-    window.location.hash = "#/";
-    Element.prototype.scrollIntoView = vi.fn();
-    billingPlans.value = { data: undefined };
-  });
+  beforeEach(resetHomepage);
 
   it("shows the price Stripe is actually configured with", () => {
     billingPlans.value = {
@@ -134,5 +132,36 @@ describe("public personal pricing", () => {
     expect(screen.getAllByText(/Elite/).length).toBeGreaterThan(0);
     expect(screen.queryByText(/Premium/)).not.toBeInTheDocument();
     expect(screen.getByText(/Free permanently, not a trial/i)).toBeInTheDocument();
+  });
+});
+
+describe("public track record", () => {
+  beforeEach(resetHomepage);
+
+  it("renders no marketing statistic until the backend says the sample is large enough", () => {
+    trackRecord.value = { data: { published: { has_published_data: true, has_enough_data: false, wins: 3, losses: 1, win_rate_pct: 75 } } };
+    renderSite();
+    expect(screen.queryByText("How the calls have actually done")).not.toBeInTheDocument();
+  });
+
+  it("shows wins and losses together once the evidence gate is satisfied", () => {
+    trackRecord.value = {
+      data: {
+        window_days: 30,
+        published: {
+          has_published_data: true,
+          has_enough_data: true,
+          published_opportunities: 48,
+          wins: 31,
+          losses: 12,
+          win_rate_pct: 72.1,
+        },
+      },
+    };
+    renderSite();
+    expect(screen.getByText("How the calls have actually done")).toBeInTheDocument();
+    expect(screen.getByText("31")).toBeInTheDocument();
+    expect(screen.getByText("12")).toBeInTheDocument();
+    expect(screen.getByText("72.1%")).toBeInTheDocument();
   });
 });
