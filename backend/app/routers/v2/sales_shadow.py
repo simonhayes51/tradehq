@@ -4,18 +4,21 @@ This endpoint reports observations only. It does not alter collector cadence,
 request limits, or selection. Its purpose is to provide the evidence required
 before any future reallocation of the existing detailed-sales request budget.
 
-In addition to aggregate trigger counts, the report now answers the operational
+In addition to aggregate trigger counts, the report answers the operational
 question that actually matters: when the shadow wanted a card the live selector
 did not choose, did the live selector naturally pick that card up shortly
 thereafter anyway? Repeated misses are surfaced separately so an eventual budget
 reallocation can target real blind spots rather than raw trigger volume.
+
+A shadow event is never called a miss until its full pickup window has elapsed.
+Fresh events stay pending; an early pickup can still be credited immediately.
 """
 from __future__ import annotations
 
 import json
 from bisect import bisect_right
 from collections import Counter, defaultdict
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -112,27 +115,41 @@ async def sales_information_shadow(
             due_times_by_card[int(raw_card_id)].append(observed_at)
 
     pickup_delta = timedelta(minutes=int(pickup_window_minutes))
+    measurement_cutoff = datetime.now(timezone.utc) - pickup_delta
     per_card: Dict[int, Dict[str, Any]] = {}
-    event_count = 0
+    measured_event_count = 0
+    pending_event_count = 0
     pickup_count = 0
-    user_event_count = 0
+    user_measured_count = 0
+    user_pending_count = 0
     user_pickup_count = 0
 
     for row in rows:
         observed_at = row["observed_at"]
+        if observed_at.tzinfo is None:
+            observed_at = observed_at.replace(tzinfo=timezone.utc)
         note_map = _card_note_map(row)
         for raw_card_id in row["triggered_card_ids"] or []:
             card_id = int(raw_card_id)
-            event_count += 1
             note = note_map.get(card_id, {})
             user_driven = bool(note.get("user_driven"))
-            if user_driven:
-                user_event_count += 1
 
             due_times = due_times_by_card.get(card_id, [])
             idx = bisect_right(due_times, observed_at)
             next_due_at = due_times[idx] if idx < len(due_times) else None
             picked_up = bool(next_due_at and next_due_at <= observed_at + pickup_delta)
+            mature = observed_at <= measurement_cutoff
+            pending = not picked_up and not mature
+
+            if picked_up or mature:
+                measured_event_count += 1
+                if user_driven:
+                    user_measured_count += 1
+            else:
+                pending_event_count += 1
+                if user_driven:
+                    user_pending_count += 1
+
             if picked_up:
                 pickup_count += 1
                 if user_driven:
@@ -141,6 +158,8 @@ async def sales_information_shadow(
             card = per_card.setdefault(card_id, {
                 "card_id": card_id,
                 "shadow_events": 0,
+                "measured_events": 0,
+                "pending_events": 0,
                 "picked_up_events": 0,
                 "missed_events": 0,
                 "user_driven_events": 0,
@@ -149,9 +168,11 @@ async def sales_information_shadow(
                 "last_shadow_at": observed_at,
             })
             card["shadow_events"] += 1
+            card["measured_events"] += int(picked_up or mature)
+            card["pending_events"] += int(pending)
             card["picked_up_events"] += int(picked_up)
-            card["missed_events"] += int(not picked_up)
-            card["user_driven_events"] += int(user_driven)
+            card["missed_events"] += int(mature and not picked_up)
+            card["user_driven_events"] += int(user_driven and (picked_up or mature))
             card["first_shadow_at"] = min(card["first_shadow_at"], observed_at)
             card["last_shadow_at"] = max(card["last_shadow_at"], observed_at)
             for reason in note.get("reasons") or []:
@@ -206,6 +227,8 @@ async def sales_information_shadow(
             "current_signal": meta.get("signal"),
             "current_evaluated_at": meta.get("evaluated_at").isoformat() if meta.get("evaluated_at") else None,
             "shadow_events": card["shadow_events"],
+            "measured_events": card["measured_events"],
+            "pending_events": card["pending_events"],
             "picked_up_events": card["picked_up_events"],
             "missed_events": card["missed_events"],
             "user_driven_events": card["user_driven_events"],
@@ -219,6 +242,7 @@ async def sales_information_shadow(
     triggered_total = sum(int(row["triggered_new_count"] or 0) for row in rows)
     user_total = sum(int(row["user_driven_count"] or 0) for row in rows)
     held_total = sum(int(row["held_position_count"] or 0) for row in rows)
+    missed_count = max(0, measured_event_count - pickup_count)
 
     return {
         "status": "ok",
@@ -237,26 +261,32 @@ async def sales_information_shadow(
         "selector_versions": dict(versions),
         "pickup_analysis": {
             "window_minutes": int(pickup_window_minutes),
-            "measured_shadow_card_events": event_count,
+            "measured_shadow_card_events": measured_event_count,
+            "pending_shadow_card_events": pending_event_count,
             "picked_up_by_live_scheduler": pickup_count,
-            "still_missed_after_window": max(0, event_count - pickup_count),
-            "pickup_rate_pct": round(100.0 * pickup_count / event_count, 2) if event_count else None,
-            "user_driven_events_with_card_detail": user_event_count,
+            "still_missed_after_window": missed_count,
+            "pickup_rate_pct": (
+                round(100.0 * pickup_count / measured_event_count, 2)
+                if measured_event_count else None
+            ),
+            "user_driven_events_with_card_detail": user_measured_count,
+            "user_driven_pending_events": user_pending_count,
             "user_driven_picked_up": user_pickup_count,
             "user_driven_pickup_rate_pct": (
-                round(100.0 * user_pickup_count / user_event_count, 2)
-                if user_event_count else None
+                round(100.0 * user_pickup_count / user_measured_count, 2)
+                if user_measured_count else None
             ),
             "repeated_missed_cards": repeated_missed_out,
             "note": (
-                "Per-card reason/user classification is available from selector v1.2 onward. "
-                "Older observations still contribute to pickup/miss counts but may have empty reasons."
+                "Fresh shadow events remain pending until the full pickup window elapses. "
+                "Per-card reason/user classification is available from selector v1.2 onward; "
+                "older observations still contribute to measured pickup/miss counts but may have empty reasons."
             ),
         },
         "live_scheduler_changed": False,
         "extra_futgg_sales_requests": 0,
         "decision_note": (
-            "Use repeated misses and low pickup rates to decide whether some of the existing 60 slots "
+            "Use repeated mature misses and low pickup rates to decide whether some of the existing 60 slots "
             "should be reserved for information-value cards. Do not infer extra collector capacity."
         ),
     }
