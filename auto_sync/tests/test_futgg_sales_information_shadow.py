@@ -45,6 +45,32 @@ def test_shadow_peeks_do_not_consume_price_events_or_user_requests():
     assert "consumed_at IS NULL" in request_conn.fetch_calls[0][0]
 
 
+def test_current_recommendation_triggers_use_current_intelligence_and_exact_bin():
+    conn = FakeConn([[
+        {"source_card_id": 10, "signal": "watch"},
+        {"source_card_id": 20, "signal": "buy"},
+    ]])
+    hits = run(shadow.triggers_from_current_intelligence(conn))
+
+    by_card = {}
+    for hit in hits:
+        by_card.setdefault(hit.card_id, set()).add(hit.reason)
+
+    assert by_card[10] == {triggers.REASON_LIVE_RECOMMENDATION}
+    assert by_card[20] == {
+        triggers.REASON_LIVE_RECOMMENDATION,
+        triggers.REASON_DISCORD_CANDIDATE,
+    }
+    sql, args = conn.fetch_calls[0]
+    assert "FROM futgg_current_intelligence c" in sql
+    assert "futgg_recommendation_snapshots" not in sql
+    assert "m.current_bin = c.current_bin" in sql
+    assert "c.expires_at IS NULL OR c.expires_at > now()" in sql
+    assert "c.status NOT IN ('expired', 'invalidated')" in sql
+    assert args == (shadow.CURRENT_INTELLIGENCE_MAX_AGE_MINUTES,)
+    assert all(hit.detail["source"] == "current_intelligence" for hit in hits)
+
+
 def test_held_positions_are_explicitly_futgg_and_user_driven():
     conn = FakeConn([[{"card_id": 82092, "position_count": 2}]])
     hits = run(shadow.triggers_from_held_positions(conn))
