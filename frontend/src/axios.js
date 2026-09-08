@@ -8,7 +8,7 @@ import axios from "axios";
  * - 10s timeout
  * - Idempotent GET retries (max 2; exponential backoff + jitter)
  * - 429 Retry-After honouring
- * - Premium gate (HTTP 402) → dispatches `premium:blocked` event
+ * - Elite gate (HTTP 402) → dispatches `premium:blocked` event
  * - Normalised error: err.userMessage
  *
  * To disable retries per request: api.get("/x", { __noRetry: true })
@@ -63,7 +63,7 @@ function parseRetryAfter(headerValue) {
 function getUserFriendlyMessage(status, originalMessage) {
   switch (status) {
     case 401: return "Please log in to continue";
-    case 402: return "This feature requires Premium";
+    case 402: return "This feature requires Elite";
     case 403: return "You do not have permission to perform this action";
     case 404: return "The requested resource was not found";
     case 429: return "You’re doing that too fast. Please try again in a moment";
@@ -129,7 +129,7 @@ api.interceptors.response.use(
       });
     }
 
-    // --- 402 Premium gate ---
+    // --- 402 Elite gate ---
     if (status === 402 && detail?.feature) {
       if (typeof window !== "undefined") {
         window.dispatchEvent(new CustomEvent("premium:blocked", { detail }));
