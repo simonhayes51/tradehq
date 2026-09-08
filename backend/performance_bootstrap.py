@@ -185,6 +185,14 @@ def main() -> None:
     install_track_record_cache_route(application)
     install_track_record_prewarm(application)
 
+    # Dashboard + Track Record registered their prewarm coroutines above. Wrap
+    # the app's existing lifespan once so those jobs start after main.py has
+    # created its pools/app.state and are cancelled cleanly before shutdown.
+    # This replaces our deprecated FastAPI startup decorators without altering
+    # main.py's own lifespan or its long-running worker ownership.
+    from app.services.managed_startup_tasks import install_managed_startup_jobs
+    install_managed_startup_jobs(application)
+
     # Do NOT prewarm sales/BIN history for the whole segmented market here.
     # Bulk HTTP and Discord consumers are persisted-state readers now, so loading
     # ~1,300 cards of evidence at every API restart is pure startup DB/memory
