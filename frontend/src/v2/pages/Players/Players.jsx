@@ -57,7 +57,9 @@ export default function Players() {
         <Search size={20} />
         <input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search a player…" />
       </label>
-      {loading ? <EmptyState text="Searching cards…" compact /> : error ? <EmptyState text={error} error compact /> : query.trim().length < 2 ? (
+      {loading ? <EmptyState text="Searching cards…" compact /> : error ? (
+        <EmptyState text={error} error compact action={<button type="button" onClick={() => futggQuery.refetch()}>Try again</button>} />
+      ) : query.trim().length < 2 ? (
         <section className="v2-player-start">
           <div className="v2-player-start-copy"><span><Sparkles size={15}/> QUICK START</span><h2>Search the full card database</h2><p>Enter two or more letters. Results are grouped as cards, so you can compare different versions of the same player.</p></div>
           <div className="v2-search-examples"><small>POPULAR SEARCHES</small>{EXAMPLES.map((name) => <button key={name} onClick={() => setQuery(name)}>{name}<ArrowRight size={14}/></button>)}</div>
