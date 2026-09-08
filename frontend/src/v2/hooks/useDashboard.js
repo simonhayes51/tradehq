@@ -9,10 +9,22 @@
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../lib/api";
 
+export function normaliseDashboard(data) {
+  if (!data || typeof data !== "object") return data;
+  // alerts_log intentionally keeps historical triggers after a card is
+  // removed from the watchlist. Home labels this slice "Affecting your
+  // watchlist", so when the dashboard says there are no watched cards,
+  // historical alerts must not be presented as current watchlist state.
+  if (Number(data.watchedCount || 0) <= 0) {
+    return { ...data, watchlistAlerts: [], unreadAlertCount: 0 };
+  }
+  return data;
+}
+
 export function useDashboard() {
   return useQuery({
     queryKey: ["v2", "dashboard"],
-    queryFn: async () => (await api.get("/api/v2/dashboard")).data,
+    queryFn: async () => normaliseDashboard((await api.get("/api/v2/dashboard")).data),
     staleTime: 30_000,
   });
 }
