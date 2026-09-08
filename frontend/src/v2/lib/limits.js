@@ -20,6 +20,7 @@ export const FREE_LIMITS = {
   trackRecordDays: 30,
   eliteWatchlist: 500,
   eliteAlerts: 100,
+  eliteOpenTrades: 1000,
 };
 
 // One name for the paid plan, everywhere. The product previously called
