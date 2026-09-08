@@ -16,15 +16,15 @@ export default function PremiumGate({ locked, featureName, children, fallback })
   return (
     <div className="rounded-[var(--v2-radius)] border border-[var(--v2-border)] bg-[var(--v2-elevated)] p-5 flex flex-col items-center justify-center gap-3 text-center min-h-[140px]">
       <div>
-        <p className="text-sm font-semibold text-[var(--v2-accent)]">Premium feature</p>
+        <p className="text-sm font-semibold text-[var(--v2-accent)]">Elite feature</p>
         <p className="text-xs text-[var(--v2-muted)] mt-1">
-          {featureName || "This section"} is available on Premium.
+          {featureName || "This section"} is available on Elite.
         </p>
       </div>
       <Link
         // Billing.jsx reads ?unlock= and shows a one-line header naming
         // the specific thing that sent the user there ("Unlock the full
-        // Opportunities feed"), not a generic "Welcome to Premium" -
+        // Opportunities feed"), not a generic "Welcome to Elite" -
         // the upgrade page should feel connected to the action that
         // brought them there, not like a separate marketing destination.
         to={`/billing${featureName ? `?unlock=${encodeURIComponent(featureName)}` : ""}`}
