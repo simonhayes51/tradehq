@@ -14,7 +14,7 @@
 // numbers on them, because "here is what you came for" is a better first
 // screen than a tour.
 import { useEffect, useMemo, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { ArrowRight, Bell, Check, Loader2, Star, Wallet } from "lucide-react";
 import { useEntitlements } from "../../../context/EntitlementsContext";
 import { EVENTS, track, trackOnce } from "../../../lib/analytics";
@@ -33,8 +33,20 @@ const BUDGETS = [
   { label: "Over 1m", value: 5_000_000 },
 ];
 
+// `from` originates in public/gated URLs and survives an OAuth round trip,
+// so never hand it to navigate() without constraining it to this app. A
+// same-app hash route begins with one slash; protocol-relative strings do
+// not qualify.
+export function safeOnboardingReturnTo(value) {
+  return typeof value === "string" && value.startsWith("/") && !value.startsWith("//")
+    ? value
+    : "/";
+}
+
 export default function Onboarding() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const returnTo = safeOnboardingReturnTo(searchParams.get("from"));
   const { tier } = useEntitlements();
   const { data: state, isLoading } = useOnboarding();
   const complete = useCompleteOnboarding();
@@ -56,18 +68,20 @@ export default function Onboarding() {
   useEffect(() => { trackOnce(EVENTS.ONBOARDING_STARTED, { tier }); }, [tier]);
 
   // A member who has already been through this does not see it again,
-  // even by typing the URL.
+  // even by typing the URL. When signup sent them here from another
+  // destination, preserve that intent instead of flattening everything to
+  // Home.
   useEffect(() => {
     if (!isLoading && state && state.needsOnboarding === false && step === 0) {
-      navigate("/", { replace: true });
+      navigate(returnTo, { replace: true });
     }
-  }, [isLoading, state, step, navigate]);
+  }, [isLoading, state, step, navigate, returnTo]);
 
   function finish({ skipped }) {
     track(skipped ? EVENTS.ONBOARDING_SKIPPED : EVENTS.ONBOARDING_COMPLETED, { tier, step });
     complete.mutate(
       { coin_budget: budget, wants_price_alerts: wantsAlerts, skipped },
-      { onSettled: () => navigate("/", { replace: true }) },
+      { onSettled: () => navigate(returnTo, { replace: true }) },
     );
   }
 
