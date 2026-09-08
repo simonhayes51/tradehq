@@ -16,8 +16,9 @@ import {
   Zap,
 } from "lucide-react";
 import { useBillingPlans, headlinePrice } from "./v2/hooks/useBillingPlans";
+import { useTrackRecord } from "./v2/hooks/useTrackRecord";
 import { PAID_PLAN_NAME, FREE_LIMITS } from "./v2/lib/limits";
-import { APP_ORIGIN, DISCORD_INVITE_URL } from "./lib/domains";
+import { APP_ORIGIN, DISCORD_BOT_INSTALL_URL, DISCORD_INVITE_URL } from "./lib/domains";
 import Privacy from "./pages/Privacy";
 import Terms from "./pages/Terms";
 import { DiscordCommandsGuide, DiscordServerFeedGuide, GettingStartedGuide, GuidesHome } from "./pages/Guides";
@@ -27,6 +28,7 @@ import "./styles/public-site.css";
 
 const APP_SIGNUP = `${APP_ORIGIN}/#/signup`;
 const APP_LOGIN = `${APP_ORIGIN}/#/login`;
+const APP_SIGNUP_FOR_ELITE = `${APP_SIGNUP}?from=${encodeURIComponent("/billing?unlock=elite")}`;
 
 const personalFeatures = [
   "Live trades with clear buy prices",
@@ -307,7 +309,7 @@ function DiscordSection() {
             {serverFeatures.map((feature) => <li key={feature}><Check size={16} /> {feature}</li>)}
           </ul>
           <div className="pub-inline-actions">
-            <a href={DISCORD_INVITE_URL} target="_blank" rel="noreferrer" className="pub-button">
+            <a href={DISCORD_BOT_INSTALL_URL} target="_blank" rel="noreferrer" className="pub-button">
               Add to Discord <ArrowRight size={16} />
             </a>
             <Link className="pub-text-link" to="/guides/discord-server-feed">Setup guide</Link>
@@ -332,7 +334,7 @@ function PlanCard({ name, price, suffix, description, features, action, href, fe
       {featured && <span className="pub-plan-badge">MOST POPULAR</span>}
       <h3>{name}</h3>
       <p className="pub-plan-desc">{description}</p>
-      <div className="pub-price"><strong>{price}</strong>{suffix && <span>{suffix}</span>}</div>
+      <div className="pub-price"><strong>{price || "Pricing unavailable"}</strong>{suffix && <span>{suffix}</span>}</div>
       <ul>
         {features.map((feature) => <li key={feature}><Check size={15} /> {feature}</li>)}
       </ul>
@@ -343,7 +345,7 @@ function PlanCard({ name, price, suffix, description, features, action, href, fe
 
 function Pricing() {
   const plans = useBillingPlans();
-  const monthly = headlinePrice(plans.data, "monthly") || "£3/month";
+  const monthly = headlinePrice(plans.data, "monthly");
   const season = headlinePrice(plans.data, "season");
 
   return (
@@ -361,7 +363,7 @@ function Pricing() {
               name="Free"
               price="£0"
               suffix="forever"
-              description="Try the core tools and see real trades without entering any card details."
+              description="Free permanently, not a trial. Try the core tools and see real trades without entering any card details."
               features={[
                 `${FREE_LIMITS.dailyOpportunities} full trade suggestions each day`,
                 `${FREE_LIMITS.watchlist}-card watchlist`,
@@ -377,8 +379,8 @@ function Pricing() {
               suffix={season ? `or ${season}` : null}
               description="Get the full live feed, higher limits and access to every trading tool."
               features={["Full live trade feed", ...personalFeatures.slice(1)]}
-              action={`Get ${PAID_PLAN_NAME}`}
-              href={`${APP_ORIGIN}/#/billing`}
+              action={`Create account for ${PAID_PLAN_NAME}`}
+              href={APP_SIGNUP_FOR_ELITE}
               featured
             />
           </div>
@@ -393,7 +395,7 @@ function Pricing() {
               description="Up to six selected trades each day for smaller or casual trading communities."
               features={["Up to 6 posts per day", ...serverFeatures.slice(1)]}
               action="Set up server feed"
-              href={DISCORD_INVITE_URL}
+              href={DISCORD_BOT_INSTALL_URL}
             />
             <PlanCard
               name="Server Feed+"
@@ -402,10 +404,50 @@ function Pricing() {
               description="More daily trade posts for larger and more active Discord servers."
               features={["Up to 15 posts per day", ...serverFeatures.slice(1)]}
               action="Set up Server Feed+"
-              href={DISCORD_INVITE_URL}
+              href={DISCORD_BOT_INSTALL_URL}
               featured
             />
           </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function PublicTrackRecord() {
+  const query = useTrackRecord("30d");
+  const published = query.data?.published;
+  if (!published?.has_published_data || !published?.has_enough_data) return null;
+
+  const stats = [
+    ["Calls published", published.published_opportunities],
+    ["Hit their target", published.wins],
+    ["Did not", published.losses],
+    ["Win rate", published.win_rate_pct == null ? null : `${published.win_rate_pct}%`],
+  ].filter(([, value]) => value !== null && value !== undefined);
+
+  return (
+    <section className="pub-section pub-section-soft" aria-label="Published track record">
+      <div className="pub-container">
+        <div className="pub-section-heading pub-section-heading-center">
+          <span>TRACK RECORD</span>
+          <h2>How the calls have actually done</h2>
+          <p>
+            The last {query.data?.window_days ?? 30} days of recommendations genuinely published to members.
+            Wins and losses are both shown. No backtest selection.
+          </p>
+        </div>
+        <div className="pub-feature-grid">
+          {stats.map(([label, value]) => (
+            <article key={label}>
+              <div className="pub-icon"><BarChart3 size={19} /></div>
+              <h3>{value}</h3>
+              <p>{label}</p>
+            </article>
+          ))}
+        </div>
+        <div className="pub-inline-actions" style={{ justifyContent: "center", marginTop: 24 }}>
+          <a href={APP_SIGNUP} className="pub-button">Create free account to see the record <ArrowRight size={16} /></a>
         </div>
       </div>
     </section>
@@ -448,7 +490,7 @@ function PublicHome() {
     if (!location.state?.scrollTo) return;
     requestAnimationFrame(() => scrollToId(location.state.scrollTo));
   }, [location.state]);
-  return <main><Hero /><ProofBand /><FeatureIntro /><MobileProduct /><HowItWorks /><DiscordSection /><Pricing /><FAQ /><FinalCTA /></main>;
+  return <main><Hero /><ProofBand /><FeatureIntro /><MobileProduct /><HowItWorks /><DiscordSection /><PublicTrackRecord /><Pricing /><FAQ /><FinalCTA /></main>;
 }
 
 function ForwardToApp() {

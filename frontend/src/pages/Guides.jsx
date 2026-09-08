@@ -14,7 +14,7 @@ import {
   Smartphone,
   Terminal,
 } from "lucide-react";
-import { APP_ORIGIN, DISCORD_INVITE_URL } from "../lib/domains";
+import { APP_ORIGIN, DISCORD_BOT_INSTALL_URL } from "../lib/domains";
 import "../styles/guides.css";
 
 const APP_SIGNUP = `${APP_ORIGIN}/#/signup`;
@@ -163,7 +163,7 @@ export function DiscordServerFeedGuide() {
         text="Add EAFC.Live, choose where trades should appear, send a test post and then switch the live feed on."
         time="About 3 minutes"
       >
-        <a className="pub-button" href={DISCORD_INVITE_URL} target="_blank" rel="noreferrer">Add to Discord <ArrowRight size={17} /></a>
+        <a className="pub-button" href={DISCORD_BOT_INSTALL_URL} target="_blank" rel="noreferrer">Add to Discord <ArrowRight size={17} /></a>
       </GuideIntro>
 
       <section className="guide-body">

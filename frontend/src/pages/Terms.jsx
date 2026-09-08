@@ -2,17 +2,17 @@
 //
 // Same rule as Privacy.jsx: claims are either sourced from this codebase
 // or explicitly supplied by the operator. Billing behaviour described
-// here (cancel_at_period_end, trial handling) is read directly from the
-// Stripe integration in backend/main.py, not assumed. "EAFC.Live" is the
-// supplied operator name only - no legal structure (company, sole
-// trader, etc.) is stated or implied since none has been confirmed.
+// here (cancel_at_period_end, optional trial handling) is read directly
+// from the Stripe integration in backend/main.py, not assumed. Pricing is
+// intentionally NOT hardcoded here: Stripe is the source of truth and the
+// Billing page/checkout show the amount that will actually be charged.
 import "../styles/legal.css";
 
 export default function Terms() {
   return (
     <div className="legal-page">
       <h1>Terms of Service</h1>
-      <p className="legal-updated">Last updated: 20 August 2026</p>
+      <p className="legal-updated">Last updated: 8 September 2026</p>
 
       <p>
         These terms are between you and <strong>EAFC.Live</strong> ("we", "us"), of{" "}
@@ -35,15 +35,17 @@ export default function Terms() {
         we authenticate you through Discord and never see or store your Discord password.
       </p>
 
-      <h2>Premium subscription</h2>
-      <p>Current pricing: £3/month or £25/season, with a 7-day free trial on eligible sign-ups.</p>
+      <h2>Elite subscription</h2>
+      <p>
+        Current Elite prices, billing periods and any promotional trial that applies are shown on
+        the Billing page and again in Stripe before you confirm a subscription. Those live checkout
+        details are the price and terms that apply to your purchase.
+      </p>
       <ul>
         <li>You can cancel at any time from the Billing page.</li>
-        <li>Cancelling during your free trial stops it from renewing into a paid subscription.</li>
-        <li>Cancelling an active paid subscription stops the next renewal — it does not end your
-          Premium access immediately.</li>
-        <li>If you cancel, your Premium access continues until the end of the billing period
-          you've already paid for.</li>
+        <li>If your checkout includes a free trial, cancelling before that trial ends stops it from renewing into a paid subscription.</li>
+        <li>Cancelling an active paid subscription stops the next renewal — it does not end your Elite access immediately.</li>
+        <li>If you cancel, your Elite access continues until the end of the billing period you've already paid for.</li>
       </ul>
       <p>
         We don't offer blanket refunds for time already used on a subscription. If you're a
@@ -55,6 +57,13 @@ export default function Terms() {
       <p>
         Payment is processed by Stripe. We don't receive or store your card details — Stripe
         handles that directly.
+      </p>
+
+      <h2>Discord Server Feed subscriptions</h2>
+      <p>
+        A Discord Server Feed subscription belongs to the Discord server it is purchased for and
+        is separate from a personal Elite subscription. The available Server Feed plan, posting
+        allowance and price are shown during setup and in Stripe before payment is confirmed.
       </p>
 
       <h2>Acceptable use</h2>

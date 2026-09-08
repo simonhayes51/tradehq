@@ -44,7 +44,7 @@ export const PLAN_ROWS = [
   {
     label: "Portfolio",
     free: `${FREE_LIMITS.openTrades} open trades, ${FREE_LIMITS.historyDays} days of history`,
-    elite: "Unlimited trades and full history",
+    elite: `${FREE_LIMITS.eliteOpenTrades.toLocaleString()} open trades and full history`,
   },
   {
     label: "Track record",

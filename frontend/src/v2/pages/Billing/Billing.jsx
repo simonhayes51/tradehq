@@ -55,7 +55,7 @@ const ELITE_FEATURES = [
   { icon: Check, title: "Trade Finder", desc: "Search every live-priced card by budget, return, risk and position." },
   { icon: Check, title: `${FREE_LIMITS.eliteWatchlist}-card watchlist`, desc: `Up to ${FREE_LIMITS.eliteWatchlist} cards, against ${FREE_LIMITS.watchlist} on Free.` },
   { icon: Check, title: `${FREE_LIMITS.eliteAlerts} price alerts`, desc: `Up to ${FREE_LIMITS.eliteAlerts} active alerts, against ${FREE_LIMITS.alerts} on Free.` },
-  { icon: Check, title: "Full portfolio and history", desc: "Unlimited open trades and your complete history, not the last 30 days." },
+  { icon: Check, title: "Full portfolio and history", desc: "Higher open-trade limits and your complete history, not the last 30 days." },
   { icon: Check, title: "Complete track record", desc: "Every published call and every window, not just the recent summary." },
   { icon: MessageCircle, title: "Members-only Discord", desc: "The Elite channel in the EAFC.Live Discord." },
 ];
@@ -78,7 +78,7 @@ const UNLOCK_COPY = {
   full_track_record: "Every published call, every time window, and the full win/loss ledger.",
   realtime_alerts: `Up to ${FREE_LIMITS.eliteAlerts} active price alerts instead of ${FREE_LIMITS.alerts}.`,
   watchlist: `Track up to ${FREE_LIMITS.eliteWatchlist} cards instead of ${FREE_LIMITS.watchlist}.`,
-  trade_journal: "Unlimited open trades and your complete history, not the last 30 days.",
+  trade_journal: "Higher open-trade limits and your complete history, not the last 30 days.",
   // Aliases for older links.
   opportunities: "Every opportunity the engine finds, with exact buy and sell prices.",
   "trade finder": "Search every live-priced card by budget, risk, position and return.",
@@ -235,6 +235,9 @@ export default function Billing() {
   const activePlan = plans?.plans?.[PLAN_KEYS[billingCycle].key];
   const priceDisplay = headlinePrice(plans, PLAN_KEYS[billingCycle].key);
   const seasonSaving = seasonSavingPercent(plans);
+  const trialDays = Math.max(0, Number(plans?.trial_days || 0));
+  const hasTrial = trialDays > 0;
+  const checkoutAvailable = activePlan?.configured === true && Boolean(priceDisplay);
 
   useEffect(() => {
     loadUserData();
@@ -326,8 +329,7 @@ export default function Billing() {
   }
 
   async function createCheckoutSession() {
-    if (loading) return;   // duplicate-submission guard: a second click
-                           // would open a second Stripe session.
+    if (loading || !checkoutAvailable) return; // fail closed if live Stripe pricing is unavailable
     setLoading(true); setError(""); setSuccess("");
     track(EVENTS.CHECKOUT_STARTED, { plan: PLAN_KEYS[billingCycle].key });
     try {
@@ -441,7 +443,7 @@ export default function Billing() {
         {isPremium && currentSubscription ? (
           <>
             <header className="billing-v2-head">
-              <span className="billing-v2-badge"><Crown size={14} /> PREMIUM ACTIVE</span>
+              <span className="billing-v2-badge"><Crown size={14} /> ELITE ACTIVE</span>
               <h1>You're on Elite</h1>
               <p>Every feature below is unlocked on your account right now.</p>
             </header>
@@ -482,7 +484,7 @@ export default function Billing() {
               <MessageCircle size={18} />
               <div>
                 <strong>Your Elite Discord access is live</strong>
-                <p>Join the server to reach the premium channel.</p>
+                <p>Join the server to reach the Elite channel.</p>
               </div>
               <a href={DISCORD_INVITE_URL} target="_blank" rel="noreferrer" className="billing-v2-btn secondary">
                 Open Discord <ExternalLink size={13} />
@@ -503,7 +505,7 @@ export default function Billing() {
             <div className="billing-v2-toggle" role="tablist" aria-label="Billing cycle">
               <button role="tab" aria-selected={billingCycle === "monthly"} className={billingCycle === "monthly" ? "active" : ""} onClick={() => setBillingCycle("monthly")}>Monthly</button>
               <button role="tab" aria-selected={billingCycle === "yearly"} className={billingCycle === "yearly" ? "active" : ""} onClick={() => setBillingCycle("yearly")}>
-                Season <span className="billing-v2-save-pill">{seasonSaving ? `Save ${seasonSaving}%` : "Best value"}</span>
+                Season {seasonSaving ? <span className="billing-v2-save-pill">Save {seasonSaving}%</span> : null}
               </button>
             </div>
 
@@ -514,19 +516,21 @@ export default function Billing() {
                     customer is about to be charged. */}
                 <span className="amount">{priceDisplay || "Pricing unavailable"}</span>
               </div>
-              {activePlan && activePlan.configured === false ? (
+              {!checkoutAvailable ? (
                 <p className="billing-v2-price-total">
                   We couldn&apos;t load live pricing just now. Try again in a moment — nothing is
                   charged until you confirm on Stripe&apos;s own checkout page.
                 </p>
               ) : null}
 
-              <div className="billing-v2-trial">
-                <Gift size={15} /> <span>7-day free trial included — cancel any time during the trial and you won't be charged.</span>
-              </div>
+              {hasTrial ? (
+                <div className="billing-v2-trial">
+                  <Gift size={15} /> <span>{trialDays}-day free trial included — cancel any time during the trial and you won&apos;t be charged.</span>
+                </div>
+              ) : null}
 
-              <button onClick={createCheckoutSession} disabled={loading} className="billing-v2-btn primary full">
-                {loading ? "Starting checkout…" : <><Gift size={16} /> Start 7-day free trial</>}
+              <button onClick={createCheckoutSession} disabled={loading || !checkoutAvailable} className="billing-v2-btn primary full">
+                {loading ? "Starting checkout…" : !checkoutAvailable ? "Pricing unavailable" : hasTrial ? <><Gift size={16} /> Start {trialDays}-day free trial</> : <><Crown size={16} /> Continue to secure checkout</>}
               </button>
               <div className="billing-v2-secure"><Shield size={13} /> Secure payment via Stripe · Cancel any time</div>
             </SectionCard>
@@ -554,7 +558,7 @@ export default function Billing() {
 
             <p className="billing-v2-cancel-note">
               <Clock size={13} /> Cancel any time from this page. Elite stays active until the end of
-              the period you&apos;ve already paid for.{plans?.trial_days ? ` Cancelling during the ${plans.trial_days}-day trial means you're never charged.` : ""}
+              the period you&apos;ve already paid for.{hasTrial ? ` Cancelling during the ${trialDays}-day trial means you're never charged.` : ""}
             </p>
           </>
         )}
