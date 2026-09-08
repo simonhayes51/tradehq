@@ -111,8 +111,8 @@ def install_market_batch_singleflight() -> None:
                 # The SQL loader still returns its historical 14-day window,
                 # while migrations 084/085 define the market snapshot over the
                 # newest 50 sales in seven days. Filter centrally here so every
-                # batch engine caller (scanner + transitional live fallback)
-                # uses the same evidence horizon as the snapshot aggregates.
+                # fresh-evaluation caller uses the same evidence horizon as the
+                # snapshot aggregates.
                 fetched = {
                     int(card_id): filter_valuation_sales(rows)
                     for card_id, rows in fetched.items()
@@ -138,23 +138,30 @@ def main() -> None:
     # Import the app only after the shared loaders have been wrapped.
     import main as application
 
-    # Heavy market-list endpoints consume scanner-persisted actionable
-    # recommendations rather than re-running evaluate_card() across the market
+    # Heavy market-list endpoints consume scanner-persisted current
+    # intelligence rather than re-running evaluate_card() across the market
     # inside HTTP requests.
     from app.services.snapshot_surface_routes import install_snapshot_surface_routes
     install_snapshot_surface_routes(application)
 
     # The one-card detail surface is genuinely a fresh evaluation. Route it
-    # through the same canonical evidence path as Discord, Companion and held
-    # positions without sending bulk surfaces back through that path.
+    # through the same canonical evidence path as Companion and held positions
+    # without sending bulk surfaces back through that path.
     from app.services.fresh_card_routes import install_fresh_player_detail_route
     install_fresh_player_detail_route(application)
 
-    # Home needs the full signal universe, including AVOID/regime. It now reads
-    # scanner-persisted current intelligence. A temporary live-scoring fallback
-    # remains only while migration 080/current-state coverage warms up.
+    # Home needs the full signal universe, including AVOID/regime. It is
+    # persisted-only now and never falls back to a market-wide live CPU pass.
     from app.services.dashboard_market_cache import install_dashboard_market_cache
     install_dashboard_market_cache(application)
+
+    # Some background consumers, notably Discord's live publisher, still lazily
+    # import futgg_market's old bulk helper names. Redirect those names to
+    # scanner-persisted current intelligence. Dashboard imported its own copies
+    # earlier and has already been patched above; futgg_scanner uses its own
+    # evaluation loop and is not touched by this installer.
+    from app.services.persisted_market_helpers import install_persisted_market_helpers
+    install_persisted_market_helpers()
 
     # Add the scanner/current-intelligence state to the existing readiness
     # report. It is a degraded operational check, not a load-balancer-fatal
@@ -173,7 +180,7 @@ def main() -> None:
     install_track_record_prewarm(application)
 
     # Do NOT prewarm sales/BIN history for the whole segmented market here.
-    # Those bulk HTTP consumers are persisted-state readers now, so loading
+    # Bulk HTTP and Discord consumers are persisted-state readers now, so loading
     # ~1,300 cards of evidence at every API restart is pure startup DB/memory
     # pressure. Fresh one-card callers populate the single-flight cache on
     # demand; the background scanner owns the market-wide evidence pass.
