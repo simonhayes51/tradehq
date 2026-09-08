@@ -70,7 +70,7 @@ export default function LimitReachedPrompt() {
           <div className="limit-reached-absolute">
             <div className="limit-reached-icon"><Lock size={20} /></div>
             <h2>Account limit reached</h2>
-            <p>{detail.message || "You&apos;ve reached the maximum allowed for this feature."}</p>
+            <p>{detail.message || "You've reached the maximum allowed for this feature."}</p>
             {hasCount ? <p className="limit-reached-count">{used.toLocaleString()} of {limit.toLocaleString()} used.</p> : null}
             <div className="limit-reached-actions">
               <button type="button" onClick={() => setDetail(null)}>Close</button>
