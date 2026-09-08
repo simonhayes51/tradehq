@@ -72,6 +72,8 @@ ALLOWED_PROPS = frozenset({
     "step",      # onboarding step index
     "count",     # a small integer
     "reason",    # a short enum-ish string
+    "source",    # bounded partner/source code, never a referring URL
+    "campaign",  # bounded operator-defined campaign code
 })
 
 # Events only trusted server-side code may write. A browser POSTing one
