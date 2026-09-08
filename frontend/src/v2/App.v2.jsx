@@ -20,6 +20,7 @@ import Billing from "./pages/Billing/Billing";
 import DiscordFeed from "./pages/DiscordFeed/DiscordFeed";
 import "./styles/mobile-screenshot-fixes.css";
 import "./styles/mobile-player-redesign.css";
+import "./styles/mobile-menu-final.css";
 
 export default function V2App() {
   return (
