@@ -2,14 +2,14 @@
 
 Unlike futgg_recommendation_snapshots, futgg_current_intelligence contains one
 mutable row for every successfully scanned card, including avoid and
-insufficient_data states. This is therefore the right source for Home/regime
-surfaces that need the whole evaluated universe rather than only actionable
-recommendations.
+insufficient_data states. This is therefore the right source for current product
+surfaces that need the engine's latest state rather than historical assertions.
 
 Safety: persisted intelligence is reusable only while the market snapshot's
 current BIN still matches the BIN the engine evaluated. A price move excludes
-that card until the scanner evaluates it again. This mirrors the fail-closed
-rule used by snapshot_market_surfaces for actionable recommendations.
+that card until the scanner evaluates it again. Callers serving actionable
+recommendations can additionally require an unexpired evaluation, preserving the
+same fail-closed lifecycle rule the older recommendation-snapshot reader used.
 """
 from __future__ import annotations
 
@@ -70,13 +70,15 @@ async def load_current_intelligence_pairs(
     *,
     card_ids: Optional[Iterable[int]] = None,
     max_age_minutes: Optional[int] = None,
+    require_unexpired: bool = False,
 ):
     """Return current market-row + persisted intelligence pairs.
 
     `card_ids` lets callers preserve an existing candidate-universe contract
     without re-scoring it. `max_age_minutes=None` means use the latest known
-    state regardless of age; callers can then expose age explicitly rather than
-    silently pretending an old evaluation is fresh.
+    state regardless of age. `require_unexpired=True` is for actionable product
+    surfaces: an evaluation whose own lifecycle deadline has passed is excluded
+    even if the BIN has not moved yet.
     """
     clauses = []
     args = []
@@ -96,6 +98,11 @@ async def load_current_intelligence_pairs(
             f"c.evaluated_at >= now() - (${next_arg}::int * interval '1 minute')"
         )
         args.append(max(1, int(max_age_minutes)))
+        next_arg += 1
+
+    if require_unexpired:
+        clauses.append("(c.expires_at IS NULL OR c.expires_at > now())")
+        clauses.append("c.status NOT IN ('expired', 'invalidated')")
 
     query = _BASE_QUERY
     if clauses:
