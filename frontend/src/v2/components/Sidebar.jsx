@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { ArrowUpRight, Briefcase, ChevronRight, Home, Lock, MoreHorizontal, Server, SlidersHorizontal, Sparkles, Star, TrendingUp, User, Users, X } from "lucide-react";
 import { useEntitlements } from "../../context/EntitlementsContext";
@@ -10,23 +10,12 @@ import "../styles/mobile-nav.css";
 const ITEMS = [
   { to: "/", label: "Home", short: "Home", icon: Home, match: (p) => p === "/" },
   { to: "/opportunities", label: "Opportunities", short: "Opps", icon: TrendingUp, match: (p) => p.startsWith("/opportunities") },
-  // Free sees Finder with a lock rather than having the product hidden.
   { to: "/trade-finder", label: "Trade Finder", short: "Finder", icon: SlidersHorizontal, match: (p) => p.startsWith("/trade-finder"), eliteFeature: "trade_finder", authOnly: true },
   { to: "/players", label: "Players", short: "Players", icon: Users, match: (p) => p.startsWith("/players") },
-  // Mobile has room for four primary destinations plus one More button.
-  // These remain first-class desktop links and move into the mobile More
-  // sheet instead of being squeezed into an eight-across bottom bar.
   { to: "/chat", label: "AI Chat", short: "Chat", icon: Sparkles, match: (p) => p.startsWith("/chat"), authOnly: true, requiresAiChat: true, eliteFeature: "ai_chat", mobileOverflow: true },
   { to: "/watchlist", label: "Watchlist", short: "Watch", icon: Star, match: (p) => p.startsWith("/watchlist"), authOnly: true, mobileOverflow: true },
   { to: "/portfolio", label: "Portfolio", short: "Portfolio", icon: Briefcase, match: (p) => p.startsWith("/portfolio") || p.startsWith("/club"), authOnly: true, mobileOverflow: true },
-  // Server Feed is guild-scoped and separately billed. It is deliberately
-  // NOT tied to isElite: a Free personal account can legitimately manage
-  // a paid Discord feed. Only show it once the live guild endpoint says
-  // this member actually has a configured feed to manage.
   { to: "/discord-feed", label: "Server Feed", short: "Feed", icon: Server, match: (p) => p.startsWith("/discord-feed"), authOnly: true, requiresServerFeed: true, mobileOverflow: true },
-  // Desktop reaches Account through the tier chip. Mobile reaches it from
-  // More, so there is still one obvious route to billing/logout without
-  // consuming another bottom-tab slot.
   { to: "/account", label: "Account", short: "Account", icon: User, desktopHidden: true, authOnly: true, mobileOverflow: true, match: (p) => p.startsWith("/account") || p.startsWith("/billing") },
 ];
 
@@ -51,6 +40,27 @@ export default function Sidebar() {
   const moreActive = mobileOverflowItems.some((item) => item.match(pathname));
   const isLocked = (item) => Boolean(item.eliteFeature) && !features.includes(item.eliteFeature);
 
+  // Close the sheet on every navigation, including browser back/forward.
+  useEffect(() => {
+    setMoreOpen(false);
+  }, [pathname]);
+
+  // Safari can paint fixed descendants of the sidebar in a separate
+  // stacking context, so the visual backdrop is not a reliable click
+  // catcher on its own. Capture pointer taps at document level as the
+  // behavioural source of truth: anything outside the sheet/trigger closes.
+  useEffect(() => {
+    if (!moreOpen) return undefined;
+    const closeOnOutsideTap = (event) => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      if (target.closest("#mobile-more-menu") || target.closest(".mobile-more-trigger")) return;
+      setMoreOpen(false);
+    };
+    document.addEventListener("pointerdown", closeOnOutsideTap, true);
+    return () => document.removeEventListener("pointerdown", closeOnOutsideTap, true);
+  }, [moreOpen]);
+
   const renderItem = (item, { inMore = false } = {}) => {
     const active = item.match(pathname);
     const Icon = item.icon;
@@ -59,7 +69,7 @@ export default function Sidebar() {
       key={`${inMore ? "more-" : ""}${item.to}`}
       to={item.to}
       aria-current={active ? "page" : undefined}
-      onClick={() => inMore && setMoreOpen(false)}
+      onClick={() => setMoreOpen(false)}
       className={`${active ? "active" : ""}${item.desktopHidden ? " desktop-hidden-nav" : ""}${item.mobileOverflow ? " mobile-overflow-nav" : ""}${locked ? " nav-locked" : ""}${inMore ? " mobile-more-link" : ""}`}
       title={locked ? `${item.label} is part of Elite - see what it includes` : undefined}
     >
@@ -104,7 +114,7 @@ export default function Sidebar() {
     ) : null}
 
     {isAuthenticated && !isElite
-      ? <Link className={`nav-upgrade ${pathname.startsWith("/billing") ? "active" : ""}`} to="/billing?unlock=elite">
+      ? <Link className={`nav-upgrade ${pathname.startsWith("/billing") ? "active" : ""}`} to="/billing?unlock=elite" onClick={() => setMoreOpen(false)}>
           <Sparkles size={16}/>
           <span className="nav-full-label">Upgrade to Elite</span>
           <span className="nav-short-label">Elite</span>
@@ -112,7 +122,7 @@ export default function Sidebar() {
         </Link>
       : null}
     {isAuthenticated
-      ? <button className={`account-chip ${pathname.startsWith("/account") ? "active" : ""}`} onClick={() => navigate("/account")}><User size={16}/><b>{tierLabel}</b><span>Account</span></button>
+      ? <button className={`account-chip ${pathname.startsWith("/account") ? "active" : ""}`} onClick={() => { setMoreOpen(false); navigate("/account"); }}><User size={16}/><b>{tierLabel}</b><span>Account</span></button>
       : <div className="account-chip auth-chip-pair">
           <button onClick={() => navigate("/login")}>Log in</button>
           <button className="primary" onClick={() => navigate("/signup")}>Start free</button>
