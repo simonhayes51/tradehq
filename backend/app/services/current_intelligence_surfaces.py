@@ -34,6 +34,7 @@ SELECT
     c.recommended_sell_target     AS rec_recommended_sell_target,
     c.buy_below                   AS rec_buy_below,
     c.expected_profit_after_tax   AS rec_expected_profit_after_tax,
+    c.expected_profit_basis       AS rec_expected_profit_basis,
     c.expected_roi                AS rec_expected_roi,
     c.confidence_score            AS rec_confidence_score,
     c.liquidity_score             AS rec_liquidity_score,

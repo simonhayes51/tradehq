@@ -1,0 +1,76 @@
+/* Final mobile player hierarchy pass.
+ * Loaded after the older mobile styles so the standalone /players/:id page
+ * shares the denser decision hierarchy used by the quick-analysis sheet. */
+
+@media (max-width: 700px) {
+  .dash-analysis-modal .dash-modal-verdict {
+    text-wrap: pretty;
+  }
+
+  /* The page variant already has a proper centred card hero. Its remaining
+     mobile problem was the three full-width metric slabs, which pushed the
+     first evidence well below the fold. Keep the hero, compact only the
+     decision numbers. */
+  .dash-analysis-modal.page-mode .dash-modal-numbers {
+    display: grid !important;
+    grid-template-columns: repeat(3,minmax(0,1fr)) !important;
+    gap: 6px !important;
+    overflow: visible !important;
+    border: 0 !important;
+    background: transparent !important;
+  }
+  .dash-analysis-modal.page-mode .dash-modal-numbers .metric {
+    display: block !important;
+    min-width: 0;
+    min-height: 84px !important;
+    padding: 10px 8px !important;
+    border: 1px solid #35383b !important;
+    border-radius: 7px !important;
+  }
+  .dash-analysis-modal.page-mode .dash-modal-numbers .metric > span,
+  .dash-analysis-modal.page-mode .dash-modal-numbers .metric > strong,
+  .dash-analysis-modal.page-mode .dash-modal-numbers .metric > small {
+    display: block !important;
+    grid-column: auto !important;
+    grid-row: auto !important;
+    padding: 0 !important;
+    text-align: left !important;
+  }
+  .dash-analysis-modal.page-mode .dash-modal-numbers .metric > span {
+    margin-bottom: 7px;
+    font-size: 8px !important;
+    letter-spacing: .055em;
+  }
+  .dash-analysis-modal.page-mode .dash-modal-numbers .metric > strong {
+    font-size: clamp(16px,4.8vw,20px) !important;
+    line-height: 1.05 !important;
+    white-space: nowrap;
+  }
+  .dash-analysis-modal.page-mode .dash-modal-numbers .metric > small {
+    margin-top: 5px;
+    font-size: 8.5px !important;
+    line-height: 1.2;
+  }
+  .dash-analysis-modal.page-mode .dash-modal-numbers .coin-value > img {
+    min-width: 11px !important;
+  }
+
+  /* The standalone verdict should inform rather than become another card.
+     WAIT/AVOID still remain visible, but the copy is no longer a large box
+     between identity and the actual prices. */
+  .dash-analysis-modal.page-mode .dash-modal-verdict {
+    margin: 10px 0 !important;
+    padding: 8px 0 !important;
+    border: 0 !important;
+    background: transparent !important;
+    color: #c1c1c1 !important;
+    font-size: 13px !important;
+    line-height: 1.45 !important;
+  }
+}
+
+@media (max-width: 390px) {
+  .dash-analysis-modal.page-mode .dash-modal-numbers .metric > strong {
+    font-size: 15px !important;
+  }
+}
