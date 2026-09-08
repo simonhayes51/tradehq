@@ -14,3 +14,16 @@
 
 ALTER TABLE futgg_current_intelligence
     ADD COLUMN IF NOT EXISTS expected_profit_basis NUMERIC;
+
+-- Existing rows were evaluated under the same engine invariant we persist now:
+-- executable BUY -> current executable/live BIN; otherwise WATCH/prospective ->
+-- recommended buy max. Backfill that invariant so the first request after deploy
+-- cannot still pair an old profit with the wrong visible entry while waiting for
+-- the next scanner cycle.
+UPDATE futgg_current_intelligence
+SET expected_profit_basis = CASE
+    WHEN current_executable_buy IS NOT NULL THEN current_executable_buy
+    ELSE recommended_buy_max
+END
+WHERE expected_profit_basis IS NULL
+  AND expected_profit_after_tax IS NOT NULL;
