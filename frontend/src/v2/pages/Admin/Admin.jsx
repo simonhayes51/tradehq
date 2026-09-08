@@ -17,6 +17,7 @@ import { useAdminPipelineHealth } from "../../hooks/useAdminPipelineHealth";
 import PipelineHealthTab from "./tabs/PipelineHealthTab";
 import CollectorStatusTab from "./tabs/CollectorStatusTab";
 import DataQualityTab from "./tabs/DataQualityTab";
+import CalibrationTab from "./tabs/CalibrationTab";
 import MarketEventsTab from "./tabs/MarketEventsTab";
 import NextPromoTab from "./tabs/NextPromoTab";
 import SubscriptionsTab from "./tabs/SubscriptionsTab";
@@ -30,6 +31,7 @@ const TABS = [
   { key: "conversion", label: "Conversion", Component: ConversionTab },
   { key: "pipeline", label: "Pipeline Health", Component: PipelineHealthTab },
   { key: "data-quality", label: "Data Quality", Component: DataQualityTab },
+  { key: "calibration", label: "Calibration", Component: CalibrationTab },
   { key: "collectors", label: "Collector Status", Component: CollectorStatusTab },
   { key: "sbc-imports", label: "SBC Imports", Component: AdminSbcImports },
   { key: "player-cards", label: "Player Cards", Component: PlayerCardsTab },
