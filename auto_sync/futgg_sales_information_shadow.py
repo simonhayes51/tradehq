@@ -31,7 +31,7 @@ import futgg_sales_triggers as triggers
 
 log = logging.getLogger("futgg_sales_information_shadow")
 
-SELECTOR_VERSION = "information-shadow-1.4"
+SELECTOR_VERSION = "information-shadow-1.5"
 CURRENT_INTELLIGENCE_MAX_AGE_MINUTES = triggers.env_int(
     "FUTGG_TRIGGER_CURRENT_INTELLIGENCE_MAX_AGE_MIN", 30, minimum=1,
 )
@@ -55,6 +55,9 @@ PREMIUM_STALE_AFTER_MINUTES = triggers.env_int(
 PREMIUM_STALE_CHECK_AFTER_MINUTES = triggers.env_int(
     "FUTGG_TRIGGER_PREMIUM_STALE_CHECK_AFTER_MIN", 180, minimum=30,
 )
+PREMIUM_STALE_QUERY_LIMIT = triggers.env_int(
+    "FUTGG_TRIGGER_PREMIUM_STALE_QUERY_LIMIT", 100, minimum=20,
+)
 
 # Early in a new game cycle the most important trading universe is dominated by
 # ordinary Gold Rares rather than 95+ end-game cards. Give them a predictable
@@ -63,6 +66,9 @@ PREMIUM_STALE_CHECK_AFTER_MINUTES = triggers.env_int(
 # wrapper still has a bounded request budget and promotes the oldest checks first.
 GOLD_RARE_ROTATION_AFTER_MINUTES = triggers.env_int(
     "FUTGG_TRIGGER_GOLD_RARE_ROTATION_AFTER_MIN", 480, minimum=60,
+)
+GOLD_RARE_ROTATION_QUERY_LIMIT = triggers.env_int(
+    "FUTGG_TRIGGER_GOLD_RARE_ROTATION_QUERY_LIMIT", 200, minimum=20,
 )
 
 USER_DRIVEN_REASONS = frozenset(set(triggers.USER_DRIVEN_REASONS) | {REASON_HELD_POSITION})
@@ -222,8 +228,10 @@ async def triggers_from_gold_rare_rotation(
                      m.current_bin DESC,
                      m.rating DESC NULLS LAST,
                      m.source_card_id
+            LIMIT $2
             """,
             GOLD_RARE_ROTATION_AFTER_MINUTES,
+            GOLD_RARE_ROTATION_QUERY_LIMIT,
         )
     except (asyncpg.UndefinedTableError, asyncpg.UndefinedColumnError):
         return []
@@ -284,11 +292,13 @@ async def triggers_from_premium_stale_sales(
                      m.rating DESC,
                      m.current_bin DESC,
                      m.latest_sale_at ASC
+            LIMIT $5
             """,
             PREMIUM_STALE_MIN_BIN,
             PREMIUM_STALE_MIN_RATING,
             PREMIUM_STALE_AFTER_MINUTES,
             PREMIUM_STALE_CHECK_AFTER_MINUTES,
+            PREMIUM_STALE_QUERY_LIMIT,
         )
     except (asyncpg.UndefinedTableError, asyncpg.UndefinedColumnError):
         return []
@@ -316,13 +326,39 @@ async def triggers_from_premium_stale_sales(
     ]
 
 
+def _background_reason_rank(reasons: set[str]) -> int:
+    """Stable priority before the selector's cap is applied.
+
+    Without this, whichever trigger function happened to append first could fill
+    all background slots before Gold Rare rotation was even considered. Ranking
+    here keeps the candidate pool aligned with the live worker's intent rather
+    than source-code order.
+    """
+    if reasons & {
+        triggers.REASON_LIVE_RECOMMENDATION,
+        triggers.REASON_DISCORD_CANDIDATE,
+        triggers.REASON_PROFIT_OPPORTUNITY,
+        triggers.REASON_BULK_PRICE_CHANGE,
+        triggers.REASON_NEW_RELEASE,
+        REASON_PREMIUM_STALE_SALES,
+    }:
+        return 0
+    if REASON_GOLD_RARE_ROTATION in reasons:
+        return 1
+    if triggers.REASON_MARKET_ACTIVITY in reasons:
+        return 2
+    if triggers.REASON_STALE_EVIDENCE in reasons:
+        return 3
+    return 4
+
+
 def combine_information_hits(
     hits: Iterable[triggers.TriggerHit],
     *,
     exclude_ids: Iterable[int] = (),
     limit: int = triggers.TRIGGERED_SELECT_LIMIT,
 ) -> list[triggers.TriggeredCard]:
-    """Same capped combinator semantics, with held positions user-driven."""
+    """Group hits, protect user-driven demand, then rank background work."""
     exclude = {int(x) for x in exclude_ids}
     by_card: dict[int, dict[str, dict]] = {}
     order: list[int] = []
@@ -337,8 +373,16 @@ def combine_information_hits(
     def is_user(card_id: int) -> bool:
         return any(reason in USER_DRIVEN_REASONS for reason in by_card[card_id])
 
+    order_index = {card_id: idx for idx, card_id in enumerate(order)}
     user_ids = [card_id for card_id in order if is_user(card_id)]
     background_ids = [card_id for card_id in order if not is_user(card_id)]
+    background_ids.sort(
+        key=lambda card_id: (
+            _background_reason_rank(set(by_card[card_id])),
+            order_index[card_id],
+        )
+    )
+
     selected = user_ids[:limit]
     selected += background_ids[: max(0, limit - len(selected))]
 
