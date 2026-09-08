@@ -36,7 +36,7 @@ const TABS = [
   { key: "sbc-market", label: "SBC Market", Component: SbcReinforcementTab },
   { key: "player-cards", label: "Player Cards", Component: PlayerCardsTab },
   { key: "market-events", label: "Market Events", Component: MarketEventsTab },
-  { key: "next-promo", label: "Next Promo", Component: NextPromoTab },
+  { key: "next-promo", label: "Upcoming Events", Component: NextPromoTab },
   { key: "subscriptions", label: "Access & Subs", Component: SubscriptionsTab },
   { key: "api-usage", label: "API Usage", Component: ApiUsageTab },
 ];

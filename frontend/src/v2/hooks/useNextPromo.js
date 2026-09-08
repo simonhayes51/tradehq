@@ -1,12 +1,4 @@
 // src/v2/hooks/useNextPromo.js
-//
-// The "Next Promo" calendar - a separate table/endpoint from
-// /api/admin/market-events (see migration 018's own comment: that one is
-// SBC-scoped and card-fingerprinted, this one is a narrow name/kind/
-// start_at row on the core DB, e.g. "TOTW 35" or "Winter Wildcards").
-// GET never fabricates a placeholder event - see main.py's
-// /api/events/next - so a null `name` here means honestly nothing is
-// scheduled yet, not a loading/error state.
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 
@@ -19,13 +11,41 @@ export function useNextPromo() {
   });
 }
 
+export function useUpcomingEvents() {
+  return useQuery({
+    queryKey: ["v2", "admin", "upcomingEvents"],
+    queryFn: async () => (await api.get("/api/admin/upcoming-events")).data,
+    retry: false,
+    staleTime: 15_000,
+  });
+}
+
+function invalidateCalendar(queryClient) {
+  queryClient.invalidateQueries({ queryKey: ["v2", "admin", "nextPromo"] });
+  queryClient.invalidateQueries({ queryKey: ["v2", "admin", "upcomingEvents"] });
+  queryClient.invalidateQueries({ queryKey: ["v2", "dashboard"] });
+}
+
 export function useCreatePromo() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (payload) => (await api.post("/api/events", payload)).data,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["v2", "admin", "nextPromo"] });
-      queryClient.invalidateQueries({ queryKey: ["v2", "dashboard"] });
-    },
+    mutationFn: async (payload) => (await api.post("/api/admin/upcoming-events", payload)).data,
+    onSuccess: () => invalidateCalendar(queryClient),
+  });
+}
+
+export function useUpdateUpcomingEvent() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, ...payload }) => (await api.patch(`/api/admin/upcoming-events/${id}`, payload)).data,
+    onSuccess: () => invalidateCalendar(queryClient),
+  });
+}
+
+export function useDeleteUpcomingEvent() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (id) => (await api.delete(`/api/admin/upcoming-events/${id}`)).data,
+    onSuccess: () => invalidateCalendar(queryClient),
   });
 }
