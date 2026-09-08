@@ -35,6 +35,7 @@ const query = vi.hoisted(() => ({
           pickup_rate_pct: 42.5,
           still_missed_after_window: 23,
           measured_shadow_card_events: 40,
+          pending_shadow_card_events: 2,
           user_driven_pickup_rate_pct: 31.2,
           repeated_missed_cards: [
             {
@@ -77,9 +78,10 @@ describe("DataQualityTab", () => {
     expect(screen.getByText("98.5%")).toBeInTheDocument();
     expect(screen.getByText("OFF")).toBeInTheDocument();
     expect(screen.getByText("42.5%")).toBeInTheDocument();
+    expect(screen.getByText("40 mature · 2 pending")).toBeInTheDocument();
     expect(screen.getByText("Mario Kempes")).toBeInTheDocument();
     expect(screen.getByText("77,000")).toBeInTheDocument();
-    expect(screen.getByText("3")).toBeInTheDocument();
+    expect(screen.getByText("held position ×3")).toBeInTheDocument();
   });
 
   it("allows an operator to refresh the evidence", () => {
