@@ -16,6 +16,7 @@ import {
   Zap,
 } from "lucide-react";
 import { useBillingPlans, headlinePrice } from "./v2/hooks/useBillingPlans";
+import { useTrackRecord } from "./v2/hooks/useTrackRecord";
 import { PAID_PLAN_NAME, FREE_LIMITS } from "./v2/lib/limits";
 import { APP_ORIGIN, DISCORD_BOT_INSTALL_URL, DISCORD_INVITE_URL } from "./lib/domains";
 import Privacy from "./pages/Privacy";
@@ -413,6 +414,46 @@ function Pricing() {
   );
 }
 
+function PublicTrackRecord() {
+  const query = useTrackRecord("30d");
+  const published = query.data?.published;
+  if (!published?.has_published_data || !published?.has_enough_data) return null;
+
+  const stats = [
+    ["Calls published", published.published_opportunities],
+    ["Hit their target", published.wins],
+    ["Did not", published.losses],
+    ["Win rate", published.win_rate_pct == null ? null : `${published.win_rate_pct}%`],
+  ].filter(([, value]) => value !== null && value !== undefined);
+
+  return (
+    <section className="pub-section pub-section-soft" aria-label="Published track record">
+      <div className="pub-container">
+        <div className="pub-section-heading pub-section-heading-center">
+          <span>TRACK RECORD</span>
+          <h2>How the calls have actually done</h2>
+          <p>
+            The last {query.data?.window_days ?? 30} days of recommendations genuinely published to members.
+            Wins and losses are both shown. No backtest selection.
+          </p>
+        </div>
+        <div className="pub-feature-grid">
+          {stats.map(([label, value]) => (
+            <article key={label}>
+              <div className="pub-icon"><BarChart3 size={19} /></div>
+              <h3>{value}</h3>
+              <p>{label}</p>
+            </article>
+          ))}
+        </div>
+        <div className="pub-inline-actions" style={{ justifyContent: "center", marginTop: 24 }}>
+          <a href={APP_SIGNUP} className="pub-button">Create free account to see the record <ArrowRight size={16} /></a>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function FAQ() {
   const items = [
     ["Is profit guaranteed?", "No. EAFC.Live uses live prices and recent completed sales to find potential trades, but the market can always move. Expected profit already accounts for EA's 5% sale tax."],
@@ -449,7 +490,7 @@ function PublicHome() {
     if (!location.state?.scrollTo) return;
     requestAnimationFrame(() => scrollToId(location.state.scrollTo));
   }, [location.state]);
-  return <main><Hero /><ProofBand /><FeatureIntro /><MobileProduct /><HowItWorks /><DiscordSection /><Pricing /><FAQ /><FinalCTA /></main>;
+  return <main><Hero /><ProofBand /><FeatureIntro /><MobileProduct /><HowItWorks /><DiscordSection /><PublicTrackRecord /><Pricing /><FAQ /><FinalCTA /></main>;
 }
 
 function ForwardToApp() {
