@@ -27,8 +27,12 @@ def _resource_filter(resource_type: str, resource_value: str) -> Optional[Tuple[
         return ("m.rating >= $1", [int(match.group(1))]) if match else None
     if kind == "MIN_TEAM_RATING":
         return None
+    # FUT.GG stores the human rarity family, e.g. "Team of the Week", not
+    # the SBC parser's compact `totw` token. Match the actual catalogue
+    # vocabulary rather than silently returning an empty cohort.
     patterns = {
-        "ICON": "%icon%", "HERO": "%hero%", "TOTW": "%totw%", "TOTS": "%tots%",
+        "ICON": "%icon%", "HERO": "%hero%",
+        "TOTW": "%team of the week%", "TOTS": "%team of the season%",
         "GOLD_RARE": "%gold rare%", "SILVER_RARE": "%silver rare%", "BRONZE_RARE": "%bronze rare%",
     }
     pattern = patterns.get(kind)
