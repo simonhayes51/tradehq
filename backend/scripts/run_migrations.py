@@ -26,11 +26,12 @@ Rules:
   - A file may declare its target DB in a header comment
     ("-- target: player"); the default target is core. A run only executes
     files matching its target.
-  - A file may declare tables it depends on but doesn't create itself via
-    "-- requires-table: sales_history, bin_history" - typically tables
-    owned by another service (e.g. auto_sync). The runner skips the file
-    cleanly (not recorded, retried next run) instead of surfacing a raw
-    "relation does not exist".
+  - A file may declare database relations it depends on but doesn't create
+    itself via "-- requires-table: sales_history, futgg_market_snapshot".
+    The historical directive name is kept for compatibility, but the check
+    accepts ordinary/partitioned tables, views, materialized views and foreign
+    tables. The runner skips the file cleanly (not recorded, retried next run)
+    instead of surfacing a raw "relation does not exist".
   - Same idea for individual columns owned by another service on a table
     this repo does create, via "-- requires-column: fut_players.name" -
     e.g. fut_players is bootstrapped here (migration 017) but its FUTBIN
@@ -89,12 +90,11 @@ def _file_target(sql: str) -> str:
 
 
 def _file_requires_tables(sql: str) -> list[str]:
-    """Tables a migration's header declares as prerequisites it doesn't
-    create itself - e.g. sales_history/bin_history, which auto_sync's
-    ensure_tables() creates on its own first run, not any migration here.
-    Lets the runner skip cleanly instead of throwing a raw Postgres error
-    if the backend boots before that other service has ever run against
-    this database."""
+    """Relations a migration's header declares as prerequisites it doesn't
+    create itself. The directive is historically named `requires-table`, but
+    some real dependencies (notably futgg_market_snapshot) are materialized
+    views. `_missing_tables` therefore checks PostgreSQL relation kinds rather
+    than information_schema.tables."""
     m = _REQUIRES_RE.search(sql[:2000])
     if not m:
         return []
@@ -125,13 +125,28 @@ def _file_requires_columns(sql: str) -> list[tuple[str, str]]:
 
 
 async def _missing_tables(conn: asyncpg.Connection, names: list[str]) -> list[str]:
+    """Return missing public-schema relations required by a migration.
+
+    information_schema.tables does not expose PostgreSQL materialized views.
+    `futgg_market_snapshot` is one, so the old implementation permanently
+    reported it missing even while REFRESH MATERIALIZED VIEW succeeded. Use
+    pg_class instead and accept every relation kind a migration can sensibly
+    depend on: table, partitioned table, view, materialized view, foreign table.
+    """
     if not names:
         return []
     rows = await conn.fetch(
-        "SELECT table_name FROM information_schema.tables WHERE table_schema='public' AND table_name = ANY($1::text[])",
+        """
+        SELECT c.relname AS relation_name
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public'
+          AND c.relname = ANY($1::text[])
+          AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
+        """,
         names,
     )
-    present = {r["table_name"] for r in rows}
+    present = {r["relation_name"] for r in rows}
     return [n for n in names if n not in present]
 
 
@@ -238,16 +253,13 @@ async def run(dsn: str, target: str = "core", execute_legacy: bool = False) -> i
                 missing = await _missing_tables(conn, _file_requires_tables(sql))
                 missing += await _missing_columns(conn, _file_requires_columns(sql))
                 if missing:
-                    # Not an error: this migration depends on tables owned
-                    # by a different service (e.g. auto_sync's
-                    # sales_history/bin_history, created by its own
-                    # ensure_tables() on first run, not by any migration
-                    # here). Skip cleanly and retry next boot instead of
-                    # letting Postgres raise 'relation does not exist' -
-                    # not recorded as applied, so it's picked up as soon as
-                    # the prerequisite exists.
+                    # Not an error: this migration depends on relations/columns
+                    # owned by another service. Skip cleanly and retry next boot
+                    # instead of letting Postgres raise 'relation does not exist'.
+                    # Not recorded as applied, so it is picked up as soon as the
+                    # prerequisite exists.
                     log.info(
-                        "skipping %s for now - waiting on table(s) %s (owned by another service)",
+                        "skipping %s for now - waiting on relation(s) %s (owned by another service)",
                         path.name, ", ".join(missing),
                     )
                     continue
