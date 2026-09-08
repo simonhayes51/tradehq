@@ -1,6 +1,9 @@
 -- Migration 073: persist the two daily Free opportunity picks
 -- target: core
--- requires-table: futgg_market_snapshot
+--
+-- This table is independent of futgg_market_snapshot. The selector reads
+-- current market data at runtime, but creating the persistence table itself
+-- must not wait for that separately-owned materialized view to exist.
 --
 -- Free members get FREE_DAILY_PICKS complete opportunities per FC content
 -- day (18:00 Europe/London boundary - see app/services/content_day.py).
