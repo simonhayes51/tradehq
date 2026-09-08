@@ -11,7 +11,7 @@
   },
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "node scripts/prepare-companion.mjs && vite build",
     "preview": "vite preview --host --port 8080",
     "start": "serve -s dist -l ${PORT:-8080} --single",
     "lint": "eslint . --ext .js,.jsx",

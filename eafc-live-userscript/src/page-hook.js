@@ -41,7 +41,11 @@
 // context, only the handful of fields the overlay actually renders.
 import { extractAuctionsFromResponse } from "./card-detector.js";
 
-const FC26_RE = /\/ut\/game\/fc26(\/|$)/;
+// EA versions the Ultimate Team API path by game, e.g. /ut/game/fc26
+// and /ut/game/fc27. Keep the observer scoped to that exact family while
+// remaining season-neutral so a new FC release does not silently disable
+// Companion market observation.
+const FC_GAME_RE = /\/ut\/game\/fc\d+(\/|$)/i;
 const TRANSFERMARKET_RE = /\/transfermarket(\/|$|\?)/;
 const EVENT_NAME = "eafc-live:transfermarket";
 
@@ -81,7 +85,7 @@ function dispatchSanitizedAuctions(url, bodyText) {
       const promise = originalFetch.apply(this, arguments);
       try {
         const url = typeof input === "string" ? input : input && input.url;
-        if (url && FC26_RE.test(url) && TRANSFERMARKET_RE.test(url)) {
+        if (url && FC_GAME_RE.test(url) && TRANSFERMARKET_RE.test(url)) {
           promise
             .then((response) => {
               // Clone so we never consume the body the page itself is
@@ -121,7 +125,7 @@ function dispatchSanitizedAuctions(url, bodyText) {
 
     OriginalXHR.prototype.send = function eafcLiveSend() {
       const url = this.__eafcLiveUrl;
-      if (url && FC26_RE.test(url) && TRANSFERMARKET_RE.test(url)) {
+      if (url && FC_GAME_RE.test(url) && TRANSFERMARKET_RE.test(url)) {
         this.addEventListener("loadend", function () {
           try {
             dispatchSanitizedAuctions(url, this.responseText);
@@ -134,7 +138,7 @@ function dispatchSanitizedAuctions(url, bodyText) {
     };
   }
 
-  console.log("[EAFC.Live] page hook installed - observing window.fetch/XHR for /ut/game/fc26 responses", {
+  console.log("[EAFC.Live] page hook installed - observing active /ut/game/fc*/ responses", {
     href: location.href,
     inIframe: window !== window.top,
   });

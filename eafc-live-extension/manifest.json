@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "EAFC.Live Companion",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Read-only EAFC.Live intelligence overlay for the EA SPORTS FC Web App transfer market. Never bids, buys, lists, or automates trading.",
   "host_permissions": [
     "https://api.eafc.live/*"

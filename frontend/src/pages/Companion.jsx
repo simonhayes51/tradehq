@@ -33,8 +33,8 @@ export default function Companion() {
         </h1>
         <p className="text-sm text-[var(--v2-muted,#8a94a6)] mb-10 leading-relaxed">
           A read-only overlay that shows EAFC.Live trading intelligence directly
-          inside the official EA SPORTS FC 26 Web App Transfer Market. Install
-          the userscript once, then open the Web App as you always do &mdash;
+          inside the official EA SPORTS FC Web App Transfer Market. Install the
+          userscript once, then open the Web App as you always do &mdash;
           EAFC.Live never buys, bids, lists, or automates anything for you.
         </p>
 
