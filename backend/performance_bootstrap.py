@@ -185,11 +185,18 @@ def main() -> None:
     install_track_record_cache_route(application)
     install_track_record_prewarm(application)
 
-    # Dashboard + Track Record registered their prewarm coroutines above. Wrap
-    # the app's existing lifespan once so those jobs start after main.py has
-    # created its pools/app.state and are cancelled cleanly before shutdown.
-    # This replaces our deprecated FastAPI startup decorators without altering
-    # main.py's own lifespan or its long-running worker ownership.
+    # The Investment runner consumes frozen cohort memberships but historically
+    # never populated live FC27 memberships itself. Register a managed bootstrap
+    # job that classifies priced cards for the configured game year using the
+    # existing immutable cohort classifier. It is inert when Investments are
+    # disabled and never changes publication policy.
+    from app.services.investment_cohort_bootstrap import install_investment_cohort_bootstrap
+    install_investment_cohort_bootstrap(application)
+
+    # Dashboard + Track Record + Investment cohort bootstrap registered their
+    # managed jobs above. Wrap the app's existing lifespan once so those jobs
+    # start after main.py has created its pools/app.state and are cancelled
+    # cleanly before shutdown.
     from app.services.managed_startup_tasks import install_managed_startup_jobs
     install_managed_startup_jobs(application)
 
