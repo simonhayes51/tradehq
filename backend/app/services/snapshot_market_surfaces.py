@@ -1,18 +1,22 @@
-"""Fast reader for user-facing market lists.
+"""Fast reader for user-facing current market lists.
 
 The background FUT.GG scanner already runs the expensive recommendation engine
-and persists buy/strong_buy/watch conclusions to futgg_recommendation_snapshots.
-The HTTP list endpoints must not immediately repeat that same 1,300-card Python
-CPU pass while a user waits.
+and persists one mutable current-state row per successfully evaluated card in
+futgg_current_intelligence. HTTP list endpoints must read that state rather than
+repeat a ~1,300-card Python scoring pass or treat the immutable recommendation
+audit table as a current product database.
 
-This module reads the most recent still-usable persisted conclusion for each
-card and joins it to the *current* futgg_market_snapshot row for identity,
-images and price metadata.
+The filename is retained temporarily because several incident-safe route helpers
+import this module. Its live query no longer reads futgg_recommendation_snapshots;
+that table remains the historical assertion/Track Record corpus.
 
-Safety rule: a persisted recommendation is only reusable while the live
-current_bin is exactly the same as the current_bin it was evaluated against.
-If the price moved, the row is excluded until the scanner evaluates it again.
-That deliberately fails closed rather than showing a stale executable trade.
+Safety rules for actionable lists are deliberately fail-closed:
+- the current market BIN must exactly match the BIN the engine evaluated;
+- the evaluation must be recent enough for this surface;
+- its lifecycle expiry must not have passed;
+- expired/invalidated statuses are excluded.
+A price move or lifecycle expiry therefore removes the card until the scanner
+produces a fresh current state.
 """
 from __future__ import annotations
 
@@ -26,59 +30,53 @@ from app.services.futgg_intelligence import CardIntelligence
 DEFAULT_MAX_AGE_MINUTES = int(os.getenv("FUTGG_SURFACE_SNAPSHOT_MAX_AGE_MINUTES", "30"))
 
 _QUERY = """
-WITH recent AS (
-    SELECT DISTINCT ON (s.source_card_id)
-        s.*
-    FROM futgg_recommendation_snapshots s
-    WHERE s.evaluated_at >= now() - ($1::int * interval '1 minute')
-      AND s.signal IN ('buy', 'strong_buy', 'watch')
-      AND s.invalidated_at IS NULL
-      AND (s.expires_at IS NULL OR s.expires_at > now())
-    ORDER BY s.source_card_id, s.evaluated_at DESC
-)
 SELECT
     m.*,
-    s.evaluated_at              AS rec_evaluated_at,
-    s.current_bin               AS rec_current_bin,
-    s.price_age_minutes         AS rec_price_age_minutes,
-    s.sales_count               AS rec_sales_count,
-    s.sales_window_span_minutes AS rec_sales_window_span_minutes,
-    s.fair_value                AS rec_fair_value,
-    s.theoretical_max_buy       AS rec_theoretical_max_buy,
-    s.recommended_buy_max       AS rec_recommended_buy_max,
-    s.current_executable_buy    AS rec_current_executable_buy,
-    s.break_even_price          AS rec_break_even_price,
-    s.recommended_sell_target   AS rec_recommended_sell_target,
-    s.buy_below                 AS rec_buy_below,
-    s.expected_profit_after_tax AS rec_expected_profit_after_tax,
-    s.expected_roi              AS rec_expected_roi,
-    s.confidence_score          AS rec_confidence_score,
-    s.liquidity_score           AS rec_liquidity_score,
-    s.risk_level                AS rec_risk_level,
-    s.signal                    AS rec_signal,
-    s.status                    AS rec_status,
-    s.trend_state               AS rec_trend_state,
-    s.trend_features            AS rec_trend_features,
-    s.reason_codes              AS rec_reason_codes,
-    s.blocking_codes            AS rec_blocking_codes,
-    s.reasons                   AS rec_reasons,
-    s.engine_version            AS rec_engine_version,
-    s.trend_version             AS rec_trend_version,
-    s.expires_at                AS rec_expires_at,
-    s.expiry_minutes            AS rec_expiry_minutes,
-    s.valuation_source          AS rec_valuation_source,
-    s.evidence_quality          AS rec_evidence_quality,
-    s.bin_sample_count          AS rec_bin_sample_count,
-    s.bin_history_span_hours    AS rec_bin_history_span_hours,
-    s.bin_reference_price       AS rec_bin_reference_price,
-    s.bin_trend_direction       AS rec_bin_trend_direction,
-    s.bin_volatility            AS rec_bin_volatility,
-    s.evidence_age_minutes      AS rec_evidence_age_minutes
-FROM recent s
-JOIN futgg_market_snapshot m ON m.source_card_id = s.source_card_id
-WHERE m.is_tradeable IS DISTINCT FROM FALSE
+    c.evaluated_at              AS rec_evaluated_at,
+    c.current_bin               AS rec_current_bin,
+    c.price_age_minutes         AS rec_price_age_minutes,
+    c.sales_sample_size         AS rec_sales_count,
+    c.sales_window_span_minutes AS rec_sales_window_span_minutes,
+    c.fair_value                AS rec_fair_value,
+    c.theoretical_max_buy       AS rec_theoretical_max_buy,
+    c.recommended_buy_max       AS rec_recommended_buy_max,
+    c.current_executable_buy    AS rec_current_executable_buy,
+    c.break_even_price          AS rec_break_even_price,
+    c.recommended_sell_target   AS rec_recommended_sell_target,
+    c.buy_below                 AS rec_buy_below,
+    c.expected_profit_after_tax AS rec_expected_profit_after_tax,
+    c.expected_roi              AS rec_expected_roi,
+    c.confidence_score          AS rec_confidence_score,
+    c.liquidity_score           AS rec_liquidity_score,
+    c.risk_level                AS rec_risk_level,
+    c.signal                    AS rec_signal,
+    c.status                    AS rec_status,
+    c.trend_state               AS rec_trend_state,
+    c.trend_features            AS rec_trend_features,
+    c.reason_codes              AS rec_reason_codes,
+    c.blocking_codes            AS rec_blocking_codes,
+    c.reasons                   AS rec_reasons,
+    c.engine_version            AS rec_engine_version,
+    c.trend_version             AS rec_trend_version,
+    c.expires_at                AS rec_expires_at,
+    NULL::integer               AS rec_expiry_minutes,
+    c.valuation_source          AS rec_valuation_source,
+    c.evidence_quality          AS rec_evidence_quality,
+    c.bin_sample_count          AS rec_bin_sample_count,
+    c.bin_history_span_hours    AS rec_bin_history_span_hours,
+    c.bin_reference_price       AS rec_bin_reference_price,
+    c.bin_trend_direction       AS rec_bin_trend_direction,
+    c.bin_volatility            AS rec_bin_volatility,
+    c.evidence_age_minutes      AS rec_evidence_age_minutes
+FROM futgg_current_intelligence c
+JOIN futgg_market_snapshot m ON m.source_card_id = c.source_card_id
+WHERE c.evaluated_at >= now() - ($1::int * interval '1 minute')
+  AND c.signal IN ('buy', 'strong_buy', 'watch')
+  AND c.status NOT IN ('expired', 'invalidated')
+  AND (c.expires_at IS NULL OR c.expires_at > now())
+  AND m.is_tradeable IS DISTINCT FROM FALSE
   AND m.current_bin IS NOT NULL
-  AND m.current_bin = s.current_bin
+  AND m.current_bin = c.current_bin
 """
 
 
@@ -173,7 +171,7 @@ def _to_pair(record: Any) -> Tuple[Dict[str, Any], CardIntelligence]:
 
 
 async def load_market_surface_pairs(provider, *, max_age_minutes: int = DEFAULT_MAX_AGE_MINUTES):
-    """Return current-row + persisted-intelligence pairs for fast list surfaces."""
+    """Return exact-BIN, unexpired current-intelligence pairs for list surfaces."""
     async with provider._pool.acquire() as conn:
         records = await conn.fetch(_QUERY, max(1, int(max_age_minutes)))
     return [_to_pair(record) for record in records]
