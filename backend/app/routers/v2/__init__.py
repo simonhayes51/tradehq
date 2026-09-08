@@ -22,6 +22,7 @@ from app.routers.v2.intelligence_health import router as intelligence_health_rou
 from app.routers.v2.market_transitions import router as market_transitions_router
 from app.routers.v2.calibration import router as calibration_router
 from app.routers.v2.sales_shadow import router as sales_shadow_router
+from app.routers.v2.sbc_reinforcement import router as sbc_reinforcement_router
 
 router = APIRouter(prefix="/api/v2")
 router.include_router(health_router)
@@ -76,3 +77,6 @@ router.include_router(calibration_router)
 # Admin-only readout of what the information-value sales selector would
 # prioritise. The live collector remains unchanged while this evidence builds.
 router.include_router(sales_shadow_router)
+# Admin-only SBC resource-demand market reinforcement research. This remains
+# shadow-only: it does not write market_status or change priority weights.
+router.include_router(sbc_reinforcement_router)

@@ -10,15 +10,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
-from typing import Any, Optional, Tuple
+from typing import Optional, Tuple
 
 import asyncpg
 
-from app.services import trading_math as tm
 from app.services.futgg_card_evaluation import evaluate_fresh_card
-from app.services.futgg_intelligence import CardIntelligence
-from app.services.futgg_trend import DOWNTREND, FALLING_KNIFE
+from app.services.held_position_decision import HeldPositionDecision, decide_held_position
 from app.services.market_data_provider import FutggMarketDataProvider
 from app.services.recommendation_engine_v2 import evaluate_card as evaluate_legacy_card
 
@@ -27,76 +26,12 @@ log = logging.getLogger("held_position_refresher")
 REFRESH_LOCK_KEY = 7741010  # distinct from every other REFRESH_LOCK_KEY in this codebase
 
 
-def _futgg_held_verdict(
-    market_row: dict[str, Any],
-    ci: CardIntelligence,
-    purchase_price: int,
-) -> Tuple[str, str]:
-    """Convert current FUT.GG intelligence into a conservative HOLD/SELL
-    decision for a card the user already owns.
-
-    FUT.GG's engine is deliberately a mispricing detector, not a price
-    forecaster, so this must not pretend `recommended_sell_target` is a
-    guaranteed future price. A SELL is emitted only for an observable sell
-    condition: target reached, engine explicitly says sell/avoid, or a
-    profitable position has moved into a confirmed negative trend. Everything
-    else stays HOLD rather than fabricating a future-price forecast.
-    """
-    current_raw = market_row.get("current_bin")
-    if current_raw is None:
-        return "HOLD", "Live FUT.GG price is temporarily unavailable; no verified sell trigger can be confirmed."
-
-    current = int(current_raw)
-    purchase = int(purchase_price)
-    current_profit = tm.net_profit(current, purchase)
-    current_roi = tm.net_roi(current, purchase)
-    target = int(ci.recommended_sell_target) if ci.recommended_sell_target is not None else None
-
-    if target is not None and current >= target:
-        return (
-            "SELL",
-            f"Current BIN {current:,} is above the live sell target of {target:,}. Consider selling now to lock in the available return.",
-        )
-
-    if ci.signal in {"sell", "avoid"}:
-        detail = " ".join(ci.signal_reasons or [])
-        suffix = f" {detail}" if detail else ""
-        return "SELL", f"The live FUT.GG engine now rates this position {ci.signal.upper()}.{suffix}".strip()
-
-    if ci.trend_state in {FALLING_KNIFE, DOWNTREND} and current_profit is not None and current_profit > 0:
-        roi_text = f" ({float(current_roi) * 100:.1f}% after tax)" if current_roi is not None else ""
-        return (
-            "SELL",
-            f"The position is profitable now{roi_text}, but the live market trend has turned {ci.trend_state.replace('_', ' ')}.",
-        )
-
-    target_text = f" Live sell target: {target:,}." if target is not None else ""
-    if current_profit is not None:
-        pnl_text = f" Current after-tax P/L at {current:,} BIN is {int(current_profit):+,} coins."
-    else:
-        pnl_text = ""
-
-    if ci.signal == "insufficient_data":
-        return (
-            "HOLD",
-            "No verified sell trigger is present, but current market evidence is insufficient for a stronger call."
-            + pnl_text
-            + target_text,
-        )
-
-    return (
-        "HOLD",
-        "No live FUT.GG sell trigger is present."
-        + pnl_text
-        + target_text,
-    )
-
-
 async def _evaluate_futgg_position(
     provider: FutggMarketDataProvider,
     card_id: int,
     purchase_price: int,
-) -> Optional[Tuple[str, str]]:
+    original_target: Optional[int],
+) -> Optional[HeldPositionDecision]:
     evaluated = await evaluate_fresh_card(
         provider,
         card_id,
@@ -104,10 +39,11 @@ async def _evaluate_futgg_position(
     )
     if evaluated is None:
         return None
-    return _futgg_held_verdict(
+    return decide_held_position(
         evaluated.row,
         evaluated.intelligence,
-        purchase_price,
+        purchase_price=purchase_price,
+        original_target=original_target,
     )
 
 
@@ -148,14 +84,14 @@ async def refresh_held_positions(pool: asyncpg.Pool, player_pool: asyncpg.Pool) 
 
     Explicit card_source is authoritative. Historical NULL-source rows are
     probed FUT.GG-first, then legacy, and classified after a successful probe.
-    This preserves old positions without allowing a bare numeric id to keep
-    choosing a catalogue forever.
+    FUT.GG positions use purchase-aware exit logic; discovery targets alone can
+    no longer turn an after-tax loss into an automatic SELL.
     """
     written = 0
     async with pool.acquire() as conn:
         open_trades = await conn.fetch(
             """
-            SELECT trade_id, card_id, card_source, buy, platform
+            SELECT trade_id, card_id, card_source, buy, platform, target_sell
             FROM trades
             WHERE status = 'open' AND card_id IS NOT NULL AND buy IS NOT NULL
             """
@@ -169,13 +105,17 @@ async def refresh_held_positions(pool: asyncpg.Pool, player_pool: asyncpg.Pool) 
         card_source = row["card_source"]
         platform = row["platform"] or "ps"
         purchase_price = int(row["buy"])
+        original_target = int(row["target_sell"]) if row["target_sell"] else None
         status: Optional[str] = None
         reasoning: Optional[str] = None
         resolved_source: Optional[str] = card_source
+        analysis_json: Optional[str] = None
 
         try:
             if card_source == "futgg":
-                result = await _evaluate_futgg_position(futgg_provider, card_id, purchase_price)
+                result = await _evaluate_futgg_position(
+                    futgg_provider, card_id, purchase_price, original_target
+                )
                 if result is None:
                     log.warning(
                         "held_position_refresher: skipping trade_id=%s card_id=%s because explicit source=futgg but card is missing from futgg_market_snapshot",
@@ -183,7 +123,8 @@ async def refresh_held_positions(pool: asyncpg.Pool, player_pool: asyncpg.Pool) 
                         card_id,
                     )
                     continue
-                status, reasoning = result
+                status, reasoning = result.verdict, result.reasoning
+                analysis_json = json.dumps(result.as_dict())
 
             elif card_source == "futbin":
                 result = await _evaluate_legacy_position(
@@ -209,9 +150,11 @@ async def refresh_held_positions(pool: asyncpg.Pool, player_pool: asyncpg.Pool) 
                     futgg_provider,
                     card_id,
                     purchase_price,
+                    original_target,
                 )
                 if futgg_result is not None:
-                    status, reasoning = futgg_result
+                    status, reasoning = futgg_result.verdict, futgg_result.reasoning
+                    analysis_json = json.dumps(futgg_result.as_dict())
                     resolved_source = "futgg"
                 else:
                     legacy_result = await _evaluate_legacy_position(
@@ -249,6 +192,7 @@ async def refresh_held_positions(pool: asyncpg.Pool, player_pool: asyncpg.Pool) 
                 SET card_source = COALESCE(card_source, $4),
                     current_recommendation_status = $2,
                     current_recommendation_reasoning = $3,
+                    current_position_analysis = $5::jsonb,
                     current_evaluated_at = now()
                 WHERE trade_id = $1
                 """,
@@ -256,6 +200,7 @@ async def refresh_held_positions(pool: asyncpg.Pool, player_pool: asyncpg.Pool) 
                 status,
                 reasoning,
                 resolved_source,
+                analysis_json,
             )
         written += 1
 
@@ -268,7 +213,7 @@ async def refresher_loop(
     interval_seconds: int = 900,
 ) -> None:
     """Background task started from the app lifespan. Same advisory-lock
-    pattern as fair_value.refresher_loop / event_impact.refresher_loop."""
+    pattern as the other guarded refresh loops."""
     await asyncio.sleep(10)
     while True:
         try:
