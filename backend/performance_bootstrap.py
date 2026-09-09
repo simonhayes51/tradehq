@@ -145,6 +145,12 @@ def main() -> None:
     # been wrapped.
     import main as application
 
+    # Replace the legacy aggregate Free Discord overview with one canonical
+    # Trade of the Day and add the no-card/no-Stripe Free setup path. Paid
+    # Server Feed selection and billing remain on their existing code paths.
+    from app.services.discord_free_server_feed import install_free_server_feed
+    install_free_server_feed()
+
     # While preseason Elite is free, prevent a new personal Stripe checkout
     # from charging somebody for access they already have. Existing paid
     # subscriptions and the separate Discord Server Feed billing are untouched.
