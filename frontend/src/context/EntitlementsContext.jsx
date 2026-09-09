@@ -38,11 +38,17 @@ export function EntitlementsProvider({ children }) {
     features: [],
     limits: DEFAULT_LIMITS,
     roles: [],
+    // Why the effective tier was granted. During the FC27 preseason
+    // giveaway this is "preseason", which is intentionally distinct from
+    // a Stripe trial/subscription or an admin/manual grant.
+    accessSource: "anonymous",
+    promo: null,
     lastCheck: null,
   });
 
   const lastCheckRef = useRef(0);
   const wasPremiumRef = useRef(false);
+  const previousAccessSourceRef = useRef("anonymous");
   const loadedOnceRef = useRef(false);
 
   async function refreshEntitlements({ force = false } = {}) {
@@ -58,19 +64,24 @@ export function EntitlementsProvider({ children }) {
       // this exact distinction).
       const { data } = await api.get("/api/entitlements", { __skipAuthRedirect: true });
       const isPremium = Boolean(data?.is_premium);
+      const accessSource = data?.access_source || (data?.user_id ? (isPremium ? "paid_or_granted" : "free") : "anonymous");
 
       // If a previously-premium session just lost premium (subscription
-      // lapsed, refund, etc.), cached premium-only data in memory could
-      // now be stale/wrong, so a reload is the safe move - but a native
-      // alert() is jarring and blocks the tab, so a toast instead, with
-      // enough delay to actually be seen before the page reloads.
+      // lapsed, refund, or the time-bounded preseason access expired),
+      // cached premium-only data in memory could now be stale/wrong, so a
+      // reload is the safe move. Keep the message accurate about WHY the
+      // access ended instead of calling the preseason giveaway a subscription.
       if (loadedOnceRef.current && wasPremiumRef.current && !isPremium) {
-        toast.error("Your Elite subscription has ended. Refreshing your access…", { duration: 4000 });
+        const message = previousAccessSourceRef.current === "preseason"
+          ? "Your free preseason Elite access has ended. Refreshing your access…"
+          : "Your Elite subscription has ended. Refreshing your access…";
+        toast.error(message, { duration: 4000 });
         setTimeout(() => window.location.reload(), 1500);
         return;
       }
 
       wasPremiumRef.current = isPremium;
+      previousAccessSourceRef.current = accessSource;
       loadedOnceRef.current = true;
 
       setState({
@@ -81,6 +92,8 @@ export function EntitlementsProvider({ children }) {
         features: Array.isArray(data?.features) ? data.features : [],
         limits: data?.limits || DEFAULT_LIMITS,
         roles: Array.isArray(data?.roles) ? data.roles : [],
+        accessSource,
+        promo: data?.promo || null,
         lastCheck: new Date(),
       });
     } catch (error) {

@@ -135,8 +135,21 @@ def main() -> None:
     logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
     install_market_batch_singleflight()
 
-    # Import the app only after the shared loaders have been wrapped.
+    # Install the temporary FC27 preseason entitlement overlay BEFORE main.py
+    # imports the route tree. This keeps every direct import of the canonical
+    # resolver consistent, including Discord reconciliation.
+    from app.services.preseason_elite_access import install_preseason_elite_access
+    install_preseason_elite_access()
+
+    # Import the app only after the shared loaders and entitlement overlay have
+    # been wrapped.
     import main as application
+
+    # While preseason Elite is free, prevent a new personal Stripe checkout
+    # from charging somebody for access they already have. Existing paid
+    # subscriptions and the separate Discord Server Feed billing are untouched.
+    from app.services.preseason_elite_access import install_preseason_checkout_guard
+    install_preseason_checkout_guard(application.app)
 
     # Heavy market-list endpoints consume scanner-persisted current
     # intelligence rather than re-running evaluate_card() across the market
