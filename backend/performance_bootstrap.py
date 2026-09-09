@@ -98,7 +98,7 @@ def install_market_batch_singleflight() -> None:
             entry = sales_cache.get(key)
             if entry is None or now - entry["at"] >= CACHE_SECONDS:
                 entry = {"at": now, "ids": frozenset(), "data": {}}
-                bin_cache[key] = entry
+                sales_cache[key] = entry
 
             missing = ids - entry["ids"]
             if missing:
