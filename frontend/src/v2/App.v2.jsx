@@ -17,7 +17,9 @@ import Chat from "./pages/Chat/Chat";
 import TrackRecord from "./pages/TrackRecord/TrackRecord";
 import Onboarding from "./pages/Onboarding/Onboarding";
 import Billing from "./pages/Billing/Billing";
+import PreseasonBilling from "./pages/Billing/PreseasonBilling";
 import DiscordFeed from "./pages/DiscordFeed/DiscordFeed";
+import { useEntitlements } from "../context/EntitlementsContext";
 import "./styles/mobile-screenshot-fixes.css";
 import "./styles/mobile-player-redesign.css";
 import "./styles/mobile-menu-final.css";
@@ -61,13 +63,11 @@ export default function V2App() {
       <Route path="watchlist" element={<ShellLayout><Watchlist /></ShellLayout>} />
       <Route path="portfolio" element={<ShellLayout><ClubRoute /></ShellLayout>} />
       <Route path="account" element={<ShellLayout><Account /></ShellLayout>} />
-      {/* The one Billing users are ever sent to now - see Billing.jsx's
-          header comment. The old v1 /billing (purple styling, "Smart Buy
-          AI"/"Sharpe ratio" copy that doesn't describe v2) is left in
-          place at its own URL for now (nothing deletes it), but every
-          in-app link (PremiumGate, LockedPreviewCard, this public site)
-          points here instead. */}
-      <Route path="billing" element={<ShellLayout><Billing /></ShellLayout>} />
+      {/* Personal checkout is intentionally replaced with the giveaway
+          explanation for preseason-granted members. Paid/admin users still
+          receive the existing Billing page, and Discord Server Feed has its
+          own route/product regardless. */}
+      <Route path="billing" element={<ShellLayout><BillingRoute /></ShellLayout>} />
       {/* Self-service web settings page for a Discord server's paid
           Server Feed - a convenience alongside the /feed Discord command
           group, not a replacement for it (see discord_feed_web.py). */}
@@ -82,6 +82,12 @@ export default function V2App() {
       <Route path="*" element={<ShellLayout><NotFound /></ShellLayout>} />
     </Routes>
   );
+}
+
+function BillingRoute() {
+  const { accessSource, promo } = useEntitlements();
+  if (accessSource === "preseason" && promo?.active) return <PreseasonBilling />;
+  return <Billing />;
 }
 
 function NotFound() {
