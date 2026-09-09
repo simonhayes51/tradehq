@@ -98,7 +98,7 @@ def install_market_batch_singleflight() -> None:
             entry = sales_cache.get(key)
             if entry is None or now - entry["at"] >= CACHE_SECONDS:
                 entry = {"at": now, "ids": frozenset(), "data": {}}
-                sales_cache[key] = entry
+                bin_cache[key] = entry
 
             missing = ids - entry["ids"]
             if missing:
@@ -144,6 +144,12 @@ def main() -> None:
     # Import the app only after the shared loaders and entitlement overlay have
     # been wrapped.
     import main as application
+
+    # Replace the legacy aggregate Free Discord overview with one canonical
+    # Trade of the Day and add the no-card/no-Stripe Free setup path. Paid
+    # Server Feed selection and billing remain on their existing code paths.
+    from app.services.discord_free_server_feed import install_free_server_feed
+    install_free_server_feed()
 
     # While preseason Elite is free, prevent a new personal Stripe checkout
     # from charging somebody for access they already have. Existing paid
