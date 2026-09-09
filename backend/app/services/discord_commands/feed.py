@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 """
-The `/feed` command group - the paid multi-server trading feed's admin
+The `/feed` command group - Free and paid multi-server trading-feed admin
 commands (`/feed setup`, `/feed activate`, ...), gated to members with
 Manage Server.
 
@@ -15,6 +15,7 @@ billed.
 from typing import Any, Dict, List
 
 PLAN_CHOICES = [
+    {"name": "Free — 1 shared Trade of the Day", "value": "free"},
     {"name": "Server Feed — £9.99/mo, up to 6/day", "value": "server_feed"},
     {"name": "Server Feed+ — £19.99/mo, up to 15/day", "value": "server_feed_plus"},
 ]
@@ -48,21 +49,23 @@ CHANNEL_OPTION: Dict[str, Any] = {
 
 FEED_COMMAND: Dict[str, Any] = {
     "name": "feed",
-    "description": "Manage this server's paid trading feed (requires Manage Server)",
+    "description": "Manage this server's EAFC.Live trading feed (requires Manage Server)",
     "default_member_permissions": "32",  # MANAGE_GUILD - hides the command from members without it
     "dm_permission": False,  # not usable in DMs
     "options": [
         {
-            "type": 1, "name": "setup", "description": "Set up the paid trading feed for this server",
+            "type": 1, "name": "setup", "description": "Start Free or set up a paid Server Feed",
             "options": [
-                {"type": 3, "name": "plan", "description": "Plan", "required": True, "choices": PLAN_CHOICES},
+                # Discord requires required options before optional ones. Channel
+                # is the only thing Free needs; omitting plan defaults to Free.
                 CHANNEL_OPTION,
-                {"type": 3, "name": "platform", "description": "Platform", "required": True, "choices": FEED_PLATFORM_CHOICES},
-                {"type": 3, "name": "budget_mix", "description": "Budget mix", "required": True, "choices": BUDGET_MIX_CHOICES},
+                {"type": 3, "name": "plan", "description": "Optional — defaults to Free", "required": False, "choices": PLAN_CHOICES},
+                {"type": 3, "name": "platform", "description": "Paid plans only", "required": False, "choices": FEED_PLATFORM_CHOICES},
+                {"type": 3, "name": "budget_mix", "description": "Paid plans only", "required": False, "choices": BUDGET_MIX_CHOICES},
             ],
         },
         {"type": 1, "name": "test", "description": "Send a synthetic test opportunity to the configured channel"},
-        {"type": 1, "name": "activate", "description": "Activate the live trading feed"},
+        {"type": 1, "name": "activate", "description": "Activate a paid live trading feed"},
         {"type": 1, "name": "status", "description": "Show this server's feed status"},
         {
             "type": 1, "name": "channel", "description": "Change the posting channel",
@@ -70,19 +73,19 @@ FEED_COMMAND: Dict[str, Any] = {
         },
         {
             "type": 1, "name": "sell_channel",
-            "description": "Route TARGET HIT / result posts to a separate channel (omit channel to clear)",
+            "description": "Paid plans: route TARGET HIT / result posts to a separate channel",
             "options": [
                 {
                     "type": 7,  # CHANNEL
                     "name": "channel",
-                    "description": "Sell-time results channel - omit to go back to posting results in the main feed channel",
+                    "description": "Sell-time results channel - omit to use the main feed channel",
                     "required": False,
                     "channel_types": [0, 5],  # GUILD_TEXT, GUILD_ANNOUNCEMENT only
                 },
             ],
         },
         {
-            "type": 1, "name": "preferences", "description": "Update feed preferences",
+            "type": 1, "name": "preferences", "description": "Paid plans: update server-specific feed preferences",
             "options": [
                 {"type": 3, "name": "platform", "description": "Platform", "required": False, "choices": FEED_PLATFORM_CHOICES},
                 {"type": 3, "name": "budget_mix", "description": "Budget mix", "required": False, "choices": BUDGET_MIX_CHOICES},
@@ -106,10 +109,10 @@ FEED_COMMAND: Dict[str, Any] = {
                 },
             ],
         },
-        {"type": 1, "name": "pause", "description": "Pause new live opportunity posts (billing unaffected)"},
-        {"type": 1, "name": "resume", "description": "Resume the live trading feed"},
-        {"type": 1, "name": "billing", "description": "Get a secure link to manage billing"},
-        {"type": 1, "name": "help", "description": "Explain the Server Feed plans and commands"},
+        {"type": 1, "name": "pause", "description": "Pause this server's feed"},
+        {"type": 1, "name": "resume", "description": "Resume this server's feed"},
+        {"type": 1, "name": "billing", "description": "Paid plans: get a secure billing-management link"},
+        {"type": 1, "name": "help", "description": "Explain Free, Server Feed and Server Feed+"},
     ],
 }
 
