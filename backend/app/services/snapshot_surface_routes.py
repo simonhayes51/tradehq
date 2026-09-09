@@ -73,6 +73,35 @@ def _restrict_to_rows(pairs, rows):
     return [(row, ci) for row, ci in pairs if int(row["source_card_id"]) in allowed]
 
 
+def _filter_meaningful_opportunities(pairs, floor_fn):
+    """Keep headline opportunities economically meaningful, not just high-ROI.
+
+    The engine can legitimately produce BUY on a 350-coin card when the
+    percentage edge is huge, but a +268-coin result should not occupy the main
+    Opportunities feed beside five-figure trades. Reuse the existing calibrated
+    price-relative meaningful-profit floor rather than inventing a second set of
+    thresholds here.
+    """
+    return [
+        (row, ci)
+        for row, ci in pairs
+        if ci.expected_profit_after_tax is not None
+        and float(ci.expected_profit_after_tax) >= floor_fn(row.get("current_bin"))
+    ]
+
+
+def _quality_opportunity_sort_key(pair):
+    """Rank executable opportunities by coin value before percentage optics."""
+    row, ci = pair
+    return (
+        0 if ci.signal == "strong_buy" else 1,
+        -(float(ci.expected_profit_after_tax) if ci.expected_profit_after_tax is not None else 0.0),
+        -(float(ci.confidence_score) if ci.confidence_score is not None else 0.0),
+        -(float(ci.expected_roi) if ci.expected_roi is not None else 0.0),
+        int(row["source_card_id"]),
+    )
+
+
 def install_snapshot_surface_routes(application) -> None:
     from app.routers.v2 import futgg_market as market
     from app.routers.v2 import dashboard as dashboard_module
@@ -88,7 +117,8 @@ def install_snapshot_surface_routes(application) -> None:
             require_confirmed_sales=True,
             max_evidence_age_minutes=market.MAX_OPPORTUNITY_EVIDENCE_AGE_MINUTES,
         )
-        scored.sort(key=market._opportunity_sort_key)
+        scored = _filter_meaningful_opportunities(scored, market._meaningful_profit_floor)
+        scored.sort(key=_quality_opportunity_sort_key)
         return [market._item_with_intelligence(row, ci) for row, ci in scored]
 
     # Home's Free-pick resolver imported this symbol directly, so patch both
@@ -127,7 +157,8 @@ def install_snapshot_surface_routes(application) -> None:
             require_confirmed_sales=True,
             max_evidence_age_minutes=market.MAX_OPPORTUNITY_EVIDENCE_AGE_MINUTES,
         )
-        scored.sort(key=market._opportunity_sort_key)
+        scored = _filter_meaningful_opportunities(scored, market._meaningful_profit_floor)
+        scored.sort(key=_quality_opportunity_sort_key)
         page = kw.get("page", 1)
         page_size = kw.get("page_size", market.DEFAULT_PAGE_SIZE)
         total = len(scored)
@@ -156,7 +187,8 @@ def install_snapshot_surface_routes(application) -> None:
             require_confirmed_sales=True,
             max_evidence_age_minutes=market.MAX_OPPORTUNITY_EVIDENCE_AGE_MINUTES,
         )
-        scored.sort(key=market._opportunity_sort_key)
+        scored = _filter_meaningful_opportunities(scored, market._meaningful_profit_floor)
+        scored.sort(key=_quality_opportunity_sort_key)
         if not scored:
             return {"item": None}
         row, ci = scored[0]
