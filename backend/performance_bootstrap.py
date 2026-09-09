@@ -151,6 +151,12 @@ def main() -> None:
     from app.services.discord_free_server_feed import install_free_server_feed
     install_free_server_feed()
 
+    # FC26 is in an exceptional supply shock. Keep collection and outcome
+    # grading live, but pause NEW Discord buy calls until the configured expiry.
+    # Install after Free Server Feed so its routed daily publisher is guarded too.
+    from app.services.discord_market_shock import install_discord_market_shock_guard
+    install_discord_market_shock_guard()
+
     # While preseason Elite is free, prevent a new personal Stripe checkout
     # from charging somebody for access they already have. Existing paid
     # subscriptions and the separate Discord Server Feed billing are untouched.
