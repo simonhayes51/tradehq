@@ -135,6 +135,13 @@ def main() -> None:
     logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
     install_market_batch_singleflight()
 
+    # Install the crash/repricing guard before main.py imports any module that
+    # takes a direct reference to futgg_intelligence.evaluate_card. This makes
+    # the same fail-closed rule apply to scanner, player detail, opportunities,
+    # Companion and Discord rather than only one presentation surface.
+    from app.services.market_regime_guard import install_market_regime_guard
+    install_market_regime_guard()
+
     # Install the temporary FC27 preseason entitlement overlay BEFORE main.py
     # imports the route tree. This keeps every direct import of the canonical
     # resolver consistent, including Discord reconciliation.
