@@ -59,6 +59,30 @@ def _pipeline_status(age_seconds: Optional[float], degraded_after: float, down_a
     return STATUS_HEALTHY
 
 
+def _opportunity_status(
+    active_opportunities: Optional[int],
+    last_price_age: Optional[float],
+    last_sale_age: Optional[float],
+    last_bin_age: Optional[float],
+) -> str:
+    if active_opportunities is None:
+        return STATUS_UNKNOWN
+    if active_opportunities <= 0:
+        return STATUS_DEGRADED
+    ages = [age for age in (last_price_age, last_sale_age, last_bin_age) if age is not None]
+    if not ages:
+        return STATUS_UNKNOWN
+    if last_price_age is not None and last_price_age > 3600:
+        return STATUS_DOWN
+    if any(age > 14400 for age in ages):
+        return STATUS_DOWN
+    if last_price_age is not None and last_price_age > 900:
+        return STATUS_DEGRADED
+    if any(age > 5400 for age in ages):
+        return STATUS_DEGRADED
+    return STATUS_HEALTHY
+
+
 @router.get("/launch-health")
 async def launch_health(
     request: Request,
@@ -213,7 +237,7 @@ async def launch_health(
             },
         },
         "opportunity_engine": {
-            "status": "ACTIVE",
+            "status": _opportunity_status(active_opportunities, last_price_age, last_sale_age, last_bin_age),
             "engine_version": ENGINE_CONFIG.version,
             "active_opportunities": active_opportunities,
             "unverifiable_discount_guard": ENGINE_CONFIG.unverifiable_discount_guard_enabled,

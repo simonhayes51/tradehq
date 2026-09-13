@@ -4,14 +4,14 @@ asyncpg==0.29.0
 aiohttp==3.9.0
 python-dotenv==1.0.0
 python-multipart==0.0.6
-pydantic
+pydantic==2.5.3
 itsdangerous
 matplotlib
-requests
-beautifulsoup4
+requests==2.31.0
+beautifulsoup4==4.12.3
 httpx<0.28  # starlette 0.27.x's TestClient breaks on httpx>=0.28 (dropped the `app=` kwarg); unpinned, this silently installed an incompatible httpx and made TestClient-based tests impossible to run
 PyJWT==2.9.0
-stripe
+stripe==10.12.0
 lightweight-charts
 email-validator==2.2.0
 redis>=5.0

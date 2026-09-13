@@ -78,6 +78,13 @@ class TestApiNeverLeaksShadowSignals:
         # ...and the only way past that is an explicit admin check.
         assert "await require_admin(request)" in source
 
+    def test_public_signal_detail_filters_shadow_rows(self):
+        from app.routers.v2 import investments
+        source = inspect.getsource(investments.get_signal)
+        assert "include_shadow" in source
+        assert "await require_admin(request)" in source
+        assert "s.shadow = FALSE" in source
+
     def test_ledger_endpoint_is_published_only(self):
         from app.routers.v2 import investments
         source = inspect.getsource(investments.get_ledger)

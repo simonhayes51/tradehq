@@ -22,4 +22,4 @@ dependsOn = ["install"]
 cmds = ["/opt/venv/bin/playwright install --with-deps chromium"]
 
 [start]
-cmd = "/opt/venv/bin/uvicorn main:app --host 0.0.0.0 --port $PORT"
+cmd = "/opt/venv/bin/python performance_bootstrap.py"

@@ -33,9 +33,10 @@ _hits: Dict[Tuple[str, str], Deque[float]] = defaultdict(deque)
 
 
 def _client_ip(request: Request) -> str:
-    # ProxyHeadersMiddleware (trusted_hosts="*") already rewrites
-    # request.client from X-Forwarded-For, so this is the real client IP
-    # even behind a load balancer/CDN, not the proxy's own address.
+    # main.py only trusts configured proxy hosts before rewriting
+    # request.client from X-Forwarded-For. In production, set
+    # TRUSTED_PROXY_HOSTS to the actual Coolify/proxy hop(s) so the limiter
+    # sees the real client without accepting spoofed forwarding headers.
     return request.client.host if request.client else "unknown"
 
 
