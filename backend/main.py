@@ -867,7 +867,12 @@ async def lifespan(app: FastAPI):
 # --- FastAPI app ---
 app = FastAPI(lifespan=lifespan)
 
-app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
+TRUSTED_PROXY_HOSTS = [
+    h.strip()
+    for h in os.getenv("TRUSTED_PROXY_HOSTS", "127.0.0.1,::1").split(",")
+    if h.strip()
+]
+app.add_middleware(ProxyHeadersMiddleware, trusted_hosts=TRUSTED_PROXY_HOSTS)
 
 
 @app.exception_handler(asyncpg_exceptions.UndefinedTableError)
@@ -990,10 +995,33 @@ class CatchExceptionsMiddleware(BaseHTTPMiddleware):
                 content={"detail": "Internal server error", "error_id": error_id},
             )
 
+CSRF_EXEMPT_PATHS = (
+    "/api/webhooks/stripe",
+    "/api/discord/interactions",
+    "/api/public/",
+    "/ext/",
+)
+
+
+class OriginGuardMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        if (
+            IS_PROD
+            and request.method in {"POST", "PUT", "PATCH", "DELETE"}
+            and request.url.path.startswith("/api/")
+            and not request.url.path.startswith(CSRF_EXEMPT_PATHS)
+            and "session" in request.cookies
+        ):
+            origin = request.headers.get("origin")
+            if origin and not _is_allowed_origin(origin):
+                return JSONResponse(status_code=403, content={"detail": "Invalid request origin"})
+        return await call_next(request)
+
+
 def _session_middleware_kwargs() -> dict:
     kwargs = {
         "secret_key": SECRET_KEY,
-        "same_site": "none" if IS_PROD else "lax",
+        "same_site": os.getenv("SESSION_COOKIE_SAMESITE", "lax" if IS_PROD else "lax").lower(),
         "https_only": IS_PROD,
     }
     session_domain = os.getenv("SESSION_COOKIE_DOMAIN") or COOKIE_DOMAIN
@@ -1008,6 +1036,7 @@ app.add_middleware(
 )
 
 app.add_middleware(CatchExceptionsMiddleware)
+app.add_middleware(OriginGuardMiddleware)
 
 from app.middleware.rate_limit import RateLimitMiddleware
 app.add_middleware(RateLimitMiddleware)
@@ -1232,7 +1261,8 @@ async def ext_add_trade(
 
 # ---- Router wiring (single, final) ----
 app.include_router(auth_me_router)          # /api/auth/me
-app.include_router(auth_email_router)       # /api/auth/email/*
+if os.getenv("ENABLE_EMAIL_AUTH", "0" if IS_PROD else "1") == "1":
+    app.include_router(auth_email_router)   # /api/auth/email/*
 app.include_router(trade_finder_router)     # /api/trade-finder...
 app.include_router(ext_router)              # /ext/...
 
@@ -3323,6 +3353,35 @@ async def delete_account(
         raise HTTPException(status_code=400, detail="Confirmation required. Add ?confirm=true")
 
     try:
+        active_subscriptions = await conn.fetch(
+            """
+            SELECT id, stripe_subscription_id
+            FROM subscriptions
+            WHERE user_id=$1
+              AND status IN ('active', 'trialing', 'trial', 'past_due')
+              AND COALESCE(cancel_at_period_end, FALSE) = FALSE
+            """,
+            user_id,
+        )
+        for sub in active_subscriptions:
+            if sub["stripe_subscription_id"]:
+                try:
+                    stripe.Subscription.modify(
+                        sub["stripe_subscription_id"],
+                        cancel_at_period_end=True,
+                    )
+                except Exception as exc:
+                    logging.error(
+                        "Account deletion blocked because Stripe cancellation failed for user %s subscription %s",
+                        user_id,
+                        sub["stripe_subscription_id"],
+                        exc_info=exc,
+                    )
+                    raise HTTPException(
+                        status_code=502,
+                        detail="Could not cancel active billing before deleting account",
+                    )
+
         async with conn.transaction():
             # The queue deliberately has no users FK, so the removal survives
             # account deletion and can be retried after Discord downtime.
@@ -3367,6 +3426,32 @@ async def delete_account(
                 await conn.execute("DELETE FROM user_profiles WHERE user_id=$1", user_id)
                 profile_deleted = True
 
+            await conn.execute(
+                """
+                UPDATE users
+                SET email=NULL,
+                    password_hash=NULL,
+                    username='Deleted user',
+                    avatar_url=NULL,
+                    discord_id=NULL,
+                    tier='free',
+                    plan=NULL,
+                    premium_until=NULL,
+                    roles='[]'::jsonb
+                WHERE id=$1
+                """,
+                user_id,
+            )
+            await conn.execute(
+                """
+                UPDATE subscriptions
+                SET cancel_at_period_end=TRUE
+                WHERE user_id=$1
+                  AND status IN ('active', 'trialing', 'trial', 'past_due')
+                """,
+                user_id,
+            )
+
         # Watchlist/alerts live on a separate database (WATCHLIST_DATABASE_URL,
         # possibly a different physical DB - see lifespan) so they can't
         # share the transaction above; best-effort, logged if it fails
@@ -3390,6 +3475,8 @@ async def delete_account(
             "profile_deleted": profile_deleted,
             "timestamp": datetime.now().isoformat(),
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logging.error(f"Account deletion error: {e}")
         raise HTTPException(status_code=500, detail="Failed to delete account")
@@ -4205,6 +4292,28 @@ async def create_checkout_session(
         if not profile:
             raise HTTPException(status_code=404, detail="User profile not found")
 
+        existing_subscription = await conn.fetchrow(
+            """
+            SELECT id, status, cancel_at_period_end, current_period_end
+            FROM subscriptions
+            WHERE user_id = $1
+              AND status IN ('active', 'trialing', 'trial', 'past_due')
+              AND (
+                COALESCE(cancel_at_period_end, FALSE) = FALSE
+                OR current_period_end IS NULL
+                OR current_period_end > NOW()
+              )
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            user_id,
+        )
+        if existing_subscription:
+            raise HTTPException(
+                status_code=409,
+                detail="An active subscription already exists for this account",
+            )
+
         # Use the user's real email if we have one; the old
         # "{username}@discord.local" placeholder broke Stripe receipts and
         # dunning emails. Omitting customer_email lets Stripe Checkout
@@ -4262,6 +4371,8 @@ async def create_checkout_session(
             subscription_data=subscription_data,
         )
         return {"sessionId": session.id, "checkoutUrl": session.url}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Create checkout error: {e}")
         raise HTTPException(status_code=500, detail="Failed to create checkout session")
@@ -4288,6 +4399,8 @@ async def cancel_subscription(user_id: str = Depends(get_current_user), conn=Dep
             subscription["id"]
         )
         return {"success": True}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Cancel subscription error: {e}")
         raise HTTPException(status_code=500, detail="Failed to cancel subscription")
@@ -4307,6 +4420,8 @@ async def update_payment_method(user_id: str = Depends(get_current_user), conn=D
             return_url=f"{FRONTEND_URL}/#/billing"
         )
         return {"portalUrl": portal_session.url}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Update payment method error: {e}")
         raise HTTPException(status_code=500, detail="Failed to update payment method")

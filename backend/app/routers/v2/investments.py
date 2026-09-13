@@ -184,7 +184,15 @@ async def list_signals(
 
 
 @router.get("/investments/signals/{signal_id}")
-async def get_signal(signal_id: int, pool=Depends(get_core_pool)) -> Dict[str, Any]:
+async def get_signal(
+    signal_id: int,
+    request: Request,
+    include_shadow: bool = Query(False, description="Admin-only: include a shadow-mode signal by id"),
+    pool=Depends(get_core_pool),
+) -> Dict[str, Any]:
+    if include_shadow:
+        await require_admin(request)
+
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
@@ -193,8 +201,10 @@ async def get_signal(signal_id: int, pool=Depends(get_core_pool)) -> Dict[str, A
             LEFT JOIN futgg_players p ON p.source_card_id = s.source_card_id
             LEFT JOIN futgg_market_snapshot m ON m.source_card_id = s.source_card_id
             WHERE s.id = $1
+              AND ($2::boolean OR s.shadow = FALSE)
             """,
             signal_id,
+            include_shadow,
         )
     if row is None:
         raise HTTPException(status_code=404, detail="signal not found")

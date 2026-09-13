@@ -76,6 +76,35 @@ class TestClientCannotControlTheCheckout:
         source = _checkout_source()
         assert "if STRIPE_TRIAL_DAYS > 0:" in source
 
+    def test_checkout_refuses_existing_active_subscription(self):
+        source = _checkout_source()
+        assert "existing_subscription" in source
+        assert "active', 'trialing', 'trial', 'past_due" in source
+        assert "status_code=409" in source
+
+    def test_checkout_preserves_intentional_http_errors(self):
+        source = _checkout_source()
+        assert "except HTTPException:" in source
+        assert "raise" in source
+
+
+class TestAccountDeletionStopsBilling:
+    def test_account_deletion_cancels_renewal_before_scrubbing_user(self):
+        import main
+        source = _code_of(main.delete_account)
+        assert "stripe.Subscription.modify" in source
+        assert "cancel_at_period_end=True" in source
+        assert "Could not cancel active billing before deleting account" in source
+        assert "UPDATE users" in source
+        assert "email=NULL" in source
+        assert "discord_id=NULL" in source
+
+    def test_billing_mutations_preserve_intentional_http_errors(self):
+        import main
+        for func in (main.delete_account, main.cancel_subscription, main.update_payment_method):
+            source = _code_of(func)
+            assert "except HTTPException:" in source
+
 
 class TestPriceHasOneSource:
     def test_no_hardcoded_price_strings_remain_in_the_subscription_response(self):

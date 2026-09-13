@@ -7,6 +7,7 @@ from app.services.market_regime_guard import (
     REGIME_REPRICING,
     apply_regime_guard,
     evaluate_regime,
+    fail_closed_regime_guard,
 )
 
 NOW = datetime(2026, 9, 9, 20, 0, tzinfo=timezone.utc)
@@ -119,3 +120,26 @@ def test_guard_never_upgrades_non_buy_signal():
     )
     assert guarded.signal == "watch"
     assert guarded.confidence_score == 0.8
+
+
+def test_guard_failure_suppresses_actionable_buy():
+    ci = CardIntelligence(
+        card_id=3,
+        signal="buy",
+        status="active",
+        risk_level="low",
+        confidence_score=0.9,
+        fair_value=Decimal("100000"),
+        recommended_buy_max=Decimal("90000"),
+        current_executable_buy=Decimal("88000"),
+        recommended_sell_target=Decimal("110000"),
+        expected_profit_after_tax=Decimal("12000"),
+    )
+    guarded = fail_closed_regime_guard(ci, {"source_card_id": 3}, RuntimeError("boom"))
+    assert guarded.signal == "avoid"
+    assert guarded.status == "insufficient_data"
+    assert guarded.recommended_buy_max is None
+    assert guarded.current_executable_buy is None
+    assert guarded.recommended_sell_target is None
+    assert guarded.expected_profit_after_tax is None
+    assert "market_repricing" in guarded.blocking_codes

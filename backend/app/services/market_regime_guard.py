@@ -250,6 +250,50 @@ def apply_regime_guard(ci: Any, snapshot: Mapping[str, Any], sales: Optional[Seq
     return ci
 
 
+def fail_closed_regime_guard(ci: Any, snapshot: Mapping[str, Any], exc: Exception):
+    """If the safety layer itself breaks, preserve the card but remove any buy."""
+    if getattr(ci, "signal", None) not in {"buy", "strong_buy"}:
+        return ci
+
+    ci.signal = "avoid"
+    ci.status = "insufficient_data"
+    ci.risk_level = "avoid"
+    if getattr(ci, "confidence_score", None) is not None:
+        ci.confidence_score = min(float(ci.confidence_score), CONFIDENCE_CAP)
+
+    for attr in (
+        "fair_value",
+        "theoretical_max_buy",
+        "recommended_buy_max",
+        "current_executable_buy",
+        "break_even_price",
+        "recommended_sell_target",
+        "buy_below",
+        "expected_profit_after_tax",
+        "expected_roi",
+        "expected_profit_basis",
+    ):
+        if hasattr(ci, attr):
+            setattr(ci, attr, None)
+
+    reason = "Market regime guard failed, so this card is being suppressed until it can be re-evaluated."
+    if reason not in ci.signal_reasons:
+        ci.signal_reasons.insert(0, reason)
+    if REASON_CODE not in ci.reason_codes:
+        ci.reason_codes.insert(0, REASON_CODE)
+    if REASON_CODE not in ci.blocking_codes:
+        ci.blocking_codes.insert(0, REASON_CODE)
+    if not any(r.get("code") == REASON_CODE for r in ci.reasons if isinstance(r, dict)):
+        ci.reasons.insert(0, {"code": REASON_CODE, "message": reason, "severity": "blocking"})
+    ci.trend_description = reason
+    ci.trend_features = dict(getattr(ci, "trend_features", {}) or {})
+    ci.trend_features.update({
+        "market_regime": REGIME_REPRICING,
+        "regime_guard_error": exc.__class__.__name__,
+    })
+    return ci
+
+
 def install_market_regime_guard() -> None:
     """Wrap the canonical pure evaluator before application modules import it."""
     from app.services import futgg_intelligence
@@ -269,11 +313,11 @@ def install_market_regime_guard() -> None:
         )
         try:
             return apply_regime_guard(ci, snapshot, sales)
-        except Exception:
-            # A guard must never take the market engine down. The underlying
-            # engine result is preserved if this safety layer itself errors.
+        except Exception as exc:
+            # A guard must never take the market engine down, but launch
+            # safety also means an unguarded BUY must not survive the error.
             log.exception("market regime guard failed for card_id=%s", snapshot.get("source_card_id"))
-            return ci
+            return fail_closed_regime_guard(ci, snapshot, exc)
 
     futgg_intelligence.evaluate_card = guarded_evaluate_card
     futgg_intelligence._market_regime_guard_installed = True
