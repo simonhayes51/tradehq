@@ -8,9 +8,9 @@ COHORT median move around individual content-release events (promos,
 TOTW). This router answers "which INDIVIDUAL cards rose the most between
 two fixed calendar points" - the web-app/early-access launch and full
 release - which is what a launch-movers leaderboard needs. It also turns
-that historical movement into descriptive launch-playbook signals: which
-positions, price bands, pace tiers, rarities, nations and leagues tended
-to rise together.
+that historical movement into descriptive launch-playbook signals across
+all useful data we have: position, rating band, price band, pace tier,
+rarity, nation and league.
 
 Data source: fc26_historical_daily_prices (chart-reconstructed, see
 auto_sync/research_fc26_historical_loader.py) joined to futgg_players for
@@ -64,6 +64,7 @@ MAX_PAGE_SIZE = 200
 PACE_HIGH_THRESHOLD = 85
 MIN_TREND_GROUP_SIZE = 3
 TOP_TREND_GROUPS = 8
+TOP_KEY_SIGNALS = 5
 HIGH_CALIBRATION_ERR_PCT = 20.0
 
 FC26_WEB_APP_LAUNCH_DATE = date(2025, 9, 17)
@@ -74,6 +75,20 @@ PRICE_BANDS = [
     {"key": "1k_5k", "label": "1k-5k", "min": 1000, "max": 4999},
     {"key": "5k_25k", "label": "5k-25k", "min": 5000, "max": 24999},
     {"key": "25k_plus", "label": "25k+", "min": 25000, "max": None},
+]
+
+RATING_BANDS = [
+    {"key": "bronze_silver", "label": "Under 75", "min": 0, "max": 74},
+    {"key": "75_79", "label": "75-79", "min": 75, "max": 79},
+    {"key": "80_84", "label": "80-84", "min": 80, "max": 84},
+    {"key": "85_plus", "label": "85+", "min": 85, "max": None},
+]
+
+PACE_BANDS = [
+    {"key": "under_70", "label": "Pace under 70", "min": 0, "max": 69},
+    {"key": "70_79", "label": "Pace 70-79", "min": 70, "max": 79},
+    {"key": "80_84", "label": "Pace 80-84", "min": 80, "max": 84},
+    {"key": "85_plus", "label": "Pace 85+", "min": 85, "max": None},
 ]
 
 
@@ -201,9 +216,11 @@ async def list_release_price_rises(
             "card_id": cid,
             "name": p["display_name"] or p["name"],
             "rating": p["rating"],
+            "rating_band": _rating_band(p["rating"]),
             "position": p["primary_position"],
             "rarity": p["rarity"],
             "pace": p["pace"],
+            "pace_band": _pace_band(p["pace"]),
             "nation": p["nation"],
             "nation_image_url": p["nation_image_url"],
             "league": p["league"],
@@ -251,11 +268,25 @@ def _sort_key(row: Dict[str, Any], field: str, order: str) -> tuple:
     return (0, direction * value)
 
 
-def _price_band(price: int) -> Dict[str, Any]:
-    for band in PRICE_BANDS:
-        if price >= band["min"] and (band["max"] is None or price <= band["max"]):
+def _band_for_value(value: Optional[int], bands: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if value is None:
+        return None
+    for band in bands:
+        if value >= band["min"] and (band["max"] is None or value <= band["max"]):
             return {"key": band["key"], "label": band["label"]}
-    return {"key": "unknown", "label": "Unknown"}
+    return None
+
+
+def _price_band(price: int) -> Dict[str, Any]:
+    return _band_for_value(price, PRICE_BANDS) or {"key": "unknown", "label": "Unknown"}
+
+
+def _rating_band(rating: Optional[int]) -> Optional[Dict[str, Any]]:
+    return _band_for_value(rating, RATING_BANDS)
+
+
+def _pace_band(pace: Optional[int]) -> Optional[Dict[str, Any]]:
+    return _band_for_value(pace, PACE_BANDS)
 
 
 def _median(values: List[float]) -> Optional[float]:
@@ -275,10 +306,12 @@ def _group_by(rows: List[Dict[str, Any]], key_field: str, image_field: Optional[
             key = key.get("label")
         if r["pct_change"] is None or not key:
             continue
-        g = groups.setdefault(key, {"values": [], "profits": [], "image_url": None})
+        g = groups.setdefault(key, {"values": [], "profits": [], "roi": [], "image_url": None})
         g["values"].append(r["pct_change"])
         if r.get("net_profit_after_tax") is not None:
             g["profits"].append(r["net_profit_after_tax"])
+        if r.get("net_roi_after_tax") is not None:
+            g["roi"].append(r["net_roi_after_tax"])
         if image_field and not g["image_url"] and r.get(image_field):
             g["image_url"] = r[image_field]
     return groups
@@ -292,6 +325,7 @@ def _top_groups(groups: Dict[str, Dict[str, Any]], label_field: str, limit: int 
             label_field: key,
             "median_pct_change": round(_median(g["values"]), 1),
             "median_profit_after_tax": round(_median(g["profits"])) if g["profits"] else None,
+            "median_roi_after_tax": round(_median(g["roi"]), 1) if g["roi"] else None,
             "card_count": len(g["values"]),
             "image_url": g["image_url"],
         }
@@ -299,59 +333,120 @@ def _top_groups(groups: Dict[str, Dict[str, Any]], label_field: str, limit: int 
     ]
 
 
+def _signal_from_group(dimension: str, label: str, group: Dict[str, Any], overall_pct: float, overall_profit: Optional[float]) -> Dict[str, Any]:
+    median_pct = group.get("median_pct_change")
+    median_profit = group.get("median_profit_after_tax")
+    pct_lift = round((median_pct or 0) - overall_pct, 1)
+    profit_lift = round(median_profit - overall_profit) if median_profit is not None and overall_profit is not None else None
+    return {
+        "dimension": dimension,
+        "label": label,
+        "median_pct_change": median_pct,
+        "median_profit_after_tax": median_profit,
+        "median_roi_after_tax": group.get("median_roi_after_tax"),
+        "card_count": group.get("card_count", 0),
+        "lift_vs_all_pct_points": pct_lift,
+        "profit_lift_vs_all": profit_lift,
+    }
+
+
+def _key_signals(rows: List[Dict[str, Any]], grouped: Dict[str, List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    pct_values = [r["pct_change"] for r in rows if r.get("pct_change") is not None]
+    profit_values = [r["net_profit_after_tax"] for r in rows if r.get("net_profit_after_tax") is not None]
+    overall_pct = _median(pct_values) or 0
+    overall_profit = _median(profit_values)
+
+    dimensions = [
+        ("Position", "by_position", "position"),
+        ("Price band", "by_price_band", "price_band"),
+        ("Rating band", "by_rating_band", "rating_band"),
+        ("Pace band", "by_pace_band", "pace_band"),
+        ("Rarity", "by_rarity", "rarity"),
+        ("League", "by_league", "league"),
+        ("Nation", "by_nation", "nation"),
+    ]
+    signals: List[Dict[str, Any]] = []
+    for dimension, trend_key, label_key in dimensions:
+        for group in grouped.get(trend_key, []):
+            if group.get("card_count", 0) < MIN_TREND_GROUP_SIZE:
+                continue
+            signals.append(_signal_from_group(dimension, group[label_key], group, overall_pct, overall_profit))
+
+    signals.sort(
+        key=lambda s: (
+            s["lift_vs_all_pct_points"],
+            s.get("median_profit_after_tax") if s.get("median_profit_after_tax") is not None else -10**12,
+            s["card_count"],
+        ),
+        reverse=True,
+    )
+    return signals[:TOP_KEY_SIGNALS]
+
+
 def _build_trends(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     by_position: Dict[str, List[float]] = {}
     by_position_profit: Dict[str, List[float]] = {}
+    by_position_roi: Dict[str, List[float]] = {}
     for r in rows:
         if r["pct_change"] is None or not r["position"]:
             continue
         by_position.setdefault(r["position"], []).append(r["pct_change"])
         if r.get("net_profit_after_tax") is not None:
             by_position_profit.setdefault(r["position"], []).append(r["net_profit_after_tax"])
+        if r.get("net_roi_after_tax") is not None:
+            by_position_roi.setdefault(r["position"], []).append(r["net_roi_after_tax"])
     position_trend = [
         {
             "position": pos,
             "median_pct_change": round(_median(vals), 1),
             "median_profit_after_tax": round(_median(by_position_profit.get(pos, []))) if by_position_profit.get(pos) else None,
+            "median_roi_after_tax": round(_median(by_position_roi.get(pos, [])), 1) if by_position_roi.get(pos) else None,
             "card_count": len(vals),
         }
         for pos, vals in sorted(by_position.items(), key=lambda kv: _median(kv[1]) or 0, reverse=True)
     ]
 
-    pace_groups: Dict[str, List[float]] = {"high_pace": [], "low_pace": []}
-    pace_profit: Dict[str, List[float]] = {"high_pace": [], "low_pace": []}
-    for r in rows:
-        if r["pct_change"] is None or r["pace"] is None:
-            continue
-        key = "high_pace" if r["pace"] >= PACE_HIGH_THRESHOLD else "low_pace"
-        pace_groups[key].append(r["pct_change"])
-        if r.get("net_profit_after_tax") is not None:
-            pace_profit[key].append(r["net_profit_after_tax"])
-    pace_trend = [
-        {
-            "group": key,
-            "label": f"Pace {PACE_HIGH_THRESHOLD}+" if key == "high_pace" else f"Pace under {PACE_HIGH_THRESHOLD}",
-            "median_pct_change": round(_median(vals), 1) if vals else None,
-            "median_profit_after_tax": round(_median(pace_profit[key])) if pace_profit[key] else None,
-            "card_count": len(vals),
-        }
-        for key, vals in pace_groups.items()
-    ]
-
     price_trend = _top_groups(_group_by(rows, "price_band"), "price_band", limit=len(PRICE_BANDS))
-    # Restore the intended band order after median calculations, then let
-    # the frontend show both order and performance without guessing ranges.
     band_order = {band["label"]: i for i, band in enumerate(PRICE_BANDS)}
     price_trend.sort(key=lambda r: band_order.get(r["price_band"], 99))
 
-    return {
+    rating_trend = _top_groups(_group_by(rows, "rating_band"), "rating_band", limit=len(RATING_BANDS))
+    rating_order = {band["label"]: i for i, band in enumerate(RATING_BANDS)}
+    rating_trend.sort(key=lambda r: rating_order.get(r["rating_band"], 99))
+
+    pace_trend = _top_groups(_group_by(rows, "pace_band"), "pace_band", limit=len(PACE_BANDS))
+    pace_order = {band["label"]: i for i, band in enumerate(PACE_BANDS)}
+    pace_trend.sort(key=lambda r: pace_order.get(r["pace_band"], 99))
+
+    grouped = {
         "by_position": position_trend,
-        "by_pace_tier": pace_trend,
         "by_price_band": price_trend,
+        "by_rating_band": rating_trend,
+        "by_pace_band": pace_trend,
         "by_nation": _top_groups(_group_by(rows, "nation", "nation_image_url"), "nation"),
         "by_league": _top_groups(_group_by(rows, "league", "league_image_url"), "league"),
         "by_rarity": _top_groups(_group_by(rows, "rarity"), "rarity"),
     }
+    grouped["key_signals"] = _key_signals(rows, grouped)
+    # Keep the old two-bucket shape for older clients while the UI moves to the
+    # ranked, data-led key_signals array.
+    grouped["by_pace_tier"] = [
+        {
+            "group": "high_pace",
+            "label": f"Pace {PACE_HIGH_THRESHOLD}+",
+            "median_pct_change": next((r["median_pct_change"] for r in pace_trend if r["pace_band"] == f"Pace {PACE_HIGH_THRESHOLD}+"), None),
+            "median_profit_after_tax": next((r["median_profit_after_tax"] for r in pace_trend if r["pace_band"] == f"Pace {PACE_HIGH_THRESHOLD}+"), None),
+            "card_count": next((r["card_count"] for r in pace_trend if r["pace_band"] == f"Pace {PACE_HIGH_THRESHOLD}+"), 0),
+        },
+        {
+            "group": "low_pace",
+            "label": f"Pace under {PACE_HIGH_THRESHOLD}",
+            "median_pct_change": None,
+            "median_profit_after_tax": None,
+            "card_count": sum(r["card_count"] for r in pace_trend if r["pace_band"] != f"Pace {PACE_HIGH_THRESHOLD}+"),
+        },
+    ]
+    return grouped
 
 
 def _top_trend(rows: List[Dict[str, Any]], label_key: str) -> Optional[Dict[str, Any]]:
@@ -368,24 +463,11 @@ def _build_playbook(rows: List[Dict[str, Any]], trends: Dict[str, Any]) -> Dict[
 
     top_card = max(rows, key=lambda r: r.get("pct_change") or 0)
     top_profit = max(rows, key=lambda r: r.get("net_profit_after_tax") or 0)
+    key_signals = trends.get("key_signals", [])
     best_position = _top_trend(trends.get("by_position", []), "position")
     best_rarity = _top_trend(trends.get("by_rarity", []), "rarity")
     price_bands = [r for r in trends.get("by_price_band", []) if r.get("card_count", 0) >= MIN_TREND_GROUP_SIZE]
     best_band = max(price_bands, key=lambda r: r.get("median_pct_change") or 0) if price_bands else None
-    pace = {r.get("group"): r for r in trends.get("by_pace_tier", [])}
-    high, low = pace.get("high_pace"), pace.get("low_pace")
-    pace_edge = None
-    if high and low and high.get("median_pct_change") is not None and low.get("median_pct_change") is not None:
-        diff = round(high["median_pct_change"] - low["median_pct_change"], 1)
-        pace_edge = {
-            "label": "Pace premium" if diff >= 0 else "Pace was not everything",
-            "value": diff,
-            "copy": (
-                f"85+ pace cards beat slower cards by {diff} points on median rise."
-                if diff >= 0 else
-                f"Slower cards beat 85+ pace cards by {abs(diff)} points on median rise."
-            ),
-        }
 
     cards = [
         {
@@ -401,38 +483,38 @@ def _build_playbook(rows: List[Dict[str, Any]], trends: Dict[str, Any]) -> Dict[
             "card_id": top_profit["card_id"],
         },
     ]
-    if best_position:
+    for signal in key_signals[:3]:
+        cards.append({
+            "label": signal["dimension"],
+            "value": signal["label"],
+            "copy": (
+                f"{signal['label']} beat the overall median by "
+                f"{signal['lift_vs_all_pct_points']} points across {signal['card_count']} cards."
+            ),
+        })
+    if not key_signals and best_position:
         cards.append({
             "label": "Position angle",
             "value": best_position["position"],
             "copy": f"{best_position['position']} had a {best_position['median_pct_change']}% median rise across {best_position['card_count']} cards.",
         })
-    if best_band:
+    if not key_signals and best_band:
         cards.append({
             "label": "Budget band",
             "value": best_band["price_band"],
             "copy": f"This band had a {best_band['median_pct_change']}% median rise across {best_band['card_count']} cards.",
         })
-    if best_rarity:
+    if not key_signals and best_rarity:
         cards.append({
             "label": "Card type",
             "value": best_rarity["rarity"],
             "copy": f"{best_rarity['rarity']} cards led the rarity breakdown on median rise.",
         })
-    if pace_edge:
-        cards.append(pace_edge)
 
-    best_bits = []
-    if best_position:
-        best_bits.append(best_position["position"])
-    if best_band:
-        best_bits.append(best_band["price_band"])
-    if best_rarity:
-        best_bits.append(best_rarity["rarity"])
-    profile = " + ".join(best_bits[:3]) or "the strongest historical risers"
+    profile = " + ".join(signal["label"] for signal in key_signals[:3]) or "the strongest historical risers"
 
     return {
         "headline": f"Best FC27 watch profile: {profile}",
-        "summary": "Use the FC26 launch window as evidence for what to shortlist early in FC27. It is historical pattern matching, not a guaranteed buy signal.",
+        "summary": "The signal is ranked from the actual FC26 data by median rise versus the overall market. Treat it as a shortlist, then verify current FC27 prices before buying.",
         "cards": cards[:6],
     }
