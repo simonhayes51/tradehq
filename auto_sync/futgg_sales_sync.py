@@ -15,7 +15,7 @@ price-access signing endpoint throttles under concurrency.
 
 The same data is available directly:
 
-    POST /api/fut/price-access/sign/   {"url": "/api/fut/player-prices/26/<eaId>/?platform=ps5"}
+    POST /api/fut/price-access/sign/   {"url": "/api/fut/player-prices/27/<eaId>/?platform=ps5"}
       -> {"data": {"url": "...?verify=<token>", "expiresIn": 120}}
     GET  <signed url>                  -> ~25 KB JSON
 
@@ -53,7 +53,7 @@ headless finding - but neither transport by itself was the fix:
                   player page), attaches a page.on("response", ...)
                   listener BEFORE navigation, and passively captures that
                   page's own naturally-triggered request to
-                  /api/fut/player-prices/26/<card-id>/ - no injected
+                  /api/fut/player-prices/27/<card-id>/ - no injected
                   fetch(), no manual call to the sign endpoint. This is
                   structurally identical to how PriceSync obtains data,
                   and is the fallback when Cloudflare blocks signed_fetch.
@@ -129,7 +129,7 @@ def env_float(name: str, default: float, minimum: float | None = None) -> float:
     return max(minimum, value) if minimum is not None else value
 
 
-GAME_YEAR = os.getenv("FUTGG_GAME_YEAR", "26")
+GAME_YEAR = os.getenv("FUTGG_GAME_YEAR", "27")
 PLATFORM = os.getenv("FUTGG_SALES_PLATFORM", "ps5")
 HEADLESS = env_bool("PLAYWRIGHT_HEADLESS", True)
 TIMEOUT_MS = env_int("PLAYWRIGHT_TIMEOUT_MS", 45000, minimum=5000)
@@ -2800,7 +2800,7 @@ async def run_forever() -> None:
             ORDER BY rating DESC NULLS LAST LIMIT 1
             """
         )
-    anchor = anchor or "https://www.fut.gg/players/1114-roberto-baggio/26-1114/"
+    anchor = anchor or "https://www.fut.gg/players/"
 
     log.info(
         "%s starting: transport=%s platform=%s batch=%d page_concurrency=%d "
@@ -3672,7 +3672,7 @@ async def run_diagnostic_card(card_id: int) -> bool:
             _row_value(row, "sales_consecutive_failures", 0), row["source_url"],
         )
 
-        anchor = anchor or "https://www.fut.gg/players/1114-roberto-baggio/26-1114/"
+        anchor = anchor or "https://www.fut.gg/players/"
 
         if TRANSPORT_MODE == "page_capture":
             ok, results = await _run_diagnostic_page_capture(pool, row, card_id)
