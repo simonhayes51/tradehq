@@ -7,10 +7,10 @@ Different question from market_event_study.py: that script reports a
 COHORT median move around individual content-release events (promos,
 TOTW). This router answers "which INDIVIDUAL cards rose the most between
 two fixed calendar points" - the web-app/early-access launch and full
-release - which is what a "who raised the most at launch" leaderboard
-needs. It also breaks the same move down by position and by the
-PACE_HIGH/PACE_LOW pace-tier split, purely descriptive (see WORDING
-DISCIPLINE below).
+release - which is what a launch-movers leaderboard needs. It also turns
+that historical movement into descriptive launch-playbook signals: which
+positions, price bands, pace tiers, rarities, nations and leagues tended
+to rise together.
 
 Data source: fc26_historical_daily_prices (chart-reconstructed, see
 auto_sync/research_fc26_historical_loader.py) joined to futgg_players for
@@ -58,47 +58,23 @@ from app.services.game_cycle import GAME_CYCLE
 router = APIRouter(tags=["v2-release-price-rises"])
 log = logging.getLogger("release_price_rises_router")
 
-# How many days forward of the requested baseline/target date we'll
-# search for the closest actually-observed price. The series is daily
-# but sparse per card (see loader docstring) - beyond this window a
-# "nearest price" stops meaningfully representing that date.
 MATCH_WINDOW_DAYS = 5
-
 DEFAULT_PAGE_SIZE = 50
 MAX_PAGE_SIZE = 200
-
-# Pace-tier split used for the "did pace players rise more" trend
-# breakdown. Matches the informal community threshold for a "fast" card,
-# not a value derived from this dataset - kept as a named constant so the
-# cutoff is visible and easy to move rather than a magic number in a query.
 PACE_HIGH_THRESHOLD = 85
-
-# A nation/league/rarity group needs at least this many priced cards
-# before its median is reported - below this a single card's move would
-# masquerade as "this whole nation rose", which is exactly the kind of
-# fake pattern small-sample trends produce.
 MIN_TREND_GROUP_SIZE = 3
-# How many groups to show per breakdown - these are meant to be skimmed
-# ("top movers"), not an exhaustive table of every nation/league in the
-# game, most of which have too few priced cards to mean anything anyway.
 TOP_TREND_GROUPS = 8
-
-# Matches auto_sync/research_fc26_historical_loader.py's own flag
-# threshold for a chart extraction it doesn't fully trust - reusing the
-# same number rather than picking a second, unrelated one.
 HIGH_CALIBRATION_ERR_PCT = 20.0
 
-# FC26's confirmed launch calendar. Unlike GAME_CYCLE (app/services/
-# game_cycle.py), which is deliberately env-var-driven because it also has
-# to describe FC27's calendar before EA has announced it, FC26 already
-# happened - its dates are a historical fact, not a per-deployment config
-# value - so this endpoint hardcodes them rather than requiring every
-# deployment to set EAFC_WEB_APP_LAUNCH_DATE/EAFC_FULL_RELEASE_DATE (and
-# EAFC_GAME_YEAR=26) just to ask about a season that's already over.
-# GAME_CYCLE's own env vars still win when they happen to be configured for
-# game_year 26, and ?early_date=/?full_date= always wins over both.
 FC26_WEB_APP_LAUNCH_DATE = date(2025, 9, 19)
 FC26_FULL_RELEASE_DATE = date(2025, 9, 26)
+
+PRICE_BANDS = [
+    {"key": "sub_1k", "label": "Under 1k", "min": 0, "max": 999},
+    {"key": "1k_5k", "label": "1k-5k", "min": 1000, "max": 4999},
+    {"key": "5k_25k", "label": "5k-25k", "min": 5000, "max": 24999},
+    {"key": "25k_plus", "label": "25k+", "min": 25000, "max": None},
+]
 
 
 def _resolve_date(explicit: Optional[str], fallback: Optional[date], label: str) -> date:
@@ -118,9 +94,7 @@ def _resolve_date(explicit: Optional[str], fallback: Optional[date], label: str)
 
 async def _nearest_prices(conn, card_ids: List[int], target: date, window_days: int) -> Dict[int, Dict[str, Any]]:
     """For each card, the price on the observed_date closest to `target`
-    within [target, target + window_days] (searching forward only - a
-    price from BEFORE the requested date is not "the price at that
-    point", it's stale data standing in for a gap)."""
+    within [target, target + window_days] (searching forward only)."""
     if not card_ids:
         return {}
     rows = await conn.fetch(
@@ -144,18 +118,23 @@ async def list_release_price_rises(
     full_date: Optional[str] = Query(None, description="YYYY-MM-DD; defaults to the configured full-release date"),
     match_window_days: int = Query(MATCH_WINDOW_DAYS, ge=0, le=14),
     position: Optional[str] = Query(None, description="Filter to one primary_position, e.g. ST"),
+    q: Optional[str] = Query(None, min_length=1, max_length=80, description="Case-insensitive player-name search"),
+    min_rating: Optional[int] = Query(None, ge=0, le=99),
     min_early_price: Optional[int] = Query(None, ge=0, description="Drop cards priced below this at the early date - filters out cheap fodder whose tiny base inflates % change"),
     max_early_price: Optional[int] = Query(None, ge=0),
-    include_uncertain: bool = Query(False, description="Include cards whose chart extraction was flagged low-confidence (see module docstring's DATA QUALITY note)"),
-    sort_by: str = Query("pct_change", pattern="^(pct_change|abs_change|early_price|full_price|rating)$"),
+    include_uncertain: bool = Query(False, description="Include cards whose chart extraction was flagged low-confidence"),
+    sort_by: str = Query("pct_change", pattern="^(pct_change|abs_change|net_profit_after_tax|net_roi_after_tax|early_price|full_price|rating)$"),
     order: str = Query("desc", pattern="^(asc|desc)$"),
     page: int = Query(1, ge=1),
     page_size: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
     pool=Depends(get_core_pool),
 ) -> Dict[str, Any]:
-    """Ranked list of individual FC{game_year} cards by price change from
-    early release to full release, plus a position/pace-tier breakdown of
-    the same move for the "who/what archetype rose the most" question."""
+    """Rank individual launch movers and describe the launch patterns.
+
+    q/min_rating are server-side deliberately: filtering a client-side top
+    100 makes a "90+" or searched result look exhaustive when it is only a
+    narrowed slice of a different leaderboard.
+    """
     game_cycle_matches = GAME_CYCLE.game_year == game_year
     early_fallback = GAME_CYCLE.web_app_launch if game_cycle_matches else (FC26_WEB_APP_LAUNCH_DATE if game_year == 26 else None)
     full_fallback = GAME_CYCLE.full_release if game_cycle_matches else (FC26_FULL_RELEASE_DATE if game_year == 26 else None)
@@ -170,11 +149,16 @@ async def list_release_price_rises(
         if position:
             args.append(position.upper())
             card_where.append(f"p.primary_position = ${len(args)}")
+        if min_rating is not None:
+            args.append(min_rating)
+            card_where.append(f"p.rating >= ${len(args)}")
+        if q:
+            args.append(f"%{q.strip().lower()}%")
+            card_where.append(
+                f"(LOWER(COALESCE(p.display_name, p.name, '')) LIKE ${len(args)} "
+                f"OR LOWER(COALESCE(p.name, '')) LIKE ${len(args)})"
+            )
         if not include_uncertain:
-            # LEFT JOIN, not INNER: a card with no extraction_runs row at
-            # all (e.g. priced through a different path than the chart
-            # loader) is not thereby "low confidence" - only an explicit
-            # bad signal on the row that exists excludes it.
             card_where.append(
                 "(r.card_id IS NULL OR (r.status = 'success' "
                 f"AND (r.calibration_max_pct_err IS NULL OR r.calibration_max_pct_err <= {HIGH_CALIBRATION_ERR_PCT}) "
@@ -196,7 +180,6 @@ async def list_release_price_rises(
             *args,
         )
         card_ids = [r["source_card_id"] for r in players]
-
         early_prices = await _nearest_prices(conn, card_ids, early, match_window_days)
         full_prices = await _nearest_prices(conn, card_ids, full, match_window_days)
 
@@ -212,6 +195,8 @@ async def list_release_price_rises(
             continue
         abs_change = f["price"] - e["price"]
         pct_change = (abs_change / e["price"] * 100.0) if e["price"] else None
+        net_profit = (float(f["price"]) * 0.95) - float(e["price"])
+        net_roi = (net_profit / float(e["price"]) * 100.0) if e["price"] else None
         rows.append({
             "card_id": cid,
             "name": p["display_name"] or p["name"],
@@ -223,14 +208,6 @@ async def list_release_price_rises(
             "nation_image_url": p["nation_image_url"],
             "league": p["league"],
             "league_image_url": p["league_image_url"],
-            # card_image_stored_url is our own R2 mirror of FUT.GG's
-            # composited card render - the one URL that reliably loads
-            # hotlinked. card_image_url/card_design_image_url/
-            # player_image_url are FUT.GG's own URLs and are prone to
-            # failing to load cross-origin (same reason
-            # futgg_recommendation_store.py and others prefer the mirror
-            # first); CardArt's onError fallback catches whatever still
-            # doesn't load.
             "image_url": p["card_image_stored_url"] or p["card_image_url"] or p["card_design_image_url"] or p["player_image_url"],
             "early_price": e["price"],
             "early_price_date": e["date"].isoformat(),
@@ -238,15 +215,17 @@ async def list_release_price_rises(
             "full_price_date": f["date"].isoformat(),
             "abs_change": abs_change,
             "pct_change": round(pct_change, 1) if pct_change is not None else None,
+            "net_profit_after_tax": round(net_profit),
+            "net_roi_after_tax": round(net_roi, 1) if net_roi is not None else None,
+            "price_band": _price_band(e["price"]),
         })
 
     reverse = order == "desc"
-    rows.sort(key=lambda r: (r[sort_by] is None, r[sort_by] or 0), reverse=reverse)
+    rows.sort(key=lambda r: _sort_key(r, sort_by), reverse=reverse)
 
     total = len(rows)
     start = (page - 1) * page_size
     page_rows = rows[start:start + page_size]
-
     trends = _build_trends(rows)
 
     return {
@@ -260,7 +239,21 @@ async def list_release_price_rises(
         "page_size": page_size,
         "items": page_rows,
         "trends": trends,
+        "playbook": _build_playbook(rows, trends),
     }
+
+
+def _sort_key(row: Dict[str, Any], field: str) -> tuple:
+    value = row.get(field)
+    # Missing values always sort last, regardless of asc/desc.
+    return (value is not None, value or 0)
+
+
+def _price_band(price: int) -> Dict[str, Any]:
+    for band in PRICE_BANDS:
+        if price >= band["min"] and (band["max"] is None or price <= band["max"]):
+            return {"key": band["key"], "label": band["label"]}
+    return {"key": "unknown", "label": "Unknown"}
 
 
 def _median(values: List[float]) -> Optional[float]:
@@ -273,33 +266,30 @@ def _median(values: List[float]) -> Optional[float]:
 
 
 def _group_by(rows: List[Dict[str, Any]], key_field: str, image_field: Optional[str] = None) -> Dict[str, Dict[str, Any]]:
-    """Collect {group_key: {"values": [...], "image_url": ...}} - the
-    image (flag/crest) is taken from whichever card in the group has one,
-    since it's the same for every card in a real nation/league and a few
-    rows are missing it in futgg_players."""
     groups: Dict[str, Dict[str, Any]] = {}
     for r in rows:
         key = r.get(key_field)
+        if isinstance(key, dict):
+            key = key.get("label")
         if r["pct_change"] is None or not key:
             continue
-        g = groups.setdefault(key, {"values": [], "image_url": None})
+        g = groups.setdefault(key, {"values": [], "profits": [], "image_url": None})
         g["values"].append(r["pct_change"])
+        if r.get("net_profit_after_tax") is not None:
+            g["profits"].append(r["net_profit_after_tax"])
         if image_field and not g["image_url"] and r.get(image_field):
             g["image_url"] = r[image_field]
     return groups
 
 
 def _top_groups(groups: Dict[str, Dict[str, Any]], label_field: str, limit: int = TOP_TREND_GROUPS) -> List[Dict[str, Any]]:
-    """Median-ranked, min-sample-filtered, capped to `limit` - see
-    MIN_TREND_GROUP_SIZE/TOP_TREND_GROUPS module comment for why: this is
-    a skimmable "top movers" list, not an exhaustive table, and a group
-    with 1-2 cards is one card's move wearing the group's name."""
     eligible = {k: g for k, g in groups.items() if len(g["values"]) >= MIN_TREND_GROUP_SIZE}
     ranked = sorted(eligible.items(), key=lambda kv: _median(kv[1]["values"]) or 0, reverse=True)
     return [
         {
             label_field: key,
             "median_pct_change": round(_median(g["values"]), 1),
+            "median_profit_after_tax": round(_median(g["profits"])) if g["profits"] else None,
             "card_count": len(g["values"]),
             "image_url": g["image_url"],
         }
@@ -308,47 +298,139 @@ def _top_groups(groups: Dict[str, Dict[str, Any]], label_field: str, limit: int 
 
 
 def _build_trends(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Descriptive breakdowns only - see module docstring's WORDING
-    DISCIPLINE note. Median (not mean) pct_change per group, so a handful
-    of extreme risers don't stand in for the whole group's typical move.
-    Position/pace show every group (there are only ever a couple of
-    dozen positions and exactly two pace tiers); nation/league/rarity are
-    capped to the top movers since the game has dozens of each and most
-    have too few priced cards here to mean anything."""
     by_position: Dict[str, List[float]] = {}
+    by_position_profit: Dict[str, List[float]] = {}
     for r in rows:
         if r["pct_change"] is None or not r["position"]:
             continue
         by_position.setdefault(r["position"], []).append(r["pct_change"])
+        if r.get("net_profit_after_tax") is not None:
+            by_position_profit.setdefault(r["position"], []).append(r["net_profit_after_tax"])
     position_trend = [
-        {"position": pos, "median_pct_change": round(_median(vals), 1), "card_count": len(vals)}
+        {
+            "position": pos,
+            "median_pct_change": round(_median(vals), 1),
+            "median_profit_after_tax": round(_median(by_position_profit.get(pos, []))) if by_position_profit.get(pos) else None,
+            "card_count": len(vals),
+        }
         for pos, vals in sorted(by_position.items(), key=lambda kv: _median(kv[1]) or 0, reverse=True)
     ]
 
     pace_groups: Dict[str, List[float]] = {"high_pace": [], "low_pace": []}
+    pace_profit: Dict[str, List[float]] = {"high_pace": [], "low_pace": []}
     for r in rows:
         if r["pct_change"] is None or r["pace"] is None:
             continue
         key = "high_pace" if r["pace"] >= PACE_HIGH_THRESHOLD else "low_pace"
         pace_groups[key].append(r["pct_change"])
+        if r.get("net_profit_after_tax") is not None:
+            pace_profit[key].append(r["net_profit_after_tax"])
     pace_trend = [
         {
             "group": key,
             "label": f"Pace {PACE_HIGH_THRESHOLD}+" if key == "high_pace" else f"Pace under {PACE_HIGH_THRESHOLD}",
             "median_pct_change": round(_median(vals), 1) if vals else None,
+            "median_profit_after_tax": round(_median(pace_profit[key])) if pace_profit[key] else None,
             "card_count": len(vals),
         }
         for key, vals in pace_groups.items()
     ]
 
-    nation_trend = _top_groups(_group_by(rows, "nation", "nation_image_url"), "nation")
-    league_trend = _top_groups(_group_by(rows, "league", "league_image_url"), "league")
-    rarity_trend = _top_groups(_group_by(rows, "rarity"), "rarity")
+    price_trend = _top_groups(_group_by(rows, "price_band"), "price_band", limit=len(PRICE_BANDS))
+    # Restore the intended band order after median calculations, then let
+    # the frontend show both order and performance without guessing ranges.
+    band_order = {band["label"]: i for i, band in enumerate(PRICE_BANDS)}
+    price_trend.sort(key=lambda r: band_order.get(r["price_band"], 99))
 
     return {
         "by_position": position_trend,
         "by_pace_tier": pace_trend,
-        "by_nation": nation_trend,
-        "by_league": league_trend,
-        "by_rarity": rarity_trend,
+        "by_price_band": price_trend,
+        "by_nation": _top_groups(_group_by(rows, "nation", "nation_image_url"), "nation"),
+        "by_league": _top_groups(_group_by(rows, "league", "league_image_url"), "league"),
+        "by_rarity": _top_groups(_group_by(rows, "rarity"), "rarity"),
+    }
+
+
+def _top_trend(rows: List[Dict[str, Any]], label_key: str) -> Optional[Dict[str, Any]]:
+    return rows[0] if rows else None
+
+
+def _build_playbook(rows: List[Dict[str, Any]], trends: Dict[str, Any]) -> Dict[str, Any]:
+    if not rows:
+        return {
+            "headline": "No launch pattern yet",
+            "summary": "Widen the date range or lower the filters to build a launch read.",
+            "cards": [],
+        }
+
+    top_card = max(rows, key=lambda r: r.get("pct_change") or 0)
+    top_profit = max(rows, key=lambda r: r.get("net_profit_after_tax") or 0)
+    best_position = _top_trend(trends.get("by_position", []), "position")
+    best_rarity = _top_trend(trends.get("by_rarity", []), "rarity")
+    price_bands = [r for r in trends.get("by_price_band", []) if r.get("card_count", 0) >= MIN_TREND_GROUP_SIZE]
+    best_band = max(price_bands, key=lambda r: r.get("median_pct_change") or 0) if price_bands else None
+    pace = {r.get("group"): r for r in trends.get("by_pace_tier", [])}
+    high, low = pace.get("high_pace"), pace.get("low_pace")
+    pace_edge = None
+    if high and low and high.get("median_pct_change") is not None and low.get("median_pct_change") is not None:
+        diff = round(high["median_pct_change"] - low["median_pct_change"], 1)
+        pace_edge = {
+            "label": "Pace premium" if diff >= 0 else "Pace was not everything",
+            "value": diff,
+            "copy": (
+                f"85+ pace cards beat slower cards by {diff} points on median rise."
+                if diff >= 0 else
+                f"Slower cards beat 85+ pace cards by {abs(diff)} points on median rise."
+            ),
+        }
+
+    cards = [
+        {
+            "label": "Biggest riser",
+            "value": f"+{top_card['pct_change']}%" if (top_card.get("pct_change") or 0) >= 0 else f"{top_card['pct_change']}%",
+            "copy": f"{top_card['name']} moved from {top_card['early_price']:,} to {top_card['full_price']:,} coins.",
+            "card_id": top_card["card_id"],
+        },
+        {
+            "label": "Best coin return",
+            "value": f"+{top_profit['net_profit_after_tax']:,}",
+            "copy": f"After EA tax, {top_profit['name']} produced the biggest coin gain in this view.",
+            "card_id": top_profit["card_id"],
+        },
+    ]
+    if best_position:
+        cards.append({
+            "label": "Position angle",
+            "value": best_position["position"],
+            "copy": f"{best_position['position']} had a {best_position['median_pct_change']}% median rise across {best_position['card_count']} cards.",
+        })
+    if best_band:
+        cards.append({
+            "label": "Budget band",
+            "value": best_band["price_band"],
+            "copy": f"This band had a {best_band['median_pct_change']}% median rise across {best_band['card_count']} cards.",
+        })
+    if best_rarity:
+        cards.append({
+            "label": "Card type",
+            "value": best_rarity["rarity"],
+            "copy": f"{best_rarity['rarity']} cards led the rarity breakdown on median rise.",
+        })
+    if pace_edge:
+        cards.append(pace_edge)
+
+    best_bits = []
+    if best_position:
+        best_bits.append(best_position["position"])
+    if best_band:
+        best_bits.append(best_band["price_band"])
+    if best_rarity:
+        best_bits.append(best_rarity["rarity"])
+    profile = " + ".join(best_bits[:3]) or "the strongest historical risers"
+
+    return {
+        "headline": f"Best FC27 watch profile: {profile}",
+        "summary": "Use the FC26 launch window as evidence for what to shortlist early in FC27. It is historical pattern matching, not a guaranteed buy signal.",
+        "cards": cards[:6],
     }
