@@ -176,11 +176,9 @@ export default function ReleasePriceRises() {
 function LaunchAnswer({ data, windowLabel }) {
   const playbook = data.playbook || {};
   const cards = playbook.cards || [];
+  const signals = data.trends?.key_signals || fallbackSignals(data.trends);
   const biggest = cards.find((card) => card.label === "Biggest riser");
   const profit = cards.find((card) => card.label === "Best coin return");
-  const position = topBy(data.trends?.by_position, "position");
-  const budget = topBy(data.trends?.by_price_band, "price_band");
-  const pace = bestPace(data.trends?.by_pace_tier);
 
   return (
     <section className="rpr-answer">
@@ -190,9 +188,9 @@ function LaunchAnswer({ data, windowLabel }) {
         <p>{plainSummary(playbook.summary)}</p>
       </div>
       <div className="rpr-takeaways" aria-label="How to use this data">
-        <Takeaway label="1. Shortlist" value={position?.label || "Best position"} copy="Start with the strongest repeated profile, not one random card." />
-        <Takeaway label="2. Budget" value={budget?.label || "Best price band"} copy="Check the range that moved on median rise and after-tax coins." />
-        <Takeaway label="3. Confirm" value={pace?.label || "Pace check"} copy={pace?.copy || "Use the card list to confirm the pattern with actual examples."} />
+        <Takeaway label="1. Strongest trend" signal={signals[0]} fallback="No clear trend" />
+        <Takeaway label="2. Next signal" signal={signals[1]} fallback="Check the proof list" />
+        <Takeaway label="3. Check too" signal={signals[2]} fallback="Sort by profit or ROI" />
       </div>
       <div className="rpr-examples">
         {biggest ? <ReadStat card={biggest} /> : null}
@@ -202,8 +200,14 @@ function LaunchAnswer({ data, windowLabel }) {
   );
 }
 
-function Takeaway({ label, value, copy }) {
-  return <div><span>{label}</span><strong>{value}</strong><p>{copy}</p></div>;
+function Takeaway({ label, signal, fallback }) {
+  return (
+    <div>
+      <span>{label}</span>
+      <strong>{signal ? `${signal.dimension}: ${signal.label}` : fallback}</strong>
+      <p>{signal ? signalCopy(signal) : "Use the card list below to validate the move with real examples."}</p>
+    </div>
+  );
 }
 
 function ReadStat({ card }) {
@@ -273,18 +277,30 @@ function Pagination({ page, from, to, total, hasNext, onPrev, onNext }) {
   return <div className="rpr-pagination"><button type="button" onClick={onPrev} disabled={page <= 1}><ArrowLeft size={14} /> Previous</button><span>{from}-{to} of {total}</span><button type="button" onClick={onNext} disabled={!hasNext}>Next <ArrowRight size={14} /></button></div>;
 }
 
-function topBy(rows = [], labelKey) {
-  const row = rows.filter((item) => item?.card_count > 0 && item?.median_pct_change != null).sort((a, b) => (b.median_pct_change || 0) - (a.median_pct_change || 0))[0];
-  if (!row) return null;
-  return { label: row[labelKey], pct: row.median_pct_change, profit: row.median_profit_after_tax };
+function fallbackSignals(trends = {}) {
+  const position = topBy(trends.by_position, "position", "Position");
+  const budget = topBy(trends.by_price_band, "price_band", "Price band");
+  const rarity = topBy(trends.by_rarity, "rarity", "Rarity");
+  return [position, budget, rarity].filter(Boolean);
 }
 
-function bestPace(rows = []) {
-  const high = rows.find((row) => row.group === "high_pace");
-  const low = rows.find((row) => row.group === "low_pace");
-  if (!high || !low || high.median_pct_change == null || low.median_pct_change == null) return null;
-  const winner = high.median_pct_change >= low.median_pct_change ? high : low;
-  return { label: winner.label, copy: `${winner.label} had the stronger median move in this window.` };
+function topBy(rows = [], labelKey, dimension) {
+  const row = rows.filter((item) => item?.card_count > 0 && item?.median_pct_change != null).sort((a, b) => (b.median_pct_change || 0) - (a.median_pct_change || 0))[0];
+  if (!row) return null;
+  return {
+    dimension,
+    label: row[labelKey],
+    median_pct_change: row.median_pct_change,
+    median_profit_after_tax: row.median_profit_after_tax,
+    card_count: row.card_count,
+  };
+}
+
+function signalCopy(signal) {
+  const lift = signal.lift_vs_all_pct_points;
+  const liftText = lift == null ? `${signal.median_pct_change}% median rise` : `${signedNumber(lift)} pts vs all cards`;
+  const profit = signal.median_profit_after_tax == null ? "" : ` / ${formatCoins(signal.median_profit_after_tax)} median after tax`;
+  return `${liftText}${profit} across ${signal.card_count} cards.`;
 }
 
 function fmtDate(iso) {
@@ -305,4 +321,15 @@ function signedPct(value) {
   if (value == null || Number.isNaN(Number(value))) return "-";
   const n = Number(value);
   return `${n > 0 ? "+" : ""}${n}%`;
+}
+
+function signedNumber(value) {
+  if (value == null || Number.isNaN(Number(value))) return "-";
+  const n = Number(value);
+  return `${n > 0 ? "+" : ""}${n}`;
+}
+
+function formatCoins(value) {
+  if (value == null || Number.isNaN(Number(value))) return "-";
+  return Number(value).toLocaleString("en-GB");
 }
