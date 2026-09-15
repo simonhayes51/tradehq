@@ -14,8 +14,8 @@ retrying fixes.
 
 Discovery found that the same page also loads a STATIC bulk feed:
 
-    r2.fut.gg/26/player-prices-index.v1.<hash>.json    (~67 KB)
-    r2.fut.gg/26/player-prices-<platform>-dyn.v1.<hash>.json  (~167 KB)
+    r2.fut.gg/27/player-prices-index.v1.<hash>.json    (~67 KB)
+    r2.fut.gg/27/player-prices-<platform>-dyn.v1.<hash>.json  (~167 KB)
 
 carrying ~27,085 prices between them. One page load yields the entire
 catalogue - no signing, no per-card rendering, no rate limit to trip.
@@ -156,7 +156,7 @@ def env_int(name: str, default: int, minimum: int | None = None) -> int:
 # deploy. Set FUTGG_BULK_APPLY=false to force a read-only cycle.
 APPLY = env_bool("FUTGG_BULK_APPLY", True)
 PLATFORM = os.getenv("FUTGG_BULK_PLATFORM", "ps5")
-GAME_YEAR = os.getenv("FUTGG_GAME_YEAR", "26")
+GAME_YEAR = int(os.getenv("FUTGG_GAME_YEAR", "27"))
 INTERVAL_SECONDS = env_int("FUTGG_BULK_INTERVAL_SECONDS", 300, minimum=60)
 HEADLESS = env_bool("PLAYWRIGHT_HEADLESS", True)
 TIMEOUT_MS = env_int("PLAYWRIGHT_TIMEOUT_MS", 45000, minimum=5000)
@@ -553,11 +553,14 @@ async def resolve_player_url(pool: asyncpg.Pool) -> str:
             SELECT source_url FROM futgg_players
             WHERE is_active AND source_url IS NOT NULL
               AND is_tradeable IS DISTINCT FROM FALSE
+              AND game_year = $1
             ORDER BY rating DESC NULLS LAST
             LIMIT 1
-            """
+            """,
+            GAME_YEAR,
         )
-    return url or "https://www.fut.gg/players/1114-roberto-baggio/26-1114/"
+    fallback_prefix = "" if GAME_YEAR == 27 else f"/{GAME_YEAR}"
+    return url or f"https://www.fut.gg{fallback_prefix}/players/"
 
 
 async def ingest_once(
@@ -652,7 +655,9 @@ async def ingest_once(
                 """
                 SELECT source_card_id, rating FROM futgg_players
                 WHERE is_active AND is_tradeable IS DISTINCT FROM FALSE
-                """
+                  AND game_year = $1
+                """,
+                GAME_YEAR,
             )
     total = len(ours)
     matched = [r for r in ours if int(r["source_card_id"]) in by_id]
@@ -807,8 +812,9 @@ async def ingest_once(
                         price_checked_at = $2,
                         last_price_status = 'bulk_feed'
                     WHERE p.source_card_id = ANY($1::bigint[])
+                      AND p.game_year = $3
                     """,
-                    [r[0] for r in records], now,
+                    [r[0] for r in records], now, GAME_YEAR,
                 )
                 skipped_ids = [cid for cid, _ in candidates if cid not in written_ids]
                 if skipped_ids:
@@ -817,8 +823,9 @@ async def ingest_once(
                         UPDATE futgg_players p
                         SET price_checked_at = $2
                         WHERE p.source_card_id = ANY($1::bigint[])
+                          AND p.game_year = $3
                         """,
-                        skipped_ids, now,
+                        skipped_ids, now, GAME_YEAR,
                     )
                 if no_market_ids:
                     # Deliberately NOT writing a bin_history row here.
@@ -846,8 +853,9 @@ async def ingest_once(
                         SET price_updated_at = $2,
                             last_price_status = 'bulk_no_market'
                         WHERE p.source_card_id = ANY($1::bigint[])
+                          AND p.game_year = $3
                         """,
-                        no_market_ids, now,
+                        no_market_ids, now, GAME_YEAR,
                     )
                 if _last_price_changes:
                     # Handoff to the triggered-detailed-sales queue
@@ -930,10 +938,10 @@ async def run_forever() -> None:
     )
     PLAYER_URL = await resolve_player_url(pool)
     log.info(
-        "%s starting: platform=%s interval=%ss apply=%s url=%s "
+        "%s starting: game_year=%s platform=%s interval=%ss apply=%s url=%s "
         "discovery_enabled=%s discover_url=%s discovery_retry_count=%d "
         "discovery_failure_backoff=%ds",
-        SCRIPT_VERSION, PLATFORM, INTERVAL_SECONDS, APPLY, PLAYER_URL,
+        SCRIPT_VERSION, GAME_YEAR, PLATFORM, INTERVAL_SECONDS, APPLY, PLAYER_URL,
         DISCOVERY_ENABLED, DISCOVER_URL or "<unset>", DISCOVERY_RETRY_COUNT,
         DISCOVERY_FAILURE_BACKOFF_SECONDS,
     )
