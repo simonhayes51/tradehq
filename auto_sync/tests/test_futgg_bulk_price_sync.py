@@ -30,8 +30,8 @@ def run_async(coro_fn):
     return wrapper
 
 
-PLAYER_URL = "https://www.fut.gg/players/1114-roberto-baggio/26-1114/"
-DISCOVER_URL = "https://www.fut.gg/players/245037-eric-garcia/26-84131117/"
+PLAYER_URL = "https://www.fut.gg/players/"
+DISCOVER_URL = "https://www.fut.gg/players/?page=2"
 
 
 def _feed_payloads(ids: list[int], prices: list[int], statuses: list[int] | None = None):
@@ -49,8 +49,8 @@ def _feed_responses(ids, prices, statuses=None) -> dict[str, dict]:
     expects to see them (URL just needs to contain the marker substring)."""
     index, dyn = _feed_payloads(ids, prices, statuses)
     return {
-        f"https://r2.fut.gg/26/{mod.INDEX_MARKER}.v1.abc123.json": index,
-        f"https://r2.fut.gg/26/{mod.DYN_MARKER}.v1.def456.json": dyn,
+        f"https://r2.fut.gg/{mod.GAME_YEAR}/{mod.INDEX_MARKER}.v1.abc123.json": index,
+        f"https://r2.fut.gg/{mod.GAME_YEAR}/{mod.DYN_MARKER}.v1.def456.json": dyn,
     }
 
 
@@ -118,10 +118,14 @@ class _FakeConn:
         self.ours_rows = ours_rows
         self.copied: list[tuple] = []
         self.executed: list[tuple] = []
+        self.fetches: list[tuple] = []
 
     async def fetch(self, query, *args):
+        self.fetches.append((query, args))
         text = " ".join(query.split())
         if "source_card_id, rating FROM futgg_players" in text:
+            assert "game_year = $1" in text
+            assert args == (mod.GAME_YEAR,)
             return self.ours_rows
         if "last_price_status" in text:
             return []
@@ -184,6 +188,8 @@ async def test_normal_capture_succeeds_without_discovery(monkeypatch):
     assert result["ok"] is True
     assert page.goto_urls == [PLAYER_URL]  # never touched DISCOVER_URL
     assert pool.conn.copied  # a write happened - normal fast path unchanged
+    assert any(args == (mod.GAME_YEAR,) for _, args in pool.conn.fetches)
+    assert any("p.game_year = $3" in query and args[-1] == mod.GAME_YEAR for query, args in pool.conn.executed)
 
 
 # ---------------------------------------------------------------------
