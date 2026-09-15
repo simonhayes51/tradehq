@@ -243,11 +243,12 @@ _last_written_seeded = False
 _last_price_changes: list[tuple[int, "int | None", int]] = []
 
 #: A stable, operator-maintained "known good" FUT.GG player URL to fall
-#: back to when the normal PLAYER_URL stops yielding the feed - e.g.
-#: https://www.fut.gg/players/245037-eric-garcia/26-84131117/, confirmed
-#: working in production. Not hardcoded: the worker refuses to guess a
-#: URL on your behalf, so automatic recovery is a no-op (logged clearly,
-#: not silently skipped) until this is set.
+#: back to when the normal PLAYER_URL stops yielding the feed. Use a
+#: current FC27 card URL for the live cycle, or a matching historical URL
+#: only when FUTGG_GAME_YEAR is intentionally set to that older cycle.
+#: Not hardcoded: the worker refuses to guess a URL on your behalf, so
+#: automatic recovery is a no-op (logged clearly, not silently skipped)
+#: until this is set.
 DISCOVER_URL = (os.getenv("FUTGG_DISCOVER_URL") or "").strip()
 #: Master switch for automatic rediscovery. Defaults on; set to false to
 #: restore the old "fail every cycle until someone notices" behaviour.
