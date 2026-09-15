@@ -29,9 +29,16 @@ const PRICE_FLOORS = [
   { value: "5000", label: "5k+" },
   { value: "25000", label: "25k+" },
 ];
+const WINDOWS = {
+  day1_full: { label: "Day 1 to full release", short: "17 Sep to 24 Sep", early: "2025-09-17", full: "2025-09-24", meaning: "What moved before the wider market arrived." },
+  day1_14: { label: "Day 1 to +14 days", short: "17 Sep to 1 Oct", early: "2025-09-17", full: "2025-10-01", meaning: "What kept climbing beyond full release." },
+  full_7: { label: "Full release to +7 days", short: "24 Sep to 1 Oct", early: "2025-09-24", full: "2025-10-01", meaning: "What rose after the main player base joined." },
+  full_14: { label: "Full release to +14 days", short: "24 Sep to 8 Oct", early: "2025-09-24", full: "2025-10-08", meaning: "What had staying power after launch hype settled." },
+};
 const PAGE_SIZE = 60;
 
 export default function ReleasePriceRises() {
+  const [windowKey, setWindowKey] = useState("day1_full");
   const [sortBy, setSortBy] = useState("pct_change");
   const [order, setOrder] = useState("desc");
   const [position, setPosition] = useState("");
@@ -47,6 +54,11 @@ export default function ReleasePriceRises() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
+  const selectedWindow = WINDOWS[windowKey] || null;
+  const isCustom = windowKey === "custom";
+  const requestEarly = isCustom ? earlyDate : selectedWindow?.early;
+  const requestFull = isCustom ? fullDate : selectedWindow?.full;
+
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
@@ -57,8 +69,8 @@ export default function ReleasePriceRises() {
       position: position || undefined,
       min_rating: Number(minRating) || undefined,
       min_early_price: Number(minPrice) || undefined,
-      early_date: earlyDate || undefined,
-      full_date: fullDate || undefined,
+      early_date: requestEarly || undefined,
+      full_date: requestFull || undefined,
       q: deferredQuery.trim() || undefined,
       page,
       page_size: PAGE_SIZE,
@@ -67,12 +79,11 @@ export default function ReleasePriceRises() {
       .catch((err) => { if (!cancelled) setError(err?.response?.data?.detail || "Couldn't load launch movers."); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [sortBy, order, position, minRating, minPrice, earlyDate, fullDate, deferredQuery, page]);
+  }, [sortBy, order, position, minRating, minPrice, requestEarly, requestFull, deferredQuery, page]);
 
   const setFilter = (setter) => (value) => { setPage(1); setter(value); };
   const effectiveEarly = earlyDate || data?.early_date || "";
   const effectiveFull = fullDate || data?.full_date || "";
-  const datesAreCustom = Boolean(earlyDate || fullDate);
   const items = data?.items || [];
   const total = Number(data?.total || 0);
   const from = total ? (page - 1) * PAGE_SIZE + 1 : 0;
@@ -84,25 +95,40 @@ export default function ReleasePriceRises() {
       <PageHead
         eyebrow="FC26 launch data"
         title="Launch Movers"
-        copy="A clean look at what rose between early access and full release. Use it as evidence for the type of FC27 cards worth watching early."
+        copy="Compare the key launch windows: what moved before full release, what moved after, and what kept going."
       />
 
+      <div className="rpr-windows" role="tablist" aria-label="Launch window">
+        {Object.entries(WINDOWS).map(([key, item]) => (
+          <button key={key} type="button" className={windowKey === key ? "active" : ""} onClick={() => { setPage(1); setWindowKey(key); }} role="tab" aria-selected={windowKey === key}>
+            <strong>{item.label}</strong>
+            <span>{item.short}</span>
+          </button>
+        ))}
+        <button type="button" className={isCustom ? "active" : ""} onClick={() => { setPage(1); setWindowKey("custom"); }} role="tab" aria-selected={isCustom}>
+          <strong>Custom</strong>
+          <span>Pick dates</span>
+        </button>
+      </div>
+
       <div className="rpr-datebar">
-        <label><span>{datesAreCustom ? "Start" : "Early access"}</span><input type="date" value={effectiveEarly} onChange={(e) => setFilter(setEarlyDate)(e.target.value)} /></label>
-        <ArrowRight size={15} />
-        <label><span>{datesAreCustom ? "End" : "Full release"}</span><input type="date" value={effectiveFull} onChange={(e) => setFilter(setFullDate)(e.target.value)} /></label>
-        {datesAreCustom ? (
-          <button type="button" onClick={() => { setPage(1); setEarlyDate(""); setFullDate(""); }}><RotateCcw size={13} /> Reset</button>
+        {isCustom ? (
+          <>
+            <label><span>Start</span><input type="date" value={effectiveEarly} onChange={(e) => setFilter(setEarlyDate)(e.target.value)} /></label>
+            <ArrowRight size={15} />
+            <label><span>End</span><input type="date" value={effectiveFull} onChange={(e) => setFilter(setFullDate)(e.target.value)} /></label>
+            <button type="button" onClick={() => { setPage(1); setEarlyDate(""); setFullDate(""); }}><RotateCcw size={13} /> Reset</button>
+          </>
         ) : (
-          <p><ShieldCheck size={13} /> Low-confidence chart reads excluded</p>
+          <p><ShieldCheck size={13} /> {selectedWindow?.meaning} Low-confidence chart reads are excluded.</p>
         )}
       </div>
 
-      {data?.playbook ? <KeyRead playbook={data.playbook} trends={data.trends} /> : null}
+      {data?.playbook ? <KeyRead playbook={data.playbook} windowLabel={selectedWindow?.label || "Custom window"} /> : null}
 
       {data ? (
         <p className="rpr-summary-line">
-          {total} cards matched. Showing {from}-{to}. Prices are the nearest clean observations to {fmtDate(data.early_date)} and {fmtDate(data.full_date)}.
+          {total} cards matched. Showing {from}-{to}. Comparing {fmtDate(data.early_date)} to {fmtDate(data.full_date)}.
         </p>
       ) : null}
 
@@ -152,13 +178,13 @@ export default function ReleasePriceRises() {
   );
 }
 
-function KeyRead({ playbook }) {
+function KeyRead({ playbook, windowLabel }) {
   const cards = playbook.cards || [];
   const picked = ["Biggest riser", "Best coin return", "Position angle"].map((label) => cards.find((card) => card.label === label)).filter(Boolean);
   return (
     <section className="rpr-read">
       <div>
-        <span>Key read</span>
+        <span>Key read · {windowLabel}</span>
         <h2>{cleanHeadline(playbook.headline)}</h2>
         <p>{playbook.summary}</p>
       </div>
