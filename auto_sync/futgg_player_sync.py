@@ -56,11 +56,14 @@ Important environment variables:
   FUTGG_LISTING_FULL_SCAN         false
   FUTGG_LISTING_MAX_PAGES         5 (daily mode)
   FUTGG_LISTING_MAX_PAGES_FULL    400 (full-scan mode, per partition)
-  FUTGG_FULL_SCAN_PARTITIONS      "new:/players/new/?page={page},catalogue:/players/?page={page}"
+  FUTGG_GAME_YEAR                 27 (current FUT.GG cycle)
+  FUTGG_FULL_SCAN_PARTITIONS      defaults to the selected game year:
+                                   FC27/current: "new:/players/new/?page={page},catalogue:/players/?page={page}"
+                                   older years: "new:/{game_year}/players/new/?page={page},catalogue:/{game_year}/players/?page={page}"
                                    comma-separated name:template pairs, each
                                    template containing a literal '{page}'
-                                   placeholder - the full-scan sources to
-                                   walk and merge/de-duplicate
+                                   placeholder. Templates may also include
+                                   '{game_year}' and '{game_prefix}'.
   FUTGG_FULL_SCAN_MIN_COVERAGE    0.9 (full-scan must discover >= this
                                    fraction of futgg_players' current row
                                    count to be treated as a plausible
@@ -121,6 +124,9 @@ BROWSER_TIMEZONE = os.getenv("FUTGG_BROWSER_TIMEZONE", "UTC").strip() or "UTC"
 BACKFILL_RELEASE_METADATA = os.getenv("FUTGG_BACKFILL_RELEASE_METADATA", "false").strip().lower() in {"1", "true", "yes", "on"}
 BACKFILL_LIMIT = int(os.getenv("FUTGG_BACKFILL_LIMIT", "500"))
 BACKFILL_GAME_YEAR = os.getenv("FUTGG_BACKFILL_GAME_YEAR", "").strip()
+GAME_YEAR = int(os.getenv("FUTGG_GAME_YEAR", "27"))
+CURRENT_FUTGG_GAME_YEAR = int(os.getenv("FUTGG_CURRENT_GAME_YEAR", "27"))
+GAME_PREFIX = "" if GAME_YEAR == CURRENT_FUTGG_GAME_YEAR else f"/{GAME_YEAR}"
 TIMEOUT_MS = max(5000, int(os.getenv("PLAYWRIGHT_TIMEOUT_MS", "45000")))
 PLAYER_LIMIT = max(0, int(os.getenv("FUTGG_PLAYER_LIMIT", "0")))
 
@@ -144,7 +150,10 @@ MAX_PAGES = MAX_PAGES_FULL if FULL_SCAN else MAX_PAGES_DAILY
 # confirm any such filter's exact query parameter by inspection - an
 # operator with live access can repoint this at a verified-complete source
 # without a code change.
-DEFAULT_FULL_SCAN_PARTITIONS = "new:/players/new/?page={page},catalogue:/players/?page={page}"
+DEFAULT_FULL_SCAN_PARTITIONS = (
+    f"new:{GAME_PREFIX}/players/new/?page={{page}},"
+    f"catalogue:{GAME_PREFIX}/players/?page={{page}}"
+)
 
 
 def _parse_full_scan_partitions(raw: str) -> list[tuple[str, str]]:
@@ -605,7 +614,7 @@ async def _paginate_listing(
     previous_page_hrefs: dict[str, ListingCardMetadata] = {}
 
     for page_number in range(start_page, start_page + max_pages):
-        listing_url = f"{BASE_URL}{url_template.format(page=page_number)}"
+        listing_url = f"{BASE_URL}{url_template.format(page=page_number, game_year=GAME_YEAR, game_prefix=GAME_PREFIX)}"
         response = await page.goto(listing_url, wait_until="domcontentloaded", timeout=TIMEOUT_MS)
         status = response.status if response else 0
         if status != 200:
@@ -705,7 +714,8 @@ async def collect_listing_urls(page) -> dict[str, ListingCardMetadata]:
     daily-vs-full-scan distinction and why full-scan walks more than
     /players/new/.
 
-    Daily mode (FULL_SCAN=false): a single partition, /players/new/,
+    Daily mode (FULL_SCAN=false): a single partition, the selected
+    game year's /players/new/,
     capped at MAX_PAGES_DAILY pages.
 
     Full-scan mode: every partition in FULL_SCAN_PARTITIONS (each capped
@@ -722,7 +732,7 @@ async def collect_listing_urls(page) -> dict[str, ListingCardMetadata]:
     still iterate/len() this like a plain list - dict keys behave
     identically for that."""
     if not FULL_SCAN:
-        urls = await _paginate_listing(page, "/players/new/?page={page}", MAX_PAGES, "daily-new")
+        urls = await _paginate_listing(page, f"{GAME_PREFIX}/players/new/?page={{page}}", MAX_PAGES, "daily-new")
         log.info("Discovery mode=daily source=partition:daily-new unique=%d", len(urls))
         if PLAYER_LIMIT:
             return dict(list(urls.items())[:PLAYER_LIMIT])
@@ -763,7 +773,7 @@ def _full_scan_is_plausible(discovered: int, db_total: int, min_coverage: float)
     return discovered >= db_total * min_coverage
 
 
-async def existing_ids(conn: asyncpg.Connection, urls) -> set[int]:
+async def existing_ids(conn: asyncpg.Connection, urls, game_year: int = GAME_YEAR) -> set[int]:
     """urls: any iterable of card URLs - a plain list, or (as
     collect_listing_urls now returns) a dict keyed by URL, iterated for
     its keys exactly the same way."""
@@ -775,7 +785,13 @@ async def existing_ids(conn: asyncpg.Connection, urls) -> set[int]:
     if not ids:
         return set()
     rows = await conn.fetch(
-        "SELECT source_card_id FROM futgg_players WHERE source_card_id = ANY($1::bigint[])", ids
+        """
+        SELECT source_card_id
+        FROM futgg_players
+        WHERE source_card_id = ANY($1::bigint[])
+          AND game_year = $2
+        """,
+        ids, game_year,
     )
     return {int(row["source_card_id"]) for row in rows}
 
@@ -1208,7 +1224,7 @@ async def crawl_once() -> None:
                 metadata.gg_rating_invalid for metadata in urls.values()
             )
             async with pool.acquire() as conn:
-                known = await existing_ids(conn, urls)
+                known = await existing_ids(conn, urls, GAME_YEAR)
                 db_total = await conn.fetchval("SELECT COUNT(*) FROM futgg_players")
                 listing_years = {
                     int(match.group("game_year"))
