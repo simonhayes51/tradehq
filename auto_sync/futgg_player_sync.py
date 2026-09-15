@@ -1194,7 +1194,43 @@ async def crawl_once() -> None:
     lock_conn = await connect_with_retry(DATABASE_URL)
     got_lock = await lock_conn.fetchval("SELECT pg_try_advisory_lock($1)", OVERLAP_LOCK_KEY)
     if not got_lock:
-        log.info("Previous FUT.GG player sync still running; skipping")
+        holders = await lock_conn.fetch(
+            """
+            SELECT a.pid, a.application_name, a.client_addr, a.state,
+                   now() - a.query_start AS query_age,
+                   left(a.query, 180) AS query
+            FROM pg_locks l
+            JOIN pg_stat_activity a ON a.pid = l.pid
+            WHERE l.locktype = 'advisory'
+              AND (
+                    l.objid = $1
+                    OR ((l.classid::bigint << 32) + l.objid::bigint) = $1
+                  )
+            ORDER BY a.query_start NULLS LAST
+            """,
+            OVERLAP_LOCK_KEY,
+        )
+        if holders:
+            log.info(
+                "Previous FUT.GG player sync still running; skipping. lock_key=%s holders=%s",
+                OVERLAP_LOCK_KEY,
+                [
+                    {
+                        "pid": row["pid"],
+                        "app": row["application_name"],
+                        "client": str(row["client_addr"]) if row["client_addr"] else None,
+                        "state": row["state"],
+                        "query_age": str(row["query_age"]),
+                        "query": row["query"],
+                    }
+                    for row in holders
+                ],
+            )
+        else:
+            log.info(
+                "Previous FUT.GG player sync still running; skipping. lock_key=%s holder_not_visible",
+                OVERLAP_LOCK_KEY,
+            )
         await lock_conn.close()
         return
 
