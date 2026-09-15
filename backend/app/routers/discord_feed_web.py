@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 """
-Web management API for the self-service Server Feed, backing the
-/v2/discord-feed settings page. This is a convenience surface, not a
-replacement - every setting here is also reachable via the /feed Discord
-command group (discord_interactions.py), and both drive the exact same
-discord_feed_billing.py functions so behavior can never diverge between
-the two.
+Web management API for the Server Feed, backing the /v2/discord-feed
+settings page. This is a convenience surface, not a replacement - every
+setting here is also reachable via the /feed Discord command group
+(discord_interactions.py), and both drive the same feed configuration.
 
 Access control: a logged-in dashboard user (request.session["discord_id"])
 may manage a guild's feed only if Discord's own API says, RIGHT NOW, that
@@ -55,27 +53,39 @@ async def _require_guild_access(request: Request, guild_id: str, client: Discord
 async def _get_feed_or_404(guild_id: str) -> dict[str, Any]:
     feed = await feed_billing.get_guild_feed(guild_id)
     if not feed:
-        raise HTTPException(status_code=404, detail="This server hasn't run /feed setup yet.")
+        raise HTTPException(status_code=404, detail="This server hasn't got a Server Feed set up yet.")
     return feed
 
 
 @router.get("/guilds")
 async def list_manageable_guilds(request: Request):
-    """Every self-service Server Feed guild (plan IS NOT NULL - excludes
-    admin-managed official/partner rows with no billing) where the caller
-    currently has Manage Server, checked live against Discord."""
+    """Return every configured Server Feed the caller can manage.
+
+    Includes both self-service paid feeds and EAFC.Live admin-granted
+    Partner/Official feeds. Discord permissions are still checked live,
+    so simply knowing a guild id or having the bot present is not enough.
+    """
     discord_id = _session_discord_id(request)
     pool = await get_core_pool()
     rows = await pool.fetch(
-        "SELECT guild_id, name, plan, status, subscription_status FROM discord_servers WHERE plan IS NOT NULL"
+        """
+        SELECT guild_id, name, plan, access_level, status, subscription_status
+        FROM discord_servers
+        WHERE plan IS NOT NULL
+           OR access_level IN ('paid_partner', 'official')
+        ORDER BY created_at DESC
+        """
     )
     client = DiscordClient()
     manageable = []
     for row in rows:
         if await user_has_manage_guild_live(client, row["guild_id"], discord_id):
             manageable.append({
-                "guild_id": row["guild_id"], "name": row["name"],
-                "plan": row["plan"], "status": row["status"],
+                "guild_id": row["guild_id"],
+                "name": row["name"],
+                "plan": row["plan"],
+                "access_level": row["access_level"],
+                "status": row["status"],
                 "subscription_status": row["subscription_status"],
             })
     return {"guilds": manageable}
