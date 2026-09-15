@@ -186,7 +186,8 @@ async def list_release_price_rises(
             SELECT p.source_card_id, p.name, p.display_name, p.rating,
                    p.primary_position, p.rarity, p.pace,
                    p.nation, p.nation_image_url, p.league, p.league_image_url,
-                   p.player_image_url, p.card_design_image_url
+                   p.player_image_url, p.card_design_image_url,
+                   p.card_image_url, p.card_image_stored_url
             FROM futgg_players p
             LEFT JOIN fc26_historical_extraction_runs r ON r.card_id = p.source_card_id
             WHERE {' AND '.join(card_where)}
@@ -222,7 +223,15 @@ async def list_release_price_rises(
             "nation_image_url": p["nation_image_url"],
             "league": p["league"],
             "league_image_url": p["league_image_url"],
-            "image_url": p["card_design_image_url"] or p["player_image_url"],
+            # card_image_stored_url is our own R2 mirror of FUT.GG's
+            # composited card render - the one URL that reliably loads
+            # hotlinked. card_image_url/card_design_image_url/
+            # player_image_url are FUT.GG's own URLs and are prone to
+            # failing to load cross-origin (same reason
+            # futgg_recommendation_store.py and others prefer the mirror
+            # first); CardArt's onError fallback catches whatever still
+            # doesn't load.
+            "image_url": p["card_image_stored_url"] or p["card_image_url"] or p["card_design_image_url"] or p["player_image_url"],
             "early_price": e["price"],
             "early_price_date": e["date"].isoformat(),
             "full_price": f["price"],
