@@ -21,6 +21,7 @@ import SubscriptionsTab from "./tabs/SubscriptionsTab";
 import ApiUsageTab from "./tabs/ApiUsageTab";
 import ConversionTab from "./tabs/ConversionTab";
 import ReferralsTab from "./tabs/ReferralsTab";
+import BotTab from "./tabs/BotTab";
 import PlayerCardsTab from "./tabs/PlayerCardsTab";
 import AdminSbcImports from "../AdminSbcImports/AdminSbcImports";
 
@@ -28,6 +29,7 @@ const TABS = [
   // First: it is the question the launch is actually judged on.
   { key: "conversion", label: "Conversion", Component: ConversionTab },
   { key: "referrals", label: "Referrals", Component: ReferralsTab },
+  { key: "bot", label: "Bot", Component: BotTab },
   { key: "readiness", label: "Readiness", Component: RoadmapReadinessTab },
   { key: "pipeline", label: "Pipeline Health", Component: PipelineHealthTab },
   { key: "data-quality", label: "Data Quality", Component: DataQualityTab },
