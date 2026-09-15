@@ -201,7 +201,7 @@ def test_easysbc_sbc_sync_is_actually_one_shot():
 # ---------------------------------------------------------------------
 
 
-def test_dockerfile_sales_runs_the_xvfb_entrypoint_which_execs_sales_sync_directly():
+def test_dockerfile_sales_runs_fc27_policy_then_xvfb_entrypoint_then_sales_sync():
     """CMD now bootstraps Xvfb (headed Chromium - 2026-08-04
     headless-detection finding) via docker-entrypoint-sales.sh rather than
     calling python directly. That script must still end by exec'ing
@@ -210,10 +210,14 @@ def test_dockerfile_sales_runs_the_xvfb_entrypoint_which_execs_sales_sync_direct
     process so SIGTERM/SIGINT still reach the worker directly for its own
     graceful-shutdown handling, and no wrapper double-loops run_forever()."""
     text = _read(AUTO_SYNC_DIR / "Dockerfile.sales")
-    assert re.search(r'CMD\s*\[\s*"/app/docker-entrypoint-sales\.sh"\s*\]', text)
+    assert re.search(r'CMD\s*\[\s*"bash"\s*,\s*"/app/fc27-sales-policy\.sh"\s*\]', text)
     cmd_lines = [line for line in text.splitlines() if line.strip().upper().startswith("CMD")]
     assert len(cmd_lines) == 1
     assert "sh -c" not in cmd_lines[0]
+
+    policy = _read(AUTO_SYNC_DIR / "fc27-sales-policy.sh")
+    assert 'GAME_YEAR="${FUTGG_GAME_YEAR:-27}"' in policy
+    assert re.search(r'^exec /app/docker-entrypoint-sales\.sh\s*$', policy, re.MULTILINE)
 
     entrypoint = _read(AUTO_SYNC_DIR / "docker-entrypoint-sales.sh")
     assert re.search(r'^exec python futgg_sales_sync\.py\s*$', entrypoint, re.MULTILINE)
