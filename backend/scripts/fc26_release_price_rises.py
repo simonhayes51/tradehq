@@ -14,7 +14,7 @@ Usage:
     python -m scripts.fc26_release_price_rises --position ST --top 15
 
 For --game-year 26, dates default to FC26's confirmed launch calendar
-(19 Sep 2026 early release / 26 Sep 2026 full release) unless
+(19 Sep 2025 early release / 26 Sep 2025 full release) unless
 EAFC_WEB_APP_LAUNCH_DATE/EAFC_FULL_RELEASE_DATE are set, in which case
 those win. For any other game year, dates come from those env vars only.
 --early-date/--full-date always override both.
@@ -39,8 +39,8 @@ PACE_HIGH_THRESHOLD = 85
 # docstring for why this is hardcoded rather than env-var-only: FC26
 # already happened, so these are a historical fact, not a per-deployment
 # config value still waiting on an EA announcement.
-FC26_WEB_APP_LAUNCH_DATE = date(2026, 9, 19)
-FC26_FULL_RELEASE_DATE = date(2026, 9, 26)
+FC26_WEB_APP_LAUNCH_DATE = date(2025, 9, 19)
+FC26_FULL_RELEASE_DATE = date(2025, 9, 26)
 
 
 def _parse_args() -> argparse.Namespace:
