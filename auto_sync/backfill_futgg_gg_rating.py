@@ -200,7 +200,7 @@ async def run_backfill(*, game_year: int, start_page: int | None, max_pages: int
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--game-year", type=int, default=int(os.getenv("FUTGG_GAME_YEAR", "26")))
+    parser.add_argument("--game-year", type=int, default=int(os.getenv("FUTGG_GAME_YEAR", "27")))
     parser.add_argument("--start-page", type=int, default=None, help="Override the durable DB checkpoint")
     parser.add_argument("--max-pages", type=int, default=sync.MAX_PAGES_FULL)
     args = parser.parse_args()
