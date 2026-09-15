@@ -387,7 +387,7 @@ async def ensure_schema(conn: asyncpg.Connection) -> None:
     await conn.execute(
         """
         CREATE TABLE IF NOT EXISTS futgg_players (
-            source_card_id BIGINT PRIMARY KEY,
+            source_card_id BIGINT NOT NULL,
             source_player_id BIGINT NOT NULL,
             source_slug TEXT NOT NULL,
             source_url TEXT NOT NULL,
@@ -447,8 +447,31 @@ async def ensure_schema(conn: asyncpg.Connection) -> None:
             price_updated_at TIMESTAMPTZ,
             next_price_due_at TIMESTAMPTZ,
             last_price_status TEXT,
-            metadata_warnings TEXT[] NOT NULL DEFAULT '{}'
+            metadata_warnings TEXT[] NOT NULL DEFAULT '{}',
+            PRIMARY KEY (game_year, source_card_id)
         )
+        """
+    )
+    await conn.execute(
+        """
+        DO $$
+        DECLARE
+            pk_name text;
+        BEGIN
+            SELECT conname INTO pk_name
+            FROM pg_constraint
+            WHERE conrelid = 'futgg_players'::regclass
+              AND contype = 'p'
+              AND conkey = ARRAY[
+                  (SELECT attnum FROM pg_attribute WHERE attrelid = 'futgg_players'::regclass AND attname = 'source_card_id')
+              ];
+
+            IF pk_name IS NOT NULL THEN
+                EXECUTE format('ALTER TABLE futgg_players DROP CONSTRAINT %I CASCADE', pk_name);
+                ALTER TABLE futgg_players ADD PRIMARY KEY (game_year, source_card_id);
+            END IF;
+        END
+        $$;
         """
     )
     # is_tradeable starts NULL ("unknown, never priced") - futgg_price_sync.py
@@ -519,6 +542,9 @@ async def ensure_schema(conn: asyncpg.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS futgg_players_price_due_idx "
         "ON futgg_players (next_price_due_at, price_tier) "
         "WHERE is_active AND is_tradeable IS DISTINCT FROM FALSE"
+    )
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS futgg_players_source_card_idx ON futgg_players (source_card_id)"
     )
     await conn.execute(
         "CREATE INDEX IF NOT EXISTS futgg_players_player_idx ON futgg_players (source_player_id)"
@@ -970,7 +996,7 @@ async def upsert_card(conn: asyncpg.Connection, card: FutggCard) -> None:
             CASE WHEN $51::numeric IS NULL THEN NULL ELSE NOW() END,
             NOW(),NOW(),NOW(),$52
         )
-        ON CONFLICT (source_card_id) DO UPDATE SET
+        ON CONFLICT (game_year, source_card_id) DO UPDATE SET
             source_player_id = EXCLUDED.source_player_id,
             source_slug = EXCLUDED.source_slug,
             source_url = EXCLUDED.source_url,
