@@ -13,9 +13,11 @@ Usage:
     python -m scripts.fc26_release_price_rises --early-date 2025-09-26 --full-date 2025-10-03
     python -m scripts.fc26_release_price_rises --position ST --top 15
 
-Dates default to the configured EAFC_WEB_APP_LAUNCH_DATE /
-EAFC_FULL_RELEASE_DATE (see app/services/game_cycle.py) - pass
---early-date/--full-date to override.
+For --game-year 26, dates default to FC26's confirmed launch calendar
+(19 Sep 2026 early release / 26 Sep 2026 full release) unless
+EAFC_WEB_APP_LAUNCH_DATE/EAFC_FULL_RELEASE_DATE are set, in which case
+those win. For any other game year, dates come from those env vars only.
+--early-date/--full-date always override both.
 """
 from __future__ import annotations
 
@@ -32,6 +34,13 @@ log = logging.getLogger("fc26_release_price_rises")
 
 MATCH_WINDOW_DAYS = 5
 PACE_HIGH_THRESHOLD = 85
+
+# FC26's confirmed launch calendar - see release_price_rises.py's module
+# docstring for why this is hardcoded rather than env-var-only: FC26
+# already happened, so these are a historical fact, not a per-deployment
+# config value still waiting on an EA announcement.
+FC26_WEB_APP_LAUNCH_DATE = date(2026, 9, 19)
+FC26_FULL_RELEASE_DATE = date(2026, 9, 26)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -58,10 +67,10 @@ def _env_date(name: str) -> Optional[date]:
         return None
 
 
-def _resolve_date(explicit: Optional[str], env_name: str, label: str) -> date:
+def _resolve_date(explicit: Optional[str], env_name: str, label: str, hardcoded_fallback: Optional[date] = None) -> date:
     if explicit:
         return date.fromisoformat(explicit)
-    fallback = _env_date(env_name)
+    fallback = _env_date(env_name) or hardcoded_fallback
     if fallback is None:
         raise SystemExit(f"No {label} date: pass --{label}-date or set {env_name}")
     return fallback
@@ -100,8 +109,10 @@ async def main() -> int:
         log.error("need --dsn or PLAYER_DATABASE_URL/DATABASE_URL")
         return 1
 
-    early = _resolve_date(args.early_date, "EAFC_WEB_APP_LAUNCH_DATE", "early")
-    full = _resolve_date(args.full_date, "EAFC_FULL_RELEASE_DATE", "full")
+    early_hardcoded = FC26_WEB_APP_LAUNCH_DATE if args.game_year == 26 else None
+    full_hardcoded = FC26_FULL_RELEASE_DATE if args.game_year == 26 else None
+    early = _resolve_date(args.early_date, "EAFC_WEB_APP_LAUNCH_DATE", "early", early_hardcoded)
+    full = _resolve_date(args.full_date, "EAFC_FULL_RELEASE_DATE", "full", full_hardcoded)
     if full <= early:
         log.error("full date (%s) must be after early date (%s)", full, early)
         return 1
