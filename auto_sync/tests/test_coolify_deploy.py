@@ -37,7 +37,9 @@ def _read(path: Path) -> str:
 
 def test_dockerfile_player_runs_the_one_shot_player_sync():
     text = _read(AUTO_SYNC_DIR / "Dockerfile.player")
-    assert re.search(r'CMD\s*\[\s*"python"\s*,\s*"futgg_player_sync\.py"\s*\]', text)
+    assert re.search(r'CMD\s*\[\s*"/app/docker-entrypoint-player\.sh"\s*\]', text)
+    entrypoint = _read(AUTO_SYNC_DIR / "docker-entrypoint-player.sh")
+    assert re.search(r'^exec python futgg_player_sync\.py\s*$', entrypoint, re.MULTILINE)
 
 
 def test_dockerfile_player_uses_playwright_base():
@@ -48,6 +50,15 @@ def test_dockerfile_player_uses_playwright_base():
 def test_dockerfile_player_defaults_to_fc27():
     text = _read(AUTO_SYNC_DIR / "Dockerfile.player")
     assert "FUTGG_GAME_YEAR=27" in text
+
+
+def test_dockerfile_player_defaults_to_headed_chromium_via_xvfb():
+    text = _read(AUTO_SYNC_DIR / "Dockerfile.player")
+    entrypoint = _read(AUTO_SYNC_DIR / "docker-entrypoint-player.sh")
+    assert "ENV PLAYWRIGHT_HEADLESS=false" in text
+    assert "ENV DISPLAY=:99" in text
+    assert "Xvfb" in text
+    assert "Xvfb" in entrypoint
 
 
 def test_dockerfile_player_exposes_no_port():
