@@ -95,7 +95,36 @@ async def list_servers(admin=Depends(require_admin), conn=Depends(get_db)) -> Li
         ORDER BY s.created_at DESC
         """
     )
-    return [_row_to_dict(r) for r in rows]
+
+    # Resolve the live guild name from Discord rather than leaving old
+    # self-service rows displayed as "Guild <id>". Persist successful
+    # lookups so the correct name is also available anywhere else that
+    # reads discord_servers without making another Discord API request.
+    client = DiscordClient()
+    servers: List[Dict[str, Any]] = []
+    for row in rows:
+        item = _row_to_dict(row)
+        guild_id = str(item.get("guild_id") or "").strip()
+        stored_name = str(item.get("name") or "").strip()
+        if guild_id:
+            try:
+                status, guild = await client.get_guild(guild_id)
+                live_name = guild.get("name") if status == 200 and isinstance(guild, dict) else None
+                if isinstance(live_name, str) and live_name.strip():
+                    live_name = live_name.strip()[:200]
+                    item["name"] = live_name
+                    item["discord_name"] = live_name
+                    if live_name != stored_name:
+                        await conn.execute(
+                            "UPDATE discord_servers SET name=$2, updated_at=NOW() WHERE id=$1",
+                            item["id"],
+                            live_name,
+                        )
+            except Exception:
+                # Name resolution should never stop the admin page loading.
+                pass
+        servers.append(item)
+    return servers
 
 
 @router.post("/servers")
