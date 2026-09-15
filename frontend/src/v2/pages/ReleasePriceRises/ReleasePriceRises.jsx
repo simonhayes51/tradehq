@@ -1,18 +1,19 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { ArrowDown, ArrowRight, ArrowUp, LayoutGrid, List, Medal, Rocket, Search } from "lucide-react";
+import { ArrowDown, ArrowRight, ArrowUp, LayoutGrid, List, Medal, RotateCcw, Rocket, Search, Shirt } from "lucide-react";
 import { getReleasePriceRises } from "../../api/releasePriceRises";
 import CoinValue from "../../components/CoinValue";
 import EmptyState from "../../components/EmptyState";
 import { PageHead } from "../Players/Players";
 import "./release-price-rises.css";
 
-// Server does the ranking (it has the full card set); this page re-fetches
-// on every sort/filter change rather than sorting a client-side cache,
-// since the trends block (by_position / by_pace_tier) is computed over the
-// SAME server-side set and would drift out of sync with a client-only sort.
-// Name search and the rating floor stay client-side, narrowing within the
-// fetched top page rather than round-tripping for a plain text filter.
+// Server does the ranking (it has the full card set) and the data-quality
+// filtering (which cards' chart extraction it trusts); this page re-fetches
+// on every sort/filter/date change rather than sorting a client-side cache,
+// since the trends block is computed over the SAME server-side set and
+// would drift out of sync with a client-only sort. Name search and the
+// rating floor stay client-side, narrowing within the fetched top page
+// rather than round-tripping for a plain text filter.
 const SORTS = [
   { value: "pct_change", label: "Biggest % rise" },
   { value: "abs_change", label: "Biggest coin rise" },
@@ -28,12 +29,26 @@ const RATING_FLOORS = [
   { value: "85", label: "85+ OVR" },
   { value: "90", label: "90+ OVR" },
 ];
+// Coin-price floor. Distinct from the rating floor: a low-rated card can
+// still cost a lot, and a high-rated one can be dirt cheap - this is what
+// actually keeps cheap fodder (whose tiny price base turns a 2,000-coin
+// move into a spectacular-looking 600%+) out of the "biggest riser" list.
+const PRICE_FLOORS = [
+  { value: "0", label: "Any price" },
+  { value: "500", label: "500+ coins" },
+  { value: "1000", label: "1,000+ coins" },
+  { value: "5000", label: "5,000+ coins" },
+  { value: "25000", label: "25,000+ coins" },
+];
 
 export default function ReleasePriceRises() {
   const [sortBy, setSortBy] = useState("pct_change");
   const [order, setOrder] = useState("desc");
   const [position, setPosition] = useState("");
   const [minRating, setMinRating] = useState("0");
+  const [minPrice, setMinPrice] = useState("500");
+  const [earlyDate, setEarlyDate] = useState("");
+  const [fullDate, setFullDate] = useState("");
   const [query, setQuery] = useState("");
   const [view, setView] = useState("grid");
   const [data, setData] = useState(null);
@@ -44,12 +59,28 @@ export default function ReleasePriceRises() {
     let cancelled = false;
     setLoading(true);
     setError("");
-    getReleasePriceRises({ sort_by: sortBy, order, position: position || undefined, page_size: 100 })
+    getReleasePriceRises({
+      sort_by: sortBy,
+      order,
+      position: position || undefined,
+      min_early_price: Number(minPrice) || undefined,
+      early_date: earlyDate || undefined,
+      full_date: fullDate || undefined,
+      page_size: 100,
+    })
       .then((res) => { if (!cancelled) setData(res); })
       .catch((err) => { if (!cancelled) setError(err?.response?.data?.detail || "Couldn't load launch price movement."); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [sortBy, order, position]);
+  }, [sortBy, order, position, minPrice, earlyDate, fullDate]);
+
+  // Once the server has answered, its own early_date/full_date become the
+  // controlled value for the date inputs - keeps them showing the actual
+  // dates in effect (including the server's default) rather than staying
+  // blank until someone touches them.
+  const effectiveEarly = earlyDate || data?.early_date || "";
+  const effectiveFull = fullDate || data?.full_date || "";
+  const datesAreCustom = Boolean(earlyDate || fullDate);
 
   const items = useMemo(() => {
     let list = data?.items || [];
@@ -73,10 +104,34 @@ export default function ReleasePriceRises() {
       <PageHead
         eyebrow="FC26 LAUNCH"
         title="Who rose the most at launch"
-        copy={data
-          ? `Price on ${fmtDate(data.early_date)} (early release) vs ${fmtDate(data.full_date)} (full release) for every priced FC${data.game_year} card.`
-          : "Comparing prices from early release to full release."}
+        copy="Compare card prices between any two dates in FC26's launch window - early release, full release, or your own range."
       />
+
+      <div className="rpr-dates">
+        <label>
+          <span>Early date</span>
+          <input type="date" value={effectiveEarly} onChange={(e) => setEarlyDate(e.target.value)} />
+        </label>
+        <ArrowRight size={16} className="rpr-dates-arrow" />
+        <label>
+          <span>Full date</span>
+          <input type="date" value={effectiveFull} onChange={(e) => setFullDate(e.target.value)} />
+        </label>
+        {datesAreCustom ? (
+          <button type="button" className="rpr-dates-reset" onClick={() => { setEarlyDate(""); setFullDate(""); }}>
+            <RotateCcw size={13} /> Reset to launch dates
+          </button>
+        ) : (
+          <span className="rpr-dates-hint">Showing FC26's confirmed early-release → full-release window</span>
+        )}
+      </div>
+
+      {data ? (
+        <p className="rpr-summary-line">
+          {data.total} cards priced near both {fmtDate(data.early_date)} and {fmtDate(data.full_date)}
+          {data.include_uncertain ? "" : " (low-confidence chart extractions excluded)"}.
+        </p>
+      ) : null}
 
       {data ? <Trends trends={data.trends} /> : null}
 
@@ -93,6 +148,9 @@ export default function ReleasePriceRises() {
         </select>
         <select value={minRating} onChange={(e) => setMinRating(e.target.value)} aria-label="Minimum rating">
           {RATING_FLOORS.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
+        </select>
+        <select value={minPrice} onChange={(e) => setMinPrice(e.target.value)} aria-label="Minimum price">
+          {PRICE_FLOORS.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
         </select>
         <select value={sortBy} onChange={(e) => setSortBy(e.target.value)} aria-label="Sort by">
           {SORTS.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
@@ -119,7 +177,11 @@ export default function ReleasePriceRises() {
       ) : items.length ? (
         view === "grid" ? <RisesGrid items={rest} rankOffset={podium.length} /> : <RisesTable items={items} />
       ) : (
-        <EmptyState icon={<Rocket />} title="No cards match" text="Try a different position, rating floor or search." />
+        <EmptyState
+          icon={<Rocket />}
+          title="No cards match"
+          text="Try a lower price/rating floor, a different position, or widen the date range."
+        />
       )}
     </main>
   );
@@ -128,6 +190,11 @@ export default function ReleasePriceRises() {
 function fmtDate(iso) {
   if (!iso) return "—";
   return new Date(iso).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+}
+
+function CardArt({ src, alt, className }) {
+  if (src) return <img src={src} alt={alt} className={className} />;
+  return <div className={`${className} rpr-noimg`}><Shirt size={18} /></div>;
 }
 
 function Trends({ trends }) {
@@ -149,11 +216,13 @@ function Trends({ trends }) {
 }
 
 function TrendBars({ items }) {
-  const values = items.map((i) => Math.abs(Number(i.value) || 0));
+  const withValues = items.filter((i) => i.count > 0);
+  if (!withValues.length) return <p className="rpr-trend-empty">Not enough priced cards yet to break this down.</p>;
+  const values = withValues.map((i) => Math.abs(Number(i.value) || 0));
   const max = Math.max(1, ...values);
   return (
     <div className="rpr-bars">
-      {items.map((item) => (
+      {withValues.map((item) => (
         <div className="rpr-bar-row" key={item.label}>
           <span className="rpr-bar-label">{item.label}</span>
           <div className="rpr-bar-track">
@@ -178,7 +247,7 @@ function Podium({ items }) {
       {items.map((row, i) => (
         <Link to={`/players/${row.card_id}`} key={row.card_id} className={`rpr-podium-card ${MEDAL_CLASS[i]}`}>
           <div className="rpr-podium-rank"><Medal size={16} /> #{i + 1}</div>
-          {row.image_url ? <img src={row.image_url} alt="" /> : <div className="rpr-podium-noimg" />}
+          <CardArt src={row.image_url} alt="" className="rpr-podium-img" />
           <strong className="rpr-podium-name">{row.name}</strong>
           <span className="rpr-podium-meta">{row.rating} OVR · {row.position || "—"}</span>
           <div className="rpr-podium-prices">
@@ -198,7 +267,7 @@ function RisesGrid({ items, rankOffset = 0 }) {
       {items.map((row, i) => (
         <Link to={`/players/${row.card_id}`} key={row.card_id} className="rpr-grid-card">
           <span className="rpr-grid-rank">{rankOffset + i + 1}</span>
-          {row.image_url ? <img src={row.image_url} alt="" /> : <div className="rpr-grid-noimg" />}
+          <CardArt src={row.image_url} alt="" className="rpr-grid-img" />
           <div className="rpr-grid-body">
             <strong>{row.name}</strong>
             <div className="rpr-meta-pills">
@@ -241,7 +310,7 @@ function RisesTable({ items }) {
               <td className="rpr-card-cell">
                 <span className="rpr-rank">{i + 1}</span>
                 <Link to={`/players/${row.card_id}`}>
-                  {row.image_url ? <img src={row.image_url} alt="" /> : null}
+                  <CardArt src={row.image_url} alt="" className="rpr-table-img" />
                   <div><strong>{row.name}</strong><small>{row.rating} OVR · {row.rarity}</small></div>
                 </Link>
               </td>

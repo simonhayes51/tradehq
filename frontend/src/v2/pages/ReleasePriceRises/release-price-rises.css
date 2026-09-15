@@ -2,6 +2,67 @@
 
 .rpr-page { display: flex; flex-direction: column; gap: 20px; padding: 24px; max-width: 1120px; margin: 0 auto; }
 
+/* ---- Shared "no card art" fallback ------------------------------------ */
+.rpr-noimg {
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--v2-elevated);
+  color: var(--v2-dim);
+}
+
+/* ---- Date range picker ------------------------------------------------ */
+.rpr-dates {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--v2-border);
+  border-radius: var(--v2-radius);
+  background: var(--v2-card);
+}
+.rpr-dates label { display: flex; flex-direction: column; gap: 4px; }
+.rpr-dates label span {
+  font-family: var(--v2-font-mono);
+  font-size: 10.5px;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--v2-muted);
+}
+.rpr-dates input[type="date"] {
+  height: 38px;
+  padding: 0 10px;
+  border: 1px solid var(--v2-border);
+  border-radius: var(--v2-radius);
+  background: var(--v2-elevated);
+  color: var(--v2-text);
+  font-size: 13px;
+  font-family: var(--v2-font-mono);
+  color-scheme: dark;
+}
+.rpr-dates-arrow { color: var(--v2-dim); margin-bottom: 9px; }
+.rpr-dates-hint { color: var(--v2-muted); font-size: 12px; margin-bottom: 9px; }
+.rpr-dates-reset {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 38px;
+  margin-bottom: 0;
+  padding: 0 12px;
+  border: 1px solid var(--v2-border);
+  border-radius: var(--v2-radius);
+  background: transparent;
+  color: var(--v2-muted);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.rpr-dates-reset:hover { border-color: var(--v2-accent); color: var(--v2-accent); }
+
+.rpr-summary-line { margin: -8px 0 0; color: var(--v2-muted); font-size: 12.5px; }
+.rpr-trend-empty { color: var(--v2-dim); font-size: 12.5px; margin: 0; }
+
 .rpr-trends { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 @media (max-width: 700px) { .rpr-trends { grid-template-columns: 1fr; } }
 
@@ -118,8 +179,8 @@
   color: var(--v2-muted);
 }
 .rpr-podium-card.gold .rpr-podium-rank { color: #f2c94c; }
-.rpr-podium-card img { width: 92px; height: 92px; object-fit: contain; margin: 4px 0; }
-.rpr-podium-noimg { width: 92px; height: 92px; border-radius: 50%; background: var(--v2-elevated); }
+.rpr-podium-img { width: 92px; height: 92px; object-fit: contain; margin: 4px 0; }
+div.rpr-podium-img svg { width: 34px; height: 34px; }
 .rpr-podium-name { font-size: 16px; }
 .rpr-podium-meta { color: var(--v2-muted); font-size: 12px; }
 .rpr-podium-prices { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--v2-muted); margin-top: 6px; }
@@ -155,8 +216,7 @@
   font-size: 11px;
   color: var(--v2-dim);
 }
-.rpr-grid-card img { width: 56px; height: 56px; object-fit: contain; flex: 0 0 auto; }
-.rpr-grid-noimg { width: 56px; height: 56px; border-radius: 50%; background: var(--v2-elevated); flex: 0 0 auto; }
+.rpr-grid-img { width: 56px; height: 56px; object-fit: contain; flex: 0 0 auto; }
 .rpr-grid-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .rpr-grid-body strong { font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rpr-meta-pills { display: flex; gap: 6px; flex-wrap: wrap; }
@@ -206,7 +266,7 @@
 
 .rpr-card-cell { display: flex; align-items: center; }
 .rpr-card-cell a { display: flex; align-items: center; gap: 10px; color: var(--v2-text); text-decoration: none; }
-.rpr-card-cell img { width: 32px; height: 32px; object-fit: contain; flex: 0 0 auto; }
+.rpr-table-img { width: 32px; height: 32px; object-fit: contain; flex: 0 0 auto; }
 .rpr-card-cell strong { display: block; font-weight: 700; }
 .rpr-card-cell small { color: var(--v2-muted); font-size: 11px; }
 .rpr-rank { width: 20px; flex: 0 0 auto; color: var(--v2-dim); font-family: var(--v2-font-mono); font-size: 12px; }
