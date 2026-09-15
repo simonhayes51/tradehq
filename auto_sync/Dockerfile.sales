@@ -80,6 +80,7 @@ COPY . .
 RUN chmod +x /app/docker-entrypoint-sales.sh
 
 ENV PLAYWRIGHT_HEADLESS=false
+ENV FUTGG_GAME_YEAR=27
 ENV FUTGG_RUN_BULK_WITH_SALES=true
 # Reverted to 60/300 (2026-09-07) - back to Friday 2026-09-04's values.
 # 22b1b60 raised these to 120/90 that same evening to close a
