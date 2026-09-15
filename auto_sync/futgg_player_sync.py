@@ -95,6 +95,7 @@ import asyncpg
 from bs4 import BeautifulSoup, Tag
 
 from db_connect import connect_with_retry, create_pool_with_retry
+from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from playwright.async_api import async_playwright
 
@@ -600,17 +601,27 @@ async def _read_card_hrefs(page) -> dict[str, ListingCardMetadata]:
     cutout/background fields while the composited image stayed at 0%
     coverage, confirming FUT.GG does not render it on the individual
     card page at all, only here."""
-    nodes = await page.locator("a[href]").evaluate_all(
-        """
-        nodes => nodes.map(node => ({
-            href: node.getAttribute('href'),
-            image: Array.from(node.querySelectorAll('img[src]'))
-                .map(image => image.src)
-                .find(src => src.includes('player-item-card/')) || null,
-            tile_html: node.outerHTML,
-        }))
-        """
-    )
+    script = """
+    nodes => nodes.map(node => ({
+        href: node.getAttribute('href'),
+        image: Array.from(node.querySelectorAll('img[src]'))
+            .map(image => image.src)
+            .find(src => src.includes('player-item-card/')) || null,
+        tile_html: node.outerHTML,
+    }))
+    """
+    for attempt in range(3):
+        try:
+            nodes = await page.locator("a[href]").evaluate_all(script)
+            break
+        except PlaywrightError as exc:
+            if "Execution context was destroyed" not in str(exc) or attempt == 2:
+                raise
+            log.warning(
+                "Listing href read hit a navigation race; retrying attempt=%d/3",
+                attempt + 2,
+            )
+            await page.wait_for_timeout(1000)
     matched: dict[str, ListingCardMetadata] = {}
     for node in nodes:
         parsed = _metadata_from_listing_node(node)
