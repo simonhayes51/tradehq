@@ -55,6 +55,7 @@ COPY . .
 
 ENV PYTHONUNBUFFERED=1
 ENV PLAYWRIGHT_HEADLESS=true
+ENV FUTGG_GAME_YEAR=27
 ENV FUTGG_BULK_APPLY=true
 
 CMD ["python", "futgg_bulk_price_sync.py"]
