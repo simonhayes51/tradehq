@@ -69,12 +69,18 @@ not need PriceSync or SalesSync to be running:
 FUTGG_GAME_YEAR=27 \
 FUTGG_LISTING_FULL_SCAN=true \
 FUTGG_REFRESH_EXISTING=true \
+FUTGG_BACKFILL_RELEASE_METADATA=false \
 python futgg_player_sync.py
 ```
 
 `/players/new/` is only a launch/recent-card window, so the full pull must
 keep `FUTGG_LISTING_FULL_SCAN=true`; that walks both `/players/new/` and
 the main `/players/` catalogue.
+
+Do not leave `FUTGG_BACKFILL_RELEASE_METADATA=true` or
+`FUTGG_BACKFILL_GAME_YEAR=26` on this run. Backfill mode reads existing
+database rows that are missing release metadata; it does not crawl the
+FC27 card catalogue.
 
 ### One-off GG Rating backfill
 
