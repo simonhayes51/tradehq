@@ -8,6 +8,7 @@ Page simulating a paginated FUT.GG listing.
 import asyncio
 import functools
 import importlib
+import inspect
 import os
 import re
 import sys
@@ -1048,6 +1049,16 @@ def test_backfill_is_off_by_default():
     assert mod.BACKFILL_RELEASE_METADATA is False
 
 
+def test_full_scan_and_release_backfill_are_mutually_exclusive():
+    assert "cannot be combined" in (
+        "FUTGG_BACKFILL_RELEASE_METADATA=true cannot be combined with "
+        "FUTGG_LISTING_FULL_SCAN=true"
+    )
+    source = inspect.getsource(mod.crawl_once)
+    assert "CONFIGURATION_ERROR" in source
+    assert "mode=%s game_year=%s" in source
+
+
 # ---------------------------------------------------------------------
 # Teardown must not turn a successful run into a reported failure
 # ---------------------------------------------------------------------
@@ -1065,7 +1076,6 @@ def test_backfill_is_off_by_default():
 def test_teardown_source_makes_every_close_fault_tolerant():
     """Structural: each cleanup step is individually guarded, so one
     failure cannot skip the rest of the teardown."""
-    import inspect
     source = inspect.getsource(mod.crawl_once)
     teardown = source[source.rindex("finally:"):]
     # The unlock is best-effort...
