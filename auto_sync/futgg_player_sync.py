@@ -11,9 +11,17 @@ Recommended Railway Cron: once daily, e.g. 15 5 * * *
 
 Two discovery modes:
   - Daily (default): a single partition, FUT.GG's newest-first feed
-    (/players/new/), capped at FUTGG_LISTING_MAX_PAGES pages - enough to
-    catch what's new since yesterday without re-walking the whole
-    catalogue every run.
+    (/players/new/), capped at FUTGG_LISTING_MAX_PAGES pages as a safety
+    ceiling. /players/new/ is a plain recency feed, not a same-year feed -
+    confirmed live 2026-09-15: once the genuinely-new FC27 cards run out,
+    the same feed starts resurfacing freshly-touched FC26 cards instead
+    of ending, so pagination now also stops as soon as a page's cards
+    stop matching the target game year (see _paginate_listing's
+    target_game_year), rather than only on a page with zero new URLs or
+    hitting the page cap. That is what lets FUTGG_LISTING_MAX_PAGES be
+    set generously (enough to catch a launch day with hundreds of new
+    cards) without also risking a wasted walk through the entire prior
+    year's catalogue when today's new-card count is small.
   - Full scan (FUTGG_LISTING_FULL_SCAN=true): one or more partitions (see
     FUTGG_FULL_SCAN_PARTITIONS below), each capped at
     FUTGG_LISTING_MAX_PAGES_FULL pages, for an occasional full-catalogue
@@ -56,7 +64,10 @@ Important environment variables:
   PLAYWRIGHT_TIMEOUT_MS           45000
   FUTGG_PLAYER_LIMIT              0 = no card limit
   FUTGG_LISTING_FULL_SCAN         false
-  FUTGG_LISTING_MAX_PAGES         5 (daily mode)
+  FUTGG_LISTING_MAX_PAGES         50 (daily mode; a safety ceiling now -
+                                   discovery stops as soon as a page's
+                                   cards stop matching the current game
+                                   year, so this rarely gets hit)
   FUTGG_LISTING_MAX_PAGES_FULL    400 (full-scan mode, per partition)
   FUTGG_GAME_YEAR                 27 (current FUT.GG cycle)
   FUTGG_FULL_SCAN_PARTITIONS      defaults to the selected game year:
@@ -148,7 +159,7 @@ CONFIGURATION_ERROR = (
     if BACKFILL_RELEASE_METADATA and FULL_SCAN
     else ""
 )
-MAX_PAGES_DAILY = max(1, int(os.getenv("FUTGG_LISTING_MAX_PAGES", "5")))
+MAX_PAGES_DAILY = max(1, int(os.getenv("FUTGG_LISTING_MAX_PAGES", "50")))
 MAX_PAGES_FULL = max(1, int(os.getenv("FUTGG_LISTING_MAX_PAGES_FULL", "400")))
 MAX_PAGES = MAX_PAGES_FULL if FULL_SCAN else MAX_PAGES_DAILY
 
@@ -660,6 +671,7 @@ async def _paginate_listing(
     start_page: int = 1,
     canonical_first_page: bool = False,
     page_callback: Callable[[int, dict[str, ListingCardMetadata]], Awaitable[None]] | None = None,
+    target_game_year: int | None = None,
 ) -> dict[str, ListingCardMetadata]:
     """Paginates a single FUT.GG listing partition (?page=1, ?page=2, ...
     against url_template, a path containing a literal '{page}'
@@ -673,6 +685,24 @@ async def _paginate_listing(
     engine behind both daily discovery (a single partition) and full-scan
     discovery (one or more partitions, merged - see collect_listing_urls());
     partition_label only affects logging.
+
+    target_game_year, when set, closes a real gap the "0 new URLs" idle
+    check cannot see: /players/new/ genuinely is a recency feed, not a
+    same-year feed - confirmed live 2026-09-15, a daily-mode run capped
+    at 5 pages found exactly the FC27 Icons/previews then live, but
+    raising that cap for a full-scan run walked past page 5 into ~10,000
+    DISTINCT card URLs, every one of them still game_year=26, because
+    FUT.GG keeps surfacing freshly-touched OLD-year cards in the same
+    feed once the genuinely-new backlog is exhausted. Each of those pages
+    has new_this_page > 0 (they are new URLs this run has not seen), so
+    the existing idle check never fires and pagination only stops at
+    FUT.GG's actual last page. When target_game_year is set, a page
+    counts as idle unless at least one newly-discovered URL on it
+    actually parses to that game_year - so daily discovery naturally
+    stops once it runs past the current year's cards into old-year
+    backlog, regardless of how high max_pages is set, instead of either
+    missing cards past a too-low cap or wastefully walking the entire
+    old-year catalogue past a too-high one.
 
     Returns card URL -> ListingCardMetadata. An optional callback runs
     after each page stabilises; the GG-rating backfill uses it to commit
@@ -762,12 +792,17 @@ async def _paginate_listing(
         if PLAYER_LIMIT and len(seen) >= PLAYER_LIMIT:
             break
 
-        if new_this_page == 0:
+        page_matches_target_year = target_game_year is None or any(
+            (match := CARD_URL_RE.match(urlparse(card_url).path)) and int(match.group("game_year")) == target_game_year
+            for card_url in current_hrefs
+        )
+        if new_this_page == 0 or not page_matches_target_year:
             idle_pages += 1
             if idle_pages >= IDLE_ROUNDS:
                 log.info(
-                    "partition=%s: %d consecutive pages with no new cards - stopping pagination",
+                    "partition=%s: %d consecutive pages %s - stopping pagination",
                     partition_label, idle_pages,
+                    "with no new cards" if new_this_page == 0 else f"with no game_year={target_game_year} cards",
                 )
                 break
         else:
@@ -802,7 +837,10 @@ async def collect_listing_urls(page) -> dict[str, ListingCardMetadata]:
     still iterate/len() this like a plain list - dict keys behave
     identically for that."""
     if not FULL_SCAN:
-        urls = await _paginate_listing(page, f"{GAME_PREFIX}/players/new/?page={{page}}", MAX_PAGES, "daily-new")
+        urls = await _paginate_listing(
+            page, f"{GAME_PREFIX}/players/new/?page={{page}}", MAX_PAGES, "daily-new",
+            target_game_year=GAME_YEAR,
+        )
         log.info("Discovery mode=daily source=partition:daily-new unique=%d", len(urls))
         if PLAYER_LIMIT:
             return dict(list(urls.items())[:PLAYER_LIMIT])

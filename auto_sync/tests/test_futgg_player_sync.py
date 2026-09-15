@@ -37,8 +37,14 @@ def run_async(coro_fn):
     return wrapper
 
 
-def _card_href(card_id: int) -> str:
-    return f"/players/{card_id}-player-{card_id}/26-{1000 + card_id}/"
+def _card_href(card_id: int, game_year: int | None = None) -> str:
+    # Defaults to the module's own current GAME_YEAR (not a hardcoded
+    # literal) so these fixtures keep matching _paginate_listing's
+    # target_game_year filter regardless of which year a given test
+    # runs the module under - a test that wants an off-year card for
+    # its own reasons can still pass game_year explicitly.
+    year = game_year if game_year is not None else mod.GAME_YEAR
+    return f"/players/{card_id}-player-{card_id}/{year}-{1000 + card_id}/"
 
 
 class _FakeResponse:
@@ -208,6 +214,48 @@ async def test_collect_listing_urls_stops_early_after_idle_pages(monkeypatch):
         "https://www.fut.gg/players/new/?page=3",
     ]
     assert len(urls) == 2
+
+
+@run_async
+async def test_daily_mode_stops_once_pages_stop_matching_current_year(monkeypatch):
+    """Reproduces the live bug (2026-09-15): /players/new/ genuinely is a
+    recency feed, not a same-year feed. A daily-mode run must stop as soon
+    as a page's cards stop matching GAME_YEAR, even though every page
+    still has distinct NEW urls this run has never seen (so the plain
+    "zero new" idle check alone would never fire, and pagination would
+    otherwise walk pages of old-year cards all the way to MAX_PAGES)."""
+    monkeypatch.setattr(mod, "MAX_PAGES", 400)
+    monkeypatch.setattr(mod, "PLAYER_LIMIT", 0)
+    monkeypatch.setattr(mod, "IDLE_ROUNDS", 2)
+    monkeypatch.setattr(mod, "PAGE_DELAY", 0)
+    monkeypatch.setattr(mod, "LISTING_STABILIZE_MAX_ATTEMPTS", 2)
+    monkeypatch.setattr(mod, "LISTING_STABILIZE_POLL_MS", 0)
+    # Pages 1-2 are this year's genuinely new cards; pages 3+ are all
+    # DISTINCT cards too (so new_this_page is never 0) but every one of
+    # them is last year's game_year - discovery must stop after 2
+    # consecutive off-year pages (pages 3 and 4), not walk to page 6.
+    pages_hrefs = {
+        1: [_card_href(1), _card_href(2)],
+        2: [_card_href(3)],
+        3: [_card_href(4, game_year=mod.GAME_YEAR - 1)],
+        4: [_card_href(5, game_year=mod.GAME_YEAR - 1)],
+        5: [_card_href(6, game_year=mod.GAME_YEAR - 1)],
+    }
+    page = _FakeListingPage(pages_hrefs)
+
+    urls = await mod.collect_listing_urls(page)
+
+    assert page.goto_urls == [
+        "https://www.fut.gg/players/new/?page=1",
+        "https://www.fut.gg/players/new/?page=2",
+        "https://www.fut.gg/players/new/?page=3",
+        "https://www.fut.gg/players/new/?page=4",
+    ]
+    # Off-year cards from the idle pages were still discovered/returned
+    # (this only stops PAGINATION early, it doesn't filter what a page
+    # already yielded) - just the 3 genuinely-current-year cards plus the
+    # 2 off-year cards seen before the idle threshold tripped.
+    assert len(urls) == 5
 
 
 @run_async
@@ -419,7 +467,7 @@ def test_full_scan_selects_the_full_page_cap(monkeypatch):
 def test_daily_mode_is_the_default():
     assert mod.FULL_SCAN is False
     assert mod.MAX_PAGES == mod.MAX_PAGES_DAILY
-    assert mod.MAX_PAGES_DAILY == 5
+    assert mod.MAX_PAGES_DAILY == 50
     assert mod.MAX_PAGES_FULL == 400
 
 
