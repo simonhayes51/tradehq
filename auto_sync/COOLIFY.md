@@ -77,6 +77,13 @@ python futgg_player_sync.py
 keep `FUTGG_LISTING_FULL_SCAN=true`; that walks both `/players/new/` and
 the main `/players/` catalogue.
 
+During pre-launch FUT.GG can expose the main FC27 catalogue before the
+`/players/new/` feed hydrates properly in Playwright. In full-scan mode,
+PlayerSync treats a failed partition as a warning and continues to the
+remaining partition(s). A warning for `partition=new` is acceptable if
+`partition=catalogue` then discovers cards. A failure saying all
+full-scan partitions failed means the worker did not get any card data.
+
 Do not leave `FUTGG_BACKFILL_RELEASE_METADATA=true` or
 `FUTGG_BACKFILL_GAME_YEAR=26` on this run. Backfill mode reads existing
 database rows that are missing release metadata; it does not crawl the
