@@ -77,7 +77,8 @@ python futgg_player_sync.py
 
 `/players/new/` is only a launch/recent-card window, so the full pull must
 keep `FUTGG_LISTING_FULL_SCAN=true`; that walks both `/players/new/` and
-the main `/players/` catalogue.
+the main `/players/` catalogue. Page 1 uses FUT.GG's canonical URLs
+(`/players/new/` and `/players/`), then page 2+ uses `?page=N`.
 
 During pre-launch FUT.GG can expose the main FC27 catalogue before the
 `/players/new/` feed hydrates properly in Playwright. In full-scan mode,
