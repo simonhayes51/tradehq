@@ -19,6 +19,41 @@
   color: var(--v2-dim);
 }
 
+.rpr-windows {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.rpr-windows button {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  min-height: 58px;
+  padding: 10px;
+  border: 1px solid var(--v2-border);
+  border-radius: var(--v2-radius);
+  background: var(--v2-card);
+  color: var(--v2-text);
+  cursor: pointer;
+}
+
+.rpr-windows button.active {
+  border-color: rgba(57,255,138,.48);
+  background: rgba(57,255,138,.08);
+}
+
+.rpr-windows strong {
+  font-size: 12.5px;
+  line-height: 1.2;
+}
+
+.rpr-windows span {
+  color: var(--v2-muted);
+  font-size: 11px;
+}
+
 .rpr-datebar {
   display: flex;
   flex-wrap: wrap;
@@ -433,6 +468,7 @@
 }
 
 @media (max-width: 900px) {
+  .rpr-windows { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .rpr-read,
   .rpr-patterns { grid-template-columns: 1fr; }
   .rpr-read-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -440,6 +476,7 @@
 
 @media (max-width: 700px) {
   .rpr-page { padding: 18px 14px 104px; gap: 13px; }
+  .rpr-windows { grid-template-columns: 1fr; }
   .rpr-read { padding: 14px; }
   .rpr-read h2 { font-size: 21px; }
   .rpr-read-stats { grid-template-columns: 1fr; }
