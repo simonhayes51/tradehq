@@ -54,25 +54,47 @@ async def register(user: UserRegister, request: Request, db: asyncpg.Connection 
     user_id = secrets.token_hex(8)
     pwd_hash = get_password_hash(user.password)
 
+    # Referral links are recorded before registration by /api/referrals/track-click.
+    # Revalidate the code at signup so disabled/removed partner codes cannot convert.
+    referral_code = request.session.get("referral_code")
+    valid_referral_code = None
+    if referral_code:
+        normalized_code = str(referral_code).strip().upper()
+        valid_referral_code = await db.fetchval(
+            """
+            SELECT code
+            FROM referral_codes
+            WHERE code = $1
+              AND is_active = TRUE
+            """,
+            normalized_code,
+        )
+
     await db.execute(
         """
-        INSERT INTO users (id, email, password_hash, account_type)
-        VALUES ($1, $2, $3, 'user')
+        INSERT INTO users (id, email, password_hash, account_type, referred_by)
+        VALUES ($1, $2, $3, 'user', $4)
         """,
         user_id,
         user.email,
         pwd_hash,
+        valid_referral_code,
     )
 
     await db.execute(
         """
-        INSERT INTO user_profiles (user_id, username, global_name) 
+        INSERT INTO user_profiles (user_id, username, global_name)
         VALUES ($1, $2, $2)
         ON CONFLICT (user_id) DO NOTHING
         """,
         user_id,
         user.username,
     )
+
+    # Attribution is one-shot. Once an account has been created, do not let a
+    # later registration/login flow accidentally reuse the same referral.
+    request.session.pop("referral_code", None)
+    request.session.pop("referral_recorded_at", None)
 
     request.session["user_id"] = user_id
     request.session["username"] = user.username
@@ -95,7 +117,7 @@ async def register(user: UserRegister, request: Request, db: asyncpg.Connection 
 async def login(user: UserLogin, request: Request, db: asyncpg.Connection = Depends(get_db)):
     row = await db.fetchrow(
         """
-        SELECT 
+        SELECT
             u.id,
             u.password_hash,
             u.account_type,
