@@ -14,6 +14,17 @@ router = APIRouter(prefix="/api/referrals", tags=["Referrals"])
 PARTNER_CODE_RE = re.compile(r"^[A-Z0-9_-]{3,32}$")
 
 
+def _share_url(code: str) -> str:
+    """Return the production-safe referral URL.
+
+    The public site is a client-rendered SPA and some production edge paths do
+    not reliably fall back to index.html for a direct /r/CODE request. Query
+    links always enter through the known-good root document while preserving
+    exactly the same server-side referral attribution.
+    """
+    return f"https://eafc.live/?ref={code}"
+
+
 def generate_referral_code(user_id: str) -> str:
     """Generate a unique referral code for a user."""
     prefix = user_id[:4].upper() if len(user_id) >= 4 else user_id.upper()
@@ -161,7 +172,7 @@ async def get_referral_stats(
                 "currency": "coins"
             },
             "recent_referrals": referral_list,
-            "share_url": f"https://eafc.live/r/{referral_code}"
+            "share_url": _share_url(referral_code)
         }
 
     except HTTPException:
@@ -262,7 +273,7 @@ async def list_partner_referrals(
             "signups": signups,
             "active_subscriptions": int(row["active_subscriptions"] or 0),
             "conversion_rate": round((signups / unique_clicks * 100) if unique_clicks else 0, 2),
-            "share_url": f"https://eafc.live/r/{row['code']}",
+            "share_url": _share_url(row["code"]),
         })
 
     return {"ok": True, "partners": partners}
@@ -307,7 +318,7 @@ async def create_partner_referral(
             "signups": 0,
             "active_subscriptions": 0,
             "conversion_rate": 0,
-            "share_url": f"https://eafc.live/r/{row['code']}",
+            "share_url": _share_url(row["code"]),
         },
     }
 
@@ -349,6 +360,6 @@ async def update_partner_referral(
             "partner_name": row["partner_name"],
             "is_active": bool(row["is_active"]),
             "updated_at": row["updated_at"].isoformat(),
-            "share_url": f"https://eafc.live/r/{row['code']}",
+            "share_url": _share_url(row["code"]),
         },
     }
