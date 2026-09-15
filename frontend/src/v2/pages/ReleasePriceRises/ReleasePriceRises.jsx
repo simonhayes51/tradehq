@@ -1,17 +1,18 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { ArrowDown, ArrowUp, Rocket, Search } from "lucide-react";
+import { ArrowDown, ArrowRight, ArrowUp, LayoutGrid, List, Medal, Rocket, Search } from "lucide-react";
 import { getReleasePriceRises } from "../../api/releasePriceRises";
 import CoinValue from "../../components/CoinValue";
 import EmptyState from "../../components/EmptyState";
 import { PageHead } from "../Players/Players";
 import "./release-price-rises.css";
 
-// Server does the ranking/filtering (it has the full card set); this page
-// re-fetches on every sort/filter change rather than sorting a client-side
-// cache, since the trends block (by_position / by_pace_tier) is computed
-// over the SAME filtered set server-side and would drift out of sync with
-// a client-only sort.
+// Server does the ranking (it has the full card set); this page re-fetches
+// on every sort/filter change rather than sorting a client-side cache,
+// since the trends block (by_position / by_pace_tier) is computed over the
+// SAME server-side set and would drift out of sync with a client-only sort.
+// Name search and the rating floor stay client-side, narrowing within the
+// fetched top page rather than round-tripping for a plain text filter.
 const SORTS = [
   { value: "pct_change", label: "Biggest % rise" },
   { value: "abs_change", label: "Biggest coin rise" },
@@ -19,12 +20,22 @@ const SORTS = [
   { value: "full_price", label: "Highest full-release price" },
   { value: "rating", label: "Rating" },
 ];
+const POSITIONS = ["GK", "CB", "LB", "RB", "LWB", "RWB", "CDM", "CM", "CAM", "LM", "RM", "LW", "RW", "CF", "ST"];
+const RATING_FLOORS = [
+  { value: "0", label: "Any rating" },
+  { value: "75", label: "75+ OVR" },
+  { value: "80", label: "80+ OVR" },
+  { value: "85", label: "85+ OVR" },
+  { value: "90", label: "90+ OVR" },
+];
 
 export default function ReleasePriceRises() {
   const [sortBy, setSortBy] = useState("pct_change");
   const [order, setOrder] = useState("desc");
   const [position, setPosition] = useState("");
+  const [minRating, setMinRating] = useState("0");
   const [query, setQuery] = useState("");
+  const [view, setView] = useState("grid");
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -41,11 +52,21 @@ export default function ReleasePriceRises() {
   }, [sortBy, order, position]);
 
   const items = useMemo(() => {
-    const list = data?.items || [];
-    if (!query.trim()) return list;
+    let list = data?.items || [];
+    const floor = Number(minRating) || 0;
+    if (floor) list = list.filter((row) => Number(row.rating) >= floor);
     const q = query.trim().toLowerCase();
-    return list.filter((row) => String(row.name || "").toLowerCase().includes(q));
-  }, [data, query]);
+    if (q) list = list.filter((row) => String(row.name || "").toLowerCase().includes(q));
+    return list;
+  }, [data, query, minRating]);
+
+  // Podium only makes sense on the default "biggest riser" framing - a
+  // rating/price sort or the "lowest first" toggle isn't a launch-movers
+  // ranking, it's a different question, so the spotlight hides itself
+  // instead of misleadingly medalling whatever happens to be first.
+  const showPodium = sortBy === "pct_change" && order === "desc" && !query.trim();
+  const podium = showPodium ? items.slice(0, 3) : [];
+  const rest = showPodium ? items.slice(3) : items;
 
   return (
     <main className="v2-destination rpr-page">
@@ -59,6 +80,8 @@ export default function ReleasePriceRises() {
 
       {data ? <Trends trends={data.trends} /> : null}
 
+      {podium.length ? <Podium items={podium} /> : null}
+
       <div className="rpr-controls">
         <label className="v2-search-box rpr-search">
           <Search size={16} />
@@ -67,6 +90,9 @@ export default function ReleasePriceRises() {
         <select value={position} onChange={(e) => setPosition(e.target.value)} aria-label="Filter by position">
           <option value="">All positions</option>
           {POSITIONS.map((p) => <option key={p} value={p}>{p}</option>)}
+        </select>
+        <select value={minRating} onChange={(e) => setMinRating(e.target.value)} aria-label="Minimum rating">
+          {RATING_FLOORS.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
         </select>
         <select value={sortBy} onChange={(e) => setSortBy(e.target.value)} aria-label="Sort by">
           {SORTS.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
@@ -80,6 +106,10 @@ export default function ReleasePriceRises() {
           {order === "desc" ? <ArrowDown size={15} /> : <ArrowUp size={15} />}
           {order === "desc" ? "Highest first" : "Lowest first"}
         </button>
+        <div className="rpr-view-toggle" role="group" aria-label="Layout">
+          <button type="button" className={view === "grid" ? "active" : ""} onClick={() => setView("grid")} aria-label="Card view"><LayoutGrid size={15} /></button>
+          <button type="button" className={view === "table" ? "active" : ""} onClick={() => setView("table")} aria-label="Table view"><List size={15} /></button>
+        </div>
       </div>
 
       {loading ? (
@@ -87,15 +117,13 @@ export default function ReleasePriceRises() {
       ) : error ? (
         <EmptyState text={error} error compact />
       ) : items.length ? (
-        <RisesTable items={items} />
+        view === "grid" ? <RisesGrid items={rest} rankOffset={podium.length} /> : <RisesTable items={items} />
       ) : (
-        <EmptyState icon={<Rocket />} title="No cards match" text="Try a different position or clear the search." />
+        <EmptyState icon={<Rocket />} title="No cards match" text="Try a different position, rating floor or search." />
       )}
     </main>
   );
 }
-
-const POSITIONS = ["GK", "CB", "LB", "RB", "LWB", "RWB", "CDM", "CM", "CAM", "LM", "RM", "LW", "RW", "CF", "ST"];
 
 function fmtDate(iso) {
   if (!iso) return "—";
@@ -139,6 +167,57 @@ function TrendBars({ items }) {
         </div>
       ))}
     </div>
+  );
+}
+
+const MEDAL_CLASS = ["gold", "silver", "bronze"];
+
+function Podium({ items }) {
+  return (
+    <section className="rpr-podium" aria-label="Top launch risers">
+      {items.map((row, i) => (
+        <Link to={`/players/${row.card_id}`} key={row.card_id} className={`rpr-podium-card ${MEDAL_CLASS[i]}`}>
+          <div className="rpr-podium-rank"><Medal size={16} /> #{i + 1}</div>
+          {row.image_url ? <img src={row.image_url} alt="" /> : <div className="rpr-podium-noimg" />}
+          <strong className="rpr-podium-name">{row.name}</strong>
+          <span className="rpr-podium-meta">{row.rating} OVR · {row.position || "—"}</span>
+          <div className="rpr-podium-prices">
+            <CoinValue value={row.early_price} /> <ArrowRight size={12} /> <CoinValue value={row.full_price} />
+          </div>
+          <span className="rpr-podium-pct">{row.pct_change > 0 ? "+" : ""}{row.pct_change}%</span>
+        </Link>
+      ))}
+    </section>
+  );
+}
+
+function RisesGrid({ items, rankOffset = 0 }) {
+  if (!items.length) return null;
+  return (
+    <section className="rpr-grid">
+      {items.map((row, i) => (
+        <Link to={`/players/${row.card_id}`} key={row.card_id} className="rpr-grid-card">
+          <span className="rpr-grid-rank">{rankOffset + i + 1}</span>
+          {row.image_url ? <img src={row.image_url} alt="" /> : <div className="rpr-grid-noimg" />}
+          <div className="rpr-grid-body">
+            <strong>{row.name}</strong>
+            <div className="rpr-meta-pills">
+              <span>{row.rating ?? "—"} OVR</span>
+              <span>{row.position || "—"}</span>
+              {row.pace != null ? <span>{row.pace} PAC</span> : null}
+            </div>
+            <div className="rpr-grid-prices">
+              <div><small>EARLY</small><CoinValue value={row.early_price} /></div>
+              <ArrowRight size={13} className="rpr-grid-arrow" />
+              <div><small>FULL</small><CoinValue value={row.full_price} /></div>
+            </div>
+          </div>
+          <span className={`rpr-grid-pct ${row.abs_change > 0 ? "positive" : row.abs_change < 0 ? "negative" : ""}`}>
+            {row.pct_change == null ? "—" : `${row.pct_change > 0 ? "+" : ""}${row.pct_change}%`}
+          </span>
+        </Link>
+      ))}
+    </section>
   );
 }
 
