@@ -68,8 +68,8 @@ PACE_HIGH_THRESHOLD = 85
 # EAFC_GAME_YEAR=26) just to ask about a season that's already over.
 # GAME_CYCLE's own env vars still win when they happen to be configured for
 # game_year 26, and ?early_date=/?full_date= always wins over both.
-FC26_WEB_APP_LAUNCH_DATE = date(2026, 9, 19)
-FC26_FULL_RELEASE_DATE = date(2026, 9, 26)
+FC26_WEB_APP_LAUNCH_DATE = date(2025, 9, 19)
+FC26_FULL_RELEASE_DATE = date(2025, 9, 26)
 
 
 def _resolve_date(explicit: Optional[str], fallback: Optional[date], label: str) -> date:
