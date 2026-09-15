@@ -63,7 +63,8 @@ describe("ReleasePriceRises", () => {
     render(<MemoryRouter><ReleasePriceRises /></MemoryRouter>);
 
     expect(await screen.findByText("Launch Movers")).toBeInTheDocument();
-    expect(screen.getByText("ST + 1k-5k + gold_rare")).toBeInTheDocument();\n    expect(screen.getByText("Day 1 to full release")).toBeInTheDocument();
+    expect(screen.getByText("ST + 1k-5k + gold_rare")).toBeInTheDocument();
+    expect(screen.getByText("Day 1 to full release")).toBeInTheDocument();
     expect(screen.getByText("Best coin return")).toBeInTheDocument();
     expect(screen.getAllByText(/tax net|after tax/i).length).toBeGreaterThan(0);
     expect(screen.getByText("Budget")).toBeInTheDocument();
