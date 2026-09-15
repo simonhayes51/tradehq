@@ -93,7 +93,7 @@ PRICE_ACCESS_POW_WORKER_TIMEOUT_MS = _env_int("FUTGG_PRICE_ACCESS_POW_TIMEOUT_MS
 PRICE_ACCESS_SIGN_CACHE_MAX_TTL_MS = _env_int("FUTGG_PRICE_ACCESS_CACHE_MAX_TTL_MS", 75_000)
 PRICE_ACCESS_SIGN_CACHE_SAFETY_MS = _env_int("FUTGG_PRICE_ACCESS_CACHE_SAFETY_MS", 45_000)
 
-DEFAULT_GAME_YEAR = 26
+DEFAULT_GAME_YEAR = 27
 DEFAULT_PLATFORM = "ps5"
 
 SUPPORTED_CHALLENGE_ALGORITHMS = ("sha256-prefix-v1",)
@@ -706,7 +706,7 @@ async def _open_diagnostic_page(anchor_url: str, *, headless: bool, user_agent: 
 # A real, stable fut.gg player page - only used as a same-origin anchor
 # when the caller doesn't supply their own open page. Matches
 # futgg_sales_sync.py's own run_diagnostic_card() fallback anchor.
-DEFAULT_ANCHOR_URL = "https://www.fut.gg/players/1114-roberto-baggio/26-1114/"
+DEFAULT_ANCHOR_URL = "https://www.fut.gg/players/"
 
 
 async def fetch_player_price_detail(
