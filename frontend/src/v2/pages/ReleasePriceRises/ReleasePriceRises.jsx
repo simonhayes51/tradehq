@@ -156,7 +156,7 @@ export default function ReleasePriceRises() {
                 <span>Proof list</span>
                 <h2>{total} cards matched</h2>
               </div>
-              <p>{from}-{to} shown · {fmtDate(data.early_date)} to {fmtDate(data.full_date)} · low-confidence chart reads excluded</p>
+              <p>{from}-{to} shown / {fmtDate(data.early_date)} to {fmtDate(data.full_date)} / low-confidence chart reads excluded</p>
             </div>
             {items.length ? (
               <>
@@ -185,7 +185,7 @@ function LaunchAnswer({ data, windowLabel }) {
   return (
     <section className="rpr-answer">
       <div className="rpr-answer-main">
-        <span>The answer · {windowLabel}</span>
+        <span>The answer / {windowLabel}</span>
         <h2>{cleanHeadline(playbook.headline)}</h2>
         <p>{plainSummary(playbook.summary)}</p>
       </div>
@@ -255,7 +255,7 @@ function RisesList({ items, rankOffset = 0 }) {
           <CardArt src={row.image_url} alt="" className="rpr-card-img" />
           <div className="rpr-row-player">
             <strong>{row.name}</strong>
-            <p>{row.rating ?? "-"} OVR · {row.position || "-"}{row.pace != null ? ` · ${row.pace} PAC` : ""}</p>
+            <p>{row.rating ?? "-"} OVR / {row.position || "-"}{row.pace != null ? ` / ${row.pace} PAC` : ""}</p>
           </div>
           <div className="rpr-price-path"><CoinValue value={row.early_price} /> <ArrowRight size={12} /> <CoinValue value={row.full_price} /></div>
           <div className="rpr-row-change">
