@@ -17,10 +17,13 @@ class _FakeSession(dict):
 
 
 class _FakeRequest:
-    def __init__(self, discord_id=None):
+    def __init__(self, discord_id=None, manageable_guild_ids=None):
         self.session = _FakeSession()
         if discord_id is not None:
             self.session["discord_id"] = discord_id
+        if manageable_guild_ids is not None:
+            self.session[web._SESSION_GUILDS_KEY] = list(manageable_guild_ids)
+            self.session[web._SESSION_GUILDS_VERIFIED_KEY] = 1
 
 
 def _allow(monkeypatch, allowed=True):
@@ -28,8 +31,8 @@ def _allow(monkeypatch, allowed=True):
 
 
 # ---------------------------------------------------------------------------
-# Auth gating - every endpoint requires a session AND a live Manage Server
-# check, re-verified on every call rather than trusted from stored state.
+# Auth gating: OAuth guild proof is accepted, with live Discord permission
+# and stored Partner manager retained as fallbacks.
 # ---------------------------------------------------------------------------
 
 
@@ -41,9 +44,21 @@ def test_no_session_is_rejected():
 
 def test_session_without_manage_guild_is_rejected(monkeypatch):
     _allow(monkeypatch, allowed=False)
+    monkeypatch.setattr(web, "_stored_partner_manager_matches", AsyncMock(return_value=False))
     with pytest.raises(HTTPException) as exc:
         run(web.get_feed("g1", _FakeRequest(discord_id="42")))
     assert exc.value.status_code == 403
+
+
+def test_oauth_manageable_guild_session_grants_access(monkeypatch):
+    _allow(monkeypatch, allowed=False)
+    monkeypatch.setattr(web, "_stored_partner_manager_matches", AsyncMock(return_value=False))
+    monkeypatch.setattr(feed_billing, "get_guild_feed", AsyncMock(return_value={
+        "id": 1, "feed_channel_id": None, "status": "active",
+    }))
+    monkeypatch.setattr(feed_billing, "posts_used_today", AsyncMock(return_value=0))
+    result = run(web.get_feed("g1", _FakeRequest(discord_id="42", manageable_guild_ids=["g1"])))
+    assert result["posts_used_today"] == 0
 
 
 def test_get_feed_requires_setup_first(monkeypatch):
@@ -67,8 +82,7 @@ def test_get_feed_happy_path(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Guild listing only surfaces self-service guilds where the caller currently
-# passes the live permission check - never a static owner_discord_id match.
+# Guild listing accepts OAuth-proven guilds and still supports live checks.
 # ---------------------------------------------------------------------------
 
 
@@ -85,10 +99,22 @@ class _FakePool:
         return self._rows
 
 
+def _server_row(guild_id, name, plan="server_feed", status="active"):
+    return _FakeRow(
+        guild_id=guild_id,
+        name=name,
+        plan=plan,
+        access_level="paid_partner",
+        status=status,
+        subscription_status="active",
+        owner_discord_id=None,
+    )
+
+
 def test_list_manageable_guilds_filters_by_live_permission(monkeypatch):
     rows = [
-        _FakeRow(guild_id="g1", name="Guild One", plan="server_feed", status="active", subscription_status="active"),
-        _FakeRow(guild_id="g2", name="Guild Two", plan="server_feed_plus", status="paused", subscription_status="active"),
+        _server_row("g1", "Guild One"),
+        _server_row("g2", "Guild Two", plan="server_feed_plus", status="paused"),
     ]
     monkeypatch.setattr(web, "get_core_pool", AsyncMock(return_value=_FakePool(rows)))
 
@@ -98,6 +124,25 @@ def test_list_manageable_guilds_filters_by_live_permission(monkeypatch):
     monkeypatch.setattr(web, "user_has_manage_guild_live", fake_check)
     result = run(web.list_manageable_guilds(_FakeRequest(discord_id="42")))
     assert [g["guild_id"] for g in result["guilds"]] == ["g1"]
+    assert result["guild_oauth_verified"] is False
+
+
+def test_list_manageable_guilds_uses_oauth_guild_ids_without_live_lookup(monkeypatch):
+    rows = [
+        _server_row("g1", "Guild One"),
+        _server_row("g2", "Guild Two"),
+    ]
+    monkeypatch.setattr(web, "get_core_pool", AsyncMock(return_value=_FakePool(rows)))
+    live = AsyncMock(return_value=False)
+    monkeypatch.setattr(web, "user_has_manage_guild_live", live)
+
+    result = run(web.list_manageable_guilds(
+        _FakeRequest(discord_id="42", manageable_guild_ids=["g2"])
+    ))
+    assert [g["guild_id"] for g in result["guilds"]] == ["g2"]
+    assert result["guild_oauth_verified"] is True
+    # g2 was OAuth-proven, so only g1 needed the slower bot-side lookup.
+    assert live.await_count == 1
 
 
 # ---------------------------------------------------------------------------
@@ -132,8 +177,7 @@ def test_set_preferences_maps_feed_error_to_400(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Checkout link is refused once a subscription is already active - the web
-# page must not let someone start a second Stripe subscription for one guild.
+# Checkout link is refused once a subscription is already active.
 # ---------------------------------------------------------------------------
 
 
