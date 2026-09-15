@@ -59,6 +59,18 @@ MAX_PAGE_SIZE = 200
 # cutoff is visible and easy to move rather than a magic number in a query.
 PACE_HIGH_THRESHOLD = 85
 
+# FC26's confirmed launch calendar. Unlike GAME_CYCLE (app/services/
+# game_cycle.py), which is deliberately env-var-driven because it also has
+# to describe FC27's calendar before EA has announced it, FC26 already
+# happened - its dates are a historical fact, not a per-deployment config
+# value - so this endpoint hardcodes them rather than requiring every
+# deployment to set EAFC_WEB_APP_LAUNCH_DATE/EAFC_FULL_RELEASE_DATE (and
+# EAFC_GAME_YEAR=26) just to ask about a season that's already over.
+# GAME_CYCLE's own env vars still win when they happen to be configured for
+# game_year 26, and ?early_date=/?full_date= always wins over both.
+FC26_WEB_APP_LAUNCH_DATE = date(2026, 9, 19)
+FC26_FULL_RELEASE_DATE = date(2026, 9, 26)
+
 
 def _resolve_date(explicit: Optional[str], fallback: Optional[date], label: str) -> date:
     if explicit:
@@ -113,8 +125,11 @@ async def list_release_price_rises(
     """Ranked list of individual FC{game_year} cards by price change from
     early release to full release, plus a position/pace-tier breakdown of
     the same move for the "who/what archetype rose the most" question."""
-    early = _resolve_date(early_date, GAME_CYCLE.web_app_launch if GAME_CYCLE.game_year == game_year else None, "early")
-    full = _resolve_date(full_date, GAME_CYCLE.full_release if GAME_CYCLE.game_year == game_year else None, "full")
+    game_cycle_matches = GAME_CYCLE.game_year == game_year
+    early_fallback = GAME_CYCLE.web_app_launch if game_cycle_matches else (FC26_WEB_APP_LAUNCH_DATE if game_year == 26 else None)
+    full_fallback = GAME_CYCLE.full_release if game_cycle_matches else (FC26_FULL_RELEASE_DATE if game_year == 26 else None)
+    early = _resolve_date(early_date, early_fallback, "early")
+    full = _resolve_date(full_date, full_fallback, "full")
     if full <= early:
         raise HTTPException(400, f"full_date ({full}) must be after early_date ({early})")
 
