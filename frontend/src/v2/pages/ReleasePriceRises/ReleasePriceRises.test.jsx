@@ -8,8 +8,8 @@ vi.mock("../../api/releasePriceRises", () => ({ getReleasePriceRises: vi.fn() })
 
 const RESPONSE = {
   game_year: 26,
-  early_date: "2025-09-19",
-  full_date: "2025-09-26",
+  early_date: "2025-09-17",
+  full_date: "2025-09-24",
   include_uncertain: false,
   total: 72,
   page: 1,
@@ -63,7 +63,7 @@ describe("ReleasePriceRises", () => {
     render(<MemoryRouter><ReleasePriceRises /></MemoryRouter>);
 
     expect(await screen.findByText("Launch Movers")).toBeInTheDocument();
-    expect(screen.getByText("ST + 1k-5k + gold_rare")).toBeInTheDocument();
+    expect(screen.getByText("ST + 1k-5k + gold_rare")).toBeInTheDocument();\n    expect(screen.getByText("Day 1 to full release")).toBeInTheDocument();
     expect(screen.getByText("Best coin return")).toBeInTheDocument();
     expect(screen.getAllByText(/tax net|after tax/i).length).toBeGreaterThan(0);
     expect(screen.getByText("Budget")).toBeInTheDocument();
