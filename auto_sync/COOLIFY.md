@@ -59,6 +59,23 @@ values): `PLAYWRIGHT_HEADLESS`, `PLAYWRIGHT_TIMEOUT_MS`,
 `FUTGG_REFRESH_EXISTING`, `FUTGG_PLAYER_REQUEST_DELAY`,
 `FUTGG_PLAYER_CONCURRENCY`, `FUTGG_CIRCUIT_BREAKER_THRESHOLD`.
 
+### One-off FC27 card database pull
+
+Before FC27 prices and sales are live, use PlayerSync only. This pulls
+card/player metadata from FUT.GG's current FC27 catalogue pages and does
+not need PriceSync or SalesSync to be running:
+
+```sh
+FUTGG_GAME_YEAR=27 \
+FUTGG_LISTING_FULL_SCAN=true \
+FUTGG_REFRESH_EXISTING=true \
+python futgg_player_sync.py
+```
+
+`/players/new/` is only a launch/recent-card window, so the full pull must
+keep `FUTGG_LISTING_FULL_SCAN=true`; that walks both `/players/new/` and
+the main `/players/` catalogue.
+
 ### One-off GG Rating backfill
 
 After backend migration `068_futgg_gg_rating.sql` has run, use the
