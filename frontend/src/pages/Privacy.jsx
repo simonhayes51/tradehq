@@ -12,7 +12,7 @@ export default function Privacy() {
   return (
     <div className="legal-page">
       <h1>Privacy Policy</h1>
-      <p className="legal-updated">Last updated: 20 August 2026</p>
+      <p className="legal-updated">Last updated: 15 September 2026</p>
 
       <p>
         EAFC.Live is operated by <strong>EAFC.Live</strong>, of{" "}
@@ -23,11 +23,14 @@ export default function Privacy() {
 
       <h2>How you sign in</h2>
       <p>
-        EAFC.Live uses Discord to sign you in (OAuth, <code>identify</code> scope). We receive
-        and store: your Discord user ID, your Discord username, your Discord global/display
-        name, and your Discord avatar image URL. We do not receive your email address or your
-        Discord password through this process — Discord authenticates you, and we never see or
-        store a password.
+        EAFC.Live uses Discord to sign you in using the <code>identify</code> and <code>guilds</code> OAuth scopes.
+        We receive and store your Discord user ID, Discord username, Discord global/display name,
+        and Discord avatar image URL. Discord also provides the servers your account belongs to,
+        together with ownership and permission information. We use that information only to work
+        out which registered EAFC.Live Discord Server Feeds you are allowed to manage. We keep only
+        the IDs of matching registered servers in your signed login session, not your complete Discord
+        server list. We do not receive your email address or Discord password through this process -
+        Discord authenticates you, and we never see or store a password.
       </p>
 
       <h2>What you create in the app</h2>
@@ -45,14 +48,14 @@ export default function Privacy() {
       <p>
         If you use the AI Chat feature, the message you type is sent to OpenAI
         (model <code>gpt-5.6-luna</code>) to generate a reply. This only happens when you actively
-        use AI Chat — it does not apply to your general use of EAFC.Live. We do not keep a stored
+        use AI Chat - it does not apply to your general use of EAFC.Live. We do not keep a stored
         transcript of your AI Chat conversations in our own database.
       </p>
 
       <h2>Payments</h2>
       <p>
         Premium subscriptions are handled by Stripe. When you subscribe, Stripe collects your
-        payment details directly — EAFC.Live does not receive or store your card number. What we
+        payment details directly - EAFC.Live does not receive or store your card number. What we
         do store is your Stripe customer/subscription reference and your subscription status
         (active, cancelled, trial, etc.), so we can show you the correct plan and manage renewals.
       </p>
@@ -69,10 +72,10 @@ export default function Privacy() {
       <h2>How long we keep data</h2>
       <p>
         Your watchlist, alerts, trade history, portfolio and settings are kept for as long as
-        your account exists — there is currently no automatic time-based deletion of this data
+        your account exists - there is currently no automatic time-based deletion of this data
         while your account is active. If you subscribe to Premium, we keep a record of that
         subscription (via Stripe) for as long as reasonably necessary for accounting purposes,
-        even after you cancel or delete your account — see "Deleting your account" below. Deleting
+        even after you cancel or delete your account - see "Deleting your account" below. Deleting
         data from our live database does not guarantee instant removal from routine backups,
         which are retained for a limited period as part of normal database operation before being
         overwritten.
@@ -84,15 +87,15 @@ export default function Privacy() {
         your watchlist, alerts, trade history, portfolio and settings, and unlinks your Discord
         profile from EAFC.Live where that's possible. If you have ever had a Premium subscription,
         we keep a minimal billing record (not your trading data) rather than deleting it outright,
-        because we're required to be able to account for past payments — your profile display
+        because we're required to be able to account for past payments - your profile display
         information is still cleared in that case. This action cannot be undone.
       </p>
 
       <h2>Who we share data with</h2>
       <ul>
-        <li><strong>Discord</strong> — for signing you in.</li>
-        <li><strong>Stripe</strong> — for processing Premium payments.</li>
-        <li><strong>OpenAI</strong> — only for messages you send through AI Chat.</li>
+        <li><strong>Discord</strong> - for signing you in and checking which registered Discord servers you can manage.</li>
+        <li><strong>Stripe</strong> - for processing Premium payments.</li>
+        <li><strong>OpenAI</strong> - only for messages you send through AI Chat.</li>
       </ul>
       <p>We do not sell your data, and we do not share it with anyone else.</p>
 
