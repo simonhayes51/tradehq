@@ -29,6 +29,20 @@ between early and full release", never "full release caused X to rise".
 
 Ungated (no entitlement check) - read-only descriptive data, same
 precedent as futgg_market.py / investments.py's ungated surfaces.
+
+DATA QUALITY - chart-reconstructed prices can be wrong
+--------------------------------------------------------
+fc26_historical_daily_prices is reconstructed by pixel-measuring FUT.GG's
+price-history SVG chart (see the loader's own docstring), not read from a
+raw API - a bad Y-axis calibration produces a price that is off by a
+large factor, which then shows up here as a spectacular but fake % move.
+fc26_historical_extraction_runs records that same script's own confidence
+in each card's extraction (status, calibration_max_pct_err, tick_warnings
+- HIGH_CALIBRATION_ERR_PCT = 20.0 is that loader's own flag threshold).
+By default this endpoint EXCLUDES any card whose extraction run didn't
+succeed cleanly (status != 'success', calibration error above that same
+20% threshold, or any tick_warnings) - pass ?include_uncertain=true to
+see them anyway, e.g. for auditing the loader itself.
 """
 from __future__ import annotations
 
@@ -58,6 +72,11 @@ MAX_PAGE_SIZE = 200
 # not a value derived from this dataset - kept as a named constant so the
 # cutoff is visible and easy to move rather than a magic number in a query.
 PACE_HIGH_THRESHOLD = 85
+
+# Matches auto_sync/research_fc26_historical_loader.py's own flag
+# threshold for a chart extraction it doesn't fully trust - reusing the
+# same number rather than picking a second, unrelated one.
+HIGH_CALIBRATION_ERR_PCT = 20.0
 
 # FC26's confirmed launch calendar. Unlike GAME_CYCLE (app/services/
 # game_cycle.py), which is deliberately env-var-driven because it also has
@@ -115,7 +134,9 @@ async def list_release_price_rises(
     full_date: Optional[str] = Query(None, description="YYYY-MM-DD; defaults to the configured full-release date"),
     match_window_days: int = Query(MATCH_WINDOW_DAYS, ge=0, le=14),
     position: Optional[str] = Query(None, description="Filter to one primary_position, e.g. ST"),
-    min_early_price: Optional[int] = Query(None, ge=0),
+    min_early_price: Optional[int] = Query(None, ge=0, description="Drop cards priced below this at the early date - filters out cheap fodder whose tiny base inflates % change"),
+    max_early_price: Optional[int] = Query(None, ge=0),
+    include_uncertain: bool = Query(False, description="Include cards whose chart extraction was flagged low-confidence (see module docstring's DATA QUALITY note)"),
     sort_by: str = Query("pct_change", pattern="^(pct_change|abs_change|early_price|full_price|rating)$"),
     order: str = Query("desc", pattern="^(asc|desc)$"),
     page: int = Query(1, ge=1),
@@ -139,6 +160,16 @@ async def list_release_price_rises(
         if position:
             args.append(position.upper())
             card_where.append(f"p.primary_position = ${len(args)}")
+        if not include_uncertain:
+            # LEFT JOIN, not INNER: a card with no extraction_runs row at
+            # all (e.g. priced through a different path than the chart
+            # loader) is not thereby "low confidence" - only an explicit
+            # bad signal on the row that exists excludes it.
+            card_where.append(
+                "(r.card_id IS NULL OR (r.status = 'success' "
+                f"AND (r.calibration_max_pct_err IS NULL OR r.calibration_max_pct_err <= {HIGH_CALIBRATION_ERR_PCT}) "
+                "AND cardinality(r.tick_warnings) = 0))"
+            )
 
         players = await conn.fetch(
             f"""
@@ -146,6 +177,7 @@ async def list_release_price_rises(
                    p.primary_position, p.rarity, p.pace,
                    p.player_image_url, p.card_design_image_url
             FROM futgg_players p
+            LEFT JOIN fc26_historical_extraction_runs r ON r.card_id = p.source_card_id
             WHERE {' AND '.join(card_where)}
               AND EXISTS (SELECT 1 FROM fc26_historical_daily_prices h WHERE h.card_id = p.source_card_id)
             """,
@@ -163,6 +195,8 @@ async def list_release_price_rises(
         if not e or not f:
             continue
         if min_early_price is not None and e["price"] < min_early_price:
+            continue
+        if max_early_price is not None and e["price"] > max_early_price:
             continue
         abs_change = f["price"] - e["price"]
         pct_change = (abs_change / e["price"] * 100.0) if e["price"] else None
@@ -196,6 +230,7 @@ async def list_release_price_rises(
         "early_date": early.isoformat(),
         "full_date": full.isoformat(),
         "match_window_days": match_window_days,
+        "include_uncertain": include_uncertain,
         "total": total,
         "page": page,
         "page_size": page_size,

@@ -34,6 +34,7 @@ log = logging.getLogger("fc26_release_price_rises")
 
 MATCH_WINDOW_DAYS = 5
 PACE_HIGH_THRESHOLD = 85
+HIGH_CALIBRATION_ERR_PCT = 20.0
 
 # FC26's confirmed launch calendar - see release_price_rises.py's module
 # docstring for why this is hardcoded rather than env-var-only: FC26
@@ -52,6 +53,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--match-window-days", type=int, default=MATCH_WINDOW_DAYS)
     parser.add_argument("--position", default=None, help="e.g. ST, CB")
     parser.add_argument("--min-early-price", type=int, default=None)
+    parser.add_argument("--max-early-price", type=int, default=None)
+    parser.add_argument("--include-uncertain", action="store_true",
+                         help="Include cards whose chart extraction was flagged low-confidence "
+                              "(status != success, calibration error, or tick warnings) - "
+                              "excluded by default because these produce fake spectacular % moves")
     parser.add_argument("--top", type=int, default=30, help="Rows to print (0 = all)")
     return parser.parse_args()
 
@@ -126,12 +132,19 @@ async def main() -> int:
             if args.position:
                 query_args.append(args.position.upper())
                 card_where.append(f"p.primary_position = ${len(query_args)}")
+            if not args.include_uncertain:
+                card_where.append(
+                    "(r.card_id IS NULL OR (r.status = 'success' "
+                    f"AND (r.calibration_max_pct_err IS NULL OR r.calibration_max_pct_err <= {HIGH_CALIBRATION_ERR_PCT}) "
+                    "AND cardinality(r.tick_warnings) = 0))"
+                )
 
             players = await conn.fetch(
                 f"""
                 SELECT p.source_card_id, p.name, p.display_name, p.rating,
                        p.primary_position, p.rarity, p.pace
                 FROM futgg_players p
+                LEFT JOIN fc26_historical_extraction_runs r ON r.card_id = p.source_card_id
                 WHERE {' AND '.join(card_where)}
                   AND EXISTS (SELECT 1 FROM fc26_historical_daily_prices h WHERE h.card_id = p.source_card_id)
                 """,
@@ -150,6 +163,8 @@ async def main() -> int:
         if not e or not f:
             continue
         if args.min_early_price is not None and e["price"] < args.min_early_price:
+            continue
+        if args.max_early_price is not None and e["price"] > args.max_early_price:
             continue
         abs_change = f["price"] - e["price"]
         pct_change = (abs_change / e["price"] * 100.0) if e["price"] else None
