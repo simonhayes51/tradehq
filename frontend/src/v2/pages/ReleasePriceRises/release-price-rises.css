@@ -63,7 +63,43 @@
 .rpr-summary-line { margin: -8px 0 0; color: var(--v2-muted); font-size: 12.5px; }
 .rpr-trend-empty { color: var(--v2-dim); font-size: 12.5px; margin: 0; }
 
-.rpr-trends { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+/* ---- Trend chip strips (nation/league/rarity "top movers") ----------- */
+.rpr-chip-row {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+  scrollbar-width: thin;
+}
+.rpr-chip {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  width: 96px;
+  padding: 10px 8px;
+  border: 1px solid var(--v2-border);
+  border-radius: var(--v2-radius);
+  background: var(--v2-elevated);
+  text-align: center;
+}
+.rpr-chip-rank { font-family: var(--v2-font-mono); font-size: 10px; color: var(--v2-dim); }
+.rpr-chip img { width: 24px; height: 24px; object-fit: contain; border-radius: 3px; }
+.rpr-chip-label {
+  font-size: 11px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+.rpr-chip-pct { font-family: var(--v2-font-mono); font-weight: 800; font-size: 16px; }
+.rpr-chip-pct.positive { color: var(--v2-positive); }
+.rpr-chip-pct.negative { color: var(--v2-negative); }
+.rpr-chip-count { font-size: 9.5px; color: var(--v2-dim); }
+
+.rpr-trends { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
 @media (max-width: 700px) { .rpr-trends { grid-template-columns: 1fr; } }
 
 .rpr-trend-panel {
