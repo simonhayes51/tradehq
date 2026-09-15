@@ -7,6 +7,7 @@ Page simulating a paginated FUT.GG listing.
 """
 import asyncio
 import functools
+import importlib
 import os
 import re
 import sys
@@ -497,6 +498,67 @@ async def test_full_scan_uses_configured_partitions_and_dedupes(monkeypatch):
 
 
 @run_async
+async def test_default_full_scan_partitions_target_current_game_year(monkeypatch):
+    monkeypatch.setattr(mod, "FULL_SCAN", True)
+    monkeypatch.setattr(mod, "MAX_PAGES_FULL", 1)
+    monkeypatch.setattr(mod, "PLAYER_LIMIT", 0)
+    monkeypatch.setattr(mod, "IDLE_ROUNDS", 10)
+    monkeypatch.setattr(mod, "PAGE_DELAY", 0)
+    monkeypatch.setattr(
+        mod,
+        "FULL_SCAN_PARTITIONS",
+        mod.parse_partitions(mod.DEFAULT_FULL_SCAN_PARTITIONS),
+    )
+    hrefs_by_path = {
+        "/players/new/?page=1": [_card_href(1)],
+        "/players/?page=1": [_card_href(2)],
+    }
+    page = _FakeMultiPartitionPage(hrefs_by_path)
+
+    urls = await mod.collect_listing_urls(page)
+
+    assert page.goto_urls == [
+        "https://www.fut.gg/players/new/?page=1",
+        "https://www.fut.gg/players/?page=1",
+    ]
+    assert len(urls) == 2
+
+
+@run_async
+async def test_historical_game_year_adds_listing_prefix(monkeypatch):
+    monkeypatch.setenv("FUTGG_GAME_YEAR", "26")
+    monkeypatch.setenv("FUTGG_CURRENT_GAME_YEAR", "27")
+    historical = importlib.reload(mod)
+    monkeypatch.setattr(historical, "FULL_SCAN", True)
+    monkeypatch.setattr(historical, "MAX_PAGES_FULL", 1)
+    monkeypatch.setattr(historical, "PLAYER_LIMIT", 0)
+    monkeypatch.setattr(historical, "IDLE_ROUNDS", 10)
+    monkeypatch.setattr(historical, "PAGE_DELAY", 0)
+    monkeypatch.setattr(
+        historical,
+        "FULL_SCAN_PARTITIONS",
+        historical.parse_partitions(historical.DEFAULT_FULL_SCAN_PARTITIONS),
+    )
+    hrefs_by_path = {
+        "/26/players/new/?page=1": [_card_href(1)],
+        "/26/players/?page=1": [_card_href(2)],
+    }
+    page = _FakeMultiPartitionPage(hrefs_by_path)
+
+    try:
+        urls = await historical.collect_listing_urls(page)
+        assert page.goto_urls == [
+            "https://www.fut.gg/26/players/new/?page=1",
+            "https://www.fut.gg/26/players/?page=1",
+        ]
+        assert len(urls) == 2
+    finally:
+        monkeypatch.delenv("FUTGG_GAME_YEAR", raising=False)
+        monkeypatch.delenv("FUTGG_CURRENT_GAME_YEAR", raising=False)
+        importlib.reload(historical)
+
+
+@run_async
 async def test_daily_mode_only_touches_the_new_partition(monkeypatch):
     """Daily mode must not touch the catalogue-browse partition at all -
     it stays on the fast /players/new/ path even though FULL_SCAN_PARTITIONS
@@ -520,6 +582,29 @@ async def test_daily_mode_only_touches_the_new_partition(monkeypatch):
 
     assert page.goto_urls == ["https://www.fut.gg/players/new/?page=1"]
     assert len(urls) == 1
+
+
+@run_async
+async def test_existing_ids_are_scoped_to_selected_game_year():
+    class FakeConn:
+        def __init__(self):
+            self.args = None
+
+        async def fetch(self, query, *args):
+            self.args = args
+            assert "AND game_year = $2" in query
+            return [{"source_card_id": 1002}]
+
+    conn = FakeConn()
+    urls = [
+        "https://www.fut.gg/players/1-p/26-1001/",
+        "https://www.fut.gg/players/2-p/26-1002/",
+    ]
+
+    known = await mod.existing_ids(conn, urls, game_year=27)
+
+    assert known == {1002}
+    assert conn.args == ([1001, 1002], 27)
 
 
 @run_async
