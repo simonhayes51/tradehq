@@ -35,7 +35,7 @@
 #
 # HEADED CHROMIUM VIA XVFB (2026-08-04 headless-detection finding):
 # production diagnostics confirmed Cloudflare challenges
-# /api/fut/player-prices/26/<id>/?verify=... based on the browser being
+# /api/fut/player-prices/27/<id>/?verify=... based on the browser being
 # HEADLESS (leaked via navigator.userAgentData's own "HeadlessChrome" -
 # visible in this worker's own outbound analytics traffic - regardless of
 # the spoofed User-Agent header), not on which transport requests it -
