@@ -1,0 +1,91 @@
+/* src/v2/pages/ReleasePriceRises/release-price-rises.css */
+
+.rpr-page { display: flex; flex-direction: column; gap: 20px; padding: 24px; max-width: 1120px; margin: 0 auto; }
+
+.rpr-trends { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 700px) { .rpr-trends { grid-template-columns: 1fr; } }
+
+.rpr-trend-panel {
+  border: 1px solid var(--v2-border);
+  border-radius: var(--v2-radius);
+  background: var(--v2-card);
+  padding: 16px;
+}
+.rpr-trend-panel h3 {
+  margin: 0 0 12px;
+  font-size: 12px;
+  font-family: var(--v2-font-mono);
+  color: var(--v2-muted);
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.rpr-bars { display: flex; flex-direction: column; gap: 8px; }
+.rpr-bar-row {
+  display: grid;
+  grid-template-columns: 46px 1fr 56px 48px;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+}
+.rpr-bar-label { color: var(--v2-text); font-weight: 600; }
+.rpr-bar-track { height: 8px; border-radius: 999px; background: var(--v2-elevated); overflow: hidden; }
+.rpr-bar-fill { height: 100%; border-radius: 999px; }
+.rpr-bar-fill.positive { background: var(--v2-positive); }
+.rpr-bar-fill.negative { background: var(--v2-negative); }
+.rpr-bar-value { text-align: right; font-family: var(--v2-font-mono); color: var(--v2-text); }
+.rpr-bar-count { color: var(--v2-dim); font-size: 11px; }
+
+.rpr-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+.rpr-search { flex: 1 1 220px; min-width: 180px; }
+.rpr-controls select,
+.rpr-order-toggle {
+  height: 42px;
+  padding: 0 12px;
+  border: 1px solid var(--v2-border);
+  border-radius: var(--v2-radius);
+  background: var(--v2-card);
+  color: var(--v2-text);
+  font-size: 13px;
+  font-weight: 600;
+}
+.rpr-order-toggle { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; white-space: nowrap; }
+.rpr-order-toggle:hover { border-color: var(--v2-accent); color: var(--v2-accent); }
+
+.rpr-table-wrap { overflow-x: auto; border: 1px solid var(--v2-border); border-radius: var(--v2-radius); }
+.rpr-table { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 640px; }
+.rpr-table thead th {
+  text-align: left;
+  padding: 10px 12px;
+  font-family: var(--v2-font-mono);
+  font-size: 11px;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--v2-muted);
+  background: var(--v2-elevated);
+  border-bottom: 1px solid var(--v2-border);
+}
+.rpr-table tbody td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--v2-border);
+  vertical-align: middle;
+}
+.rpr-table tbody tr:last-child td { border-bottom: none; }
+.rpr-table tbody tr:hover { background: var(--v2-elevated); }
+
+.rpr-card-cell { display: flex; align-items: center; }
+.rpr-card-cell a { display: flex; align-items: center; gap: 10px; color: var(--v2-text); text-decoration: none; }
+.rpr-card-cell img { width: 32px; height: 32px; object-fit: contain; flex: 0 0 auto; }
+.rpr-card-cell strong { display: block; font-weight: 700; }
+.rpr-card-cell small { color: var(--v2-muted); font-size: 11px; }
+.rpr-rank { width: 20px; flex: 0 0 auto; color: var(--v2-dim); font-family: var(--v2-font-mono); font-size: 12px; }
+
+.rpr-change { font-weight: 700; }
+.rpr-change small { display: block; font-weight: 600; font-size: 11px; color: var(--v2-muted); }
+.rpr-change.positive { color: var(--v2-positive); }
+.rpr-change.negative { color: var(--v2-negative); }
