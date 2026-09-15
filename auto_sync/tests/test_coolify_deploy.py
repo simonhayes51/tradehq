@@ -70,6 +70,12 @@ def test_futgg_player_sync_is_actually_one_shot():
     assert "asyncio.sleep" not in main_block
 
 
+def test_futgg_player_sync_uses_game_year_card_identity():
+    text = _read(AUTO_SYNC_DIR / "futgg_player_sync.py")
+    assert "PRIMARY KEY (game_year, source_card_id)" in text
+    assert "ON CONFLICT (game_year, source_card_id)" in text
+
+
 # ---------------------------------------------------------------------
 # Dockerfile.price
 # ---------------------------------------------------------------------
