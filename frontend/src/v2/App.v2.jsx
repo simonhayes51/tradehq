@@ -9,6 +9,7 @@ import AdminSbcImports from "./pages/AdminSbcImports/AdminSbcImports";
 import Admin from "./pages/Admin/Admin";
 import ClubRoute from "./pages/Club/ClubRoute";
 import Players from "./pages/Players/Players";
+import ReleasePriceRises from "./pages/ReleasePriceRises/ReleasePriceRises";
 import Watchlist from "./pages/Watchlist/Watchlist";
 import TradeFinder from "./pages/TradeFinder/TradeFinder";
 import Opportunities from "./pages/Opportunities/Opportunities";
@@ -58,6 +59,10 @@ export default function V2App() {
       <Route path="trade-finder" element={<ShellLayout><TradeFinder /></ShellLayout>} />
       <Route path="players" element={<ShellLayout><Players /></ShellLayout>} />
       <Route path="players/:cardId" element={<ShellLayout><PlayerPage /></ShellLayout>} />
+      {/* FC26 launch-to-full-release price leaderboard - GET
+          /api/v2/release-price-rises. Ungated, read-only, same as
+          /players - no PrivateRoute wrapper needed. */}
+      <Route path="release-price-rises" element={<ShellLayout><ReleasePriceRises /></ShellLayout>} />
       <Route path="market" element={<Navigate to="/trade-finder" replace />} />
       <Route path="chat" element={<ShellLayout><Chat /></ShellLayout>} />
       <Route path="watchlist" element={<ShellLayout><Watchlist /></ShellLayout>} />

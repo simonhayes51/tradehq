@@ -23,6 +23,7 @@ from app.routers.v2.market_transitions import router as market_transitions_route
 from app.routers.v2.calibration import router as calibration_router
 from app.routers.v2.sales_shadow import router as sales_shadow_router
 from app.routers.v2.sbc_reinforcement import router as sbc_reinforcement_router
+from app.routers.v2.release_price_rises import router as release_price_rises_router
 
 router = APIRouter(prefix="/api/v2")
 router.include_router(health_router)
@@ -80,3 +81,8 @@ router.include_router(sales_shadow_router)
 # Admin-only SBC resource-demand market reinforcement research. This remains
 # shadow-only: it does not write market_status or change priority weights.
 router.include_router(sbc_reinforcement_router)
+# Per-card price-rise leaderboard from early release to full release (FC26
+# by default - see app/services/game_cycle.py). Read-only, ungated, purely
+# additive - see that router's own docstring for how it differs from
+# market_event_study.py's cohort-median event study.
+router.include_router(release_price_rises_router)
