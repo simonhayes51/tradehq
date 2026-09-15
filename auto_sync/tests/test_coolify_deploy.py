@@ -45,6 +45,11 @@ def test_dockerfile_player_uses_playwright_base():
     assert "playwright/python" in text
 
 
+def test_dockerfile_player_defaults_to_fc27():
+    text = _read(AUTO_SYNC_DIR / "Dockerfile.player")
+    assert "FUTGG_GAME_YEAR=27" in text
+
+
 def test_dockerfile_player_exposes_no_port():
     text = _read(AUTO_SYNC_DIR / "Dockerfile.player")
     assert "EXPOSE" not in text
@@ -79,6 +84,11 @@ def test_dockerfile_price_runs_bulk_price_sync_not_the_obsolete_per_card_scraper
 def test_dockerfile_price_sets_futgg_bulk_apply():
     text = _read(AUTO_SYNC_DIR / "Dockerfile.price")
     assert "FUTGG_BULK_APPLY=true" in text
+
+
+def test_dockerfile_price_defaults_to_fc27():
+    text = _read(AUTO_SYNC_DIR / "Dockerfile.price")
+    assert "FUTGG_GAME_YEAR=27" in text
 
 
 def test_dockerfile_price_uses_playwright_base():
@@ -226,6 +236,11 @@ def test_dockerfile_sales_defaults_to_headed_chromium_via_xvfb():
     assert "ENV PLAYWRIGHT_HEADLESS=false" in text
     assert "ENV DISPLAY=:99" in text
     assert "Xvfb" in text
+
+
+def test_dockerfile_sales_defaults_to_fc27():
+    text = _read(AUTO_SYNC_DIR / "Dockerfile.sales")
+    assert "FUTGG_GAME_YEAR=27" in text
 
 
 def test_docker_entrypoint_sales_is_executable():
