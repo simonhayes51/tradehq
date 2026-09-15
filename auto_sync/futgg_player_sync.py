@@ -136,6 +136,15 @@ PLAYER_LIMIT = max(0, int(os.getenv("FUTGG_PLAYER_LIMIT", "0")))
 # listing, so a handful of pages is enough) and a large one, applied per
 # partition, for an occasional full-catalogue sync.
 FULL_SCAN = os.getenv("FUTGG_LISTING_FULL_SCAN", "false").strip().lower() in {"1", "true", "yes", "on"}
+CONFIGURATION_ERROR = (
+    "FUTGG_BACKFILL_RELEASE_METADATA=true cannot be combined with "
+    "FUTGG_LISTING_FULL_SCAN=true. Backfill mode reads existing DB rows "
+    "missing release metadata; full-scan mode crawls FUT.GG listing pages "
+    "for new card data. For the FC27 card pull, unset "
+    "FUTGG_BACKFILL_RELEASE_METADATA and FUTGG_BACKFILL_GAME_YEAR."
+    if BACKFILL_RELEASE_METADATA and FULL_SCAN
+    else ""
+)
 MAX_PAGES_DAILY = max(1, int(os.getenv("FUTGG_LISTING_MAX_PAGES", "5")))
 MAX_PAGES_FULL = max(1, int(os.getenv("FUTGG_LISTING_MAX_PAGES_FULL", "400")))
 MAX_PAGES = MAX_PAGES_FULL if FULL_SCAN else MAX_PAGES_DAILY
@@ -1157,6 +1166,14 @@ async def _fetch_worker(
 
 
 async def crawl_once() -> None:
+    mode = "backfill_release_metadata" if BACKFILL_RELEASE_METADATA else ("full_scan" if FULL_SCAN else "daily_new")
+    log.info(
+        "crawl_once() starting mode=%s game_year=%s backfill_game_year=%s full_scan=%s refresh_existing=%s",
+        mode, GAME_YEAR, BACKFILL_GAME_YEAR or "-", FULL_SCAN, REFRESH_EXISTING,
+    )
+    if CONFIGURATION_ERROR:
+        raise RuntimeError(CONFIGURATION_ERROR)
+
     # Retried: this is the worker's first statement, and an unguarded
     # connect here turned a one-second TLS blip into a dead worker.
     lock_conn = await connect_with_retry(DATABASE_URL)
