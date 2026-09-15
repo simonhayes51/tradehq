@@ -27,11 +27,11 @@ Legacy `DISCORD_SERVER_ID` and `DISCORD_PREMIUM_ROLE_ID` remain fallback aliases
 ## Discord Developer Portal
 
 1. Open the existing EAFC Live application; do not create a second application or identity.
-2. In **OAuth2**, retain only the user login scope `identify`. Do not add `email`, `guilds`, or `guilds.join`.
+2. Dashboard OAuth login uses the standard `identify` and `guilds` scopes. Do not add `email` or `guilds.join`. The `guilds` scope lets EAFC.Live see the signed-in user's server IDs plus their guild-level permission bitfield so the Server Feed page can recognise guild owners, Administrators and users with Manage Server. The app keeps only matching EAFC.Live-registered guild IDs in the signed login session, not the user's complete server list.
 3. Add the exact production `DISCORD_REDIRECT_URI` under OAuth2 Redirects. Keep any genuine local/staging callback separately.
 4. In **Bot**, reset/copy the bot token once and place it only in the Coolify backend secret.
-5. Privileged Gateway Intents: leave Presence and Message Content off. This integration does not connect to the Gateway or list guild members, so Server Members Intent is not required.
-6. Install the existing bot to the EAFC Live server with the `bot` install scope. No slash-command scope is needed at launch.
+5. Privileged Gateway Intents: leave Server Members, Presence and Message Content off. The Server Feed web permission path uses standard OAuth `guilds` data and the existing single-member REST fallback; it does not require a privileged Gateway intent.
+6. Install the existing bot to the EAFC Live server with the `bot` install scope. No additional privileged Gateway intent is required for Server Feed web management.
 7. Grant the bot role `Manage Roles`. Do not grant Administrator, Manage Server, Manage Channels, Manage Webhooks, Manage Messages, Kick, Ban, Mention Everyone, or DM-related capabilities.
 
 ## Discord server
