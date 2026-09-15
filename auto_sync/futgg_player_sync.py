@@ -17,7 +17,9 @@ Two discovery modes:
   - Full scan (FUTGG_LISTING_FULL_SCAN=true): one or more partitions (see
     FUTGG_FULL_SCAN_PARTITIONS below), each capped at
     FUTGG_LISTING_MAX_PAGES_FULL pages, for an occasional full-catalogue
-    reconciliation.
+    reconciliation. In this mode page 1 is canonicalised to FUT.GG's
+    public URL shape (`/players/` or `/players/new/`); page 2+ uses
+    `?page=N`.
 
     IMPORTANT: /players/new/ is a RECENCY WINDOW, not the whole catalogue.
     Confirmed live 2026-08: a full-scan run walked every page of
@@ -89,7 +91,7 @@ import sys
 from dataclasses import asdict, dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any, Awaitable, Callable
-from urllib.parse import urljoin, urlparse
+from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 
 import asyncpg
 from bs4 import BeautifulSoup, Tag
@@ -632,6 +634,23 @@ async def _read_card_hrefs(page) -> dict[str, ListingCardMetadata]:
     return matched
 
 
+
+def _canonical_first_listing_url(url: str) -> str:
+    """Use FUT.GG's canonical first listing page instead of `?page=1`.
+
+    Live FC27 pages are exposed as `/players/` and `/players/new/`. The
+    `?page=1` form can behave differently behind Cloudflare/client
+    routing, while page 2+ still needs the explicit query parameter.
+    """
+    parsed = urlparse(url)
+    query = [
+        (key, value)
+        for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+        if not (key == "page" and value == "1")
+    ]
+    return urlunparse(parsed._replace(query=urlencode(query)))
+
+
 async def _paginate_listing(
     page,
     url_template: str,
@@ -639,11 +658,14 @@ async def _paginate_listing(
     partition_label: str,
     *,
     start_page: int = 1,
+    canonical_first_page: bool = False,
     page_callback: Callable[[int, dict[str, ListingCardMetadata]], Awaitable[None]] | None = None,
 ) -> dict[str, ListingCardMetadata]:
     """Paginates a single FUT.GG listing partition (?page=1, ?page=2, ...
     against url_template, a path containing a literal '{page}'
     placeholder) - no window.scrollTo() or scroll-settle waits anywhere.
+    Full-scan callers may canonicalise page 1 to `/players/` instead of
+    `/players/?page=1`, matching FUT.GG's public URL shape.
     Each page is a direct navigation; max_pages caps how many pages are
     visited, and IDLE_ROUNDS consecutive pages with zero new cards stops
     this partition early regardless of the cap, since that's the real
@@ -661,6 +683,8 @@ async def _paginate_listing(
 
     for page_number in range(start_page, start_page + max_pages):
         listing_url = f"{BASE_URL}{url_template.format(page=page_number, game_year=GAME_YEAR, game_prefix=GAME_PREFIX)}"
+        if canonical_first_page and page_number == 1:
+            listing_url = _canonical_first_listing_url(listing_url)
         response = await page.goto(listing_url, wait_until="domcontentloaded", timeout=TIMEOUT_MS)
         status = response.status if response else 0
         if status != 200:
@@ -788,7 +812,9 @@ async def collect_listing_urls(page) -> dict[str, ListingCardMetadata]:
     partition_failures: list[str] = []
     for name, template in FULL_SCAN_PARTITIONS:
         try:
-            partition_urls = await _paginate_listing(page, template, MAX_PAGES_FULL, name)
+            partition_urls = await _paginate_listing(
+                page, template, MAX_PAGES_FULL, name, canonical_first_page=True,
+            )
         except Exception as exc:
             partition_failures.append(f"{name}: {exc}")
             log.warning(
