@@ -67,21 +67,22 @@ main `/players/` catalogue and never opens card detail pages. Run one
 page first:
 
 ```sh
-python backfill_futgg_gg_rating.py --game-year 26 --start-page 1 --max-pages 1
+python backfill_futgg_gg_rating.py --game-year 27 --start-page 1 --max-pages 1
 ```
 
 Check `futgg_players.gg_rating` and the logged found/matched/updated
 counts, then resume from the durable database checkpoint:
 
 ```sh
-python backfill_futgg_gg_rating.py --game-year 26 --max-pages 400
+python backfill_futgg_gg_rating.py --game-year 27 --max-pages 400
 ```
 
-`FUTGG_GAME_YEAR` remains the default game-year setting. `--game-year`
-is the explicit historical override and does not change production cycle
-state. `FUTGG_LISTING_PAGE_DELAY`, stabilization, timeout, headless, and
-idle-round settings are shared with PlayerSync. The advisory lock prevents
-this job and the normal PlayerSync task from crawling concurrently.
+`FUTGG_GAME_YEAR` is the production cycle setting and now defaults to
+`27`. `--game-year` is the explicit historical override and does not
+change production cycle state. `FUTGG_LISTING_PAGE_DELAY`, stabilization,
+timeout, headless, and idle-round settings are shared with PlayerSync.
+The advisory lock prevents this job and the normal PlayerSync task from
+crawling concurrently.
 
 ---
 
@@ -103,6 +104,9 @@ this job and the normal PlayerSync task from crawling concurrently.
 
 **Required env vars:**
 - `DATABASE_URL` - required, no default.
+- `FUTGG_GAME_YEAR` - **set to `27`** for the current FC27 cycle.
+  Already baked into `Dockerfile.price` as `ENV FUTGG_GAME_YEAR=27`;
+  override only for an intentional historical backfill.
 - `FUTGG_BULK_APPLY` - **set to `true`** to actually write prices.
   Already baked into `Dockerfile.price` as `ENV FUTGG_BULK_APPLY=true`
   (matching the script's own default), so you do not need to set this in
@@ -133,13 +137,11 @@ same cycle rather than waiting for the next scheduled interval.
 - `FUTGG_DISCOVER_URL` - **strongly recommended.** A stable,
   operator-maintained "known good" FUT.GG player URL to fall back to.
   Not set by default (never hardcoded into the image or the script) - set
-  it in Coolify. Current confirmed-working example:
-  `https://www.fut.gg/players/245037-eric-garcia/26-84131117/` (Eric
-  Garcia) - this is just today's example value, not a permanent constant;
-  if it ever stops working, replace it with any other current, real
-  FUT.GG player URL and redeploy/restart. Without this set, automatic
-  recovery cannot do anything - the worker logs that clearly every time
-  capture fails, rather than silently skipping it.
+  it in Coolify. Use a current FC27 FUT.GG player URL for the live cycle
+  (or a matching historical URL only when `FUTGG_GAME_YEAR` is deliberately
+  set to that older cycle). Without this set, automatic recovery cannot
+  do anything - the worker logs that clearly every time capture fails,
+  rather than silently skipping it.
 - `FUTGG_DISCOVERY_ENABLED` - default `true`. Set to `false` to restore
   the old behaviour (fail every cycle until someone notices and
   intervenes by hand).
@@ -190,7 +192,7 @@ FUT.GG's price data is served - see its own module docstring).
 
 Production diagnostics on a real deployed instance confirmed the actual
 root cause of the Cloudflare 403: it is **not** about which transport
-requests `/api/fut/player-prices/26/<id>/?verify=...` (the `page_capture`
+requests `/api/fut/player-prices/27/<id>/?verify=...` (the `page_capture`
 fallback above was built on that premise and it turned out to be wrong) -
 a `page_capture` diagnostic run got challenged identically to
 `signed_fetch`, on a fully organic page navigation. What differed was
@@ -228,7 +230,7 @@ not an assumption carried over from FUTBIN's case.
 
 **Optional tuning env vars** (all have production-safe defaults - see
 `futgg_sales_sync.py`'s own top-of-file constants for current values):
-`FUTGG_GAME_YEAR` (default `26`), `FUTGG_SALES_PLATFORM` (default `ps5`),
+`FUTGG_GAME_YEAR` (default `27`), `FUTGG_SALES_PLATFORM` (default `ps5`),
 `PLAYWRIGHT_HEADLESS` (default `false` - see "Headed Chromium via Xvfb"
 above; do not set this to `true`), `PLAYWRIGHT_TIMEOUT_MS` (default
 `45000`), `FUTGG_SALES_BATCH_SIZE` (default `8`), `FUTGG_SALES_BATCH_DELAY`
@@ -340,7 +342,7 @@ values will differ):
 ... WARNING ========================================================================
 ... WARNING FUTGG_SALES_DIAGNOSTIC_CARD_ID=84131117 - single-card diagnostic mode, transport=signed_fetch apply=False
 ... WARNING ========================================================================
-... INFO DIAGNOSTIC: card=84131117 name='Eric Garcia' rating=84 next_sales_due_at=None (never_read=True) source_url=https://www.fut.gg/players/84131117-eric-garcia/26-84131117/
+... INFO DIAGNOSTIC: card=84131117 name='Example Player' rating=84 next_sales_due_at=None (never_read=True) source_url=https://www.fut.gg/players/...
 ... INFO DIAGNOSTIC: anchor page loaded: https://www.fut.gg/players/...
 ... INFO DIAGNOSTIC: card=84131117 SUCCESS: 12 completed auction(s) currentPrice=51000 signStatus=200 dataStatus=200 dataContentType='application/json; charset=utf-8' expiresIn=120 signedUrlAbsolute=False signedUrlOrigin='https://www.fut.gg' sameOriginAsPage=True hasVerifyParam=True
 ... INFO DIAGNOSTIC: would-apply summary: ok=1 failed=0 sales_seen=12 (FUTGG_SALES_APPLY=False - NOT written - dry run)
@@ -355,8 +357,8 @@ challenged on):
 ... WARNING ========================================================================
 ... WARNING FUTGG_SALES_DIAGNOSTIC_CARD_ID=84131117 - single-card diagnostic mode, transport=page_capture apply=False
 ... WARNING ========================================================================
-... INFO DIAGNOSTIC: card=84131117 name='Eric Garcia' rating=84 next_sales_due_at=None (never_read=True) source_url=https://www.fut.gg/players/84131117-eric-garcia/26-84131117/
-... INFO DIAGNOSTIC: navigating to card's own source_url: https://www.fut.gg/players/84131117-eric-garcia/26-84131117/
+... INFO DIAGNOSTIC: card=84131117 name='Example Player' rating=84 next_sales_due_at=None (never_read=True) source_url=https://www.fut.gg/players/...
+... INFO DIAGNOSTIC: navigating to card's own source_url: https://www.fut.gg/players/...
 ... INFO DIAGNOSTIC: card=84131117 SUCCESS [page_capture]: 12 completed auction(s) currentPrice=51000 dataStatus=200 dataContentType='application/json; charset=utf-8' elapsed=2.84s (cloudflare_challenged=False)
 ... INFO DIAGNOSTIC: would-apply summary: ok=1 failed=0 sales_seen=12 (FUTGG_SALES_APPLY=False - NOT written - dry run)
 ... WARNING ========================================================================
