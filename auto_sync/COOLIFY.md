@@ -52,7 +52,9 @@ deploying is just "pick the right Dockerfile" (see each resource's
 
 **Optional tuning env vars** (all have production-safe defaults - see
 `futgg_player_sync.py`'s module docstring for the full list and current
-values): `PLAYWRIGHT_HEADLESS`, `PLAYWRIGHT_TIMEOUT_MS`,
+values): `PLAYWRIGHT_HEADLESS` (default `false` in `Dockerfile.player` -
+headed Chromium via Xvfb, do not override to `true` while FUT.GG listing
+pages are returning 403s), `PLAYWRIGHT_TIMEOUT_MS`,
 `FUTGG_PLAYER_LIMIT`, `FUTGG_LISTING_FULL_SCAN`,
 `FUTGG_LISTING_MAX_PAGES`, `FUTGG_LISTING_MAX_PAGES_FULL`,
 `FUTGG_LISTING_IDLE_ROUNDS`, `FUTGG_LISTING_PAGE_DELAY`,
@@ -83,6 +85,10 @@ PlayerSync treats a failed partition as a warning and continues to the
 remaining partition(s). A warning for `partition=new` is acceptable if
 `partition=catalogue` then discovers cards. A failure saying all
 full-scan partitions failed means the worker did not get any card data.
+If the catalogue partition returns HTTP 403, rebuild/redeploy
+`Dockerfile.player`; it now runs headed Chromium through
+`docker-entrypoint-player.sh` for the same headless-browser challenge
+class already fixed in SalesSync.
 
 Do not leave `FUTGG_BACKFILL_RELEASE_METADATA=true` or
 `FUTGG_BACKFILL_GAME_YEAR=26` on this run. Backfill mode reads existing
