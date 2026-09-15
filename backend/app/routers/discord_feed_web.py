@@ -6,25 +6,25 @@ settings page. This is a convenience surface, not a replacement - every
 setting here is also reachable via the /feed Discord command group
 (discord_interactions.py), and both drive the same feed configuration.
 
-Access control: a logged-in dashboard user (request.session["discord_id"])
-may manage a guild's feed only if Discord's own API says, RIGHT NOW, that
-they have MANAGE_GUILD or ADMINISTRATOR in that guild (or are its owner) -
-see discord_permissions.user_has_manage_guild_live(). This is re-checked
-on every request rather than trusted from a stored owner_discord_id,
-since roles and ownership can change after /feed setup ran.
+Access control: a logged-in dashboard user may manage a guild's feed when
+Discord currently reports MANAGE_GUILD / ADMINISTRATOR / guild ownership.
+For EAFC.Live admin-granted Partner/Official feeds, the Discord account that
+originally set up/owns that feed (discord_servers.owner_discord_id) is also
+accepted as a fallback. This avoids locking a legitimate partner out of the
+web settings page when Discord's live member/role lookup cannot resolve.
 """
 
 import logging
 from typing import Any, Optional
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from app.db import get_core_pool
 from app.services import discord_feed_billing as feed_billing
 from app.services.discord_integration import DiscordClient
 from app.services.discord_permissions import user_has_manage_guild_live
-from app.services.discord_trading_feed import ServerRecord, send_test_post, server_record_from_feed
+from app.services.discord_trading_feed import send_test_post, server_record_from_feed
 
 log = logging.getLogger("discord_feed_web")
 
@@ -40,12 +40,44 @@ def _session_discord_id(request: Request) -> str:
     return str(discord_id)
 
 
+async def _stored_partner_manager_matches(guild_id: str, discord_id: str) -> bool:
+    """Fallback only for admin-managed Partner/Official feeds.
+
+    owner_discord_id is written from the verified Discord interaction that
+    created/set up the feed, so it is safe to use as the designated manager
+    for an admin-granted feed. Self-service paid feeds continue to rely on
+    the live Discord permission check.
+    """
+    try:
+        pool = await get_core_pool()
+        row = await pool.fetchrow(
+            """
+            SELECT owner_discord_id, access_level
+            FROM discord_servers
+            WHERE guild_id=$1
+            """,
+            str(guild_id),
+        )
+    except Exception:
+        log.exception("Could not resolve stored Discord feed manager for guild %s", guild_id)
+        return False
+
+    if not row:
+        return False
+    if row["access_level"] not in ("paid_partner", "official"):
+        return False
+    return bool(row["owner_discord_id"]) and str(row["owner_discord_id"]) == str(discord_id)
+
+
+async def _user_can_manage_guild(client: DiscordClient, guild_id: str, discord_id: str) -> bool:
+    if await user_has_manage_guild_live(client, guild_id, discord_id):
+        return True
+    return await _stored_partner_manager_matches(guild_id, discord_id)
+
+
 async def _require_guild_access(request: Request, guild_id: str, client: DiscordClient) -> str:
-    """Returns the caller's Discord user id once verified, or raises 403.
-    Separate from _session_discord_id() so callers that need the id for
-    audit logging (admin_id=...) don't do the permission REST calls twice."""
     discord_id = _session_discord_id(request)
-    if not await user_has_manage_guild_live(client, guild_id, discord_id):
+    if not await _user_can_manage_guild(client, guild_id, discord_id):
         raise HTTPException(status_code=403, detail="You need Manage Server in that Discord server to manage its feed.")
     return discord_id
 
@@ -61,15 +93,17 @@ async def _get_feed_or_404(guild_id: str) -> dict[str, Any]:
 async def list_manageable_guilds(request: Request):
     """Return every configured Server Feed the caller can manage.
 
-    Includes both self-service paid feeds and EAFC.Live admin-granted
-    Partner/Official feeds. Discord permissions are still checked live,
-    so simply knowing a guild id or having the bot present is not enough.
+    Includes self-service paid feeds and EAFC.Live admin-granted
+    Partner/Official feeds. Partner/Official feeds may use their stored
+    owner/setup Discord account as a fallback when the live permission
+    lookup cannot resolve.
     """
     discord_id = _session_discord_id(request)
     pool = await get_core_pool()
     rows = await pool.fetch(
         """
-        SELECT guild_id, name, plan, access_level, status, subscription_status
+        SELECT guild_id, name, plan, access_level, status,
+               subscription_status, owner_discord_id
         FROM discord_servers
         WHERE plan IS NOT NULL
            OR access_level IN ('paid_partner', 'official')
@@ -79,7 +113,13 @@ async def list_manageable_guilds(request: Request):
     client = DiscordClient()
     manageable = []
     for row in rows:
-        if await user_has_manage_guild_live(client, row["guild_id"], discord_id):
+        live_access = await user_has_manage_guild_live(client, row["guild_id"], discord_id)
+        stored_partner_access = (
+            row["access_level"] in ("paid_partner", "official")
+            and bool(row["owner_discord_id"])
+            and str(row["owner_discord_id"]) == str(discord_id)
+        )
+        if live_access or stored_partner_access:
             manageable.append({
                 "guild_id": row["guild_id"],
                 "name": row["name"],
@@ -139,8 +179,6 @@ async def set_channel(guild_id: str, request: Request, body: SetChannelBody):
 
 
 class SetSellChannelBody(BaseModel):
-    # None (the JSON field omitted, or explicit null) clears it - result
-    # posts go back to the main feed channel.
     channel_id: Optional[str] = None
 
 
