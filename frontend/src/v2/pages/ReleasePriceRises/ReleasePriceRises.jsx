@@ -253,7 +253,7 @@ function TrendChips({ items }) {
       {items.map((item, i) => (
         <div className="rpr-chip" key={item.label}>
           <span className="rpr-chip-rank">#{i + 1}</span>
-          {item.image ? <img src={item.image} alt="" /> : null}
+          <ChipImage src={item.image} alt="" />
           <span className="rpr-chip-label">{item.label}</span>
           <span className={`rpr-chip-pct ${Number(item.value) < 0 ? "negative" : "positive"}`}>
             {item.value == null ? "—" : `${item.value > 0 ? "+" : ""}${item.value}%`}
@@ -263,6 +263,17 @@ function TrendChips({ items }) {
       ))}
     </div>
   );
+}
+
+// Nation/league flag/crest art has no R2 mirror the way card art does
+// (see release_price_rises.py's image_url comment) - it's FUT.GG's own
+// URL, which sometimes fails to load cross-origin. Falls back to a small
+// dot instead of a broken-image glyph rather than nothing at all, so a
+// row without art still lines up with the ones that have it.
+function ChipImage({ src, alt }) {
+  const [failed, setFailed] = useState(false);
+  if (!src || failed) return <span className="rpr-chip-noimg" aria-hidden="true" />;
+  return <img src={src} alt={alt} onError={() => setFailed(true)} />;
 }
 
 function TrendBars({ items }) {
