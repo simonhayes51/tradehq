@@ -193,14 +193,24 @@ function fmtDate(iso) {
 }
 
 function CardArt({ src, alt, className }) {
-  if (src) return <img src={src} alt={alt} className={className} />;
+  const [failed, setFailed] = useState(false);
+  if (src && !failed) return <img src={src} alt={alt} className={className} onError={() => setFailed(true)} />;
   return <div className={`${className} rpr-noimg`}><Shirt size={18} /></div>;
 }
 
+// Position rarely has more than a dozen groups, but at a glance nobody
+// needs to read all of them - top 6 keeps the panel skimmable instead of
+// a wall of near-identical 0% bars for positions nothing interesting
+// happened to.
+const MAX_POSITION_ROWS = 6;
+
 function Trends({ trends }) {
-  const byPosition = trends?.by_position || [];
+  const byPosition = (trends?.by_position || []).slice(0, MAX_POSITION_ROWS);
   const byPace = trends?.by_pace_tier || [];
-  if (!byPosition.length && !byPace.length) return null;
+  const byNation = trends?.by_nation || [];
+  const byLeague = trends?.by_league || [];
+  const byRarity = trends?.by_rarity || [];
+  if (![byPosition, byPace, byNation, byLeague, byRarity].some((g) => g.length)) return null;
   return (
     <section className="rpr-trends">
       <div className="rpr-trend-panel">
@@ -211,7 +221,47 @@ function Trends({ trends }) {
         <h3>Pace vs the rest</h3>
         <TrendBars items={byPace.map((r) => ({ label: r.label, value: r.median_pct_change, count: r.card_count }))} />
       </div>
+      {byRarity.length ? (
+        <div className="rpr-trend-panel">
+          <h3>Best card type to have bought early</h3>
+          <TrendChips items={byRarity.map((r) => ({ label: r.rarity, value: r.median_pct_change, count: r.card_count }))} />
+        </div>
+      ) : null}
+      {byNation.length ? (
+        <div className="rpr-trend-panel">
+          <h3>Top nations</h3>
+          <TrendChips items={byNation.map((r) => ({ label: r.nation, value: r.median_pct_change, count: r.card_count, image: r.image_url }))} />
+        </div>
+      ) : null}
+      {byLeague.length ? (
+        <div className="rpr-trend-panel">
+          <h3>Top leagues</h3>
+          <TrendChips items={byLeague.map((r) => ({ label: r.league, value: r.median_pct_change, count: r.card_count, image: r.image_url }))} />
+        </div>
+      ) : null}
     </section>
+  );
+}
+
+// Compact, scrollable chip strip - for breakdowns that can have a lot of
+// groups (nations, leagues, rarities) where a full-width bar per group
+// would run off the page. Ranked #1, #2... left to right, like a leaderboard.
+function TrendChips({ items }) {
+  if (!items.length) return <p className="rpr-trend-empty">Not enough priced cards yet to break this down.</p>;
+  return (
+    <div className="rpr-chip-row">
+      {items.map((item, i) => (
+        <div className="rpr-chip" key={item.label}>
+          <span className="rpr-chip-rank">#{i + 1}</span>
+          {item.image ? <img src={item.image} alt="" /> : null}
+          <span className="rpr-chip-label">{item.label}</span>
+          <span className={`rpr-chip-pct ${Number(item.value) < 0 ? "negative" : "positive"}`}>
+            {item.value == null ? "—" : `${item.value > 0 ? "+" : ""}${item.value}%`}
+          </span>
+          <span className="rpr-chip-count">{item.count} cards</span>
+        </div>
+      ))}
+    </div>
   );
 }
 

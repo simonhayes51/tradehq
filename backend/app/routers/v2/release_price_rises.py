@@ -73,6 +73,16 @@ MAX_PAGE_SIZE = 200
 # cutoff is visible and easy to move rather than a magic number in a query.
 PACE_HIGH_THRESHOLD = 85
 
+# A nation/league/rarity group needs at least this many priced cards
+# before its median is reported - below this a single card's move would
+# masquerade as "this whole nation rose", which is exactly the kind of
+# fake pattern small-sample trends produce.
+MIN_TREND_GROUP_SIZE = 3
+# How many groups to show per breakdown - these are meant to be skimmed
+# ("top movers"), not an exhaustive table of every nation/league in the
+# game, most of which have too few priced cards to mean anything anyway.
+TOP_TREND_GROUPS = 8
+
 # Matches auto_sync/research_fc26_historical_loader.py's own flag
 # threshold for a chart extraction it doesn't fully trust - reusing the
 # same number rather than picking a second, unrelated one.
@@ -175,6 +185,7 @@ async def list_release_price_rises(
             f"""
             SELECT p.source_card_id, p.name, p.display_name, p.rating,
                    p.primary_position, p.rarity, p.pace,
+                   p.nation, p.nation_image_url, p.league, p.league_image_url,
                    p.player_image_url, p.card_design_image_url
             FROM futgg_players p
             LEFT JOIN fc26_historical_extraction_runs r ON r.card_id = p.source_card_id
@@ -207,6 +218,10 @@ async def list_release_price_rises(
             "position": p["primary_position"],
             "rarity": p["rarity"],
             "pace": p["pace"],
+            "nation": p["nation"],
+            "nation_image_url": p["nation_image_url"],
+            "league": p["league"],
+            "league_image_url": p["league_image_url"],
             "image_url": p["card_design_image_url"] or p["player_image_url"],
             "early_price": e["price"],
             "early_price_date": e["date"].isoformat(),
@@ -248,10 +263,49 @@ def _median(values: List[float]) -> Optional[float]:
     return s[mid] if n % 2 else (s[mid - 1] + s[mid]) / 2.0
 
 
+def _group_by(rows: List[Dict[str, Any]], key_field: str, image_field: Optional[str] = None) -> Dict[str, Dict[str, Any]]:
+    """Collect {group_key: {"values": [...], "image_url": ...}} - the
+    image (flag/crest) is taken from whichever card in the group has one,
+    since it's the same for every card in a real nation/league and a few
+    rows are missing it in futgg_players."""
+    groups: Dict[str, Dict[str, Any]] = {}
+    for r in rows:
+        key = r.get(key_field)
+        if r["pct_change"] is None or not key:
+            continue
+        g = groups.setdefault(key, {"values": [], "image_url": None})
+        g["values"].append(r["pct_change"])
+        if image_field and not g["image_url"] and r.get(image_field):
+            g["image_url"] = r[image_field]
+    return groups
+
+
+def _top_groups(groups: Dict[str, Dict[str, Any]], label_field: str, limit: int = TOP_TREND_GROUPS) -> List[Dict[str, Any]]:
+    """Median-ranked, min-sample-filtered, capped to `limit` - see
+    MIN_TREND_GROUP_SIZE/TOP_TREND_GROUPS module comment for why: this is
+    a skimmable "top movers" list, not an exhaustive table, and a group
+    with 1-2 cards is one card's move wearing the group's name."""
+    eligible = {k: g for k, g in groups.items() if len(g["values"]) >= MIN_TREND_GROUP_SIZE}
+    ranked = sorted(eligible.items(), key=lambda kv: _median(kv[1]["values"]) or 0, reverse=True)
+    return [
+        {
+            label_field: key,
+            "median_pct_change": round(_median(g["values"]), 1),
+            "card_count": len(g["values"]),
+            "image_url": g["image_url"],
+        }
+        for key, g in ranked[:limit]
+    ]
+
+
 def _build_trends(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Descriptive breakdowns only - see module docstring's WORDING
     DISCIPLINE note. Median (not mean) pct_change per group, so a handful
-    of extreme risers don't stand in for the whole group's typical move."""
+    of extreme risers don't stand in for the whole group's typical move.
+    Position/pace show every group (there are only ever a couple of
+    dozen positions and exactly two pace tiers); nation/league/rarity are
+    capped to the top movers since the game has dozens of each and most
+    have too few priced cards here to mean anything."""
     by_position: Dict[str, List[float]] = {}
     for r in rows:
         if r["pct_change"] is None or not r["position"]:
@@ -278,4 +332,14 @@ def _build_trends(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         for key, vals in pace_groups.items()
     ]
 
-    return {"by_position": position_trend, "by_pace_tier": pace_trend}
+    nation_trend = _top_groups(_group_by(rows, "nation", "nation_image_url"), "nation")
+    league_trend = _top_groups(_group_by(rows, "league", "league_image_url"), "league")
+    rarity_trend = _top_groups(_group_by(rows, "rarity"), "rarity")
+
+    return {
+        "by_position": position_trend,
+        "by_pace_tier": pace_trend,
+        "by_nation": nation_trend,
+        "by_league": league_trend,
+        "by_rarity": rarity_trend,
+    }
