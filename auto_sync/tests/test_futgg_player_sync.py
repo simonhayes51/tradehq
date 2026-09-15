@@ -499,6 +499,48 @@ async def test_full_scan_uses_configured_partitions_and_dedupes(monkeypatch):
 
 
 @run_async
+async def test_full_scan_continues_when_new_partition_does_not_render(monkeypatch):
+    monkeypatch.setattr(mod, "FULL_SCAN", True)
+    monkeypatch.setattr(mod, "MAX_PAGES_FULL", 1)
+    monkeypatch.setattr(mod, "PLAYER_LIMIT", 0)
+    monkeypatch.setattr(mod, "IDLE_ROUNDS", 10)
+    monkeypatch.setattr(mod, "PAGE_DELAY", 0)
+    monkeypatch.setattr(
+        mod, "FULL_SCAN_PARTITIONS",
+        [("new", "/players/new/?page={page}"), ("catalogue", "/players/?page={page}")],
+    )
+    hrefs_by_path = {
+        "/players/?page=1": [_card_href(2), _card_href(3)],
+    }
+    page = _FakeMultiPartitionPage(hrefs_by_path)
+
+    urls = await mod.collect_listing_urls(page)
+
+    expected = {mod.urljoin(mod.BASE_URL, _card_href(n)) for n in (2, 3)}
+    assert set(urls.keys()) == expected
+    assert page.goto_urls == [
+        "https://www.fut.gg/players/new/?page=1",
+        "https://www.fut.gg/players/?page=1",
+    ]
+
+
+@run_async
+async def test_full_scan_fails_when_every_partition_fails(monkeypatch):
+    monkeypatch.setattr(mod, "FULL_SCAN", True)
+    monkeypatch.setattr(mod, "MAX_PAGES_FULL", 1)
+    monkeypatch.setattr(mod, "PLAYER_LIMIT", 0)
+    monkeypatch.setattr(mod, "PAGE_DELAY", 0)
+    monkeypatch.setattr(
+        mod, "FULL_SCAN_PARTITIONS",
+        [("new", "/players/new/?page={page}"), ("catalogue", "/players/?page={page}")],
+    )
+    page = _FakeMultiPartitionPage({})
+
+    with pytest.raises(RuntimeError, match="All FUT.GG full-scan listing partitions failed"):
+        await mod.collect_listing_urls(page)
+
+
+@run_async
 async def test_default_full_scan_partitions_target_current_game_year(monkeypatch):
     monkeypatch.setattr(mod, "FULL_SCAN", True)
     monkeypatch.setattr(mod, "MAX_PAGES_FULL", 1)
