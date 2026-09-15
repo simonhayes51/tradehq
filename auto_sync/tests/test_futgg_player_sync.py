@@ -608,6 +608,32 @@ async def test_existing_ids_are_scoped_to_selected_game_year():
 
 
 @run_async
+async def test_upsert_card_conflicts_on_game_year_and_card_id():
+    from futgg_common import FutggCard
+
+    class FakeConn:
+        def __init__(self):
+            self.query = ""
+
+        async def execute(self, query, *args):
+            self.query = query
+
+    conn = FakeConn()
+    card = FutggCard(
+        source_card_id=1001,
+        source_player_id=1,
+        source_slug="player",
+        game_year=27,
+        source_url="https://www.fut.gg/players/1-player/27-1001/",
+        name="Player",
+    )
+
+    await mod.upsert_card(conn, card)
+
+    assert "ON CONFLICT (game_year, source_card_id)" in conn.query
+
+
+@run_async
 async def test_full_scan_discovers_known_regression_base_cards(monkeypatch):
     """Diagnostic regression test for the two live cards confirmed
     missing from /players/new/'s recency window: Haaland card 239085 and
