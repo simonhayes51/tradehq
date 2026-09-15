@@ -220,8 +220,7 @@ async def list_release_price_rises(
             "price_band": _price_band(e["price"]),
         })
 
-    reverse = order == "desc"
-    rows.sort(key=lambda r: _sort_key(r, sort_by), reverse=reverse)
+    rows.sort(key=lambda r: _sort_key(r, sort_by, order))
 
     total = len(rows)
     start = (page - 1) * page_size
@@ -243,10 +242,13 @@ async def list_release_price_rises(
     }
 
 
-def _sort_key(row: Dict[str, Any], field: str) -> tuple:
+def _sort_key(row: Dict[str, Any], field: str, order: str) -> tuple:
     value = row.get(field)
     # Missing values always sort last, regardless of asc/desc.
-    return (value is not None, value or 0)
+    if value is None:
+        return (1, 0)
+    direction = -1 if order == "desc" else 1
+    return (0, direction * value)
 
 
 def _price_band(price: int) -> Dict[str, Any]:
