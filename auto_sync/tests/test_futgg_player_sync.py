@@ -483,8 +483,8 @@ async def test_full_scan_uses_configured_partitions_and_dedupes(monkeypatch):
         [("new", "/players/new/?page={page}"), ("catalogue", "/players/?page={page}")],
     )
     hrefs_by_path = {
-        "/players/new/?page=1": [_card_href(1), _card_href(2)],
-        "/players/?page=1": [_card_href(2), _card_href(3)],  # card 2 overlaps both partitions
+        "/players/new/": [_card_href(1), _card_href(2)],
+        "/players/": [_card_href(2), _card_href(3)],  # card 2 overlaps both partitions
     }
     page = _FakeMultiPartitionPage(hrefs_by_path)
 
@@ -494,8 +494,14 @@ async def test_full_scan_uses_configured_partitions_and_dedupes(monkeypatch):
     assert set(urls.keys()) == expected
     # Deduplicated: card 2 appeared in both partitions but only counts once.
     assert len(urls) == 3
-    assert "https://www.fut.gg/players/new/?page=1" in page.goto_urls
-    assert "https://www.fut.gg/players/?page=1" in page.goto_urls
+    assert "https://www.fut.gg/players/new/" in page.goto_urls
+    assert "https://www.fut.gg/players/" in page.goto_urls
+
+
+def test_canonical_first_listing_url_removes_page_one_only():
+    assert mod._canonical_first_listing_url("https://www.fut.gg/players/?page=1") == "https://www.fut.gg/players/"
+    assert mod._canonical_first_listing_url("https://www.fut.gg/players/new/?page=1") == "https://www.fut.gg/players/new/"
+    assert mod._canonical_first_listing_url("https://www.fut.gg/players/?page=2") == "https://www.fut.gg/players/?page=2"
 
 
 @run_async
@@ -510,7 +516,7 @@ async def test_full_scan_continues_when_new_partition_does_not_render(monkeypatc
         [("new", "/players/new/?page={page}"), ("catalogue", "/players/?page={page}")],
     )
     hrefs_by_path = {
-        "/players/?page=1": [_card_href(2), _card_href(3)],
+        "/players/": [_card_href(2), _card_href(3)],
     }
     page = _FakeMultiPartitionPage(hrefs_by_path)
 
@@ -519,8 +525,8 @@ async def test_full_scan_continues_when_new_partition_does_not_render(monkeypatc
     expected = {mod.urljoin(mod.BASE_URL, _card_href(n)) for n in (2, 3)}
     assert set(urls.keys()) == expected
     assert page.goto_urls == [
-        "https://www.fut.gg/players/new/?page=1",
-        "https://www.fut.gg/players/?page=1",
+        "https://www.fut.gg/players/new/",
+        "https://www.fut.gg/players/",
     ]
 
 
@@ -553,16 +559,16 @@ async def test_default_full_scan_partitions_target_current_game_year(monkeypatch
         mod.parse_partitions(mod.DEFAULT_FULL_SCAN_PARTITIONS),
     )
     hrefs_by_path = {
-        "/players/new/?page=1": [_card_href(1)],
-        "/players/?page=1": [_card_href(2)],
+        "/players/new/": [_card_href(1)],
+        "/players/": [_card_href(2)],
     }
     page = _FakeMultiPartitionPage(hrefs_by_path)
 
     urls = await mod.collect_listing_urls(page)
 
     assert page.goto_urls == [
-        "https://www.fut.gg/players/new/?page=1",
-        "https://www.fut.gg/players/?page=1",
+        "https://www.fut.gg/players/new/",
+        "https://www.fut.gg/players/",
     ]
     assert len(urls) == 2
 
@@ -583,16 +589,16 @@ async def test_historical_game_year_adds_listing_prefix(monkeypatch):
         historical.parse_partitions(historical.DEFAULT_FULL_SCAN_PARTITIONS),
     )
     hrefs_by_path = {
-        "/26/players/new/?page=1": [_card_href(1)],
-        "/26/players/?page=1": [_card_href(2)],
+        "/26/players/new/": [_card_href(1)],
+        "/26/players/": [_card_href(2)],
     }
     page = _FakeMultiPartitionPage(hrefs_by_path)
 
     try:
         urls = await historical.collect_listing_urls(page)
         assert page.goto_urls == [
-            "https://www.fut.gg/26/players/new/?page=1",
-            "https://www.fut.gg/26/players/?page=1",
+            "https://www.fut.gg/26/players/new/",
+            "https://www.fut.gg/26/players/",
         ]
         assert len(urls) == 2
     finally:
@@ -617,7 +623,7 @@ async def test_daily_mode_only_touches_the_new_partition(monkeypatch):
     )
     hrefs_by_path = {
         "/players/new/?page=1": [_card_href(1)],
-        "/players/?page=1": [_card_href(2), _card_href(3)],
+        "/players/": [_card_href(2), _card_href(3)],
     }
     page = _FakeMultiPartitionPage(hrefs_by_path)
 
@@ -693,7 +699,7 @@ async def test_full_scan_discovers_known_regression_base_cards(monkeypatch):
     monkeypatch.setattr(mod, "FULL_SCAN_PARTITIONS", [("catalogue", "/players/?page={page}")])
     HAALAND_ID, MBAPPE_ID = 239085, 231747
     hrefs_by_path = {
-        "/players/?page=1": [
+        "/players/": [
             f"/players/{HAALAND_ID}-erling-haaland/26-{HAALAND_ID}/",
             f"/players/{MBAPPE_ID}-kylian-mbappe/26-{MBAPPE_ID}/",
         ],
