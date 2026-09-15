@@ -63,17 +63,17 @@ describe("ReleasePriceRises", () => {
     render(<MemoryRouter><ReleasePriceRises /></MemoryRouter>);
 
     expect(await screen.findByText("Launch Movers")).toBeInTheDocument();
-    expect(screen.getByText(/Best FC27 watch profile/)).toBeInTheDocument();
+    expect(screen.getByText("ST + 1k-5k + gold_rare")).toBeInTheDocument();
     expect(screen.getByText("Best coin return")).toBeInTheDocument();
     expect(screen.getAllByText(/tax net|after tax/i).length).toBeGreaterThan(0);
-    expect(screen.getByText("Budget bands")).toBeInTheDocument();
+    expect(screen.getByText("Budget")).toBeInTheDocument();
   });
 
   it("passes search and rating filters to the server instead of filtering a local top page", async () => {
     render(<MemoryRouter><ReleasePriceRises /></MemoryRouter>);
 
     await waitFor(() => expect(getReleasePriceRises).toHaveBeenCalled());
-    fireEvent.change(screen.getByPlaceholderText("Search every launch mover…"), { target: { value: "rashford" } });
+    fireEvent.change(screen.getByPlaceholderText("Search player..."), { target: { value: "rashford" } });
     fireEvent.change(screen.getByLabelText("Minimum rating"), { target: { value: "85" } });
 
     await waitFor(() => {
