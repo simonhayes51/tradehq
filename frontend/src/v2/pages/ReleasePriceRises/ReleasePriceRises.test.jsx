@@ -59,21 +59,24 @@ describe("ReleasePriceRises", () => {
     getReleasePriceRises.mockResolvedValue(RESPONSE);
   });
 
-  it("renders the launch playbook and after-tax movement", async () => {
+  it("renders a simple launch answer and proof list", async () => {
     render(<MemoryRouter><ReleasePriceRises /></MemoryRouter>);
 
     expect(await screen.findByText("Launch Movers")).toBeInTheDocument();
+    expect(screen.getByText("Early rush")).toBeInTheDocument();
     expect(screen.getByText("ST + 1k-5k + gold_rare")).toBeInTheDocument();
-    expect(screen.getByText("Day 1 to full release")).toBeInTheDocument();
+    expect(screen.getByText("1. Shortlist")).toBeInTheDocument();
+    expect(screen.getByText("2. Budget")).toBeInTheDocument();
     expect(screen.getByText("Best coin return")).toBeInTheDocument();
-    expect(screen.getAllByText(/tax net|after tax/i).length).toBeGreaterThan(0);
-    expect(screen.getByText("Budget")).toBeInTheDocument();
+    expect(screen.getByText("Proof list")).toBeInTheDocument();
+    expect(screen.getAllByText(/after tax/i).length).toBeGreaterThan(0);
   });
 
   it("passes search and rating filters to the server instead of filtering a local top page", async () => {
     render(<MemoryRouter><ReleasePriceRises /></MemoryRouter>);
 
     await waitFor(() => expect(getReleasePriceRises).toHaveBeenCalled());
+    fireEvent.click(screen.getByText("Refine the proof list"));
     fireEvent.change(screen.getByPlaceholderText("Search player..."), { target: { value: "rashford" } });
     fireEvent.change(screen.getByLabelText("Minimum rating"), { target: { value: "85" } });
 
