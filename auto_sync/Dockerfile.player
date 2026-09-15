@@ -19,15 +19,23 @@
 
 FROM mcr.microsoft.com/playwright/python:v1.61.0-noble
 
+ENV PYTHONUNBUFFERED=1
+ENV DISPLAY=:99
+
 WORKDIR /app
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+RUN command -v Xvfb > /dev/null 2>&1 \
+    && echo "Xvfb present in base image" \
+    || echo "WARNING: Xvfb not found in base image - worker will fail at runtime"
+
 COPY . .
 
-ENV PYTHONUNBUFFERED=1
-ENV PLAYWRIGHT_HEADLESS=true
+RUN chmod +x /app/docker-entrypoint-player.sh
+
+ENV PLAYWRIGHT_HEADLESS=false
 ENV FUTGG_GAME_YEAR=27
 
-CMD ["python", "futgg_player_sync.py"]
+CMD ["/app/docker-entrypoint-player.sh"]
