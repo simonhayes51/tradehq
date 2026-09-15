@@ -774,8 +774,17 @@ async def collect_listing_urls(page) -> dict[str, ListingCardMetadata]:
         return urls
 
     combined: dict[str, ListingCardMetadata] = {}
+    partition_failures: list[str] = []
     for name, template in FULL_SCAN_PARTITIONS:
-        partition_urls = await _paginate_listing(page, template, MAX_PAGES_FULL, name)
+        try:
+            partition_urls = await _paginate_listing(page, template, MAX_PAGES_FULL, name)
+        except Exception as exc:
+            partition_failures.append(f"{name}: {exc}")
+            log.warning(
+                "Discovery mode=full source=partition:%s failed; continuing with remaining partitions: %s",
+                name, exc,
+            )
+            continue
         before = len(combined)
         for card_url, metadata in partition_urls.items():
             combined[card_url] = _merge_listing_metadata(combined.get(card_url), metadata)
@@ -785,6 +794,12 @@ async def collect_listing_urls(page) -> dict[str, ListingCardMetadata]:
         )
         if PLAYER_LIMIT and len(combined) >= PLAYER_LIMIT:
             break
+
+    if not combined and partition_failures:
+        raise RuntimeError(
+            "All FUT.GG full-scan listing partitions failed: "
+            + "; ".join(partition_failures)
+        )
 
     log.info(
         "Discovery mode=full partitions=%d combined_unique=%d",
