@@ -888,7 +888,14 @@ async def publish_opportunity_updates(pool, server: ServerRecord, client: Option
             """
             SELECT p.id AS post_id, p.payload, p.dedup_key, p.sent_at
             FROM discord_server_posts p
-            WHERE p.server_id=$1 AND p.kind='opportunity' AND p.status='sent'
+            WHERE p.server_id=$1 AND p.status='sent'
+              AND (
+                  p.kind='opportunity'
+                  OR (
+                      p.kind='daily_overview'
+                      AND COALESCE((p.payload->>'free_trade_of_day')::boolean, FALSE)
+                  )
+              )
               AND NOT EXISTS (
                   SELECT 1 FROM discord_server_posts u
                   WHERE u.server_id=p.server_id AND u.kind='opportunity_update'
@@ -903,7 +910,9 @@ async def publish_opportunity_updates(pool, server: ServerRecord, client: Option
         for row in pending:
             payload = json.loads(row["payload"]) if isinstance(row["payload"], str) else dict(row["payload"])
             card_id = payload.get("source_card_id")
-            buy_price = payload.get("buy_price")
+            # Free Trade of the Day used `buy` before result routing was
+            # enabled. Keep those already-posted calls gradeable too.
+            buy_price = payload.get("buy_price", payload.get("buy"))
             sell_target = payload.get("sell_target")
             sent_at = row["sent_at"]
             if card_id is None or buy_price is None or sell_target is None or sent_at is None:
@@ -993,6 +1002,10 @@ async def run_all_server_feeds(pool) -> None:
                 await publish_daily_overview(pool, server)
             if server.access_level in ("paid_partner", "official"):
                 await publish_live_opportunities(pool, server)
+            # Free's single Trade of the Day is also result-trackable. This
+            # does not unlock any extra live calls; it only grades the one
+            # shared call already posted as the daily overview.
+            if server.access_level in ("free", "paid_partner", "official"):
                 await publish_opportunity_updates(pool, server)
         except Exception:
             log.warning("Discord trading feed pass failed for server_id=%s", server.id, exc_info=True)
