@@ -29,3 +29,39 @@ def test_plain_non_leak_text_stays_low_confidence():
     assert parsed.rating is None
     assert parsed.card_type is None
     assert parsed.parse_confidence == 0
+
+
+def test_concrete_leaked_card_is_publishable():
+    text = "91 Mbappe TOTY leaked for Friday"
+    parsed = LeakMonitor.parse_regex(text)
+    assert LeakMonitor.is_relevant_content(text, parsed) is True
+
+
+def test_upcoming_sbc_is_publishable():
+    text = "New Icon SBC coming tonight"
+    parsed = LeakMonitor.parse_regex(text)
+    assert LeakMonitor.is_relevant_content(text, parsed) is True
+
+
+def test_trading_discord_ad_is_not_publishable():
+    text = "We offer THE COMPLETE FUT experience. Our FUT Content alerts updates instantly with New Evolution and New SBC channels."
+    parsed = LeakMonitor.parse_regex(text)
+    assert LeakMonitor.is_relevant_content(text, parsed) is False
+
+
+def test_gameplay_banter_is_not_publishable():
+    text = "If they patch FC 27 with AI Defending we are finished"
+    parsed = LeakMonitor.parse_regex(text)
+    assert LeakMonitor.is_relevant_content(text, parsed) is False
+
+
+def test_generic_market_opinion_is_not_publishable():
+    text = "EASILY one of the best years for the FUT market inbound. Certain cards will rise like crazy."
+    parsed = LeakMonitor.parse_regex(text)
+    assert LeakMonitor.is_relevant_content(text, parsed) is False
+
+
+def test_launch_schedule_is_not_publishable():
+    text = "FC 27 HAS ARRIVED. Streamers = Playing. Web App = Today. TOTW 1 = Today."
+    parsed = LeakMonitor.parse_regex(text)
+    assert LeakMonitor.is_relevant_content(text, parsed) is False
