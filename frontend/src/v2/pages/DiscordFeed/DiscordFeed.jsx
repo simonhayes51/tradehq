@@ -55,6 +55,7 @@ export default function DiscordFeed() {
   const [selectedGuildId, setSelectedGuildId] = useState(null);
   const [feedState, setFeedState] = useState(null); // { feed, posts_used_today, channel_ok, channel_problem }
   const [channels, setChannels] = useState(null);
+  const [roles, setRoles] = useState(null);
   const [loadError, setLoadError] = useState("");
   const [busy, setBusy] = useState(false);
   const [actionMsg, setActionMsg] = useState("");
@@ -69,6 +70,8 @@ export default function DiscordFeed() {
   const [startHour, setStartHour] = useState(8);
   const [endHour, setEndHour] = useState(23);
   const [tz, setTz] = useState("Europe/London");
+  const [buyPingRole, setBuyPingRole] = useState("");
+  const [sellPingRole, setSellPingRole] = useState("");
 
   useEffect(() => {
     loadGuilds();
@@ -98,6 +101,7 @@ export default function DiscordFeed() {
   async function loadFeed(guildId) {
     setFeedState(null);
     setChannels(null);
+    setRoles(null);
     setActionMsg("");
     setActionErr("");
     try {
@@ -108,6 +112,8 @@ export default function DiscordFeed() {
       setBudgetMix(f.budget_mix || "");
       setMinConfidence(f.min_confidence != null ? String(f.min_confidence) : "");
       setMinProfit(f.min_expected_profit != null ? String(f.min_expected_profit) : "");
+      setBuyPingRole(f.buy_ping_role_id || "");
+      setSellPingRole(f.sell_ping_role_id || "");
       const hasWindow = f.posting_window_start_hour != null && f.posting_window_end_hour != null;
       setWindowEnabled(hasWindow);
       setStartHour(hasWindow ? f.posting_window_start_hour : 8);
@@ -116,6 +122,10 @@ export default function DiscordFeed() {
       api.get(`/api/v2/discord-feed/${guildId}/channels`).then(
         (res) => setChannels(res.data?.channels || []),
         () => setChannels([])
+      );
+      api.get(`/api/v2/discord-feed/${guildId}/roles`).then(
+        (res) => setRoles(res.data?.roles || []),
+        () => setRoles([])
       );
     } catch (e) {
       setLoadError(e?.response?.data?.detail || "Couldn't load this server's feed.");
@@ -151,6 +161,17 @@ export default function DiscordFeed() {
           clear_posting_window: !windowEnabled,
         }),
       "Preferences saved."
+    );
+  }
+
+  function savePingRoles() {
+    runAction(
+      () =>
+        api.patch(`/api/v2/discord-feed/${selectedGuildId}/ping-roles`, {
+          buy_role_id: buyPingRole || null,
+          sell_role_id: sellPingRole || null,
+        }),
+      "Role pings updated."
     );
   }
 
@@ -305,6 +326,48 @@ export default function DiscordFeed() {
                   <option key={c.id} value={c.id}>#{c.name}</option>
                 ))}
               </select>
+            )}
+          </SectionCard>
+
+          <SectionCard
+            title="Role pings"
+            subtitle="Optional. Ping a Discord role when a new trade is posted and when the result is posted."
+          >
+            {roles === null ? (
+              <p>Loading roles…</p>
+            ) : (
+              <>
+                <div className="discord-feed-form">
+                  <label>
+                    New trade ping
+                    <select value={buyPingRole} onChange={(e) => setBuyPingRole(e.target.value)}>
+                      <option value="">No role ping</option>
+                      {roles.map((role) => (
+                        <option key={role.id} value={role.id}>
+                          @{role.name}{role.mentionable ? "" : " (role may need Mentionable enabled)"}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Sell / result ping
+                    <select value={sellPingRole} onChange={(e) => setSellPingRole(e.target.value)}>
+                      <option value="">Same as new trade ping</option>
+                      {roles.map((role) => (
+                        <option key={role.id} value={role.id}>
+                          @{role.name}{role.mentionable ? "" : " (role may need Mentionable enabled)"}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+                <p className="mt-2 text-xs text-[var(--v2-muted)]">
+                  EAFC.Live only allows the exact role you choose here to be mentioned. It never enables @everyone, @here or user pings.
+                </p>
+                <button type="button" className="discord-feed-save" disabled={busy} onClick={savePingRoles}>
+                  {busy ? <><Loader2 className="spin" size={15} /> Saving…</> : <><RefreshCw size={15} /> Save role pings</>}
+                </button>
+              </>
             )}
           </SectionCard>
 
