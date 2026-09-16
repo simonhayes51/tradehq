@@ -209,6 +209,34 @@ def normalize_search_term(term: str) -> str:
     return _strip_diacritics(term).lower().strip()
 
 
+#: The player fields a name search matches against - see
+#: _apply_common_filters' search clause for the DB-level twin of this.
+SEARCHABLE_NAME_FIELDS = ("name", "display_name", "full_name")
+
+
+def row_matches_search(row: Dict[str, Any], search: str) -> bool:
+    """True if EVERY whitespace-separated word in `search` appears
+    SOMEWHERE across name/display_name/full_name (any word may match any
+    field, independently of the others) once both sides are
+    case-folded and diacritic-stripped. Mirrors the DB-level per-token
+    ILIKE-across-three-fields AND in _apply_common_filters, for the
+    Python-side re-checks that run after a DB fetch (diacritic folding
+    here; segment-candidate re-filtering in app/routers/v2/futgg_market.
+    py's _apply_filters_in_python) - both need the same semantics or a
+    row that passed the DB query could still get dropped afterward.
+
+    Word-based rather than a single substring check because a phrase
+    search fails a real case: "Vinicius Junior" against
+    name="Vinicius Jose de Oliveira Junior" - both words are genuinely
+    present but not adjacent, so a whole-phrase ILIKE/substring check
+    would miss it."""
+    haystacks = [normalize_search_term(row.get(field) or "") for field in SEARCHABLE_NAME_FIELDS]
+    for token in normalize_search_term(search).split():
+        if not any(token in haystack for haystack in haystacks):
+            return False
+    return True
+
+
 class MarketDataProvider:
     """Documents the provider-neutral method shape. Not used
     polymorphically today - see module docstring."""
@@ -505,9 +533,31 @@ def _apply_common_filters(
             f"EXTRACT(EPOCH FROM (now() - {age})) / 60.0 <= ${len(args)}"
         )
     if f.search:
-        term = f"%{f.search.strip()}%"
-        args.append(term)
-        where.append(f"name ILIKE ${len(args)}")
+        # A search must match whichever of these three fields the user
+        # actually typed, not just `name`. Confirmed live: futgg_players
+        # carries name/display_name/full_name as genuinely different
+        # strings for the same card (e.g. name="Vinicius Jose de
+        # Oliveira Junior", display_name="Vini Jr.", full_name matching
+        # name) - searching "Vini Jr" matched nothing because only `name`
+        # was ever checked, even though display_name is what the UI
+        # itself shows for that card.
+        #
+        # One token per word, ANDed together (each token may match any
+        # of the three fields independently) rather than one ILIKE on
+        # the whole phrase - a phrase search fails "Vinicius Junior"
+        # against name="Vinicius Jose de Oliveira Junior", because the
+        # two words are not adjacent in that field even though both are
+        # genuinely present. Splitting on whitespace and requiring each
+        # word to appear SOMEWHERE across the three fields (not
+        # necessarily the same one, not necessarily adjacent) is what
+        # makes that match, while a single-word search degrades to
+        # exactly the OR-across-three-fields check above.
+        for token in f.search.strip().split():
+            args.append(f"%{token}%")
+            idx = len(args)
+            where.append(
+                f"(name ILIKE ${idx} OR display_name ILIKE ${idx} OR full_name ILIKE ${idx})"
+            )
 
 
 class FutggMarketDataProvider(MarketDataProvider):
@@ -935,11 +985,21 @@ class FutggMarketDataProvider(MarketDataProvider):
         if filters.search:
             args.append(filters.search.strip())
             term = f"${len(args)}"
+            # coalesce(display_name, name) is what the UI actually shows
+            # as this card's name (see _serialize_player in
+            # app/routers/v2/futgg_market.py) and so what a search term
+            # is most often typed against - "Vini Jr" should outrank on
+            # an exact/prefix match against the display name, not only
+            # against the longer legal `name` column. full_name is
+            # checked alongside it so a search on the legal name (e.g.
+            # "Vinicius Junior") still ranks well even when it differs
+            # from both.
+            display = "coalesce(display_name, name)"
             order_clause = (
-                # Exact name.
-                f"(lower(name) = lower({term})) DESC, "
-                # Name starts with the term.
-                f"(lower(name) LIKE lower({term}) || '%%') DESC, "
+                # Exact match, on the displayed name or the full name.
+                f"(lower({display}) = lower({term}) OR lower(full_name) = lower({term})) DESC, "
+                # Starts with the term.
+                f"(lower({display}) LIKE lower({term}) || '%%' OR lower(full_name) LIKE lower({term}) || '%%') DESC, "
                 # Term starts a WORD in the name. This is the case users
                 # actually hit: they type a surname, and "Haaland" is
                 # neither an exact nor a prefix match for "Erling
@@ -947,7 +1007,7 @@ class FutggMarketDataProvider(MarketDataProvider):
                 # straight through to rating and buries the plain gold
                 # card under every promo whose name merely contains the
                 # same letters.
-                f"(lower(name) LIKE '%% ' || lower({term}) || '%%') DESC, "
+                f"(lower({display}) LIKE '%% ' || lower({term}) || '%%' OR lower(full_name) LIKE '%% ' || lower({term}) || '%%') DESC, "
                 f"{order_by}"
             )
 
@@ -971,9 +1031,9 @@ class FutggMarketDataProvider(MarketDataProvider):
             # lower(name), which ILIKE can use for the common
             # case-folding path); this second pass only adds diacritic
             # folding on top of that already-small result set, never
-            # scans the full table itself.
-            needle = normalize_search_term(filters.search)
-            results = [r for r in results if needle in normalize_search_term(r.get("name") or "")]
+            # scans the full table itself. See row_matches_search for
+            # why this checks all three name fields, word-by-word.
+            results = [r for r in results if row_matches_search(r, filters.search)]
         return results
 
     async def count_players(self, filters: PlayerFilters) -> int:
