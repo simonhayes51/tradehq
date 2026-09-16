@@ -249,6 +249,26 @@ def _trade_embed(row: dict[str, Any]) -> dict[str, Any]:
     return embed
 
 
+def _trade_payload(row: dict[str, Any], trade_date) -> dict[str, Any]:
+    """Build a trackable opportunity payload for the shared free trade."""
+    return {
+        "source_card_id": int(row["source_card_id"]),
+        "name": row.get("name"),
+        "trade_date": trade_date.isoformat(),
+        "free_trade_of_day": True,
+        "signal": row["signal"],
+        # These are deliberately the canonical opportunity keys consumed by
+        # publish_opportunity_updates(). Free gets one call, but still gets an
+        # honest result for that call.
+        "buy_price": str(row["current_executable_buy"]),
+        "sell_target": str(row["recommended_sell_target"]),
+        "expected_profit_after_tax": str(row["expected_profit_after_tax"]),
+        "expected_roi": str(row["expected_roi"]),
+        "confidence_score": float(row["confidence_score"]),
+        "evidence_age_minutes": int(row["evidence_age_minutes"]),
+    }
+
+
 async def _select_candidate(conn) -> Optional[dict[str, Any]]:
     row = await conn.fetchrow(
         """
@@ -317,18 +337,7 @@ async def _canonical_trade(conn, trade_date) -> Optional[dict[str, Any]]:
     if not candidate:
         return None
     embed = _trade_embed(candidate)
-    payload = {
-        "source_card_id": int(candidate["source_card_id"]),
-        "trade_date": trade_date.isoformat(),
-        "free_trade_of_day": True,
-        "signal": candidate["signal"],
-        "buy": str(candidate["current_executable_buy"]),
-        "sell_target": str(candidate["recommended_sell_target"]),
-        "expected_profit_after_tax": str(candidate["expected_profit_after_tax"]),
-        "expected_roi": str(candidate["expected_roi"]),
-        "confidence_score": float(candidate["confidence_score"]),
-        "evidence_age_minutes": int(candidate["evidence_age_minutes"]),
-    }
+    payload = _trade_payload(candidate, trade_date)
     await conn.execute(
         """
         INSERT INTO discord_free_trade_of_day (trade_date, source_card_id, payload, embed)
@@ -555,12 +564,17 @@ def install_free_server_feed() -> None:
                     "✅ The Free Server Feed is already active. No payment or activation step is needed."
                 )
             }
-        if sub_name in {"preferences", "sell_channel"}:
+        if sub_name == "sell_channel":
+            # Result routing is basic feed configuration, not a paid feed
+            # preference. Let the canonical command handler validate access,
+            # persist/clear the channel, and return its normal confirmation.
+            return await original_reply(interaction_payload, options, discord_id)
+        if sub_name == "preferences":
             return {
                 "content": (
                     "Free uses the shared EAFC.Live Trade of the Day. "
-                    "Server-specific preferences and result routing are available "
-                    "on paid Server Feed plans."
+                    "Server-specific feed preferences are available on paid "
+                    "Server Feed plans."
                 )
             }
         if sub_name == "billing":
