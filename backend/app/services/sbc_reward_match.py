@@ -75,6 +75,8 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import asyncpg
 
+from app.services.game_cycle import active_game_year
+
 log = logging.getLogger("sbc_reward_match")
 
 # Distinct from every other advisory lock key in the "774101X" family -
@@ -220,13 +222,18 @@ async def _fetch_active_sbc_events(player_pool: asyncpg.Pool) -> List[Dict[str, 
 
 
 async def _fetch_candidate_cards(core_pool: asyncpg.Pool) -> List[Dict[str, Any]]:
+    # A pack reward in a live SBC can only ever contain the CURRENT
+    # game's own cards - without this, a prior cycle's card (kept
+    # queryable as historical/reference data, see game_cycle.py) could
+    # surface as a matched reward nobody can actually pull.
     async with core_pool.acquire() as conn:
         rows = await conn.fetch(
             """
             SELECT source_card_id, name, display_name, rating
             FROM futgg_players
-            WHERE is_active AND name IS NOT NULL
-            """
+            WHERE is_active AND name IS NOT NULL AND game_year = $1
+            """,
+            active_game_year(),
         )
     return [dict(r) for r in rows]
 

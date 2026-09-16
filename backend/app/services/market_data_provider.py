@@ -845,14 +845,15 @@ class FutggMarketDataProvider(MarketDataProvider):
                 sql = f"""
                     SELECT {columns}
                     FROM futgg_market_snapshot
-                    WHERE is_tradeable IS DISTINCT FROM FALSE
+                    WHERE game_year = $2
+                      AND is_tradeable IS DISTINCT FROM FALSE
                       AND price_tier NOT IN ({EXCLUDED_PRICE_TIERS_SQL})
                       AND ({segment.where})
                       {recency_filter}
                     ORDER BY {segment.order_by}
                     LIMIT $1
                 """
-                rows = await conn.fetch(sql, segment.limit)
+                rows = await conn.fetch(sql, segment.limit, active_game_year())
                 out[segment.name] = [dict(r) for r in rows]
             for segment_rows in out.values():
                 await _attach_sbc_reward_watch(conn, segment_rows)
