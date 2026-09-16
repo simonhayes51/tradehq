@@ -73,6 +73,7 @@ from app.services.market_data_provider import (
     MAX_RECENT_SALES,
     FutggMarketDataProvider,
     PlayerFilters,
+    row_matches_search,
 )
 from app.services.priority_config import PRIORITY_ENGINE_CONFIG
 from app.services.priority_recompute import (
@@ -299,8 +300,13 @@ def _apply_filters_in_python(rows: List[Dict[str, Any]], f: "PlayerFilters") -> 
             return (now - observed).total_seconds() / 60.0 <= f.max_price_age_minutes
         out = [r for r in out if _age_ok(r)]
     if f.search:
-        term = f.search.strip().lower()
-        out = [r for r in out if term in (r.get("name") or "").lower()]
+        # Same matching rules the DB-level search uses (see
+        # market_data_provider.row_matches_search / _apply_common_filters)
+        # - these rows are raw snapshot dicts, not yet run through
+        # _serialize_player's display_name coalescing, so checking only
+        # "name" would miss a card whose display_name (or a word split
+        # across it and full_name) is what the term actually matches.
+        out = [r for r in out if row_matches_search(r, f.search)]
     return out
 
 

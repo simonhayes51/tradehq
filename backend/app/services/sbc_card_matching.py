@@ -52,6 +52,7 @@ from typing import Any, Dict, List, Optional
 
 import asyncpg
 
+from app.services.game_cycle import active_game_year
 from app.services.priority_config import PRIORITY_ENGINE_CONFIG, PriorityEngineConfig
 from app.services.sbc_demand_classifier import (
     classify_resource_signal,
@@ -268,6 +269,12 @@ async def sync_sbc_resource_demand(pool: asyncpg.Pool, *, config: PriorityEngine
 
 
 async def _eligible_pool_card_ids(conn: asyncpg.Connection, req: ParsedRequirement) -> List[int]:
+    # An SBC in the live client can only be solved with the CURRENT
+    # game's own cards - without this, a prior cycle's cards (kept
+    # queryable as historical/reference data, see game_cycle.py) counted
+    # toward "how concentrated is this pool", which could both flag a
+    # trigger for a card nobody can actually use to solve this SBC and
+    # miscount a pool as less concentrated than it really is this cycle.
     rows = await conn.fetch(
         """
         SELECT source_card_id FROM futgg_players p
@@ -277,9 +284,10 @@ async def _eligible_pool_card_ids(conn: asyncpg.Connection, req: ParsedRequireme
               (($4::text IS NULL) OR p.rarity ILIKE '%' || $4 || '%') AND
               (($5::int IS NULL) OR p.rating >= $5) AND
               (($6::int IS NULL) OR p.rating <= $6) AND
-              p.is_active
+              p.is_active AND p.game_year = $7
         """,
         req.nation, req.league, req.club, req.rarity, req.rating_min, req.rating_max,
+        active_game_year(),
     )
     return [int(r["source_card_id"]) for r in rows]
 

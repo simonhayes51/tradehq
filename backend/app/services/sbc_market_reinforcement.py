@@ -10,6 +10,8 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional, Tuple
 
+from app.services.game_cycle import active_game_year
+
 MIN_MATCHED_CARDS = 10
 PRICE_CONFIRM_PCT = 3.0
 PRICE_CONFLICT_PCT = -3.0
@@ -44,11 +46,17 @@ async def _matching_ids(conn, resource_type: str, resource_value: str, *, limit:
     if resolved is None:
         return None
     clause, args = resolved
+    # This resource segment (a nation/league/rarity bucket) can only be
+    # solved with the CURRENT game's own cards - without this, a prior
+    # cycle's cards (kept queryable as historical/reference data, see
+    # game_cycle.py) would dilute the evidence with prices/sales that
+    # have nothing to do with this cycle's market.
     rows = await conn.fetch(
         f"SELECT m.source_card_id FROM futgg_market_snapshot m "
-        f"WHERE m.is_tradeable IS DISTINCT FROM FALSE AND m.current_bin IS NOT NULL AND {clause} "
-        f"ORDER BY m.source_card_id LIMIT ${len(args)+1}",
-        *args, int(limit),
+        f"WHERE m.is_tradeable IS DISTINCT FROM FALSE AND m.current_bin IS NOT NULL "
+        f"AND m.game_year = ${len(args)+1} AND {clause} "
+        f"ORDER BY m.source_card_id LIMIT ${len(args)+2}",
+        *args, active_game_year(), int(limit),
     )
     return [int(r["source_card_id"]) for r in rows]
 

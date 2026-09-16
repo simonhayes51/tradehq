@@ -29,6 +29,7 @@ import os
 
 import pytest
 
+from app.services.game_cycle import active_game_year
 from app.services.market_data_provider import FutggMarketDataProvider, PlayerFilters
 
 DB_URL = os.getenv("FUTGG_TEST_DATABASE_URL")
@@ -52,6 +53,12 @@ def sync(fn):
 
 async def _seed(conn):
     await conn.execute("DELETE FROM futgg_players WHERE source_card_id >= 9000")
+    # search_players() now filters to the active game cycle by default
+    # (see market_data_provider._apply_common_filters) - these rows must
+    # be seeded under that same year, not a year hardcoded from before
+    # that filter existed, or PlayerFilters(search=...) below would
+    # never see them at all.
+    game_year = active_game_year()
     for card_id, name, rating, tier in CARDS:
         await conn.execute(
             """
@@ -59,9 +66,9 @@ async def _seed(conn):
                 source_card_id, source_player_id, source_slug, source_url,
                 game_year, name, rating, primary_position, rarity,
                 price_tier, is_tradeable, price_updated_at, last_price_status
-            ) VALUES ($1,$1,'s','u',26,$2,$3,'ST','gold',$4,TRUE,now(),'bulk_feed')
+            ) VALUES ($1,$1,'s','u',$5,$2,$3,'ST','gold',$4,TRUE,now(),'bulk_feed')
             """,
-            card_id, name, rating, tier,
+            card_id, name, rating, tier, game_year,
         )
     await conn.execute("REFRESH MATERIALIZED VIEW futgg_market_snapshot")
 
@@ -80,6 +87,65 @@ async def _search(term, limit=10):
         return [(r["name"], r["rating"]) for r in rows]
     finally:
         await pool.close()
+
+
+# A card whose display_name/full_name genuinely differ from name - the
+# exact shape reported live: Vini Jr's name column carries the long-form
+# legal name FUT.GG scrapes, while display_name is what the UI (and
+# most users) actually search by.
+DISPLAY_NAME_CARDS = [
+    # (id, name, display_name, full_name, rating)
+    (9101, "Vinicius Jose de Oliveira Junior", "Vini Jr.", "Vinicius Jose de Oliveira Junior", 90),
+]
+
+
+async def _seed_display_name_cards(conn):
+    await conn.execute("DELETE FROM futgg_players WHERE source_card_id >= 9100")
+    game_year = active_game_year()
+    for card_id, name, display_name, full_name, rating in DISPLAY_NAME_CARDS:
+        await conn.execute(
+            """
+            INSERT INTO futgg_players (
+                source_card_id, source_player_id, source_slug, source_url,
+                game_year, name, display_name, full_name, rating,
+                primary_position, rarity, price_tier, is_tradeable,
+                price_updated_at, last_price_status
+            ) VALUES ($1,$1,'s','u',$6,$2,$3,$4,$5,'LW','gold','gold_rare',TRUE,now(),'bulk_feed')
+            """,
+            card_id, name, display_name, full_name, rating, game_year,
+        )
+    await conn.execute("REFRESH MATERIALIZED VIEW futgg_market_snapshot")
+
+
+@sync
+async def _search_display_name_cards(term, limit=10):
+    import asyncpg
+
+    pool = await asyncpg.create_pool(DB_URL, min_size=1, max_size=2)
+    try:
+        async with pool.acquire() as conn:
+            await _seed_display_name_cards(conn)
+        rows = await FutggMarketDataProvider(pool).search_players(
+            PlayerFilters(search=term), limit=limit, offset=0
+        )
+        return [r["display_name"] or r["name"] for r in rows]
+    finally:
+        await pool.close()
+
+
+class TestSearchMatchesDisplayNameAndFullName:
+    """Reported: searching "Vini Jr" returned nothing, because only
+    `name` (the long-form legal name FUT.GG scrapes) was ever checked -
+    not `display_name` (what the UI shows and most users type) or
+    `full_name`. All of these must find the same card."""
+
+    @pytest.mark.parametrize(
+        "term",
+        ["Vini", "Vini Jr", "Vini Jr.", "vini jr", "Vinicius", "Vinicius Junior"],
+    )
+    def test_finds_the_card_by_display_name_or_full_name(self, term):
+        results = _search_display_name_cards(term)
+        assert "Vini Jr." in results, (term, results)
 
 
 class TestSearchRelevance:
