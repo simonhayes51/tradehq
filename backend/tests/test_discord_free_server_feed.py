@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
+from unittest.mock import AsyncMock
 
+from app.routers import discord_interactions as interactions
+from app.services import discord_feed_billing as billing
+from app.services import discord_trading_feed as trading
 from app.services import discord_free_server_feed as free_feed
 from app.services.discord_commands.feed import FEED_COMMAND, PLAN_CHOICES
 
@@ -61,6 +65,45 @@ def test_trade_of_day_embed_is_branded_and_explicitly_shared():
     assert rendered_fields["BUY NOW"] == "**100,000** coins"
     assert rendered_fields["SELL TARGET"] == "**115,000** coins"
     assert rendered_fields["EVIDENCE"] == "Confirmed completed sales"
+
+
+def test_trade_of_day_payload_can_be_graded_for_a_result():
+    payload = free_feed._trade_payload(_candidate_row(), date(2026, 9, 9))
+    assert payload["free_trade_of_day"] is True
+    assert payload["name"] == "Example Player"
+    assert payload["buy_price"] == "100000"
+    assert payload["sell_target"] == "115000"
+    assert "buy" not in payload
+
+
+def test_free_sell_channel_uses_the_normal_channel_configuration(monkeypatch):
+    original_reply = AsyncMock(return_value={"content": "✅ result channel updated"})
+    original_daily = AsyncMock()
+    monkeypatch.setattr(interactions, "_build_feed_reply", original_reply)
+    monkeypatch.setattr(interactions, "_free_server_feed_installed", False, raising=False)
+    monkeypatch.setattr(trading, "publish_daily_overview", original_daily)
+    monkeypatch.setattr(
+        billing,
+        "get_guild_feed",
+        AsyncMock(return_value={"id": 1, "access_level": "free"}),
+    )
+
+    free_feed.install_free_server_feed()
+    options = [
+        {
+            "name": "sell_channel",
+            "options": [{"name": "channel", "value": "results-channel"}],
+        }
+    ]
+    payload = {
+        "guild_id": "guild-1",
+        "member": {"permissions": str(1 << 5)},
+        "data": {"name": "feed", "options": options},
+    }
+    reply = run(interactions._build_feed_reply(payload, options, "admin-1"))
+
+    assert reply["content"].startswith("✅")
+    original_reply.assert_awaited_once_with(payload, options, "admin-1")
 
 
 def test_candidate_selector_requires_confirmed_sales_and_quality_floor():
