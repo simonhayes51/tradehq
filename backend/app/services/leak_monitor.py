@@ -22,6 +22,34 @@ CARD_KEYWORDS = (
     "future stars", "team of the year", "toty", "team of the season", "tots",
     "futties", "flashback", "moments", "sbc", "objective", "evolution", "evo",
     "promo", "special card", "fc pro", "thunderstruck", "centurions", "foundations",
+    "pack", "packs",
+)
+
+# Discord/internal publishing is intentionally stricter than the timeline read.
+# We still read each tracked account once, but only content/leak signals are fanned out.
+CONTENT_SIGNAL_KEYWORDS = (
+    "totw", "team of the week", "icon", "hero", "rttk", "rttf", "toty", "tots",
+    "futties", "future stars", "winter wildcards", "trailblazers", "thunderstruck",
+    "centurions", "fc pro", "promo", "special card", "sbc", "objective", "evolution",
+    "evo", "pack", "packs", "player", "card",
+)
+LEAK_INTENT_KEYWORDS = (
+    "leak", "leaked", "leaks", "rumour", "rumor", "coming", "upcoming", "tonight",
+    "tomorrow", "confirmed", "expected", "releasing", "release", "drops", "dropping",
+    "will be", "set to", "next promo", "next team", "new sbc", "new objective",
+    "new evolution", "new evo", "new pack",
+)
+ADVERTISING_PHRASES = (
+    "join our", "join us", "our discord", "our group", "our server", "we offer",
+    "limited spots", "sign up", "subscribe", "subscription", "membership", "premium group",
+    "trading discord", "exclusive community", "giveaway", "giveaways", "max capacity",
+    "for the same price", "we've helped", "we have helped", "our fut content alerts",
+    "content alerts updates", "lists are ready", "make a million instead",
+)
+GENERAL_CHAT_PHRASES = (
+    "if they patch", "generational game", "defending is", "best years for the fut market",
+    "market inbound", "will rise like crazy", "champs", "rivals gameplay", "streamers = playing",
+    "web app =", "pc users =", "xbox users", "ps users",
 )
 
 # Common leaker formats: "91 Mbappe - TOTY", "Mbappe 91 TOTY", "91-rated Mbappe Icon".
@@ -46,9 +74,9 @@ class ParsedLeak:
 class LeakMonitor:
     """Single-read FC27 X leak monitor.
 
-    Each timeline response is processed once and fans out to:
-      1. a community-facing Discord webhook repost;
-      2. an internal structured leak signal with no source tweet exposed to product APIs.
+    Each timeline response is processed once. Only posts classified as useful
+    FC content/leak signals are fanned out to Discord and the internal pipeline.
+    Ordinary tweets, adverts, banter and generic market opinions are ignored.
     """
 
     def __init__(self) -> None:
@@ -143,6 +171,17 @@ class LeakMonitor:
                 if not tweets:
                     await conn.execute("UPDATE leak_sources SET last_polled_at=now(),updated_at=now() WHERE id=$1", source["id"])
                     continue
+
+                newest = max(tweets, key=lambda t: int(t["id"]))["id"]
+                if not source["last_tweet_id"]:
+                    # First contact is a baseline only. Do not dump an account's historical feed.
+                    await conn.execute(
+                        "UPDATE leak_sources SET last_tweet_id=$1,last_polled_at=now(),updated_at=now() WHERE id=$2",
+                        str(newest), source["id"],
+                    )
+                    log.info("baselined leak source @%s at tweet %s", source["username"], newest)
+                    continue
+
                 media_by_key = {m.get("media_key"): m for m in (payload.get("includes") or {}).get("media", [])}
                 # Oldest first so Discord order and since_id progression are deterministic.
                 tweets.sort(key=lambda t: int(t["id"]))
@@ -150,7 +189,6 @@ class LeakMonitor:
                     media_urls = self._media_urls(tweet, media_by_key)
                     if await self._ingest_tweet(conn, session, source, tweet, media_urls):
                         processed += 1
-                newest = max(tweets, key=lambda t: int(t["id"]))["id"]
                 await conn.execute(
                     "UPDATE leak_sources SET last_tweet_id=$1,last_polled_at=now(),updated_at=now() WHERE id=$2",
                     str(newest), source["id"],
@@ -203,6 +241,11 @@ class LeakMonitor:
                 parsed = fallback
 
         await conn.execute("UPDATE leak_tweets SET ocr_text=$1,parsed_at=now() WHERE tweet_id=$2", ocr_text or None, tweet_id)
+        relevant = self.is_relevant_content(combined, parsed)
+        if not relevant:
+            log.info("ignored non-leak tweet @%s/%s", username, tweet_id)
+            return True
+
         if parsed.useful:
             reliability = self._reliability_score(source, tweet.get("public_metrics") or {}, parsed.parse_confidence)
             tag = "high" if reliability >= 0.78 else "medium" if reliability >= 0.55 else "rumor"
@@ -225,8 +268,6 @@ class LeakMonitor:
                 json.dumps({"engagement": tweet.get("public_metrics") or {}, "ocr_used": bool(ocr_text)}),
             )
 
-        # Raw repost is deliberately a separate output from the internal signal.
-        # A Discord failure does not discard or re-read the X tweet.
         if self.discord_webhook:
             try:
                 await self._post_discord(session, username, text, tweet_url, media_urls)
@@ -273,6 +314,32 @@ class LeakMonitor:
             parse_method="regex",
             parse_confidence=min(confidence, 1.0),
         )
+
+    @classmethod
+    def is_relevant_content(cls, text: str, parsed: ParsedLeak) -> bool:
+        """Return True only for actionable FC content/leak posts.
+
+        Tracked accounts often mix leaks with adverts, banter and opinions. Those
+        posts are deliberately rejected before both Discord and internal signals.
+        """
+        cleaned = re.sub(r"https?://\S+", " ", text or "")
+        lowered = re.sub(r"\s+", " ", cleaned).strip().lower()
+        if not lowered:
+            return False
+        if any(phrase in lowered for phrase in ADVERTISING_PHRASES):
+            return False
+        if any(phrase in lowered for phrase in GENERAL_CHAT_PHRASES):
+            return False
+
+        has_content = bool(parsed.card_type) or any(k in lowered for k in CONTENT_SIGNAL_KEYWORDS)
+        has_intent = any(k in lowered for k in LEAK_INTENT_KEYWORDS)
+        concrete_player_card = bool(parsed.player_name and parsed.rating and parsed.card_type)
+
+        # A concrete named/rated special card is strong enough on its own.
+        if concrete_player_card:
+            return True
+        # Otherwise require both FC content and a forward-looking/leak/release cue.
+        return has_content and has_intent
 
     @staticmethod
     def _clean_player_name(value: str, card_type: Optional[str]) -> str:
@@ -389,9 +456,20 @@ class LeakMonitor:
             payload["avatar_url"] = self.discord_avatar_url
         if media_urls:
             payload["embeds"] = [{"image": {"url": media_urls[0]}, "footer": {"text": f"@{username}"}}]
-        async with session.post(self.discord_webhook, json=payload, timeout=aiohttp.ClientTimeout(total=20)) as resp:
-            if resp.status >= 400:
-                raise RuntimeError(f"Discord webhook {resp.status}: {(await resp.text())[:300]}")
+
+        for attempt in range(4):
+            async with session.post(self.discord_webhook, json=payload, timeout=aiohttp.ClientTimeout(total=20)) as resp:
+                if resp.status < 400:
+                    return
+                body = await resp.text()
+                if resp.status == 429 and attempt < 3:
+                    try:
+                        retry_after = float((json.loads(body) or {}).get("retry_after") or 1.0)
+                    except (ValueError, TypeError, json.JSONDecodeError):
+                        retry_after = 1.0
+                    await asyncio.sleep(max(0.25, retry_after) + 0.05)
+                    continue
+                raise RuntimeError(f"Discord webhook {resp.status}: {body[:300]}")
 
     async def run_discovery(self) -> int:
         pool = await get_core_pool()
@@ -412,6 +490,8 @@ class LeakMonitor:
                 users = {u.get("id"): u for u in (payload.get("includes") or {}).get("users", [])}
                 for tweet in payload.get("data") or []:
                     parsed = self.parse_regex(tweet.get("text") or "")
+                    if not self.is_relevant_content(tweet.get("text") or "", parsed):
+                        continue
                     if parsed.parse_confidence < 0.50:
                         continue
                     user = users.get(tweet.get("author_id")) or {}
