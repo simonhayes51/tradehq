@@ -1029,7 +1029,12 @@ def build_sale_rows(card_id: int, auctions: list[dict], captured_at: datetime) -
         key = (int(sold_at.timestamp()), price)
         occurrence = seen.get(key, 0) + 1
         seen[key] = occurrence
-        raw = f"{card_id}|{sold_at.isoformat()}|{price}|{occurrence}"
+        # PLATFORM is part of the fingerprint so a pc sale and a ps5 sale
+        # that otherwise collide (same card, same second, same price,
+        # same occurrence - plausible, these are separate markets with
+        # no reason to stay in sync) are never treated as the same row
+        # and deduped against each other via ON CONFLICT.
+        raw = f"{card_id}|{sold_at.isoformat()}|{price}|{occurrence}|{PLATFORM}"
         fingerprint = hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
         age_seconds = max(0, int((captured_at - sold_at).total_seconds()))
@@ -1038,7 +1043,7 @@ def build_sale_rows(card_id: int, auctions: list[dict], captured_at: datetime) -
             (
                 card_id, price, price, tax, price - tax, sold_at,
                 f"{age_seconds // 60} minutes ago", age_seconds,
-                position, occurrence, fingerprint, captured_at,
+                position, occurrence, fingerprint, captured_at, PLATFORM,
             )
         )
     return rows
@@ -1048,8 +1053,9 @@ _INSERT = """
 INSERT INTO futgg_sales_history (
     source_card_id, listed_price, sold_price, ea_tax, net_price,
     approximate_sold_at, source_age_text, source_age_seconds,
-    source_row_position, occurrence_index, source_fingerprint, captured_at
-) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+    source_row_position, occurrence_index, source_fingerprint, captured_at,
+    platform
+) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
 ON CONFLICT (source_fingerprint) DO NOTHING
 """
 
@@ -1834,6 +1840,19 @@ async def ensure_schema(conn: asyncpg.Connection) -> None:
             captured_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
         """))
+    # Defaults to 'ps5' (this worker's own PLATFORM default) so every
+    # pre-existing row - there has only ever been one platform's data in
+    # this table - stays correctly labelled. Lets a second instance of
+    # this worker (FUTGG_SALES_PLATFORM=pc) safely coexist: without this,
+    # a pc sale and a ps5 sale could collide on source_fingerprint (see
+    # build_sale_rows) and get silently deduped against each other via
+    # ON CONFLICT DO NOTHING, discarding a genuine sale.
+    if "platform" not in sales_columns:
+        needed.append((
+            "futgg_sales_history.platform",
+            "ALTER TABLE futgg_sales_history ADD COLUMN IF NOT EXISTS "
+            "platform TEXT NOT NULL DEFAULT 'ps5'",
+        ))
     # Both the snapshot view and the coverage query filter sales by card
     # and recency; without this they degrade to sequential scans once the
     # table passes a few million rows.
