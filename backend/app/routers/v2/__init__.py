@@ -24,6 +24,7 @@ from app.routers.v2.calibration import router as calibration_router
 from app.routers.v2.sales_shadow import router as sales_shadow_router
 from app.routers.v2.sbc_reinforcement import router as sbc_reinforcement_router
 from app.routers.v2.release_price_rises import router as release_price_rises_router
+from app.routers.v2.discord_feed_delivery import router as discord_feed_delivery_router
 
 router = APIRouter(prefix="/api/v2")
 router.include_router(health_router)
@@ -86,3 +87,7 @@ router.include_router(sbc_reinforcement_router)
 # additive - see that router's own docstring for how it differs from
 # market_event_study.py's cohort-median event study.
 router.include_router(release_price_rises_router)
+# Server Feed delivery settings (role pings). Importing this router also
+# installs the small delivery decorators that add platform labels and safe,
+# exact-role mentions without duplicating any of the trading-feed engine.
+router.include_router(discord_feed_delivery_router)
