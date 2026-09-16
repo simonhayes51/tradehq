@@ -285,6 +285,14 @@ async def seed_last_written(pool) -> int:
     DISTINCT ON shape futgg_market_snapshot uses and it is not cheap on a
     large table - running it every cycle to decide what to skip would
     cost more than the writes it saves.
+
+    Filtered to this process's own PLATFORM: one process handles exactly
+    one platform (see PLATFORM/DYN_MARKER above), so _last_written stays
+    correctly keyed by card_id alone - but the SEED must not pick up the
+    OTHER platform's latest row (e.g. a ps5 process starting up must not
+    seed from a more-recently-written pc row), or the very first
+    comparison after startup would be against the wrong platform's price
+    and could wrongly skip (or wrongly force) a write.
     """
     global _last_written_seeded
     async with pool.acquire() as conn:
@@ -294,8 +302,10 @@ async def seed_last_written(pool) -> int:
                    source_card_id, lowest_bin, captured_at
             FROM futgg_bin_history
             WHERE captured_at >= now() - make_interval(days => 2)
+              AND platform = $1
             ORDER BY source_card_id, captured_at DESC
-            """
+            """,
+            PLATFORM,
         )
     for row in rows:
         _last_written[int(row["source_card_id"])] = (
@@ -787,8 +797,8 @@ async def ingest_once(
                 # the round-trip cost the per-card path suffered from.
                 await conn.copy_records_to_table(
                     "futgg_bin_history",
-                    records=records,
-                    columns=["source_card_id", "lowest_bin", "captured_at"],
+                    records=[(cid, price, captured, PLATFORM) for cid, price, captured in records],
+                    columns=["source_card_id", "lowest_bin", "captured_at", "platform"],
                 )
                 # price_checked_at covers EVERY card the feed priced this
                 # cycle, including the ones whose price was unchanged and
@@ -806,6 +816,18 @@ async def ingest_once(
                 # last_price_status stays on `records` only. It describes
                 # how we obtained the price we hold, and skipping a write
                 # obtained nothing new to describe.
+                #
+                # KNOWN CAVEAT running a second PLATFORM instance (e.g.
+                # pc alongside this one's ps5): futgg_players itself has
+                # no per-platform columns, so whichever platform's
+                # worker last ran wins price_updated_at/price_checked_at/
+                # last_price_status here, even though futgg_bin_history
+                # (and the view's current_bin, pinned to platform='ps5'
+                # by migration 094) stays correct per platform. In
+                # practice this only blurs the *freshness metadata* by
+                # up to one cycle, never the price value itself - not
+                # worth splitting these columns per-platform unless that
+                # freshness precision turns out to matter.
                 await conn.execute(
                     """
                     UPDATE futgg_players p
