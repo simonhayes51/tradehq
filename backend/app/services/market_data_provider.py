@@ -809,11 +809,19 @@ class FutggMarketDataProvider(MarketDataProvider):
                       -- and the fair value it gates were computed over
                       -- different windows for the same card.
                       AND approximate_sold_at >= now() - interval '14 days'
+                      -- A source_card_id can collide across game years
+                      -- (migration 095 - confirmed live, not just Icons)
+                      -- and platform is a separate market entirely. Without
+                      -- these this batch loader fed evaluate_card() sales
+                      -- data from a completely unrelated card/market.
+                      AND game_year = $3
+                      AND platform = $4
                     ORDER BY approximate_sold_at DESC
                     LIMIT $2
                 ) s
                 """,
                 list(card_ids), max(1, min(limit_per_card, MAX_RECENT_SALES)),
+                active_game_year(), "ps5",
             )
         out: Dict[int, List[Dict[str, Any]]] = {}
         for row in rows:

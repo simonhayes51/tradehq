@@ -59,7 +59,7 @@ SELECT
     c.bin_volatility              AS rec_bin_volatility,
     c.evidence_age_minutes        AS rec_evidence_age_minutes
 FROM futgg_current_intelligence c
-JOIN futgg_market_snapshot m ON m.source_card_id = c.source_card_id
+JOIN futgg_market_snapshot m ON m.source_card_id = c.source_card_id AND m.game_year = c.game_year
 WHERE m.is_tradeable IS DISTINCT FROM FALSE
   AND m.current_bin IS NOT NULL
   AND m.current_bin = c.current_bin

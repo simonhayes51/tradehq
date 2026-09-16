@@ -25,7 +25,7 @@ log = logging.getLogger("discord_current_state_overrides")
 _CURRENT_OPEN_COUNT_SQL = """
 SELECT COUNT(*)
 FROM futgg_current_intelligence c
-JOIN futgg_market_snapshot m ON m.source_card_id = c.source_card_id
+JOIN futgg_market_snapshot m ON m.source_card_id = c.source_card_id AND m.game_year = c.game_year
 WHERE c.signal IN ('buy', 'strong_buy')
   AND c.status NOT IN ('expired', 'invalidated')
   AND (c.expires_at IS NULL OR c.expires_at > NOW())
@@ -52,8 +52,10 @@ WITH last_digest AS (
     FROM futgg_intelligence_transitions transition
     JOIN futgg_current_intelligence current
       ON current.source_card_id = transition.source_card_id
+     AND current.game_year = transition.game_year
     JOIN futgg_market_snapshot market
       ON market.source_card_id = transition.source_card_id
+     AND market.game_year = transition.game_year
     CROSS JOIN last_digest
     WHERE transition.new_signal IN ('buy', 'strong_buy')
       AND (

@@ -55,6 +55,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from app.services.game_cycle import active_game_year
+
 # =============================================================================
 # Market states
 # =============================================================================
@@ -494,6 +496,14 @@ _OBSERVATIONS_QUERY = """
         FROM futgg_bin_history
         WHERE source_card_id = ids.card_id
           AND captured_at >= now() - make_interval(days => $2)
+          -- A source_card_id can collide across game years (e.g. an FC26
+          -- and FC27 card sharing the same numeric id) and platform column
+          -- carries console vs PC feeds separately. Without these two
+          -- filters this batch loader silently mixed an unrelated card's
+          -- (or platform's) history into evaluate_card()'s fair-value
+          -- computation for the card actually being scored.
+          AND game_year = $4
+          AND platform = $5
         ORDER BY captured_at DESC
         LIMIT $3
     ) h
@@ -517,7 +527,15 @@ async def load_bin_observations(
     if not ids:
         return {}
     async with pool.acquire() as conn:
-        rows = await conn.fetch(_OBSERVATIONS_QUERY, ids, int(days), int(limit_per_card))
+        rows = await conn.fetch(
+            _OBSERVATIONS_QUERY, ids, int(days), int(limit_per_card),
+            # Pinned to console, mirroring futgg_market_snapshot (migration
+            # 094/095) - the live product is console-priced; PC capture is
+            # not yet live, so pinning here keeps this consistent rather
+            # than silently picking whichever platform happened to write
+            # last.
+            active_game_year(), "ps5",
+        )
     out: Dict[int, List[Tuple[int, datetime]]] = {}
     for row in rows:
         out.setdefault(int(row["source_card_id"]), []).append(

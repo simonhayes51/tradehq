@@ -23,10 +23,13 @@ log = logging.getLogger("intelligence_health")
 # silver and bronze are intentionally excluded from the scanner because their
 # coin values cannot produce useful trades after tax/noise. Health percentages
 # must therefore use the scanner-eligible pool, not the whole tradeable catalogue.
-_SCANNER_ELIGIBLE_PLAYER_WHERE = """
+from app.services.game_cycle import active_game_year
+
+_SCANNER_ELIGIBLE_PLAYER_WHERE = f"""
     p.is_active
     AND p.is_tradeable IS DISTINCT FROM FALSE
     AND p.price_tier NOT IN ('silver', 'bronze')
+    AND p.game_year = {active_game_year()}
 """
 
 
@@ -74,7 +77,7 @@ async def intelligence_health(
                     min(ci.evaluated_at) AS oldest_evaluated_at,
                     EXTRACT(EPOCH FROM (now() - max(ci.evaluated_at))) / 60.0 AS newest_age_minutes
                 FROM futgg_current_intelligence ci
-                JOIN futgg_players p ON p.source_card_id = ci.source_card_id
+                JOIN futgg_players p ON p.source_card_id = ci.source_card_id AND p.game_year = ci.game_year
                 WHERE {_SCANNER_ELIGIBLE_PLAYER_WHERE}
                 """
             )
@@ -85,7 +88,7 @@ async def intelligence_health(
                 f"""
                 SELECT ci.signal, count(*) AS card_count
                 FROM futgg_current_intelligence ci
-                JOIN futgg_players p ON p.source_card_id = ci.source_card_id
+                JOIN futgg_players p ON p.source_card_id = ci.source_card_id AND p.game_year = ci.game_year
                 WHERE {_SCANNER_ELIGIBLE_PLAYER_WHERE}
                 GROUP BY ci.signal
                 ORDER BY ci.signal
