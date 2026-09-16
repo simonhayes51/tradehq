@@ -38,6 +38,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import asyncpg
 
 from app.services.bin_market_signal import load_bin_observations
+from app.services.game_cycle import active_game_year
 from app.services.priority_config import PRIORITY_ENGINE_CONFIG
 from app.services.priority_config import TIERS as PRIORITY_TIERS
 
@@ -440,11 +441,25 @@ class PlayerFilters:
     min_price: Optional[int] = None
     max_price_age_minutes: Optional[int] = None
     tradeable_only: bool = True
+    #: None means "the active game cycle" (app/services/game_cycle.py),
+    #: resolved in _apply_common_filters rather than defaulted here so it
+    #: always reflects EAFC_GAME_YEAR at query time, not at import time.
+    #: An explicit value overrides it - e.g. an admin/research tool that
+    #: deliberately wants to look at a prior cycle's cards.
+    game_year: Optional[int] = None
 
 
 def _apply_common_filters(
     where: List[str], args: List[Any], f: PlayerFilters
 ) -> None:
+    # Player search/list surfaces show one game cycle at a time - without
+    # this, a prior cycle's cards (kept in futgg_market_snapshot as
+    # queryable historical/reference data, never deleted - see
+    # app/services/game_cycle.py) show up alongside the current cycle's,
+    # which is confusing at best and at worst returns the WRONG card for
+    # a name/rating combination that exists in both years.
+    args.append(f.game_year if f.game_year is not None else active_game_year())
+    where.append(f"game_year = ${len(args)}")
     if f.tradeable_only:
         where.append("is_tradeable IS NOT FALSE")
     if f.rating_min is not None:
