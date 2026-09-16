@@ -1362,6 +1362,13 @@ async def select_due(conn: asyncpg.Connection) -> list[asyncpg.Record]:
     defaulting to NORMAL for an unscored card) so apply_batch_results()
     can schedule the NEXT read against the same tier this one was
     selected under, via sales_interval_minutes().
+
+    Both queries below are scoped to GAME_YEAR. Without it, this would
+    also select from a prior cycle's cards - futgg_players.is_active
+    stays TRUE for them forever (kept queryable as historical/reference
+    data, see backend/app/services/game_cycle.py) - splitting this
+    worker's fixed per-cycle SELECT_LIMIT between the live catalogue and
+    a game nobody is generating new sales for, for no benefit.
     """
     guaranteed: list[asyncpg.Record] = []
     guaranteed_ids: list[int] = []
@@ -1378,6 +1385,7 @@ async def select_due(conn: asyncpg.Connection) -> list[asyncpg.Record]:
             LEFT JOIN card_priority cp ON cp.card_id = futgg_players.source_card_id
             WHERE is_active
               AND is_tradeable IS DISTINCT FROM FALSE
+              AND game_year = $2
               AND (next_sales_due_at IS NULL OR next_sales_due_at <= NOW())
               AND {_TIER_WHERE[tier]}
             ORDER BY
@@ -1386,7 +1394,7 @@ async def select_due(conn: asyncpg.Connection) -> list[asyncpg.Record]:
                 rating DESC NULLS LAST
             LIMIT $1
             """,
-            floor,
+            floor, int(GAME_YEAR),
         )
         guaranteed.extend(rows)
         guaranteed_ids.extend(int(r["source_card_id"]) for r in rows)
@@ -1404,6 +1412,7 @@ async def select_due(conn: asyncpg.Connection) -> list[asyncpg.Record]:
         LEFT JOIN card_priority cp ON cp.card_id = futgg_players.source_card_id
         WHERE is_active
           AND is_tradeable IS DISTINCT FROM FALSE
+          AND game_year = $3
           AND (next_sales_due_at IS NULL OR next_sales_due_at <= NOW())
           AND NOT (source_card_id = ANY($1::bigint[]))
         ORDER BY
@@ -1423,6 +1432,7 @@ async def select_due(conn: asyncpg.Connection) -> list[asyncpg.Record]:
         """,
         guaranteed_ids,
         remaining,
+        int(GAME_YEAR),
     )
     return guaranteed + list(overflow)
 

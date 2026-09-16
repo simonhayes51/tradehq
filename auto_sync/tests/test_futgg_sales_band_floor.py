@@ -91,7 +91,7 @@ class FakeConn:
         rows = list(self.population)
 
         if "NOT (source_card_id = ANY($1::bigint[]))" in sql:
-            excluded, limit = args
+            excluded, limit, _game_year = args
             excluded_set = set(excluded)
             rows = [r for r in rows if r["source_card_id"] not in excluded_set]
             rows.sort(key=lambda r: (
@@ -104,7 +104,7 @@ class FakeConn:
         # A per-tier query: find which tier's WHERE fragment is present.
         for tier, condition in sales._TIER_WHERE.items():
             if condition in sql:
-                (limit,) = args
+                limit, _game_year = args
                 tier_rows = [r for r in rows if r["effective_tier"] == tier]
                 tier_rows.sort(key=lambda r: (
                     r["sales_first_read_at"] is not None,
