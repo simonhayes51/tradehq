@@ -69,7 +69,6 @@ CREATE INDEX IF NOT EXISTS idx_leak_signals_player
 CREATE INDEX IF NOT EXISTS idx_leak_signals_unconfirmed
     ON leak_signals(created_at DESC) WHERE confirmed IS NULL;
 
--- Discovery candidates are deliberately kept separate from core sources.
 CREATE TABLE IF NOT EXISTS leak_discovery_candidates (
     id BIGSERIAL PRIMARY KEY,
     x_user_id TEXT,
@@ -84,9 +83,8 @@ CREATE TABLE IF NOT EXISTS leak_discovery_candidates (
     promoted_at TIMESTAMPTZ
 );
 
--- Internal-only helper view for Trade Finder / Opportunities.
--- It deliberately excludes tweet text, tweet URLs and media URLs so product
--- consumers never receive or display the source tweet.
+-- Internal-only helper view for Trade Finder / Opportunities. It deliberately
+-- excludes tweet text, tweet URLs, source account and media URLs.
 CREATE OR REPLACE VIEW active_leak_signals AS
 SELECT
     ls.id,
@@ -103,3 +101,12 @@ SELECT
 FROM leak_signals ls
 WHERE ls.created_at >= now() - interval '14 days'
   AND COALESCE(ls.confirmed, TRUE) IS TRUE;
+
+-- Feed structured context into the existing mutable intelligence pipeline.
+-- Normal scanner upserts do not need to know about the source tweet and can
+-- leave this column untouched.
+ALTER TABLE futgg_current_intelligence
+    ADD COLUMN IF NOT EXISTS leak_context JSONB NOT NULL DEFAULT '{}'::jsonb;
+
+CREATE INDEX IF NOT EXISTS futgg_current_intelligence_leak_context_idx
+    ON futgg_current_intelligence USING GIN (leak_context);
