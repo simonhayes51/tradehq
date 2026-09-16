@@ -286,12 +286,14 @@ async def seed_last_written(pool) -> int:
     large table - running it every cycle to decide what to skip would
     cost more than the writes it saves.
 
-    Filtered to this process's own PLATFORM: one process handles exactly
-    one platform (see PLATFORM/DYN_MARKER above), so _last_written stays
-    correctly keyed by card_id alone - but the SEED must not pick up the
-    OTHER platform's latest row (e.g. a ps5 process starting up must not
-    seed from a more-recently-written pc row), or the very first
-    comparison after startup would be against the wrong platform's price
+    Filtered to this process's own PLATFORM and GAME_YEAR: one process
+    handles exactly one of each (see PLATFORM/DYN_MARKER/GAME_YEAR
+    above), so _last_written stays correctly keyed by card_id alone -
+    but the SEED must not pick up a DIFFERENT platform's or game year's
+    latest row for the same numeric card id (a real, confirmed
+    collision - see migration 095's own comment, an ordinary card
+    reusing a source_card_id across FC26/FC27), or the very first
+    comparison after startup would be against the wrong price entirely
     and could wrongly skip (or wrongly force) a write.
     """
     global _last_written_seeded
@@ -303,9 +305,10 @@ async def seed_last_written(pool) -> int:
             FROM futgg_bin_history
             WHERE captured_at >= now() - make_interval(days => 2)
               AND platform = $1
+              AND game_year = $2
             ORDER BY source_card_id, captured_at DESC
             """,
-            PLATFORM,
+            PLATFORM, GAME_YEAR,
         )
     for row in rows:
         _last_written[int(row["source_card_id"])] = (
@@ -797,8 +800,8 @@ async def ingest_once(
                 # the round-trip cost the per-card path suffered from.
                 await conn.copy_records_to_table(
                     "futgg_bin_history",
-                    records=[(cid, price, captured, PLATFORM) for cid, price, captured in records],
-                    columns=["source_card_id", "lowest_bin", "captured_at", "platform"],
+                    records=[(cid, price, captured, PLATFORM, GAME_YEAR) for cid, price, captured in records],
+                    columns=["source_card_id", "lowest_bin", "captured_at", "platform", "game_year"],
                 )
                 # price_checked_at covers EVERY card the feed priced this
                 # cycle, including the ones whose price was unchanged and

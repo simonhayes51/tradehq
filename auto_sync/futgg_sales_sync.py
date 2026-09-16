@@ -1029,12 +1029,17 @@ def build_sale_rows(card_id: int, auctions: list[dict], captured_at: datetime) -
         key = (int(sold_at.timestamp()), price)
         occurrence = seen.get(key, 0) + 1
         seen[key] = occurrence
-        # PLATFORM is part of the fingerprint so a pc sale and a ps5 sale
-        # that otherwise collide (same card, same second, same price,
-        # same occurrence - plausible, these are separate markets with
-        # no reason to stay in sync) are never treated as the same row
-        # and deduped against each other via ON CONFLICT.
-        raw = f"{card_id}|{sold_at.isoformat()}|{price}|{occurrence}|{PLATFORM}"
+        # PLATFORM and GAME_YEAR are both part of the fingerprint so a
+        # sale on a different platform or a different game cycle that
+        # otherwise collides (same card id, same second, same price,
+        # same occurrence) is never treated as the same row and deduped
+        # against it via ON CONFLICT. GAME_YEAR matters here for the
+        # same reason migration 095 added it to the table itself: a
+        # source_card_id can genuinely be shared by an FC26 and an FC27
+        # card (confirmed live, not just Icons - see that migration's
+        # comment), and this worker only ever runs one game year at a
+        # time, but the numeric id alone can't tell two years apart.
+        raw = f"{card_id}|{sold_at.isoformat()}|{price}|{occurrence}|{PLATFORM}|{GAME_YEAR}"
         fingerprint = hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
         age_seconds = max(0, int((captured_at - sold_at).total_seconds()))
@@ -1044,6 +1049,7 @@ def build_sale_rows(card_id: int, auctions: list[dict], captured_at: datetime) -
                 card_id, price, price, tax, price - tax, sold_at,
                 f"{age_seconds // 60} minutes ago", age_seconds,
                 position, occurrence, fingerprint, captured_at, PLATFORM,
+                int(GAME_YEAR),
             )
         )
     return rows
@@ -1054,8 +1060,8 @@ INSERT INTO futgg_sales_history (
     source_card_id, listed_price, sold_price, ea_tax, net_price,
     approximate_sold_at, source_age_text, source_age_seconds,
     source_row_position, occurrence_index, source_fingerprint, captured_at,
-    platform
-) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+    platform, game_year
+) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
 ON CONFLICT (source_fingerprint) DO NOTHING
 """
 
@@ -1852,6 +1858,18 @@ async def ensure_schema(conn: asyncpg.Connection) -> None:
             "futgg_sales_history.platform",
             "ALTER TABLE futgg_sales_history ADD COLUMN IF NOT EXISTS "
             "platform TEXT NOT NULL DEFAULT 'ps5'",
+        ))
+    # Confirmed live (see migration 095): a source_card_id can be shared
+    # by an FC26 and an FC27 card - not just Icons, ordinary cards too -
+    # and without this column futgg_market_snapshot's per-year LATERAL
+    # join pulled the exact same sales rows for both years. Defaults to
+    # 27 for the same reason migration 095 does: every row this worker
+    # has ever written was written under FUTGG_GAME_YEAR=27.
+    if "game_year" not in sales_columns:
+        needed.append((
+            "futgg_sales_history.game_year",
+            "ALTER TABLE futgg_sales_history ADD COLUMN IF NOT EXISTS "
+            "game_year SMALLINT NOT NULL DEFAULT 27",
         ))
     # Both the snapshot view and the coverage query filter sales by card
     # and recency; without this they degrade to sequential scans once the
