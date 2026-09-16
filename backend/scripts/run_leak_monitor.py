@@ -4,6 +4,7 @@ import asyncio
 import logging
 import time
 
+from app.services.leak_accuracy import auto_confirm_shipped_cards
 from app.services.leak_monitor import LeakMonitor
 from app.services.leak_pipeline_bridge import sync_leak_context
 
@@ -23,9 +24,15 @@ async def main() -> None:
         started = time.monotonic()
         try:
             processed = await monitor.poll_once()
+            confirmed = await auto_confirm_shipped_cards()
             bridged = await sync_leak_context()
-            if processed or bridged:
-                log.info("leak cycle processed=%s bridged=%s", processed, bridged)
+            if processed or confirmed or bridged:
+                log.info(
+                    "leak cycle processed=%s confirmed=%s bridged=%s",
+                    processed,
+                    confirmed,
+                    bridged,
+                )
 
             if (
                 monitor.discovery_enabled
