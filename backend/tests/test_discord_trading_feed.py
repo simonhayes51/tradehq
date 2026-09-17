@@ -491,6 +491,12 @@ def test_publish_live_opportunities_posts_only_one_per_call(monkeypatch):
     assert fake_client.post_embed.await_count == 1
 
 
+def test_card_repost_cooldown_is_one_rolling_day():
+    from app.services.discord_trading_feed import CARD_REPOST_COOLDOWN_MINUTES
+
+    assert CARD_REPOST_COOLDOWN_MINUTES == 1440
+
+
 def test_publish_live_opportunities_skips_a_card_posted_too_recently(monkeypatch):
     """Regression test: the same card (e.g. Marcelo) qualifying again a
     few minutes later with a slightly different current_executable_buy
