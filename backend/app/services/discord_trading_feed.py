@@ -272,10 +272,10 @@ async def _last_opportunity_post_at(conn, server_id: int) -> Optional[datetime]:
 # Vieira da Silva posted at 18:15 with BUY 75,500, then again at 18:36 -
 # 21 minutes later, past a 15-minute cooldown - with BUY 77,000). This is
 # a separate guard from that per-server cooldown: it stops any one card
-# from reoccupying the feed until enough time has passed that a repeat
-# posting is actually useful, regardless of how many times its price
-# ticked in between.
-CARD_REPOST_COOLDOWN_MINUTES = 240
+# from reoccupying the feed for a rolling 24-hour period, regardless of
+# how many times its price ticked in between. This also prevents one card
+# consuming multiple slots from a server's limited daily allowance.
+CARD_REPOST_COOLDOWN_MINUTES = 1440
 
 
 async def _recently_posted_card_ids(conn, server_id: int, card_ids: Iterable[Any]) -> set[int]:
