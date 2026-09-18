@@ -648,6 +648,68 @@ async def harvest_feed(page, url: str) -> dict[str, Any]:
                 )
             except asyncio.TimeoutError:
                 log.warning("timed out reading %d captured responses", len(pending))
+
+        # Fallback: construct the feed URL ourselves from manifest.json's
+        # own logical-name -> hash mapping and fetch it directly, rather
+        # than only ever waiting for the page's own client script to
+        # request it. Confirmed live 2026-09-18: manifest.json's
+        # player-prices-index/player-prices-{PLATFORM}-dyn entries carry
+        # a hash that visibly rotates cycle to cycle, proving FUT.GG is
+        # actively regenerating both feeds right now - the feed is not
+        # gone, the page just stopped being the thing that asks for it.
+        # TRANSPORT above documents that a request for this same file
+        # family from OUTSIDE a loaded fut.gg page (plain HTTP, or
+        # Playwright's APIRequestContext with matching origin/referer
+        # headers) always 403s, and that an in-page fetch() was ALSO
+        # found to fail CORS - but that finding predates having a correct
+        # hash to test with, and did not specify whether it was tried
+        # from a page genuinely navigated to fut.gg first (same real
+        # Origin header) or from a synthetic/blank context. Worth one
+        # real attempt now that a correct current hash is in hand, on
+        # the exact page instance already open here - cheap, and the
+        # result (CORS block vs. a clean 200) settles the question either
+        # way instead of leaving it assumed.
+        fallback_status: dict[str, str] = {}
+        manifest_body_for_fallback = manifest_holder.get("body")
+        if isinstance(manifest_body_for_fallback, dict):
+            for key, logical_name in (
+                (INDEX_MARKER, "player-prices-index"),
+                (DYN_MARKER, f"player-prices-{PLATFORM}-dyn"),
+            ):
+                if captured.get(key) is not None:
+                    continue
+                file_hash = manifest_body_for_fallback.get(logical_name)
+                if not file_hash:
+                    fallback_status[key] = "logical_name_not_in_manifest"
+                    continue
+                fetch_url = f"https://r2.fut.gg/{GAME_YEAR}/{logical_name}.v1.{file_hash}.json"
+                try:
+                    result = await page.evaluate(
+                        """async (url) => {
+                            try {
+                                const res = await fetch(url, { credentials: 'omit' });
+                                const text = await res.text();
+                                return { ok: res.ok, status: res.status, text: text.slice(0, res.ok ? undefined : 300) };
+                            } catch (e) {
+                                return { ok: false, error: String(e && e.message ? e.message : e) };
+                            }
+                        }""",
+                        fetch_url,
+                    )
+                except Exception as exc:
+                    fallback_status[key] = f"evaluate_exception:{exc}"
+                    continue
+                if result.get("ok"):
+                    try:
+                        captured[key] = json.loads(result["text"])
+                        captured[f"{key}__url"] = fetch_url
+                        captured[f"{key}__bytes"] = len(result["text"])
+                        fallback_status[key] = "success_via_manifest_hash_direct_fetch"
+                    except Exception:
+                        fallback_status[key] = "malformed_json"
+                else:
+                    fallback_status[key] = f"status={result.get('status')} error={result.get('error')}"
+
         # Diagnostics only - never affects what gets applied to the DB.
         # Populated unconditionally (cheap) so a failure log can explain
         # itself without a separate manual futgg_discover.py run.
@@ -669,6 +731,7 @@ async def harvest_feed(page, url: str) -> dict[str, Any]:
         captured["__diag"] = {
             "dismissed_early": dismissed_early,
             "dismissed_late": dismissed_late,
+            "fallback_status": fallback_status,
             "fut_gg_responses_seen": len(seen_urls),
             "r2_fut_gg_urls_seen": r2_urls,
             "other_platform_dyn_seen": other_platform_dyn_seen,
