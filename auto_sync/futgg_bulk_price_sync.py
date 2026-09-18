@@ -551,6 +551,8 @@ async def harvest_feed(page, url: str) -> dict[str, Any]:
     pending: list[asyncio.Task] = []
     seen_urls: list[str] = []
 
+    manifest_holder: dict[str, Any] = {}
+
     async def read(response, key: str) -> None:
         try:
             body = await response.body()
@@ -560,11 +562,28 @@ async def harvest_feed(page, url: str) -> dict[str, Any]:
         except Exception:
             log.warning("could not read %s", key, exc_info=True)
 
+    async def read_manifest(response) -> None:
+        # manifest.json is passively fetchable this same way even though
+        # TRANSPORT above found it 403s on every direct request - it was
+        # never the fetch mechanism that made it unusable, only requesting
+        # it ourselves. Reading its actual current content (rather than
+        # guessing at INDEX_MARKER/DYN_MARKER) tells a capture failure
+        # apart precisely: still named "player-prices-*" but not requested
+        # by this page, versus genuinely renamed/restructured on FUT.GG's
+        # side, without needing a separate manual investigation.
+        try:
+            manifest_holder["body"] = json.loads(await response.body())
+        except Exception:
+            log.warning("could not read manifest.json body", exc_info=True)
+
     def on_response(response) -> None:
         if "fut.gg" in response.url and len(seen_urls) < 200:
             seen_urls.append(f"{response.status} {response.url}")
         if response.status != 200:
             return
+        if response.url.endswith("manifest.json") and "manifest" not in manifest_holder:
+            manifest_holder["manifest"] = True
+            pending.append(asyncio.ensure_future(read_manifest(response)))
         for marker in (INDEX_MARKER, DYN_MARKER):
             # Substring match: the content hash changes on every
             # republish, so an exact URL match would silently stop
@@ -621,12 +640,23 @@ async def harvest_feed(page, url: str) -> dict[str, Any]:
         # fired, rather than leaving "was it ever requested at all" to be
         # inferred from a truncated sample.
         r2_urls = [u for u in seen_urls if "r2.fut.gg" in u]
+        manifest_body = manifest_holder.get("body")
+        manifest_price_entries: dict[str, Any] = {}
+        if isinstance(manifest_body, dict):
+            manifest_price_entries = {
+                k: v for k, v in manifest_body.items() if "price" in str(k).lower()
+            }
         captured["__diag"] = {
             "dismissed_early": dismissed_early,
             "dismissed_late": dismissed_late,
             "fut_gg_responses_seen": len(seen_urls),
             "r2_fut_gg_urls_seen": r2_urls,
             "sample_urls": seen_urls[:20],
+            "manifest_captured": manifest_body is not None,
+            "manifest_top_level_keys": (
+                list(manifest_body)[:60] if isinstance(manifest_body, dict) else None
+            ),
+            "manifest_price_entries": manifest_price_entries,
             **(await _probe_capture_failure(page)),
         }
         return captured
