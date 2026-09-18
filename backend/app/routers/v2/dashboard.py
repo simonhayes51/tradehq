@@ -906,7 +906,23 @@ async def get_dashboard(
     # --- Latest market events + SBC impact ---
     async with player_pool.acquire() as conn:
         event_rows = await conn.fetch(
-            "SELECT id, kind, source, title, starts_at, ends_at, first_seen_at FROM market_events ORDER BY first_seen_at DESC LIMIT 6"
+            # Ticker renders every row as "<kind> live now" (see
+            # HomeDashboard.jsx's eventTickerRow) - an event whose ends_at
+            # has already passed is not live, whatever ingested it or
+            # whichever year it's actually from. Confirmed live: expired
+            # SBCs from a stale crawl (source='easysbc', still pointed at
+            # last year's API - see easysbc_sbc_sync.py) kept surfacing as
+            # "SBC live now" indefinitely because first_seen_at ordering
+            # alone never re-checks whether an event is still current.
+            # ends_at IS NULL is kept in, not excluded, because a
+            # repeatable/no-expiry SBC genuinely has no end date - that is
+            # not the same thing as an expired one.
+            """
+            SELECT id, kind, source, title, starts_at, ends_at, first_seen_at
+            FROM market_events
+            WHERE ends_at IS NULL OR ends_at > now()
+            ORDER BY first_seen_at DESC LIMIT 6
+            """
         )
         # HAVING gates out noise, not just low sample size: an SBC with a
         # real, measured price effect on the cards it draws on is worth

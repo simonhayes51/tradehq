@@ -80,7 +80,13 @@ if not DATABASE_URL:
 BASE_URL = "https://www.futbin.com"
 
 # Only use the ALL page. The other URLs are filters over the same dataset.
-LISTING_URL = f"{BASE_URL}/26/squad-building-challenges"
+# Year segment kept in sync with FUTGG_GAME_YEAR (default 27, the current
+# cycle) - same fix as easysbc_sbc_sync.py's API_BASE, for the same reason:
+# this was hardcoded to /26/ from when it was written against FC26 and
+# would otherwise keep listing last year's SBCs even after this worker
+# becomes usable again (see this file's own module docstring for why it
+# isn't right now - Cloudflare, not the year).
+LISTING_URL = f"{BASE_URL}/{os.getenv('FUTGG_GAME_YEAR', '27')}/squad-building-challenges"
 
 REQUEST_DELAY_SECONDS = float(
     os.getenv("SBC_REQUEST_DELAY_SECONDS", "8")
