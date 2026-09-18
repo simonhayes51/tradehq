@@ -498,6 +498,43 @@ async def _dismiss_consent_overlay(page) -> bool:
         return False
 
 
+#: Probed on the page after a failed capture to tell apart, without a
+#: separate manual futgg_discover.py run, the handful of distinct causes
+#: that all produce the same "index=False dyn=False" symptom: a consent
+#: overlay we failed to clear, a bot-challenge/interstitial page, or FUT.GG
+#: genuinely no longer making the request this page load (asset naming or
+#: transport changed). Kept deliberately small - this runs in the hot
+#: cycle path, not a diagnostic-only tool.
+_CHALLENGE_MARKERS = (
+    "just a moment", "checking your browser", "verify you are human",
+    "enable javascript and cookies", "attention required",
+)
+
+
+async def _probe_capture_failure(page) -> dict[str, Any]:
+    try:
+        return await page.evaluate(
+            """
+            () => {
+                const body = (document.body ? document.body.innerText : '').toLowerCase();
+                const wrapper = document.querySelector('#cmpwrapper');
+                return {
+                    title: document.title,
+                    body_text_length: body.length,
+                    cmpwrapper_present: !!wrapper,
+                    cmpwrapper_visible: wrapper
+                        ? (wrapper.offsetParent !== null && getComputedStyle(wrapper).display !== 'none')
+                        : false,
+                    challenge_markers: %s.filter(m => body.includes(m)),
+                };
+            }
+            """ % json.dumps(list(_CHALLENGE_MARKERS))
+        )
+    except Exception:
+        log.warning("capture-failure probe itself failed", exc_info=True)
+        return {}
+
+
 async def harvest_feed(page, url: str) -> dict[str, Any]:
     """Load `url` and read the bulk feed off the wire.
 
@@ -506,6 +543,7 @@ async def harvest_feed(page, url: str) -> dict[str, Any]:
     on the same warm page/context either way."""
     captured: dict[str, Any] = {}
     pending: list[asyncio.Task] = []
+    seen_urls: list[str] = []
 
     async def read(response, key: str) -> None:
         try:
@@ -517,6 +555,8 @@ async def harvest_feed(page, url: str) -> dict[str, Any]:
             log.warning("could not read %s", key, exc_info=True)
 
     def on_response(response) -> None:
+        if "fut.gg" in response.url and len(seen_urls) < 200:
+            seen_urls.append(f"{response.status} {response.url}")
         if response.status != 200:
             return
         for marker in (INDEX_MARKER, DYN_MARKER):
@@ -538,12 +578,12 @@ async def harvest_feed(page, url: str) -> dict[str, Any]:
         # gating the client-side fetch that triggers the bulk feed
         # request, every millisecond it stays up eats into the hydration
         # wait below for nothing.
-        await _dismiss_consent_overlay(page)
+        dismissed_early = await _dismiss_consent_overlay(page)
         # The feed is requested during hydration, after domcontentloaded.
         # Some CMPs mount their overlay slightly after this point, so
         # check again partway through the wait rather than only once.
         await page.wait_for_timeout(HYDRATION_WAIT_MS // 2)
-        await _dismiss_consent_overlay(page)
+        dismissed_late = await _dismiss_consent_overlay(page)
         await page.wait_for_timeout(HYDRATION_WAIT_MS - HYDRATION_WAIT_MS // 2)
         if pending:
             try:
@@ -552,6 +592,16 @@ async def harvest_feed(page, url: str) -> dict[str, Any]:
                 )
             except asyncio.TimeoutError:
                 log.warning("timed out reading %d captured responses", len(pending))
+        # Diagnostics only - never affects what gets applied to the DB.
+        # Populated unconditionally (cheap) so a failure log can explain
+        # itself without a separate manual futgg_discover.py run.
+        captured["__diag"] = {
+            "dismissed_early": dismissed_early,
+            "dismissed_late": dismissed_late,
+            "fut_gg_responses_seen": len(seen_urls),
+            "sample_urls": seen_urls[:20],
+            **(await _probe_capture_failure(page)),
+        }
         return captured
     finally:
         try:
@@ -605,9 +655,9 @@ async def rediscover(page, *, attempt: int, max_attempts: int) -> dict[str, Any]
                 "rediscovery FAILED (attempt %d/%d) - FUTGG_DISCOVER_URL=%s "
                 "did not yield the feed either (index=%s dyn=%s). Either "
                 "FUT.GG changed its asset naming again, or this fallback "
-                "URL itself is now stale and needs updating.",
+                "URL itself is now stale and needs updating. diag=%s",
                 attempt, max_attempts, DISCOVER_URL,
-                index is not None, dyn is not None,
+                index is not None, dyn is not None, captured.get("__diag"),
             )
             return None
 
@@ -662,8 +712,8 @@ async def ingest_once(
     dyn = captured.get(DYN_MARKER)
     if index is None or dyn is None:
         log.warning(
-            "Feed not captured (index=%s dyn=%s) on PLAYER_URL=%s.",
-            index is not None, dyn is not None, PLAYER_URL,
+            "Feed not captured (index=%s dyn=%s) on PLAYER_URL=%s. diag=%s",
+            index is not None, dyn is not None, PLAYER_URL, captured.get("__diag"),
         )
 
         if not DISCOVERY_ENABLED:
