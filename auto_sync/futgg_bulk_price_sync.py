@@ -518,9 +518,15 @@ async def _probe_capture_failure(page) -> dict[str, Any]:
             () => {
                 const body = (document.body ? document.body.innerText : '').toLowerCase();
                 const wrapper = document.querySelector('#cmpwrapper');
+                const priceLike = document.querySelectorAll(
+                    '#prices-overview, [id*="price" i], [class*="price" i]'
+                ).length;
                 return {
                     title: document.title,
                     body_text_length: body.length,
+                    scroll_height: document.documentElement.scrollHeight,
+                    viewport_height: window.innerHeight,
+                    price_like_elements: priceLike,
                     cmpwrapper_present: !!wrapper,
                     cmpwrapper_visible: wrapper
                         ? (wrapper.offsetParent !== null && getComputedStyle(wrapper).display !== 'none')
@@ -579,6 +585,17 @@ async def harvest_feed(page, url: str) -> dict[str, Any]:
         # request, every millisecond it stays up eats into the hydration
         # wait below for nothing.
         dismissed_early = await _dismiss_consent_overlay(page)
+        # futgg_discover.py already documents this exact failure mode for
+        # the sibling per-card scraper: a price component that only mounts
+        # (and only then fetches its data) once scrolled into view, which
+        # a worker that never scrolls - this one included, until now -
+        # would never trigger. Cheap and harmless if the feed never was
+        # scroll-gated in the first place; a real user reading this page
+        # scrolls it as a matter of course, so this does no more than that.
+        try:
+            await page.evaluate("() => window.scrollTo(0, document.body.scrollHeight)")
+        except Exception:
+            pass
         # The feed is requested during hydration, after domcontentloaded.
         # Some CMPs mount their overlay slightly after this point, so
         # check again partway through the wait rather than only once.
@@ -595,10 +612,20 @@ async def harvest_feed(page, url: str) -> dict[str, Any]:
         # Diagnostics only - never affects what gets applied to the DB.
         # Populated unconditionally (cheap) so a failure log can explain
         # itself without a separate manual futgg_discover.py run.
+        #
+        # The sample below is capped at 20 entries in request order, which
+        # is too small to prove a negative on its own (a feed request that
+        # simply fires later than the first 20 assets would never show up
+        # in it) - so r2_urls_seen scans the FULL list explicitly for the
+        # r2.fut.gg host these feeds are served from, regardless of when it
+        # fired, rather than leaving "was it ever requested at all" to be
+        # inferred from a truncated sample.
+        r2_urls = [u for u in seen_urls if "r2.fut.gg" in u]
         captured["__diag"] = {
             "dismissed_early": dismissed_early,
             "dismissed_late": dismissed_late,
             "fut_gg_responses_seen": len(seen_urls),
+            "r2_fut_gg_urls_seen": r2_urls,
             "sample_urls": seen_urls[:20],
             **(await _probe_capture_failure(page)),
         }
