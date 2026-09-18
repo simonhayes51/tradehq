@@ -115,7 +115,18 @@ if not DATABASE_URL:
         "is needed: api-fc26.easysbc.io takes no API key/auth."
     )
 
-API_BASE = "https://api-fc26.easysbc.io"
+#: EasySBC.io's API host is versioned per game cycle (confirmed
+#: api-fc26.easysbc.io when this file was written, against FC26). Left
+#: unpinned to that year, this worker keeps ingesting last year's SBCs
+#: forever after a new game launches - confirmed live: William Saliba/
+#: Eden Hazard FC26 SBCs still showing as "SBC live now" on FC27's
+#: dashboard. FUTGG_GAME_YEAR is the same env var every other FUT.GG-
+#: adjacent worker in this repo already keys off (default 27, the
+#: current cycle) - reusing it here rather than a separate SBC-specific
+#: variable, so one env change moves every worker to a new cycle
+#: together rather than needing this one remembered separately.
+GAME_YEAR = os.getenv("FUTGG_GAME_YEAR", "27")
+API_BASE = f"https://api-fc{GAME_YEAR}.easysbc.io"
 LISTING_PAGE_SIZE = int(os.getenv("EASYSBC_LISTING_PAGE_SIZE", "50"))
 MAX_LISTING_PAGES = int(os.getenv("EASYSBC_MAX_LISTING_PAGES", "50"))
 
