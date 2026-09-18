@@ -108,6 +108,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import signal
 import sys
 import time
@@ -276,6 +277,18 @@ USER_AGENT = (
 
 INDEX_MARKER = "player-prices-index"
 DYN_MARKER = f"player-prices-{PLATFORM}-dyn"
+
+#: Detects a dyn feed for ANY platform, not just the configured PLATFORM.
+#: Purely diagnostic for now (see harvest_feed's on_response) - added
+#: after a live capture confirmed player-prices-pc-dyn is still served
+#: by r2.fut.gg (the asset is not gone), while our own captures using the
+#: exact PLATFORM=ps5 marker kept seeing neither ps5 nor any other dyn
+#: feed fire during a plain page load. This tells apart "the feed only
+#: fires for a different default platform now" (this would catch it)
+#: from "nothing dyn-shaped fires at all regardless of platform" (this
+#: stays empty too) - the first is a one-line fix, the second needs a
+#: UI-interaction trigger (e.g. clicking a platform switcher) instead.
+_ANY_PLATFORM_DYN_RE = re.compile(r"player-prices-([a-z0-9]+)-dyn")
 
 
 async def seed_last_written(pool) -> int:
@@ -552,6 +565,7 @@ async def harvest_feed(page, url: str) -> dict[str, Any]:
     seen_urls: list[str] = []
 
     manifest_holder: dict[str, Any] = {}
+    other_platform_dyn_seen: list[str] = []
 
     async def read(response, key: str) -> None:
         try:
@@ -591,6 +605,12 @@ async def harvest_feed(page, url: str) -> dict[str, Any]:
             if marker in response.url:
                 pending.append(asyncio.ensure_future(read(response, marker)))
                 return
+        # Diagnostic only (see _ANY_PLATFORM_DYN_RE's comment): catches a
+        # dyn feed for a platform OTHER than the configured PLATFORM,
+        # which the loop above would otherwise silently ignore.
+        any_platform_match = _ANY_PLATFORM_DYN_RE.search(response.url)
+        if any_platform_match and any_platform_match.group(1) != PLATFORM:
+            other_platform_dyn_seen.append(f"{any_platform_match.group(1)}: {response.url}")
 
     page.on("response", on_response)
     try:
@@ -651,6 +671,7 @@ async def harvest_feed(page, url: str) -> dict[str, Any]:
             "dismissed_late": dismissed_late,
             "fut_gg_responses_seen": len(seen_urls),
             "r2_fut_gg_urls_seen": r2_urls,
+            "other_platform_dyn_seen": other_platform_dyn_seen,
             "sample_urls": seen_urls[:20],
             "manifest_captured": manifest_body is not None,
             "manifest_top_level_keys": (
