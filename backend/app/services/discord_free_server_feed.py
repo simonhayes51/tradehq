@@ -289,7 +289,7 @@ async def _select_candidate(conn) -> Optional[dict[str, Any]]:
             c.evidence_age_minutes,
             c.evaluated_at
         FROM futgg_current_intelligence c
-        JOIN futgg_market_snapshot m ON m.source_card_id=c.source_card_id
+        JOIN futgg_market_snapshot m ON m.source_card_id=c.source_card_id AND m.game_year=c.game_year
         WHERE c.signal IN ('strong_buy','buy')
           AND c.status NOT IN ('expired','invalidated','insufficient_data')
           AND (c.expires_at IS NULL OR c.expires_at > NOW())

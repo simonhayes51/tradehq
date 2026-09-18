@@ -15,13 +15,13 @@ def test_current_state_store_keeps_profit_basis_next_to_profit():
         expected_profit_basis=Decimal("25500"),
     )
 
-    args = _args({"current_bin": 25500}, ci)
+    args = _args({"current_bin": 25500, "game_year": 27}, ci)
 
     # expected_profit_basis is deliberately the final persisted value so
     # adding it did not renumber the mature current-state insert contract.
     assert args[-1] == Decimal("25500")
-    assert args[12] == Decimal("17725")
-    assert args[7] == Decimal("40000")
+    assert args[13] == Decimal("17725")
+    assert args[8] == Decimal("40000")
 
 
 def test_persisted_surface_restores_profit_basis_for_client_serialisation():

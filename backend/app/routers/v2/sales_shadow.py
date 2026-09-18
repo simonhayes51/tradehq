@@ -20,6 +20,7 @@ from typing import Any, Dict
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from app.routers.admin import require_admin
+from app.services.game_cycle import active_game_year
 
 router = APIRouter(tags=["v2-sales-shadow"])
 
@@ -219,10 +220,11 @@ async def sales_information_shadow(
                            m.current_bin, c.signal, c.evaluated_at
                     FROM futgg_market_snapshot m
                     LEFT JOIN futgg_current_intelligence c
-                      ON c.source_card_id = m.source_card_id
+                      ON c.source_card_id = m.source_card_id AND c.game_year = m.game_year
                     WHERE m.source_card_id = ANY($1::bigint[])
+                      AND m.game_year = $2
                     """,
-                    shortlist_ids,
+                    shortlist_ids, active_game_year(),
                 )
             metadata = {int(row["source_card_id"]): dict(row) for row in meta_rows}
         except Exception:

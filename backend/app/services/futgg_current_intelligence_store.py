@@ -31,7 +31,7 @@ def _num(value: Any):
 
 _UPSERT = """
 INSERT INTO futgg_current_intelligence (
-    source_card_id, evaluated_at, current_bin, signal, status,
+    source_card_id, game_year, evaluated_at, current_bin, signal, status,
     fair_value, theoretical_max_buy, recommended_buy_max,
     current_executable_buy, break_even_price, recommended_sell_target,
     buy_below, expected_profit_after_tax, expected_roi,
@@ -44,10 +44,10 @@ INSERT INTO futgg_current_intelligence (
     bin_trend_direction, bin_volatility, expected_profit_basis, updated_at
 ) VALUES (
     $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,
-    $20,$21,$22,$23,$24,$25,$26,$27::jsonb,$28::jsonb,$29,$30,$31,$32,$33,
-    $34,$35,$36,$37,$38,now()
+    $20,$21,$22,$23,$24,$25,$26,$27,$28::jsonb,$29::jsonb,$30,$31,$32,$33,$34,
+    $35,$36,$37,$38,$39,now()
 )
-ON CONFLICT (source_card_id) DO UPDATE SET
+ON CONFLICT (game_year, source_card_id) DO UPDATE SET
     evaluated_at = EXCLUDED.evaluated_at,
     current_bin = EXCLUDED.current_bin,
     signal = EXCLUDED.signal,
@@ -91,12 +91,12 @@ WHERE futgg_current_intelligence.evaluated_at <= EXCLUDED.evaluated_at
 
 _TRANSITION_INSERT = """
 INSERT INTO futgg_intelligence_transitions (
-    source_card_id, changed_at,
+    source_card_id, game_year, changed_at,
     previous_signal, new_signal, previous_status, new_status,
     current_bin, fair_value, expected_roi, confidence_score,
     risk_level, trend_state, reason_codes, blocking_codes, engine_version
 ) VALUES (
-    $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15
+    $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16
 )
 """
 
@@ -104,6 +104,7 @@ INSERT INTO futgg_intelligence_transitions (
 def _args(snapshot: dict[str, Any], ci: CardIntelligence):
     return (
         int(ci.card_id),
+        int(snapshot["game_year"]),
         ci.evaluated_at,
         snapshot.get("current_bin"),
         ci.signal,
@@ -147,6 +148,7 @@ def _args(snapshot: dict[str, Any], ci: CardIntelligence):
 def _transition_args(old: Any, snapshot: dict[str, Any], ci: CardIntelligence):
     return (
         int(ci.card_id),
+        int(snapshot["game_year"]),
         ci.evaluated_at,
         old["signal"],
         ci.signal,
@@ -184,19 +186,25 @@ async def upsert_many(pool, pairs: Sequence[tuple[dict[str, Any], CardIntelligen
         async with conn.transaction():
             old_rows = await conn.fetch(
                 """
-                SELECT source_card_id, evaluated_at, signal, status
+                SELECT source_card_id, game_year, evaluated_at, signal, status
                 FROM futgg_current_intelligence
                 WHERE source_card_id = ANY($1::bigint[])
                 """,
                 card_ids,
             )
-            old_by_card = {int(row["source_card_id"]): row for row in old_rows}
+            # Keyed by (game_year, card_id) - source_card_id alone can
+            # collide across game years (migration 096), so a card_id-only
+            # key here would let a stale FC26 row gate or "transition" an
+            # FC27 evaluation of the unrelated card sharing that id.
+            old_by_key = {
+                (int(row["game_year"]), int(row["source_card_id"])): row for row in old_rows
+            }
 
             # Count only rows whose timestamp is eligible to become current.
             # Initial rows are accepted; older out-of-order results are not.
             accepted_pairs = []
             for snapshot, ci in pairs:
-                old = old_by_card.get(int(ci.card_id))
+                old = old_by_key.get((int(snapshot["game_year"]), int(ci.card_id)))
                 if old is not None and (ci.evaluated_at is None or old["evaluated_at"] > ci.evaluated_at):
                     continue
                 accepted_pairs.append((snapshot, ci))

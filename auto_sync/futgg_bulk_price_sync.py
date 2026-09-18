@@ -435,6 +435,69 @@ def decode_ids(index: dict[str, Any]) -> list[int]:
     return ids
 
 
+async def _dismiss_consent_overlay(page) -> bool:
+    """Ordinary consent-banner dismissal, same as a human clicking
+    "Accept" - not anti-bot evasion. Production evidence from a different
+    FUT.GG scraper (research_fc26_chart_capture.py): a click that should
+    have worked failed with Playwright's own diagnostic naming the real
+    cause - '<div id="cmpwrapper" class="cmpwrapper"> intercepts pointer
+    events' - a consent-management-platform overlay that mounts over the
+    page and, on some CMP configurations, holds vendor scripts (including
+    whatever triggers this page's client-side fetch of the bulk price
+    feed) until a consent choice is made. harvest_feed() below did not
+    dismiss this at all, so a freshly-created browser context - which has
+    no stored consent decision, unlike a human's real browser - could
+    hang in that gated state through the entire hydration wait, on every
+    single cycle, identically on both PLAYER_URL and FUTGG_DISCOVER_URL:
+    exactly the "Feed not captured, rediscovery FAILED too" signature,
+    because the common blocker is the overlay, not either URL.
+    Returns True if a banner was found and dismissed/hidden."""
+    for selector in (
+        "#onetrust-accept-btn-handler",
+        "#onetrust-reject-all-handler",
+        "#cmpwrapper button:has-text('Accept')",
+        "#cmpwrapper button:has-text('Agree')",
+        "#cmpwrapper button:has-text('Allow')",
+        "#didomi-notice-agree-button",
+        "#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll",
+        ".qc-cmp2-summary-buttons button[mode='primary']",
+        "button:has-text('Accept all')",
+        "button:has-text('Accept All')",
+        "button:has-text('Reject all')",
+        "button:has-text('I Agree')",
+        "button:has-text('Agree')",
+        "button:has-text('Got it')",
+    ):
+        try:
+            button = page.locator(selector).first
+            if await button.is_visible(timeout=500):
+                await button.click(timeout=2000)
+                return True
+        except Exception:
+            pass
+
+    # Last resort: the wrapper exists and is still intercepting pointer
+    # events, but none of the known "accept" selectors matched (an
+    # unrecognised/custom CMP). Hiding it has the same practical effect as
+    # a user dismissing it - it doesn't touch FUT.GG's own anti-bot
+    # posture, only a third-party consent widget.
+    try:
+        hidden = await page.evaluate(
+            """
+            () => {
+                const el = document.querySelector('#cmpwrapper');
+                if (!el) return false;
+                el.style.display = 'none';
+                el.style.pointerEvents = 'none';
+                return true;
+            }
+            """
+        )
+        return bool(hidden)
+    except Exception:
+        return False
+
+
 async def harvest_feed(page, url: str) -> dict[str, Any]:
     """Load `url` and read the bulk feed off the wire.
 
@@ -471,8 +534,17 @@ async def harvest_feed(page, url: str) -> dict[str, Any]:
         except Exception:
             log.warning("navigation failed for url=%s", url, exc_info=True)
             raise
+        # Dismiss any consent overlay as early as possible - if it's
+        # gating the client-side fetch that triggers the bulk feed
+        # request, every millisecond it stays up eats into the hydration
+        # wait below for nothing.
+        await _dismiss_consent_overlay(page)
         # The feed is requested during hydration, after domcontentloaded.
-        await page.wait_for_timeout(HYDRATION_WAIT_MS)
+        # Some CMPs mount their overlay slightly after this point, so
+        # check again partway through the wait rather than only once.
+        await page.wait_for_timeout(HYDRATION_WAIT_MS // 2)
+        await _dismiss_consent_overlay(page)
+        await page.wait_for_timeout(HYDRATION_WAIT_MS - HYDRATION_WAIT_MS // 2)
         if pending:
             try:
                 await asyncio.wait_for(
