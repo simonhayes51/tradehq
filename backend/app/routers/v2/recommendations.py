@@ -11,6 +11,7 @@ from app.auth.access import Viewer, get_viewer
 from app.auth.entitlements import FREE_TRACK_RECORD_WINDOW_DAYS, require_feature
 from app.db import get_core_pool
 from app.services.player_card_ondemand import ensure_cards_requested
+from app.services.game_cycle import active_game_year
 
 router = APIRouter(tags=["v2-recommendations"])
 
@@ -77,7 +78,7 @@ def _needs_card(d: Dict[str, Any]) -> bool:
 # window already covers "everything that could exist"), so it is
 # implemented as a generously large, explicit bound instead of a special
 # no-filter code path.
-_TRACK_RECORD_WINDOW_DAYS = {"7d": 7, "30d": 30, "90d": 90, "all": 730}
+_TRACK_RECORD_WINDOW_DAYS = {"1d": 1, "7d": 7, "30d": 30, "90d": 90, "all": 730}
 
 
 async def _model_validation(window: str, window_days: int) -> Dict[str, Any]:
@@ -219,8 +220,8 @@ async def track_record(
             recent = await published_recent_wins_and_losses(
                 core_pool, window_days=window_days, limit=5, eligible_rows=eligible_rows,
             )
-            published["recent_wins"] = recent["recent_wins"]
-            published["recent_losses"] = recent["recent_losses"]
+            published["recent_target_hits"] = recent["recent_target_hits"]
+            published["recent_target_misses"] = recent["recent_target_misses"]
     except Exception:
         log.warning("published_track_record failed", exc_info=True)
         published = {"has_published_data": False, "tracking_since": None, "window_days": window_days}
@@ -230,6 +231,7 @@ async def track_record(
     return {
         "window": resolved_window,
         "window_days": window_days,
+        "game_year": active_game_year(),
         # Said plainly, so the UI can explain why a 90-day tab is showing
         # 30 days of data instead of silently mislabelling it.
         "window_capped": capped_window,
@@ -281,6 +283,7 @@ async def track_record_recent(
     return {
         "window": window if window in _TRACK_RECORD_WINDOW_DAYS else "90d",
         "window_days": window_days,
+        "game_year": active_game_year(),
         "filter": filter,
         "outcomes": outcomes,
     }

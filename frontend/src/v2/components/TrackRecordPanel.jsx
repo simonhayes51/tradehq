@@ -28,14 +28,14 @@ import CoinValue from "./CoinValue";
 import { versionLabel } from "../lib/format";
 
 const WINDOWS = [
+  ["1d", "24 hours"],
   ["7d", "7 days"],
   ["30d", "30 days"],
-  ["90d", "90 days"],
-  ["all", "All time"],
+  ["all", "Current season"],
 ];
 
 // Must match app/routers/v2/recommendations.py's _TRACK_RECORD_WINDOW_DAYS.
-const WINDOW_DAYS = { "7d": 7, "30d": 30, "90d": 90, all: 730 };
+const WINDOW_DAYS = { "1d": 1, "7d": 7, "30d": 30, all: 730 };
 
 // A brand-new Discord Proof Ledger (tracking for less time than the
 // selected window covers) will show byte-identical numbers across every
@@ -56,15 +56,17 @@ function daysSince(iso) {
 // loss split look better than the record actually is.
 const RESULT_FILTERS = [
   ["all", "All"],
-  ["wins", "Wins"],
-  ["losses", "Losses"],
+  ["wins", "Up at 24h"],
+  ["losses", "Down at 24h"],
   ["no_entry", "Never entered"],
 ];
 
 const RESULT_COPY = {
-  win: { text: "Win", tone: "positive" },
-  loss: { text: "Loss", tone: "negative" },
-  flat: { text: "Flat", tone: "" },
+  target_hit: { text: "Target hit", tone: "positive" },
+  target_miss: { text: "Target not reached", tone: "" },
+  win: { text: "Up at 24h", tone: "positive" },
+  loss: { text: "Down at 24h", tone: "negative" },
+  flat: { text: "Flat at 24h", tone: "" },
   no_entry: { text: "No entry", tone: "muted" },
 };
 
@@ -104,7 +106,8 @@ function LedgerRow({ item, result }) {
   // same value the badge is, not by an independent >= 0 test on profit -
   // that independence is how a row could read "Loss" in red beside a
   // green positive figure.
-  const profitTone = noEntry ? "" : result === "win" ? "positive" : result === "loss" ? "negative" : "";
+  const targetMiss = result === "target_miss";
+  const profitTone = noEntry ? "" : result === "win" || result === "target_hit" ? "positive" : result === "loss" ? "negative" : "";
   return (
     <div className="track-record-outcome-row">
       <div className="track-record-outcome-copy">
@@ -120,6 +123,16 @@ function LedgerRow({ item, result }) {
       <div className="track-record-outcome-numbers">
         {noEntry ? (
           <span className="muted">Never reached the buy price</span>
+        ) : targetMiss ? (
+          <>
+            <span>Entered <CoinValue value={item.entry_price} /></span>
+            {item.peak_price != null ? (
+              <span>
+                Peak <CoinValue value={item.peak_price} /> · best observed return{" "}
+                <CoinValue value={item.best_available_profit_after_tax} signed /> ({fmtPct(item.best_available_roi_pct)})
+              </span>
+            ) : <span className="muted">Target was not reached during tracking</span>}
+          </>
         ) : (
           <>
             <span>
@@ -187,7 +200,7 @@ function ModelValidationSection({ window }) {
 }
 
 export default function TrackRecordPanel() {
-  const [window, setWindow] = useState("90d");
+  const [window, setWindow] = useState("all");
   const [resultFilter, setResultFilter] = useState("all");
   const [ledgerOpen, setLedgerOpen] = useState(false);
   // Starts at the required 5, grows by 5 on "Load more" - avoids ever
@@ -231,6 +244,14 @@ export default function TrackRecordPanel() {
 
   const trackedDays = daysSince(published.tracking_since);
   const windowNarrowerThanHistory = trackedDays != null && trackedDays < WINDOW_DAYS[window];
+  // Keep the UI safe during a rolling deploy or while an old API response
+  // is still in the process cache. These aliases can be removed once every
+  // environment has served the target-based response at least once.
+  const targetHits = Number(published.target_hits ?? published.wins ?? 0);
+  const targetMisses = Number(published.target_not_reached ?? published.losses ?? 0);
+  const targetHitRate = published.target_hit_rate_pct ?? published.win_rate_pct;
+  const recentTargetHits = published.recent_target_hits ?? published.recent_wins ?? [];
+  const recentTargetMisses = published.recent_target_misses ?? published.recent_losses ?? [];
 
   return (
     <section className="track-record-panel">
@@ -253,16 +274,16 @@ export default function TrackRecordPanel() {
       </div>
 
       <p className="track-record-disclosure">
-        Recommendations actually sent to users via the Discord Proof Ledger - not internal model
-        scoring. Results are hypothetical (based on real market data) and don't guarantee any
-        individual user achieved these exact prices.
+        FC{data?.game_year || published.game_year || 27} recommendations actually sent to users via
+        Discord. We record whether the published target was reached, not a made-up sale at the end
+        of the tracking window. Individual results still depend on entry and exit timing.
       </p>
 
       {published.has_published_data && windowNarrowerThanHistory ? (
         <p className="track-record-disclosure small track-record-tracking-note">
-          Tracking published recommendations since {fmtDate(published.tracking_since)}
-          {trackedDays === 0 ? " (today)" : ` (${trackedDays} day${trackedDays === 1 ? "" : "s"})`} - this window
-          shows the same numbers as any shorter one until more history builds up, not a bug.
+          FC{data?.game_year || published.game_year || 27} tracking began {fmtDate(published.tracking_since)}
+          {trackedDays === 0 ? " (today)" : ` (${trackedDays} day${trackedDays === 1 ? "" : "s"} ago)`}.
+          Wider periods currently contain the same current-season history.
         </p>
       ) : null}
 
@@ -273,49 +294,41 @@ export default function TrackRecordPanel() {
       ) : (
         <>
           <div className="track-record-grid compact-grid">
-            <StatTile label="Wins" value={published.wins.toLocaleString()} tone="positive" />
-            <StatTile label="Losses" value={published.losses.toLocaleString()} tone="negative" />
-            {/* Break-even was never shown, so wins + losses did not add up
-                to the "published opportunities" figure printed directly
-                below - a reader who checks the arithmetic finds calls
-                unaccounted for and reasonably assumes something is being
-                left out. */}
-            <StatTile label="Break-even" value={Number(published.flats ?? 0).toLocaleString()} sub="Neither a win nor a loss after tax" />
-            <StatTile label="Win rate" value={fmtPct(published.win_rate_pct)} tone={published.win_rate_pct >= 50 ? "positive" : ""} />
-            <StatTile label="Total profit" value={<CoinValue value={published.total_profit_after_tax} signed />} sub="After tax, one card per call" />
-            <StatTile label="Median ROI" value={fmtPct(published.median_roi_pct)} sub="After tax" />
+            <StatTile label="Target hits" value={targetHits.toLocaleString()} tone="positive" />
+            <StatTile label="Target not reached" value={targetMisses.toLocaleString()} />
+            <StatTile label="Target hit rate" value={fmtPct(targetHitRate)} tone={targetHitRate >= 50 ? "positive" : ""} />
+            <StatTile label="Calls tracked" value={published.published_opportunities.toLocaleString()} />
             <StatTile label="Median time to target" value={fmtMinutes(published.median_time_to_target_minutes)} />
           </div>
           <p className="track-record-disclosure small">
             {published.published_opportunities.toLocaleString()} recommendations graded, all of which
-            reached their buy price. Recommendations whose buy price was never available are not yet
-            counted here, so this is not a complete hit rate - it is the result of the calls you
-            could actually have taken.
+            reached their buy price. A target not reached is not labelled a loss because EAFC.Live
+            cannot know when an individual user chose to sell.
           </p>
 
           <div className="track-record-recent-split">
             <div className="track-record-recent-col">
-              <h3>Recent wins</h3>
-              {published.recent_wins?.length ? (
+              <h3>Recent target hits</h3>
+              {recentTargetHits.length ? (
                 <div className="track-record-outcomes">
-                  {published.recent_wins.map((item) => (
-                    <LedgerRow key={item.outcome_id} item={item} result="win" />
+                  {recentTargetHits.map((item) => (
+                    <LedgerRow key={item.outcome_id} item={item} result="target_hit" />
                   ))}
                 </div>
               ) : (
-                <EmptyState compact text="No recent wins in this window." />
+                <EmptyState compact text="No recent target hits in this period." />
               )}
             </div>
             <div className="track-record-recent-col">
-              <h3>Recent losses</h3>
-              {published.recent_losses?.length ? (
+              <h3>Recent targets not reached</h3>
+              {recentTargetMisses.length ? (
                 <div className="track-record-outcomes">
-                  {published.recent_losses.map((item) => (
-                    <LedgerRow key={item.outcome_id} item={item} result="loss" />
+                  {recentTargetMisses.map((item) => (
+                    <LedgerRow key={item.outcome_id} item={item} result="target_miss" />
                   ))}
                 </div>
               ) : (
-                <EmptyState compact text="No recent losses in this window." />
+                <EmptyState compact text="Every tracked call in this period reached its target." />
               )}
             </div>
           </div>
@@ -340,9 +353,10 @@ export default function TrackRecordPanel() {
           </div>
         </div>
         <p className="track-record-disclosure small">
-          A different, much larger dataset from the published figures above: every buy signal the
+          A different, much larger technical dataset from the published figures above: every buy signal the
           engine graded in this window, including ones that were never sent to anyone. Useful for
-          seeing individual calls; not the number to judge us on. Shows {ledgerLimit} rows at a time.
+          model checking, not a record of user trades. "Up" and "down" describe the 24-hour market
+          mark only, not what any user made. Shows {ledgerLimit} rows at a time.
         </p>
         {recentQuery.isLoading ? (
           <EmptyState compact text="Loading…" />
@@ -374,12 +388,11 @@ export default function TrackRecordPanel() {
         <summary>How this is calculated</summary>
         <p className="track-record-methodology">
           Published figures come only from recommendations actually posted to the Discord Proof
-          Ledger. Every recommendation is frozen the moment it's made and graded later against the
-          real, chronological listing history - entry must happen before exit, and the best price in
-          the window is never used with hindsight. All profit and ROI figures are after EA's 5% sale
-          tax, assuming one card per published call. These are hypothetical results based on real
-          market data - they do not guarantee any individual user actually achieved these prices,
-          since real execution depends on timing, competition for the listing, and platform.
+          Ledger for the current EA FC season only. Every recommendation is frozen when it is made
+          and checked against chronological listing history. Entry must happen before the target.
+          Calls that do not hit the target remain "target not reached" rather than being converted
+          into a fictional loss at the final observed price. Peak figures are market observations,
+          not guaranteed executions.
           Percentages are withheld entirely below {published?.min_sample ?? 20} graded outcomes for
           that window.
         </p>

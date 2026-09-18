@@ -113,11 +113,11 @@ class _Track:
 def test_track_record_tool_withholds_percentages_below_the_sample_floor(monkeypatch, as_elite):
     monkeypatch.setattr(ai_chat, "track_record", _Track({
         "window_days": 90,
-        "published": {"has_published_data": True, "has_enough_data": False, "wins": 3},
+        "published": {"has_published_data": True, "has_enough_data": False, "target_hits": 3},
     }))
     result = asyncio.run(ai_chat._run_tool(None, "get_track_record", {}))
     assert result["has_enough_data"] is False
-    assert "win_rate_pct" not in result
+    assert "target_hit_rate_pct" not in result
 
 
 def test_track_record_tool_never_exposes_model_validation(monkeypatch, as_elite):
@@ -128,13 +128,13 @@ def test_track_record_tool_never_exposes_model_validation(monkeypatch, as_elite)
         "window_days": 90,
         "published": {
             "has_published_data": True, "has_enough_data": True,
-            "published_opportunities": 40, "wins": 30, "losses": 10,
-            "win_rate_pct": 75.0, "median_roi_pct": 6.1,
+            "published_opportunities": 40, "target_hits": 30, "target_not_reached": 10,
+            "target_hit_rate_pct": 75.0,
         },
         "model_validation": {"graded_signals": 8000, "profitable_rate_pct": 91.0},
     }))
     result = asyncio.run(ai_chat._run_tool(None, "get_track_record", {}))
-    assert result["win_rate_pct"] == 75.0
+    assert result["target_hit_rate_pct"] == 75.0
     assert "8000" not in str(result)
     assert "caveat" in result
 

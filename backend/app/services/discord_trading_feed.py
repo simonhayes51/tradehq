@@ -50,6 +50,7 @@ from app.services.discord_daily_proof import (
     proof_row_is_defensible,
     DailyProofSchedule,
 )
+from app.services.game_cycle import active_game_year
 
 log = logging.getLogger("discord_trading_feed")
 
@@ -272,9 +273,9 @@ async def _last_opportunity_post_at(conn, server_id: int) -> Optional[datetime]:
 # Vieira da Silva posted at 18:15 with BUY 75,500, then again at 18:36 -
 # 21 minutes later, past a 15-minute cooldown - with BUY 77,000). This is
 # a separate guard from that per-server cooldown: it stops any one card
-# from reoccupying the feed for a rolling 24-hour period, regardless of
-# how many times its price ticked in between. This also prevents one card
-# consuming multiple slots from a server's limited daily allowance.
+# from reoccupying the feed until enough time has passed that a repeat
+# posting is actually useful, regardless of how many times its price
+# ticked in between.
 CARD_REPOST_COOLDOWN_MINUTES = 1440
 
 
@@ -368,7 +369,8 @@ async def _free_overview_stats(conn) -> dict[str, Any]:
     plus a count (never details) of currently open qualifying candidates."""
     period = latest_completed_reporting_period()
     rows = await conn.fetch(
-        _SELECT_DAILY_OUTCOMES, period.start, period.end, sorted(PROOF_STATUSES)
+        _SELECT_DAILY_OUTCOMES, period.start, period.end, sorted(PROOF_STATUSES),
+        active_game_year(),
     )
     eligible = [dict(r) for r in rows if proof_row_is_defensible(dict(r), period)]
     wins = [r for r in eligible if r["outcome_status"] in WIN_STATUSES]
@@ -865,19 +867,17 @@ async def publish_live_opportunities(pool, server: ServerRecord, client: Optiona
 
 
 #: How long after posting an opportunity we watch its own actual price
-#: history for a target-hit/loss before calling a negative/flat result.
-#: A target hit is always reported the moment it's observed, no matter
-#: how much of this window remains - only "it did NOT hit target" has to
-#: wait for the full window, so an early snapshot of a still-open
-#: position can never be reported as a loss.
+#: history for a target hit. Target hits are posted immediately. Anything
+#: else is closed silently after the window because users choose their own
+#: exit and a later market mark cannot truthfully be called their loss.
 OPPORTUNITY_UPDATE_HORIZON = "24h"
 
 
 async def publish_opportunity_updates(pool, server: ServerRecord, client: Optional[DiscordClient] = None) -> int:
-    """Posts an update once a previously-posted opportunity's OWN buy
+    """Posts a target-hit update once a previously-posted opportunity's OWN buy
     price and sell target - the exact numbers that specific embed showed
     users, taken from its payload - have chronologically graded to
-    target_hit/loss_unrealised/downside_hit against futgg_bin_history.
+    target_hit against futgg_bin_history.
 
     Deliberately does NOT read futgg_recommendation_outcomes: that table
     is fed by a separate, independently-scheduled scanner
@@ -954,10 +954,25 @@ async def publish_opportunity_updates(pool, server: ServerRecord, client: Option
                 observations=[(o["lowest_bin"], o["captured_at"]) for o in observations],
             )
             window_elapsed = _now() >= grade.window_end
-            if not grade.target_hit and not (
-                window_elapsed and grade.outcome_status in ("loss_unrealised", "downside_hit")
-            ):
-                continue  # not yet a reportable result - keep watching
+            if not grade.target_hit:
+                if window_elapsed:
+                    # Mark tracking complete without posting to Discord.
+                    # The final 24h market mark is not a user's sale price,
+                    # so labelling it LOSS/STOP caused avoidable confusion.
+                    await conn.fetchval(
+                        """
+                        INSERT INTO discord_server_posts
+                            (server_id, kind, dedup_key, status, payload, last_error)
+                        VALUES ($1, 'opportunity_update', $2, 'abandoned', $3::jsonb,
+                                'target_not_reached_no_discord_post')
+                        ON CONFLICT (server_id, kind, dedup_key) DO NOTHING
+                        RETURNING id
+                        """,
+                        server.id,
+                        row["dedup_key"],
+                        json.dumps({"outcome_status": "target_not_reached"}),
+                    )
+                continue
             if grade.target_hit:
                 # grade.net_profit_after_tax is computed from grade.entry_
                 # price/realised_sell_price - the grader's OWN "first
@@ -979,8 +994,6 @@ async def publish_opportunity_updates(pool, server: ServerRecord, client: Option
                 # target) - report THAT, not a re-derived figure that can
                 # be thrown off by a single noisy observation.
                 net_profit_after_tax = tm.net_profit(Decimal(str(sell_target)), Decimal(str(buy_price)))
-            else:
-                net_profit_after_tax = grade.net_profit_after_tax
             outcome = {"outcome_status": grade.outcome_status, "net_profit_after_tax": net_profit_after_tax}
             update_post_id = await _record_post(conn, server.id, "opportunity_update", row["dedup_key"], outcome)
             if update_post_id is None:

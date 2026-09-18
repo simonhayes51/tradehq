@@ -33,6 +33,7 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from app.services.futgg_config import ENGINE_CONFIG
 from app.services.futgg_intelligence import CardIntelligence
+from app.services.game_cycle import active_game_year
 
 log = logging.getLogger("futgg_recommendation_store")
 
@@ -221,6 +222,10 @@ JOIN futgg_recommendation_snapshots s ON s.id = o.snapshot_id
 WHERE o.horizon = $1
   AND o.outcome_status <> 'insufficient_observations'
   AND s.evaluated_at >= now() - $2::interval
+  AND EXISTS (
+      SELECT 1 FROM futgg_players p
+      WHERE p.source_card_id = s.source_card_id AND p.game_year = $3
+  )
   AND {VALID_ENTRY_PRICE}
 """
 
@@ -243,6 +248,10 @@ def _breakdown_sql(dimension: str) -> str:
     WHERE o.horizon = $1
       AND o.outcome_status <> 'insufficient_observations'
       AND s.evaluated_at >= now() - $2::interval
+      AND EXISTS (
+          SELECT 1 FROM futgg_players p
+          WHERE p.source_card_id = s.source_card_id AND p.game_year = $3
+      )
       AND {VALID_ENTRY_PRICE}
     GROUP BY 1
     ORDER BY 1
@@ -303,11 +312,12 @@ async def track_record(
     # every /track-record request fall back to the legacy ml_labels path
     # regardless of how much real futgg_recommendation_outcomes data existed.
     interval = timedelta(days=int(window_days))
+    game_year = active_game_year()
     async with pool.acquire() as conn:
-        head = await conn.fetchrow(_HEADLINE, horizon, interval)
+        head = await conn.fetchrow(_HEADLINE, horizon, interval, game_year)
         breakdowns: Dict[str, List[Dict[str, Any]]] = {}
         for name, expression in (BREAKDOWN_DIMENSIONS.items() if include_breakdowns else []):
-            rows = await conn.fetch(_breakdown_sql(expression), horizon, interval)
+            rows = await conn.fetch(_breakdown_sql(expression), horizon, interval, game_year)
             breakdowns[name] = [
                 {
                     "bucket": row["bucket"],
@@ -341,11 +351,15 @@ async def track_record(
             WHERE o.horizon = $1
               AND o.outcome_status <> 'insufficient_observations'
               AND s.evaluated_at >= now() - $2::interval
+              AND EXISTS (
+                  SELECT 1 FROM futgg_players p
+                  WHERE p.source_card_id = s.source_card_id AND p.game_year = $3
+              )
               AND {VALID_ENTRY_PRICE}
             GROUP BY 1
             ORDER BY 2 DESC
             """,
-            horizon, interval,
+            horizon, interval, game_year,
         ) if include_breakdowns else []
         breakdowns["reason_code"] = [
             {
@@ -371,6 +385,7 @@ async def track_record(
     return {
         "horizon": horizon,
         "window_days": window_days,
+        "game_year": game_year,
         "min_sample": min_sample,
         "has_enough_data": enough,
         "headline": {
@@ -502,6 +517,7 @@ async def recent_outcomes(
     limit = max(1, min(int(limit), MAX_RECENT_OUTCOMES))
     clause = _RECENT_OUTCOME_FILTERS[result_filter]
     interval = timedelta(days=int(window_days))
+    game_year = active_game_year()
 
     query = f"""
     SELECT
@@ -520,11 +536,15 @@ async def recent_outcomes(
     WHERE o.horizon = $1
       AND o.outcome_status <> 'insufficient_observations'
       AND s.evaluated_at >= now() - $2::interval
+      AND EXISTS (
+          SELECT 1 FROM futgg_players p
+          WHERE p.source_card_id = s.source_card_id AND p.game_year = $3
+      )
       AND {VALID_ENTRY_PRICE}
       AND ({clause})
     ORDER BY o.graded_at DESC
-    LIMIT $3
+    LIMIT $4
     """
     async with pool.acquire() as conn:
-        rows = await conn.fetch(query, horizon, interval, limit)
+        rows = await conn.fetch(query, horizon, interval, game_year, limit)
     return [_outcome_row_to_dict(r) for r in rows]

@@ -16,9 +16,8 @@
 import { Link } from "react-router-dom";
 import { ArrowRight } from "lucide-react";
 import { useTrackRecord } from "../hooks/useTrackRecord";
-import CoinValue from "./CoinValue";
 
-const WINDOW = "90d";
+const WINDOW = "all";
 
 function fmtPct(value) {
   return value == null ? "—" : `${Number(value).toFixed(1)}%`;
@@ -56,30 +55,32 @@ export default function TrackRecordSummary() {
     );
   }
 
+  const targetHits = Number(published.target_hits ?? published.wins ?? 0);
+  const targetMisses = Number(published.target_not_reached ?? published.losses ?? 0);
+  const targetHitRate = published.target_hit_rate_pct ?? published.win_rate_pct;
+
   return (
     <section className="track-record-strip">
       <div className="track-record-strip-head">
         <span>TRACK RECORD</span>
         <h2>Did our published calls work?</h2>
-        <small>Last 90 days</small>
+        <small>FC{data?.game_year || published.game_year || 27} season</small>
       </div>
       <div className="track-record-strip-grid">
         <div>
-          <span>Win rate</span>
-          <strong className={published.win_rate_pct >= 50 ? "positive" : ""}>{fmtPct(published.win_rate_pct)}</strong>
-          <small>{published.wins} won · {published.losses} lost</small>
+          <span>Target hit rate</span>
+          <strong className={targetHitRate >= 50 ? "positive" : ""}>{fmtPct(targetHitRate)}</strong>
+          <small>{targetHits} targets hit</small>
         </div>
         <div>
-          <span>Median return</span>
-          <strong>{fmtPct(published.median_roi_pct)}</strong>
-          <small>After EA's 5% tax</small>
+          <span>Target not reached</span>
+          <strong>{targetMisses.toLocaleString()}</strong>
+          <small>Not labelled as user losses</small>
         </div>
         <div>
-          <span>Hypothetical total*</span>
-          <strong className={Number(published.total_profit_after_tax) >= 0 ? "positive" : "negative"}>
-            <CoinValue value={published.total_profit_after_tax} signed />
-          </strong>
-          <small>Sum of one card per call</small>
+          <span>Median target time</span>
+          <strong>{published.median_time_to_target_minutes == null ? "—" : `${Math.floor(published.median_time_to_target_minutes / 60)}h ${Math.round(published.median_time_to_target_minutes % 60)}m`}</strong>
+          <small>For targets that were reached</small>
         </div>
         <div>
           <span>Calls graded</span>
@@ -88,9 +89,8 @@ export default function TrackRecordSummary() {
         </div>
       </div>
       <p className="track-record-strip-note">
-        *Not real earnings. This adds up the result of buying one of each recommended card at the
-        price we published and selling at target - a measure of the calls, not a record of what any
-        individual made. No user bought every card, and results assume perfect execution.
+        Current-season calls only. We report whether the published target was reached. If it was not,
+        we do not pretend the final tracked price was where every user sold.
       </p>
       <Link className="track-record-strip-link" to="/track-record">
         See every call and how this is measured <ArrowRight size={14} />

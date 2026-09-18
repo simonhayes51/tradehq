@@ -24,16 +24,12 @@ const PUBLISHED_WITH_DATA = {
   published_opportunities: 60,
   entry_reached: 60,
   entry_reached_not_tracked: true,
-  wins: 45,
-  losses: 15,
-  flats: 0,
-  win_rate_pct: 75.0,
-  total_profit_after_tax: 320000,
-  median_profit_after_tax: 5200,
-  median_roi_pct: 8.1,
+  target_hits: 45,
+  target_not_reached: 15,
+  target_hit_rate_pct: 75.0,
   median_time_to_target_minutes: 95,
-  recent_wins: [],
-  recent_losses: [],
+  recent_target_hits: [],
+  recent_target_misses: [],
 };
 
 const PUBLISHED_NO_DATA = {
@@ -86,7 +82,7 @@ describe("TrackRecordPanel", () => {
     }));
     render(<TrackRecordPanel />);
 
-    // Primary numbers are the published ones (45 wins, 75.0% win rate).
+    // Primary numbers are the published ones (45 target hits, 75.0% hit rate).
     expect(screen.getByText("45")).toBeInTheDocument();
     expect(screen.getByText("75.0%")).toBeInTheDocument();
     // The large internal signal count only appears inside the separate,
@@ -109,22 +105,25 @@ describe("TrackRecordPanel", () => {
     expect(screen.getByText(/not enough published outcomes yet/i)).toBeInTheDocument();
   });
 
-  it("shows both recent wins and recent losses by default, no filter needed", () => {
+  it("shows target hits and neutral target misses without claiming user losses", () => {
     const published = {
       ...PUBLISHED_WITH_DATA,
-      recent_wins: [
+      recent_target_hits: [
         { outcome_id: "1:24h", player_name: "Winner Card", card_rating: 91, rarity: "gold_rare",
           detected_at: "2026-08-01T00:00:00Z", entry_price: 50000, net_profit_after_tax: 5200, realised_roi_pct: 10.4 },
       ],
-      recent_losses: [
+      recent_target_misses: [
         { outcome_id: "2:24h", player_name: "Loser Card", card_rating: 88, rarity: "gold_rare",
-          detected_at: "2026-08-02T00:00:00Z", entry_price: 30000, net_profit_after_tax: -1800, realised_roi_pct: -6.0 },
+          detected_at: "2026-08-02T00:00:00Z", entry_price: 30000, peak_price: 34000,
+          best_available_profit_after_tax: 2300, best_available_roi_pct: 7.67 },
       ],
     };
     useTrackRecord.mockReturnValue(trackRecordResult(published));
     render(<TrackRecordPanel />);
-    expect(screen.getByText("Recent wins")).toBeInTheDocument();
-    expect(screen.getByText("Recent losses")).toBeInTheDocument();
+    expect(screen.getByText("Recent target hits")).toBeInTheDocument();
+    expect(screen.getByText("Recent targets not reached")).toBeInTheDocument();
+    expect(screen.getAllByText("Target not reached").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Loss")).not.toBeInTheDocument();
     expect(screen.getByText("Winner Card")).toBeInTheDocument();
     expect(screen.getByText("Loser Card")).toBeInTheDocument();
   });
@@ -137,15 +136,15 @@ describe("TrackRecordPanel", () => {
     // feature.
     const threeDaysAgo = new Date(Date.now() - 3 * 86_400_000).toISOString();
     useTrackRecord.mockReturnValue(trackRecordResult({ ...PUBLISHED_WITH_DATA, tracking_since: threeDaysAgo }));
-    render(<TrackRecordPanel />); // default window is 90d, well past 3 days of history
-    expect(screen.getByText(/tracking published recommendations since/i)).toBeInTheDocument();
-    expect(screen.getByText(/not a bug/i)).toBeInTheDocument();
+    render(<TrackRecordPanel />); // current-season window is wider than 3 days of history
+    expect(screen.getByText(/tracking began/i)).toBeInTheDocument();
+    expect(screen.getByText(/wider periods currently contain the same/i)).toBeInTheDocument();
   });
 
   it("does not show the tracking-history note once history covers the selected window", () => {
     useTrackRecord.mockReturnValue(trackRecordResult({ ...PUBLISHED_WITH_DATA, tracking_since: "2020-01-01" }));
     render(<TrackRecordPanel />);
-    expect(screen.queryByText(/tracking published recommendations since/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/tracking began/i)).not.toBeInTheDocument();
   });
 
   it("keeps model validation collapsed by default and labelled as signals, not trades", () => {

@@ -139,12 +139,12 @@ describe("public track record", () => {
   beforeEach(resetHomepage);
 
   it("renders no marketing statistic until the backend says the sample is large enough", () => {
-    trackRecord.value = { data: { published: { has_published_data: true, has_enough_data: false, wins: 3, losses: 1, win_rate_pct: 75 } } };
+    trackRecord.value = { data: { published: { has_published_data: true, has_enough_data: false, target_hits: 3, target_not_reached: 1, target_hit_rate_pct: 75 } } };
     renderSite();
     expect(screen.queryByText("How the calls have actually done")).not.toBeInTheDocument();
   });
 
-  it("shows wins and losses together once the evidence gate is satisfied", () => {
+  it("shows target hits and misses without calling them user losses", () => {
     trackRecord.value = {
       data: {
         window_days: 30,
@@ -152,9 +152,9 @@ describe("public track record", () => {
           has_published_data: true,
           has_enough_data: true,
           published_opportunities: 48,
-          wins: 31,
-          losses: 12,
-          win_rate_pct: 72.1,
+          target_hits: 31,
+          target_not_reached: 12,
+          target_hit_rate_pct: 72.1,
         },
       },
     };

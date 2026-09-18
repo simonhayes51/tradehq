@@ -48,6 +48,7 @@ async def _compute(resolved_window: str, window_days: int) -> Dict[str, Any]:
     """Run the existing, audited Track Record calculations once."""
     from app.db import get_core_pool
     from app.routers.v2 import recommendations as rec
+    from app.services.game_cycle import active_game_year
     from app.services.discord_daily_proof import (
         _fetch_published_eligible_rows,
         published_recent_wins_and_losses,
@@ -70,14 +71,15 @@ async def _compute(resolved_window: str, window_days: int) -> Dict[str, Any]:
                 limit=5,
                 eligible_rows=eligible_rows,
             )
-            published["recent_wins"] = recent["recent_wins"]
-            published["recent_losses"] = recent["recent_losses"]
+            published["recent_target_hits"] = recent["recent_target_hits"]
+            published["recent_target_misses"] = recent["recent_target_misses"]
     except Exception:
         log.warning("cached published track-record computation failed", exc_info=True)
         published = {
             "has_published_data": False,
             "tracking_since": None,
             "window_days": window_days,
+            "game_year": active_game_year(),
         }
 
     model_validation = await rec._model_validation(resolved_window, window_days)
@@ -142,6 +144,7 @@ def install_track_record_cache_route(application) -> None:
     """
     from app.auth.entitlements import FREE_TRACK_RECORD_WINDOW_DAYS
     from app.routers.v2 import recommendations as rec
+    from app.services.game_cycle import active_game_year
 
     async def cached_track_record(**kw):
         window = kw.get("window", "90d")
@@ -160,6 +163,7 @@ def install_track_record_cache_route(application) -> None:
         return {
             "window": resolved_window,
             "window_days": window_days,
+            "game_year": active_game_year(),
             "window_capped": capped_window,
             "full_history_available": viewer.has("full_track_record"),
             "published": data["published"],

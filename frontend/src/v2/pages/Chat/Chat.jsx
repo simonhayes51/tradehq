@@ -185,8 +185,8 @@ function ToolResult({ toolResult }) {
           <strong>Published recommendations, last {result.window_days} days</strong>
         </div>
         <span>
-          {result.wins} won · {result.losses} lost · {result.win_rate_pct}% win rate · median{" "}
-          {result.median_roi_pct}% after tax
+          {result.target_hits} targets hit · {result.target_not_reached} not reached ·{" "}
+          {result.target_hit_rate_pct}% target hit rate
         </span>
         <small>{result.caveat}</small>
       </div>

@@ -115,6 +115,12 @@ CREATE TABLE futgg_market_snapshot (
     card_image_url        TEXT,
     card_image_stored_url TEXT
 );
+
+CREATE TABLE futgg_players (
+    source_card_id BIGINT NOT NULL,
+    game_year      SMALLINT NOT NULL,
+    PRIMARY KEY (source_card_id, game_year)
+);
 """
 
 
@@ -181,7 +187,12 @@ def dsn():
 async def _seed_one(
     conn, *, source_card_id, horizon, outcome_status, target_hit, realised_roi,
     entry_achieved=True, evaluated_days_ago=2, player_name=None, entry_price=50000,
+    game_year=27,
 ):
+    await conn.execute(
+        "INSERT INTO futgg_players (source_card_id, game_year) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+        source_card_id, game_year,
+    )
     snapshot_id = await conn.fetchval(
         """
         INSERT INTO futgg_recommendation_snapshots

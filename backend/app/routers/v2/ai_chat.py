@@ -318,13 +318,12 @@ async def _run_tool(request: Request, name: str, args: Dict[str, Any]) -> Dict[s
             "has_enough_data": True,
             "window_days": record.get("window_days"),
             "published_recommendations": published.get("published_opportunities"),
-            "wins": published.get("wins"),
-            "losses": published.get("losses"),
-            "win_rate_pct": published.get("win_rate_pct"),
-            "median_roi_pct": published.get("median_roi_pct"),
+            "target_hits": published.get("target_hits"),
+            "target_not_reached": published.get("target_not_reached"),
+            "target_hit_rate_pct": published.get("target_hit_rate_pct"),
             "caveat": (
-                "Hypothetical results from real market data for recommendations actually sent "
-                "to users. Not a guarantee any individual achieved these prices."
+                "Current-season target tracking for recommendations actually sent to users. "
+                "A target not reached is not proof that an individual user made a loss."
             ),
         }
 

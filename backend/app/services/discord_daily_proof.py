@@ -11,6 +11,8 @@ from statistics import median
 from typing import Any, Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from app.services.game_cycle import active_game_year
+
 
 PROOF_STATUSES = frozenset(
     {"target_hit", "profitable_unrealised", "flat", "loss_unrealised", "downside_hit"}
@@ -334,6 +336,7 @@ async def _fetch_one_period_outcomes(pool, semaphore: asyncio.Semaphore, period:
     async with semaphore, pool.acquire() as conn:
         rows = await conn.fetch(
             _SELECT_DAILY_OUTCOMES, period.start, period.end, sorted(PROOF_STATUSES),
+            active_game_year(),
         )
     return [dict(row) for row in rows if proof_row_is_defensible(dict(row), period)]
 
@@ -407,14 +410,17 @@ async def published_track_record(
     if not all_eligible:
         return {
             "has_published_data": False,
-            "tracking_since": pubs[0]["report_date"].isoformat(),
+            "tracking_since": None,
             "window_days": window_days,
+            "game_year": active_game_year(),
         }
 
+    tracking_since = min(_aware(row["evaluated_at"]) for row in all_eligible).date().isoformat()
     return {
         "has_published_data": True,
-        "tracking_since": pubs[0]["report_date"].isoformat(),
+        "tracking_since": tracking_since,
         "window_days": window_days,
+        "game_year": active_game_year(),
         **aggregate_published_outcomes(all_eligible),
     }
 
@@ -442,29 +448,32 @@ async def published_recent_wins_and_losses(
     if not pubs or not all_eligible:
         return {
             "has_published_data": False,
-            "tracking_since": (pubs[0]["report_date"].isoformat() if pubs else (earliest_ever.isoformat() if earliest_ever else None)),
+            "tracking_since": None,
             "window_days": window_days,
-            "recent_wins": [],
-            "recent_losses": [],
+            "game_year": active_game_year(),
+            "recent_target_hits": [],
+            "recent_target_misses": [],
         }
 
     eligible = _unique_card_version_rows(all_eligible)
-    wins = sorted(
-        (row for row in eligible if row["outcome_status"] in WIN_STATUSES),
+    target_hits = sorted(
+        (row for row in eligible if row.get("target_hit")),
         key=lambda row: (_aware(row["graded_at"]), int(row["snapshot_id"])),
         reverse=True,
     )
-    losses = sorted(
-        (row for row in eligible if row["outcome_status"] in LOSS_STATUSES),
+    target_misses = sorted(
+        (row for row in eligible if not row.get("target_hit")),
         key=lambda row: (_aware(row["graded_at"]), int(row["snapshot_id"])),
         reverse=True,
     )
+    tracking_since = min(_aware(row["evaluated_at"]) for row in eligible).date().isoformat()
     return {
         "has_published_data": True,
-        "tracking_since": pubs[0]["report_date"].isoformat(),
+        "tracking_since": tracking_since,
         "window_days": window_days,
-        "recent_wins": [_ledger_item(row) for row in wins[:limit]],
-        "recent_losses": [_ledger_item(row) for row in losses[:limit]],
+        "game_year": active_game_year(),
+        "recent_target_hits": [_ledger_item(row) for row in target_hits[:limit]],
+        "recent_target_misses": [_ledger_item(row) for row in target_misses[:limit]],
     }
 
 
@@ -473,6 +482,9 @@ def _ledger_item(row: dict[str, Any]) -> dict[str, Any]:
     _report_item() (which only carries what the Discord embed needs)."""
     entry = Decimal(str(row["entry_price"]))
     result = Decimal(str(row["net_profit_after_tax"]))
+    mfe = row.get("max_favourable_excursion")
+    peak_price = int(entry * (Decimal("1") + Decimal(str(mfe)))) if mfe is not None else None
+    best_profit = (Decimal(str(peak_price)) * Decimal("0.95") - entry) if peak_price is not None else None
     return {
         "snapshot_id": int(row["snapshot_id"]),
         # _SELECT_DAILY_OUTCOMES hardcodes horizon='24h' in its WHERE
@@ -488,6 +500,9 @@ def _ledger_item(row: dict[str, Any]) -> dict[str, Any]:
         "exit_price": int(row["outcome_price"]),
         "net_profit_after_tax": float(result),
         "realised_roi_pct": round(float(result / entry) * 100, 2),
+        "peak_price": peak_price,
+        "best_available_profit_after_tax": float(best_profit) if best_profit is not None else None,
+        "best_available_roi_pct": round(float(best_profit / entry) * 100, 2) if best_profit is not None else None,
         "minutes_to_target": int(row["minutes_to_target"]) if row.get("minutes_to_target") is not None else None,
         "outcome_status": str(row["outcome_status"]),
         "graded_at": _aware(row["graded_at"]).isoformat(),
@@ -508,11 +523,10 @@ def aggregate_published_outcomes(rows: list[dict[str, Any]]) -> dict[str, Any]:
     """
     eligible = _unique_card_version_rows(rows)
 
-    wins = [row for row in eligible if row["outcome_status"] in WIN_STATUSES]
-    losses = [row for row in eligible if row["outcome_status"] in LOSS_STATUSES]
-    flats = [row for row in eligible if row["outcome_status"] == "flat"]
-    profits = [Decimal(str(row["net_profit_after_tax"])) for row in eligible]
-    rois = [Decimal(str(row["realised_roi"])) for row in eligible]
+    target_hits = [row for row in eligible if row.get("target_hit")]
+    target_misses = [row for row in eligible if not row.get("target_hit")]
+    target_profits = [Decimal(str(row["net_profit_after_tax"])) for row in target_hits]
+    target_rois = [Decimal(str(row["realised_roi"])) for row in target_hits]
     hold_times = [
         int(row["minutes_to_target"]) for row in eligible
         if row.get("target_hit") and row.get("minutes_to_target") is not None
@@ -526,13 +540,12 @@ def aggregate_published_outcomes(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "published_opportunities": total,
         "entry_reached": total,  # every published row is, by definition, entered
         "entry_reached_not_tracked": True,  # the publish pipeline never records "recommended but never entered"
-        "wins": len(wins),
-        "losses": len(losses),
-        "flats": len(flats),
-        "win_rate_pct": round(100 * len(wins) / total, 1) if has_enough else None,
-        "total_profit_after_tax": float(sum(profits, Decimal("0"))) if has_enough else None,
-        "median_profit_after_tax": float(median(profits)) if has_enough else None,
-        "median_roi_pct": round(float(median(rois)) * 100, 2) if has_enough else None,
+        "target_hits": len(target_hits),
+        "target_not_reached": len(target_misses),
+        "target_hit_rate_pct": round(100 * len(target_hits) / total, 1) if has_enough else None,
+        "target_profit_after_tax": float(sum(target_profits, Decimal("0"))) if has_enough else None,
+        "median_target_profit_after_tax": float(median(target_profits)) if has_enough and target_profits else None,
+        "median_target_roi_pct": round(float(median(target_rois)) * 100, 2) if has_enough and target_rois else None,
         "median_time_to_target_minutes": int(median(hold_times)) if has_enough and hold_times else None,
     }
 
@@ -651,7 +664,7 @@ _SELECT_DAILY_OUTCOMES = """
            o.exit_achieved, o.exit_at, o.realised_sell_price,
            o.outcome_price, o.outcome_observed_at, o.outcome_price_type,
            o.net_profit_after_tax, o.realised_roi,
-           o.target_hit, o.downside_hit, o.max_adverse_excursion,
+           o.target_hit, o.downside_hit, o.max_favourable_excursion, o.max_adverse_excursion,
            o.minutes_to_target,
            s.evaluated_at, s.recommended_sell_target,
            p.name, p.rating AS card_rating, p.rarity,
@@ -693,6 +706,7 @@ _SELECT_DAILY_OUTCOMES = """
       AND o.outcome_observed_at IS NOT NULL
       AND o.net_profit_after_tax IS NOT NULL
       AND o.realised_roi IS NOT NULL
+      AND p.game_year = $4
     ORDER BY o.graded_at, o.snapshot_id
 """
 
@@ -763,6 +777,7 @@ async def _claim_daily_report(pool, period: ReportingPeriod) -> Optional[dict[st
                 period.start,
                 period.end,
                 sorted(PROOF_STATUSES),
+                active_game_year(),
             )
             report = build_daily_proof_report([dict(row) for row in rows], period)
             if report is None:

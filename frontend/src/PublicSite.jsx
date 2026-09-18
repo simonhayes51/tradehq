@@ -415,15 +415,19 @@ function Pricing() {
 }
 
 function PublicTrackRecord() {
-  const query = useTrackRecord("30d");
+  const query = useTrackRecord("all");
   const published = query.data?.published;
   if (!published?.has_published_data || !published?.has_enough_data) return null;
 
+  const targetHits = published.target_hits ?? published.wins;
+  const targetMisses = published.target_not_reached ?? published.losses;
+  const targetHitRate = published.target_hit_rate_pct ?? published.win_rate_pct;
+
   const stats = [
     ["Calls published", published.published_opportunities],
-    ["Hit their target", published.wins],
-    ["Did not", published.losses],
-    ["Win rate", published.win_rate_pct == null ? null : `${published.win_rate_pct}%`],
+    ["Targets hit", targetHits],
+    ["Targets not reached", targetMisses],
+    ["Target hit rate", targetHitRate == null ? null : `${targetHitRate}%`],
   ].filter(([, value]) => value !== null && value !== undefined);
 
   return (
@@ -433,8 +437,8 @@ function PublicTrackRecord() {
           <span>TRACK RECORD</span>
           <h2>How the calls have actually done</h2>
           <p>
-            The last {query.data?.window_days ?? 30} days of recommendations genuinely published to members.
-            Wins and losses are both shown. No backtest selection.
+            FC{query.data?.game_year || published.game_year || 27} recommendations genuinely published to members.
+            Targets not reached are shown neutrally, not presented as user losses.
           </p>
         </div>
         <div className="pub-feature-grid">

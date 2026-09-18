@@ -491,10 +491,10 @@ class TestAggregatePublishedOutcomes:
         result = aggregate_published_outcomes(rows)
         assert result["published_opportunities"] == 5
         assert result["has_enough_data"] is False
-        assert result["win_rate_pct"] is None
-        assert result["total_profit_after_tax"] is None
+        assert result["target_hit_rate_pct"] is None
+        assert result["target_profit_after_tax"] is None
 
-    def test_win_rate_and_profit_computed_from_deduplicated_rows(self):
+    def test_target_rate_computed_from_deduplicated_rows(self):
         from app.services.discord_daily_proof import aggregate_published_outcomes
 
         rows = (
@@ -504,9 +504,9 @@ class TestAggregatePublishedOutcomes:
         result = aggregate_published_outcomes(rows)
         assert result["published_opportunities"] == 20
         assert result["has_enough_data"] is True
-        assert result["wins"] == 15
-        assert result["losses"] == 5
-        assert result["win_rate_pct"] == 75.0
+        assert result["target_hits"] == 15
+        assert result["target_not_reached"] == 5
+        assert result["target_hit_rate_pct"] == 75.0
         # Every published row is, by construction, entered - the publish
         # pipeline has never tracked "recommended but never entered".
         assert result["entry_reached"] == 20
@@ -538,7 +538,7 @@ class TestAggregatePublishedOutcomes:
         result = aggregate_published_outcomes(rows)
         assert result["published_opportunities"] == 21
         # (55000*0.95 - 50000) / 50000 = 0.045 -> 4.5%
-        assert result["median_roi_pct"] == pytest.approx(4.5, abs=0.5)
+        assert result["median_target_roi_pct"] == pytest.approx(4.5, abs=0.5)
 
     def test_median_time_to_target_only_uses_target_hit_rows(self):
         from app.services.discord_daily_proof import aggregate_published_outcomes
@@ -656,7 +656,7 @@ def _pub_row(report_date, start, end):
     }
 
 
-def test_published_recent_wins_and_losses_are_split_and_sorted_most_recent_first():
+def test_published_recent_targets_are_split_and_sorted_most_recent_first():
     from app.services.discord_daily_proof import published_recent_wins_and_losses
 
     day1 = datetime(2026, 8, 20, tzinfo=timezone.utc).date()
@@ -677,9 +677,9 @@ def test_published_recent_wins_and_losses_are_split_and_sorted_most_recent_first
     result = asyncio.run(published_recent_wins_and_losses(pool, window_days=90, limit=5))
 
     assert result["has_published_data"] is True
-    win_names = [w["player_name"] for w in result["recent_wins"]]
+    win_names = [w["player_name"] for w in result["recent_target_hits"]]
     assert win_names == ["Newer Win", "Older Win"]  # most recent first
-    loss_names = [l["player_name"] for l in result["recent_losses"]]
+    loss_names = [l["player_name"] for l in result["recent_target_misses"]]
     assert loss_names == ["A Loss"]
 
 
@@ -713,8 +713,8 @@ def test_published_track_record_aggregates_across_multiple_sent_days_concurrentl
 
     assert result["has_published_data"] is True
     assert result["published_opportunities"] == 3
-    assert result["wins"] == 2
-    assert result["losses"] == 1
+    assert result["target_hits"] == 2
+    assert result["target_not_reached"] == 1
 
 
 def test_published_track_record_and_recent_share_one_fetch_when_given_eligible_rows():
@@ -758,8 +758,8 @@ def test_published_track_record_and_recent_share_one_fetch_when_given_eligible_r
 
     assert shared_agg == independent_agg
     assert shared_recent == independent_recent
-    assert shared_agg["wins"] == 1
-    assert shared_agg["losses"] == 1
+    assert shared_agg["target_hits"] == 1
+    assert shared_agg["target_not_reached"] == 1
 
 
 def test_published_recent_wins_and_losses_honest_when_nothing_sent():
@@ -768,8 +768,8 @@ def test_published_recent_wins_and_losses_honest_when_nothing_sent():
     pool = _FakeProofLedgerPool([], {})
     result = asyncio.run(published_recent_wins_and_losses(pool, window_days=90, limit=5))
     assert result["has_published_data"] is False
-    assert result["recent_wins"] == []
-    assert result["recent_losses"] == []
+    assert result["recent_target_hits"] == []
+    assert result["recent_target_misses"] == []
 
 
 class TestDefensibilityTracksTheGrader:

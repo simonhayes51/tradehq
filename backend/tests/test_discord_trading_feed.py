@@ -911,7 +911,7 @@ def test_publish_opportunity_updates_withholds_a_loss_until_the_window_elapses(m
     assert fake_client.post_embed.await_count == 0
 
 
-def test_publish_opportunity_updates_reports_a_loss_after_the_window_elapses(monkeypatch):
+def test_publish_opportunity_updates_closes_non_target_silently_after_window(monkeypatch):
     monkeypatch.setenv("DISCORD_TRADING_FEED_ENABLED", "1")
     import app.services.discord_trading_feed as feed_module
 
@@ -942,6 +942,8 @@ def test_publish_opportunity_updates_reports_a_loss_after_the_window_elapses(mon
     from app.services.discord_trading_feed import publish_opportunity_updates
 
     updated = asyncio.run(publish_opportunity_updates(conn, server, fake_client))
-    assert updated == 1
-    embed = fake_client.post_embed.call_args.args[1]
-    assert "LOSS" in embed["title"] or "STOP" in embed["title"]
+    assert updated == 0
+    assert fake_client.post_embed.await_count == 0
+    # A durable opportunity_update marker prevents the same expired call
+    # being reconsidered on every worker pass, without sending a message.
+    assert conn.record_calls == 1
