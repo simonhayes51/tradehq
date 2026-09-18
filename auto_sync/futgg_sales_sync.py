@@ -1065,6 +1065,53 @@ INSERT INTO futgg_sales_history (
 ON CONFLICT (source_fingerprint) DO NOTHING
 """
 
+_BIN_INSERT = """
+INSERT INTO futgg_bin_history (source_card_id, lowest_bin, captured_at, platform, game_year)
+VALUES ($1,$2,$3,$4,$5)
+"""
+
+
+def build_bin_row(card_id: int, current_price: Any, captured_at: datetime) -> tuple | None:
+    """Map one card's currentPrice object onto a futgg_bin_history row.
+
+    FUT.GG stopped serving the r2.fut.gg bulk catalogue feed
+    (player-prices-index/player-prices-<platform>-dyn) to individual
+    player pages - confirmed live 2026-09-18: three separate production
+    captures of every response fut.gg made to a real player page (~120
+    responses each, including several OTHER r2.fut.gg feeds such as
+    manifest.json and metarank-definition, proving r2.fut.gg itself is
+    still reachable) never once included it, and a HAR of a real browser
+    session for the same page confirms it now fetches prices exclusively
+    via this same signed /api/fut/player-prices/{year}/{id}/ endpoint
+    this worker already calls for sales. futgg_bulk_price_sync.py's
+    "canonical BIN source" premise (see the AUDIT NOTE this replaced,
+    just above in apply_batch_results) is dead along with the feed it
+    depended on - this is the replacement, using data already fetched on
+    every card this worker processes, at no extra network cost.
+
+    isExtinct/isSbc/isObjective/isUntradeable all mean the number in
+    `price` does not describe a real open-market BIN (an extinct card,
+    an SBC-only reward, an objective reward, or a card that cannot be
+    listed at all) - skipped rather than written as if it were one.
+    """
+    if not isinstance(current_price, dict):
+        return None
+    if current_price.get("isExtinct") or current_price.get("isSbc"):
+        return None
+    if current_price.get("isObjective") or current_price.get("isUntradeable"):
+        return None
+    price = current_price.get("price")
+    if price is None:
+        return None
+    try:
+        price = int(price)
+    except (TypeError, ValueError):
+        return None
+    if price <= 0:
+        return None
+    priced_at = _parse_sold_at(current_price.get("priceUpdatedAt"), captured_at) or captured_at
+    return (card_id, price, priced_at, PLATFORM, int(GAME_YEAR))
+
 
 # =============================================================================
 # page_capture transport - the Cloudflare-evidenced fallback
@@ -1818,6 +1865,7 @@ async def ensure_schema(conn: asyncpg.Connection) -> None:
     needed: list[tuple[str, str]] = []
 
     sales_columns = await _existing_columns(conn, "futgg_sales_history")
+    bin_columns = await _existing_columns(conn, "futgg_bin_history")
     player_columns = await _existing_columns(conn, "futgg_players")
     indexes = await _existing_indexes(conn)
 
@@ -1879,6 +1927,44 @@ async def ensure_schema(conn: asyncpg.Connection) -> None:
             "futgg_sales_history_card_sold_idx",
             "CREATE INDEX IF NOT EXISTS futgg_sales_history_card_sold_idx "
             "ON futgg_sales_history (source_card_id, approximate_sold_at DESC)",
+        ))
+
+    # futgg_bin_history was owned by futgg_price_sync.py, then by
+    # futgg_bulk_price_sync.py's own r2.fut.gg catalogue feed. That feed
+    # is gone (see build_bin_row()'s docstring) and this worker is now
+    # the one writing current BIN data, so it needs to be able to create
+    # its own table on a database where neither of those ever ran -
+    # same reasoning as futgg_sales_history just above.
+    if not bin_columns:
+        needed.append(("futgg_bin_history table", """
+        CREATE TABLE IF NOT EXISTS futgg_bin_history (
+            id BIGSERIAL PRIMARY KEY,
+            source_card_id BIGINT NOT NULL
+                REFERENCES futgg_players(source_card_id),
+            lowest_bin INTEGER NOT NULL,
+            price_range_low INTEGER,
+            price_range_high INTEGER,
+            source_age_text TEXT,
+            captured_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """))
+    if "platform" not in bin_columns:
+        needed.append((
+            "futgg_bin_history.platform",
+            "ALTER TABLE futgg_bin_history ADD COLUMN IF NOT EXISTS "
+            "platform TEXT NOT NULL DEFAULT 'ps5'",
+        ))
+    if "game_year" not in bin_columns:
+        needed.append((
+            "futgg_bin_history.game_year",
+            "ALTER TABLE futgg_bin_history ADD COLUMN IF NOT EXISTS "
+            "game_year SMALLINT NOT NULL DEFAULT 27",
+        ))
+    if "futgg_bin_history_card_captured_idx" not in indexes:
+        needed.append((
+            "futgg_bin_history_card_captured_idx",
+            "CREATE INDEX IF NOT EXISTS futgg_bin_history_card_captured_idx "
+            "ON futgg_bin_history (source_card_id, captured_at DESC)",
         ))
 
     # Sales get their own due-at column: the price cadence is now driven
@@ -2270,6 +2356,7 @@ async def apply_batch_results(
     captured_at = datetime.now(timezone.utc)
 
     to_insert: list[tuple] = []
+    bin_rows: list[tuple] = []
     updates: list[tuple] = []
     throttled = 0
     logged_failures = 0
@@ -2353,24 +2440,28 @@ async def apply_batch_results(
             ))
             continue
 
-        # AUDIT NOTE (Part 3, price-detail field-usage review): result
-        # also carries currentPrice, fetched in both transports (see
-        # fetch_via_page_capture's equivalent) but used ONLY in the two
-        # DIAGNOSTIC log lines - never read here, never persisted.
-        # Deliberately so: futgg_bulk_price_sync.py is this deployment's
-        # canonical BIN source for the whole catalogue (~7s per cycle,
-        # see this file's own module docstring), and writing a second,
-        # independently-timed current-price value from here would be
-        # exactly the "parallel competing price source" this codebase
-        # avoids elsewhere (see futgg_price_access.py's CDN-feed design
-        # notes). The full detailed response's other fields
-        # (liveAuctions/history/priceRange/overview/momentum) are not
-        # fetched by this batch script AT ALL - only reachable today via
+        # UPDATED (2026-09-18, was: AUDIT NOTE, Part 3 price-detail
+        # field-usage review): currentPrice used to be read only for the
+        # two DIAGNOSTIC log lines, deliberately never persisted, because
+        # futgg_bulk_price_sync.py was this deployment's canonical BIN
+        # source for the whole catalogue and a second, independently-timed
+        # current-price value from here would have been exactly the
+        # "parallel competing price source" this codebase avoids
+        # elsewhere. That premise no longer holds: FUT.GG stopped serving
+        # the bulk r2.fut.gg feed that worker depends on (confirmed live -
+        # see build_bin_row()'s docstring for the evidence), so this is
+        # now the only source of current BIN data at all, not a second
+        # one. The full detailed response's other fields (liveAuctions/
+        # history/priceRange/overview/momentum) are still not fetched by
+        # this batch script - only reachable today via
         # futgg_price_access.fetch_player_price_detail()'s single-card
         # path (scripts/futgg_price_probe.py). None have a database
         # column yet; each needs a real captured example (not a
         # description) and a specific, checked hypothesis for what it
         # would improve before one is added.
+        bin_row = build_bin_row(card_id, result.get("currentPrice"), captured_at)
+        if bin_row is not None:
+            bin_rows.append(bin_row)
         sale_rows = build_sale_rows(card_id, result.get("completedAuctions") or [], captured_at)
         to_insert.extend(sale_rows)
         stats["ok"] += 1
@@ -2390,8 +2481,8 @@ async def apply_batch_results(
     if not APPLY:
         log.info(
             "FUTGG_SALES_APPLY=false - not writing to database. Would have "
-            "inserted %d sale row(s) and updated %d card(s) (sample: %s)",
-            len(to_insert), len(updates), updates[:10],
+            "inserted %d sale row(s), %d bin row(s), and updated %d card(s) (sample: %s)",
+            len(to_insert), len(bin_rows), len(updates), updates[:10],
         )
         return
 
@@ -2405,6 +2496,8 @@ async def apply_batch_results(
                             # instead of one per sale. The old scraper issued up
                             # to 50 sequential inserts per card.
                             await conn.executemany(_INSERT, to_insert)
+                        if bin_rows:
+                            await conn.executemany(_BIN_INSERT, bin_rows)
                         if updates:
                             # One set-based statement, not one round trip per
                             # card. Sorting also makes concurrent writers take

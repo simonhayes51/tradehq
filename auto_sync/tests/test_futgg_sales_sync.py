@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("DATABASE_URL", "postgresql://x:y@localhost/z")
 
 from futgg_sales_sync import (  # noqa: E402
-    _parse_sold_at, AdaptiveThrottle, build_sale_rows,
+    _parse_sold_at, AdaptiveThrottle, build_bin_row, build_sale_rows,
     SELECT_LIMIT, SELECT_LIMIT_HARD_CAP,
     circuit_breaker_tripped, classify_page_capture_error, sales_interval_minutes,
     should_fall_back_to_page_capture,
@@ -141,6 +141,55 @@ class TestBuildSaleRows:
 
     def test_empty_input(self):
         assert build_sale_rows(555, [], NOW) == []
+
+
+class TestBuildBinRow:
+    """currentPrice used to be discarded (see the comment build_bin_row's
+    docstring replaced) - now the only source of BIN data at all, since
+    FUT.GG stopped serving the r2.fut.gg bulk feed to player pages."""
+
+    def _price(self, **overrides):
+        base = {
+            "eaId": 555, "platform": "ps5", "price": 3600,
+            "isExtinct": False, "isSbc": False, "isObjective": False,
+            "isUntradeable": False, "priceUpdatedAt": "2026-09-18T15:27:39.589681Z",
+        }
+        base.update(overrides)
+        return base
+
+    def test_maps_price_platform_and_game_year(self):
+        row = build_bin_row(555, self._price(), NOW)
+        assert row == (555, 3600, row[2], "ps5", 27)
+
+    def test_uses_the_feed_own_priceupdatedat_not_captured_at(self):
+        row = build_bin_row(555, self._price(), NOW)
+        assert row[2] != NOW
+        assert row[2].year == 2026 and row[2].month == 9 and row[2].day == 18
+
+    def test_falls_back_to_captured_at_when_priceupdatedat_is_missing(self):
+        row = build_bin_row(555, self._price(priceUpdatedAt=None), NOW)
+        assert row[2] == NOW
+
+    def test_extinct_card_is_skipped(self):
+        assert build_bin_row(555, self._price(isExtinct=True), NOW) is None
+
+    def test_sbc_reward_card_is_skipped(self):
+        assert build_bin_row(555, self._price(isSbc=True), NOW) is None
+
+    def test_objective_reward_card_is_skipped(self):
+        assert build_bin_row(555, self._price(isObjective=True), NOW) is None
+
+    def test_untradeable_card_is_skipped(self):
+        assert build_bin_row(555, self._price(isUntradeable=True), NOW) is None
+
+    def test_missing_or_non_positive_price_is_skipped(self):
+        assert build_bin_row(555, self._price(price=None), NOW) is None
+        assert build_bin_row(555, self._price(price=0), NOW) is None
+        assert build_bin_row(555, self._price(price=-5), NOW) is None
+
+    def test_non_dict_current_price_is_skipped(self):
+        assert build_bin_row(555, None, NOW) is None
+        assert build_bin_row(555, "not a dict", NOW) is None
 
 
 class TestIntervals:
