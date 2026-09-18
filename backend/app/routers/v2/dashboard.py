@@ -28,6 +28,7 @@ from fastapi import APIRouter, Depends, Request
 from app.auth.access import Viewer, get_viewer, serialise_dashboard_feed
 from app.db import get_core_pool, get_player_pool, get_watchlist_pool
 from app.routers.v2.futgg_market import (
+    LIVE_OPPORTUNITY_MAX_PRICE_AGE_MINUTES,
     _meaningful_profit_floor,
     _score_and_filter,
     _sales_for_rows,
@@ -659,6 +660,18 @@ async def get_dashboard(
     candidate_rows = await _segmented_candidates(core_pool_provider)
     sales_by_card = await _sales_for_rows(core_pool_provider, candidate_rows)
 
+    # Home's actionable cards obey the same launch-safe freshness rule as
+    # /opportunities. Keep the full population for market regime/recent
+    # context, but never promote an old price as something to buy now.
+    freshness_cutoff = datetime.now(timezone.utc).timestamp() - (
+        LIVE_OPPORTUNITY_MAX_PRICE_AGE_MINUTES * 60
+    )
+    opportunity_rows = [
+        row for row in candidate_rows
+        if (row.get("bin_checked_at") or row.get("bin_captured_at")) is not None
+        and (row.get("bin_checked_at") or row.get("bin_captured_at")).timestamp() >= freshness_cutoff
+    ]
+
     # Every sort below ends in source_card_id as a final deterministic
     # tiebreak. Without one, two candidates tied on every real field could
     # swap position on every refresh purely from input-order noise (the
@@ -666,7 +679,7 @@ async def get_dashboard(
     # one), which is what made Home's Top Card look random with no
     # underlying data change - not a random pick, an unstable sort.
     buy_scored = _filter_meaningful_profit(
-        await _score_and_filter(candidate_rows, signals={"strong_buy", "buy"}, sales_by_card=sales_by_card)
+        await _score_and_filter(opportunity_rows, signals={"strong_buy", "buy"}, sales_by_card=sales_by_card)
     )
     buy_scored.sort(
         key=lambda pair: (
@@ -906,23 +919,7 @@ async def get_dashboard(
     # --- Latest market events + SBC impact ---
     async with player_pool.acquire() as conn:
         event_rows = await conn.fetch(
-            # Ticker renders every row as "<kind> live now" (see
-            # HomeDashboard.jsx's eventTickerRow) - an event whose ends_at
-            # has already passed is not live, whatever ingested it or
-            # whichever year it's actually from. Confirmed live: expired
-            # SBCs from a stale crawl (source='easysbc', still pointed at
-            # last year's API - see easysbc_sbc_sync.py) kept surfacing as
-            # "SBC live now" indefinitely because first_seen_at ordering
-            # alone never re-checks whether an event is still current.
-            # ends_at IS NULL is kept in, not excluded, because a
-            # repeatable/no-expiry SBC genuinely has no end date - that is
-            # not the same thing as an expired one.
-            """
-            SELECT id, kind, source, title, starts_at, ends_at, first_seen_at
-            FROM market_events
-            WHERE ends_at IS NULL OR ends_at > now()
-            ORDER BY first_seen_at DESC LIMIT 6
-            """
+            "SELECT id, kind, source, title, starts_at, ends_at, first_seen_at FROM market_events ORDER BY first_seen_at DESC LIMIT 6"
         )
         # HAVING gates out noise, not just low sample size: an SBC with a
         # real, measured price effect on the cards it draws on is worth

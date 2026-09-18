@@ -35,7 +35,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Iterable, Optional
 
@@ -278,6 +278,21 @@ async def _last_opportunity_post_at(conn, server_id: int) -> Optional[datetime]:
 # ticked in between.
 CARD_REPOST_COOLDOWN_MINUTES = 1440
 
+# Launch-week prices can move faster than either the scanner or FUT.GG's
+# upstream feed. A Discord post is therefore allowed only when both the
+# recommendation and its underlying BIN observation are genuinely recent.
+# These are deliberately strict, fail-closed product rules; operators can
+# tune them without a deploy, but making them looser should be exceptional.
+OPPORTUNITY_MAX_PRICE_AGE_MINUTES = int(
+    os.getenv("DISCORD_OPPORTUNITY_MAX_PRICE_AGE_MINUTES", "3")
+)
+OPPORTUNITY_MAX_PRICE_MOVE_PCT = Decimal(
+    os.getenv("DISCORD_OPPORTUNITY_MAX_PRICE_MOVE_PCT", "0.05")
+)
+OPPORTUNITY_ENTRY_WINDOW_MINUTES = int(
+    os.getenv("DISCORD_OPPORTUNITY_ENTRY_WINDOW_MINUTES", "15")
+)
+
 
 async def _recently_posted_card_ids(conn, server_id: int, card_ids: Iterable[Any]) -> set[int]:
     ids = [int(c) for c in card_ids if c is not None]
@@ -477,6 +492,73 @@ def _card_thumbnail(row: dict[str, Any]) -> Optional[str]:
     return stored or row.get("card_image_url") or row.get("card_design_image_url")
 
 
+def _price_observed_at(row: dict[str, Any]) -> Optional[datetime]:
+    """The last time the current BIN was confirmed, not merely changed."""
+    value = row.get("bin_checked_at") or row.get("bin_captured_at")
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    return _aware(value) if isinstance(value, datetime) else None
+
+
+def _price_age_minutes(row: dict[str, Any], *, now: Optional[datetime] = None) -> Optional[float]:
+    observed_at = _price_observed_at(row)
+    if observed_at is None:
+        return None
+    return max(0.0, ((_aware(now or _now()) - observed_at).total_seconds() / 60))
+
+
+def _opportunity_price(ci: Any) -> Optional[Decimal]:
+    value = getattr(ci, "current_executable_buy", None) or getattr(ci, "recommended_buy_max", None)
+    return Decimal(str(value)) if value is not None else None
+
+
+async def _final_recheck_opportunity(provider, row: dict[str, Any], ci: Any):
+    """Reload one card immediately before posting and fail closed.
+
+    The broad candidate scan can take long enough for an early-launch price
+    to become irrelevant. The persisted current-intelligence surface only
+    returns a pair while the market BIN still matches the evaluated BIN; the
+    checks below additionally require a fresh confirmation and reject a move
+    of more than 5% from the candidate the scan originally selected.
+    """
+    from app.services.current_intelligence_surfaces import load_current_intelligence_pairs
+
+    card_id = row.get("source_card_id")
+    original_price = _opportunity_price(ci)
+    if card_id is None or original_price is None or original_price <= 0:
+        return None
+    pairs = await load_current_intelligence_pairs(
+        provider,
+        card_ids=[int(card_id)],
+        max_age_minutes=OPPORTUNITY_MAX_PRICE_AGE_MINUTES,
+        require_unexpired=True,
+    )
+    if not pairs:
+        return None
+    latest_row, latest_ci = pairs[0]
+    latest_price = _opportunity_price(latest_ci)
+    age_minutes = _price_age_minutes(latest_row)
+    if latest_price is None or latest_price <= 0 or age_minutes is None:
+        return None
+    if age_minutes > OPPORTUNITY_MAX_PRICE_AGE_MINUTES:
+        return None
+    movement = abs(latest_price - original_price) / original_price
+    if movement > OPPORTUNITY_MAX_PRICE_MOVE_PCT:
+        return None
+    if str(getattr(latest_ci, "signal", "") or "") not in ("buy", "strong_buy"):
+        return None
+    ceiling = latest_ci.recommended_buy_max
+    if ceiling is None or latest_price > Decimal(str(ceiling)):
+        return None
+    latest_row = dict(latest_row)
+    latest_row["price_checked_at"] = _price_observed_at(latest_row)
+    latest_row["price_age_minutes_at_post"] = age_minutes
+    return latest_row, latest_ci
+
+
 def build_opportunity_post_embed(row: dict[str, Any], ci: Any, *, test: bool = False) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Returns (embed, components) - the link button is a separate
     top-level message field in Discord's API, not part of the embed
@@ -484,33 +566,38 @@ def build_opportunity_post_embed(row: dict[str, Any], ci: Any, *, test: bool = F
     app_url = os.getenv("FRONTEND_URL", "https://app.eafc.live")
     thumbnail = _card_thumbnail(row)
     risk = str(ci.risk_level or "unknown").lower()
-    profit = ci.expected_profit_after_tax
+    live_price = _opportunity_price(ci)
+    buy_ceiling = Decimal(str(ci.recommended_buy_max)) if ci.recommended_buy_max is not None else live_price
+    sell_target = Decimal(str(ci.recommended_sell_target)) if ci.recommended_sell_target is not None else None
+    conservative_profit = (
+        sell_target * Decimal("0.95") - buy_ceiling
+        if sell_target is not None and buy_ceiling is not None
+        else None
+    )
+    checked_at = row.get("price_checked_at") or _price_observed_at(row)
+    age_minutes = row.get("price_age_minutes_at_post")
+    if age_minutes is None:
+        age_minutes = _price_age_minutes(row)
+    checked_label = (
+        f"{_aware(checked_at).strftime('%H:%M UTC')} · {max(0, int(age_minutes))}m old"
+        if isinstance(checked_at, datetime) and age_minutes is not None
+        else "Fixture price" if test else "Just rechecked"
+    )
     fields = [
         {
-            "name": "BUY",
-            # `row` is _segmented_candidates()'s raw candidate dict - a
-            # futgg_market_snapshot-shaped row, which has NEVER had a
-            # current_executable_buy column (see market_data_provider.py's
-            # _SNAPSHOT_COLUMNS). row.get(...) therefore always returned
-            # None, so this ALWAYS displayed ci.recommended_buy_max (the
-            # conservative buy ceiling) as "BUY" - never the actual, lower
-            # live price the card was really executable at. Meanwhile
-            # EXPECTED PROFIT below is computed from ci.expected_profit_
-            # after_tax, which futgg_intelligence.py derives from the
-            # REAL entry (current_bin when executable) - so the two
-            # numbers described two different buy prices, and profit
-            # looked inflated relative to the price actually shown.
-            # ci.current_executable_buy is the field evaluate_card()
-            # actually populates from this same row; read it from there.
-            "value": f"{embeds.coins(ci.current_executable_buy or ci.recommended_buy_max)} coins",
+            "name": "LIVE PRICE",
+            "value": f"{embeds.coins(live_price)} coins",
             "inline": True,
         },
-        {"name": "SELL TARGET", "value": f"{embeds.coins(ci.recommended_sell_target)} coins", "inline": True},
+        {"name": "MAX BUY — DO NOT CHASE", "value": f"{embeds.coins(buy_ceiling)} coins", "inline": True},
+        {"name": "SELL TARGET", "value": f"{embeds.coins(sell_target)} coins", "inline": True},
         {
-            "name": "EXPECTED PROFIT (after EA tax)",
-            "value": f"{embeds.coins(profit, signed=True)} coins" if profit is not None else "n/a",
+            "name": "MIN PROFIT AT MAX BUY (after EA tax)",
+            "value": f"{embeds.coins(conservative_profit, signed=True)} coins" if conservative_profit is not None else "n/a",
             "inline": True,
         },
+        {"name": "PRICE CHECKED", "value": checked_label, "inline": True},
+        {"name": "ENTRY WINDOW", "value": f"{OPPORTUNITY_ENTRY_WINDOW_MINUTES} minutes", "inline": True},
         {"name": "RISK", "value": risk.title() if risk != "unknown" else "Unknown", "inline": True},
         {"name": "SELLING SPEED", "value": _liquidity_label(ci.liquidity_score), "inline": True},
         {"name": "CONFIDENCE", "value": f"{(ci.confidence_score or 0):.0%}", "inline": True},
@@ -523,7 +610,7 @@ def build_opportunity_post_embed(row: dict[str, Any], ci: Any, *, test: bool = F
         "fields": fields,
         "footer": {
             "text": "EAFC.Live — this is a placeholder test post." if test
-            else "EAFC.Live — live conditions change, verify current price before buying."
+            else "EAFC.Live — recheck in-game. Never pay above MAX BUY; this entry signal expires quickly."
         },
         "timestamp": _now().isoformat(),
     }
@@ -813,6 +900,10 @@ async def publish_live_opportunities(pool, server: ServerRecord, client: Optiona
             break
         if row.get("source_card_id") is not None and int(row["source_card_id"]) in recent_card_ids:
             continue  # same card posted too recently - a fresh price alone isn't a new opportunity
+        rechecked = await _final_recheck_opportunity(provider, row, ci)
+        if rechecked is None:
+            continue
+        row, ci = rechecked
         band = None
         if band_budget is not None:
             from app.services.discord_feed_billing import classify_budget_band
@@ -827,12 +918,15 @@ async def publish_live_opportunities(pool, server: ServerRecord, client: Optiona
             if band_used[band] >= band_budget[band]:
                 continue  # this budget band's daily allocation is exhausted
         dedup_key = _opportunity_dedup_key(row["source_card_id"], ci)
-        # buy_price/sell_target are the exact numbers this embed shows the
-        # user - publish_opportunity_updates() grades THIS trade against
-        # THESE numbers later, not against some other, unrelated
-        # evaluation of the same card (see its docstring for why that
-        # used to produce results that couldn't have actually happened).
-        buy_price = ci.current_executable_buy or ci.recommended_buy_max
+        # Grade conservatively from the published MAX BUY, not the lower
+        # live ask used to spot the opportunity. An entry only counts if
+        # chronological market history proves that ceiling was available
+        # during the short entry window after this post.
+        observed_buy_price = ci.current_executable_buy or ci.recommended_buy_max
+        buy_price = ci.recommended_buy_max
+        posted_at = _now()
+        price_checked_at = row.get("price_checked_at")
+        entry_expires_at = posted_at + timedelta(minutes=OPPORTUNITY_ENTRY_WINDOW_MINUTES)
         async with pool.acquire() as conn:
             post_id = await _record_post(
                 conn, server.id, "opportunity", dedup_key,
@@ -843,7 +937,12 @@ async def publish_live_opportunities(pool, server: ServerRecord, client: Optiona
                     "name": embeds.player_name(row),
                     "budget_band": band,
                     "buy_price": float(buy_price) if buy_price is not None else None,
+                    "buy_ceiling": float(buy_price) if buy_price is not None else None,
+                    "observed_buy_price": float(observed_buy_price) if observed_buy_price is not None else None,
                     "sell_target": float(ci.recommended_sell_target) if ci.recommended_sell_target is not None else None,
+                    "price_checked_at": price_checked_at.isoformat() if isinstance(price_checked_at, datetime) else None,
+                    "price_age_minutes_at_post": row.get("price_age_minutes_at_post"),
+                    "entry_expires_at": entry_expires_at.isoformat(),
                 },
             )
         if post_id is None:
@@ -946,6 +1045,41 @@ async def publish_opportunity_updates(pool, server: ServerRecord, client: Option
                 """,
                 card_id, sent_at, sent_at + window,
             )
+            # New posts carry an explicit short entry deadline. A later
+            # price dip must not retroactively make a launch-week alert
+            # look executable. Legacy posts have no deadline and retain
+            # their original grading behavior.
+            entry_expires_raw = payload.get("entry_expires_at")
+            entry_expires_at = None
+            if entry_expires_raw:
+                try:
+                    entry_expires_at = _aware(
+                        datetime.fromisoformat(str(entry_expires_raw).replace("Z", "+00:00"))
+                    )
+                except ValueError:
+                    entry_expires_at = sent_at + timedelta(minutes=OPPORTUNITY_ENTRY_WINDOW_MINUTES)
+            if entry_expires_at is not None:
+                entry_was_available = any(
+                    _aware(o["captured_at"]) <= entry_expires_at
+                    and Decimal(str(o["lowest_bin"])) <= Decimal(str(buy_price))
+                    for o in observations
+                )
+                if not entry_was_available:
+                    if _now() >= entry_expires_at:
+                        await conn.fetchval(
+                            """
+                            INSERT INTO discord_server_posts
+                                (server_id, kind, dedup_key, status, payload, last_error)
+                            VALUES ($1, 'opportunity_update', $2, 'abandoned', $3::jsonb,
+                                    'entry_not_reached_before_expiry_no_discord_post')
+                            ON CONFLICT (server_id, kind, dedup_key) DO NOTHING
+                            RETURNING id
+                            """,
+                            server.id,
+                            row["dedup_key"],
+                            json.dumps({"outcome_status": "entry_not_reached"}),
+                        )
+                    continue
             grade = grade_recommendation(
                 horizon=OPPORTUNITY_UPDATE_HORIZON,
                 evaluated_at=sent_at,

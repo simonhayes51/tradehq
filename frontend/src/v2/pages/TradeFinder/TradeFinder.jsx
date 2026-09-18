@@ -25,19 +25,20 @@ import "./trade-finder.css";
 
 const DEFAULTS = {
   budget: "", min_profit: "", min_roi: "", risk: "", min_confidence: "",
-  position: "", rarity: "", rating: "", min_liquidity: "", max_price_age: "", sort: "best",
+  position: "", rarity: "", rating: "", min_liquidity: "", max_price_age: "3", sort: "best",
 };
+const LIVE_PRICE_MAX_AGE_SECONDS = 3 * 60;
 
-// "Max price age (s)" made people do unit math in their head to use a
-// filter. These map directly to seconds server-side but are offered as
+// A raw age field made people do unit math in their head to use the
+// filter. These map directly to minutes server-side but are offered as
 // plain, understandable choices instead - what "fresh" means to a
 // trader, not a raw threshold.
 const FRESHNESS_OPTIONS = [
+  { value: "3", label: "Launch-safe — under 3 minutes old" },
+  { value: "10", label: "Recent — under 10 minutes old" },
+  { value: "30", label: "Fairly fresh — under 30 minutes old" },
+  { value: "60", label: "Within the last hour" },
   { value: "", label: "Any freshness" },
-  { value: "120", label: "Live — under 2 minutes old" },
-  { value: "600", label: "Recent — under 10 minutes old" },
-  { value: "1800", label: "Fairly fresh — under 30 minutes old" },
-  { value: "3600", label: "Within the last hour" },
 ];
 
 // Human labels for the filter chips row - kept in sync with DEFAULTS by
@@ -52,7 +53,7 @@ const FILTER_LABELS = {
   rarity: (v) => `Rarity ${v}`,
   rating: (v) => `Rating ${v}`,
   min_liquidity: (v) => `Min liquidity ${v}%`,
-  max_price_age: (v) => FRESHNESS_OPTIONS.find((o) => o.value === String(v))?.label || `Price under ${v}s old`,
+  max_price_age: (v) => FRESHNESS_OPTIONS.find((o) => o.value === String(v))?.label || `Price under ${v}m old`,
 };
 
 const SORT_OPTIONS = [
@@ -247,7 +248,7 @@ export default function TradeFinder() {
               {item.evidence_quality === "estimated"
                 ? <span className="bin-estimate-badge" title="Based on listing-price movement, not confirmed sales">BIN estimate</span>
                 : null}
-              <MarketFreshness priceAgeSeconds={item.price_age_seconds} checkedAt={item.current_bin_checked_at || item.bin_checked_at || item.current_bin_captured_at} compact />
+              <MarketFreshness priceAgeSeconds={item.price_age_seconds} checkedAt={item.current_bin_checked_at || item.bin_checked_at || item.current_bin_captured_at} staleThresholdSeconds={LIVE_PRICE_MAX_AGE_SECONDS} compact />
             </div>
           </Link>;
         })}

@@ -25,6 +25,7 @@ import "../TradeFinder/trade-finder.css";
 import "./opportunities.css";
 
 const DEFAULTS = { risk: "", min_confidence: "", min_roi: "" };
+const LIVE_PRICE_MAX_AGE_SECONDS = 3 * 60;
 
 // Opportunities and Trade Finder both read the FUT.GG-backed market feed,
 // which is why they used to look like the same tool twice: same card
@@ -42,6 +43,7 @@ export default function Opportunities() {
     risk: filters.risk || undefined,
     min_confidence: filters.min_confidence === "" ? undefined : Number(filters.min_confidence) / 100,
     min_roi: filters.min_roi ? Number(filters.min_roi) / 100 : undefined,
+    max_price_age_minutes: 3,
     page_size: 40,
   });
 
@@ -63,7 +65,7 @@ export default function Opportunities() {
       <PageHead
         eyebrow="OPPORTUNITIES"
         title="Today's shortlist, no setup needed"
-        copy="Trades: cards you can buy and flip now. The current BIN sits meaningfully below recent completed sales, so the edge is available today — not something you hold and wait on. Want full control over budget, position, rarity and sort order instead? That's Trade Finder."
+        copy="Launch-safe trades only: every price shown here was checked within the last three minutes. Never chase above Buy max, and always verify the price in-game before buying. Want full control over budget, position, rarity and sort order instead? That's Trade Finder."
       />
 
       <div className="opp-crosslinks">
@@ -267,7 +269,7 @@ function OpportunityCard({ item }) {
         {item.evidence_quality === "estimated"
           ? <span className="bin-estimate-badge" title="Based on listing-price movement, not confirmed sales">BIN estimate</span>
           : null}
-        <MarketFreshness priceAgeSeconds={item.price_age_seconds} checkedAt={item.current_bin_checked_at || item.bin_checked_at || item.current_bin_captured_at} compact />
+        <MarketFreshness priceAgeSeconds={item.price_age_seconds} checkedAt={item.current_bin_checked_at || item.bin_checked_at || item.current_bin_captured_at} staleThresholdSeconds={LIVE_PRICE_MAX_AGE_SECONDS} compact />
       </div>
     </Link>
   );

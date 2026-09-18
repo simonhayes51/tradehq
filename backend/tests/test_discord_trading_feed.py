@@ -151,7 +151,10 @@ def test_free_overview_embed_never_shows_a_live_opportunity_field():
         "best_trades": [{"name": "A", "entry": 100, "exit": 200, "result": 90}],
     }
     embed = build_free_overview_embed(stats, "https://app.eafc.live")
-    forbidden = {"BUY", "SELL TARGET", "RISK", "SELLING SPEED", "CONFIDENCE"}
+    forbidden = {
+        "BUY", "LIVE PRICE", "MAX BUY — DO NOT CHASE", "SELL TARGET",
+        "PRICE CHECKED", "ENTRY WINDOW", "RISK", "SELLING SPEED", "CONFIDENCE",
+    }
     assert not forbidden.intersection(f["name"] for f in embed["fields"])
 
 
@@ -185,7 +188,11 @@ def test_opportunity_post_embed_includes_required_fields():
 
     embed, components = build_opportunity_post_embed(row, CI())
     names = {f["name"] for f in embed["fields"]}
-    for expected in ("BUY", "SELL TARGET", "EXPECTED PROFIT (after EA tax)", "RISK", "SELLING SPEED", "CONFIDENCE"):
+    for expected in (
+        "LIVE PRICE", "MAX BUY — DO NOT CHASE", "SELL TARGET",
+        "MIN PROFIT AT MAX BUY (after EA tax)", "PRICE CHECKED",
+        "ENTRY WINDOW", "RISK", "SELLING SPEED", "CONFIDENCE",
+    ):
         assert expected in names
     # Branded and links back to the card in the app.
     assert embed["author"]["name"] == "EAFC.Live"
@@ -221,7 +228,7 @@ def test_opportunity_post_prefers_familiar_display_name():
     assert "Gabriel Teodoro Martinelli Silva" not in embed["title"]
 
 
-def test_the_buy_field_shows_the_price_profit_was_actually_computed_from():
+def test_opportunity_embed_separates_live_price_from_conservative_max_buy():
     """Production bug, reported live: a Discord post showed BUY 985,000 /
     SELL TARGET 1,120,000 / EXPECTED PROFIT +129,000 - but 1,120,000 *
     0.95 - 985,000 = 79,000, not 129,000. The BUY field was reading
@@ -251,17 +258,19 @@ def test_the_buy_field_shows_the_price_profit_was_actually_computed_from():
         current_executable_buy = 935_000
 
     embed, _ = build_opportunity_post_embed(row, CI())
-    buy_field = next(f for f in embed["fields"] if f["name"] == "BUY")
-    assert buy_field["value"] == "935,000 coins"
+    live_field = next(f for f in embed["fields"] if f["name"] == "LIVE PRICE")
+    max_field = next(f for f in embed["fields"] if f["name"] == "MAX BUY — DO NOT CHASE")
+    assert live_field["value"] == "935,000 coins"
+    assert max_field["value"] == "985,000 coins"
 
-    buy_price = Decimal(buy_field["value"].split(" coins")[0].replace(",", ""))
-    profit_field = next(f for f in embed["fields"] if f["name"].startswith("EXPECTED PROFIT"))
+    max_buy = Decimal(max_field["value"].split(" coins")[0].replace(",", ""))
+    profit_field = next(f for f in embed["fields"] if f["name"].startswith("MIN PROFIT"))
     shown_profit = Decimal(profit_field["value"].split(" coins")[0].replace(",", ""))
-    real_profit = Decimal(CI.recommended_sell_target) * Decimal("0.95") - buy_price
+    real_profit = Decimal(CI.recommended_sell_target) * Decimal("0.95") - max_buy
     assert shown_profit == real_profit, (
-        "BUY and EXPECTED PROFIT must describe the same entry price - "
+        "MAX BUY and minimum profit must describe the same conservative entry price - "
         f"shown profit {shown_profit} does not match {real_profit} "
-        f"computed from the shown BUY price"
+        f"computed from the shown MAX BUY"
     )
 
 
@@ -281,8 +290,10 @@ def test_the_buy_field_falls_back_to_the_ceiling_when_not_executable():
         current_executable_buy = None
 
     embed, _ = build_opportunity_post_embed(row, CI())
-    buy_field = next(f for f in embed["fields"] if f["name"] == "BUY")
-    assert buy_field["value"] == "800 coins"
+    live_field = next(f for f in embed["fields"] if f["name"] == "LIVE PRICE")
+    max_field = next(f for f in embed["fields"] if f["name"] == "MAX BUY — DO NOT CHASE")
+    assert live_field["value"] == "800 coins"
+    assert max_field["value"] == "800 coins"
 
 
 def test_test_post_embed_is_clearly_labelled():
@@ -465,10 +476,73 @@ class _FakeAcquireConn:
         return None
 
 
+def test_final_recheck_accepts_only_fresh_stable_prices(monkeypatch):
+    import app.services.current_intelligence_surfaces as current
+    import app.services.discord_trading_feed as feed_module
+
+    now = datetime(2026, 9, 18, 19, 2, tzinfo=timezone.utc)
+    monkeypatch.setattr(feed_module, "_now", lambda: now)
+
+    class CI:
+        signal = "buy"
+        current_executable_buy = 10_400
+        recommended_buy_max = 10_500
+
+    latest_row = {
+        "source_card_id": 1,
+        "bin_checked_at": now - timedelta(minutes=1),
+    }
+    monkeypatch.setattr(
+        current,
+        "load_current_intelligence_pairs",
+        AsyncMock(return_value=[(latest_row, CI())]),
+    )
+
+    original_ci = MagicMock(current_executable_buy=10_000, recommended_buy_max=10_500)
+    result = asyncio.run(
+        feed_module._final_recheck_opportunity(object(), {"source_card_id": 1}, original_ci)
+    )
+
+    assert result is not None
+    assert result[0]["price_age_minutes_at_post"] == 1
+
+
+@pytest.mark.parametrize(
+    ("latest_price", "age_minutes"),
+    [(10_600, 1), (10_400, 4)],
+)
+def test_final_recheck_rejects_moved_or_stale_prices(monkeypatch, latest_price, age_minutes):
+    import app.services.current_intelligence_surfaces as current
+    import app.services.discord_trading_feed as feed_module
+
+    now = datetime(2026, 9, 18, 19, 2, tzinfo=timezone.utc)
+    monkeypatch.setattr(feed_module, "_now", lambda: now)
+
+    latest_ci = MagicMock(
+        signal="buy",
+        current_executable_buy=latest_price,
+        recommended_buy_max=11_000,
+    )
+    monkeypatch.setattr(
+        current,
+        "load_current_intelligence_pairs",
+        AsyncMock(return_value=[({
+            "source_card_id": 1,
+            "bin_checked_at": now - timedelta(minutes=age_minutes),
+        }, latest_ci)]),
+    )
+    original_ci = MagicMock(current_executable_buy=10_000, recommended_buy_max=10_500)
+
+    assert asyncio.run(
+        feed_module._final_recheck_opportunity(object(), {"source_card_id": 1}, original_ci)
+    ) is None
+
+
 def test_publish_live_opportunities_posts_only_one_per_call(monkeypatch):
     monkeypatch.setenv("DISCORD_TRADING_FEED_ENABLED", "1")
     import app.routers.v2.futgg_market as futgg_market
     import app.db as db
+    import app.services.discord_trading_feed as feed_module
 
     conn = _FakeAcquireConn(
         settings_row={"max_posts_per_day": 12, "min_confidence": 0.5, "min_expected_profit": 1000,
@@ -498,6 +572,11 @@ def test_publish_live_opportunities_posts_only_one_per_call(monkeypatch):
     monkeypatch.setattr(futgg_market, "_sales_for_rows", AsyncMock(return_value={}))
     monkeypatch.setattr(futgg_market, "_score_and_filter", AsyncMock(return_value=scored))
     monkeypatch.setattr(db, "get_core_pool", AsyncMock(return_value=object()))
+    monkeypatch.setattr(
+        feed_module,
+        "_final_recheck_opportunity",
+        AsyncMock(side_effect=lambda _provider, row, ci: (row, ci)),
+    )
 
     fake_client = MagicMock()
     fake_client.post_embed = AsyncMock(return_value=(200, {"id": "msg1"}))
@@ -724,6 +803,49 @@ def test_publish_opportunity_updates_grades_the_posts_own_prices(monkeypatch):
     assert result_field["value"] != "n/a"
     expected = tm.net_profit(Decimal("9600"), Decimal("5500"))
     assert result_field["value"] == f"{expected:+,.0f} coins"
+
+
+def test_publish_opportunity_updates_silently_expires_an_unavailable_entry(monkeypatch):
+    monkeypatch.setenv("DISCORD_TRADING_FEED_ENABLED", "1")
+    import app.services.discord_trading_feed as feed_module
+
+    now = datetime(2026, 9, 18, 19, 30, tzinfo=timezone.utc)
+    monkeypatch.setattr(feed_module, "_now", lambda: now)
+    sent_at = now - timedelta(minutes=30)
+    entry_expires_at = sent_at + timedelta(minutes=15)
+    card_id = 777
+    conn = _FakeUpdatesConn(
+        pending=[_pending_post(
+            payload={
+                "source_card_id": card_id,
+                "name": "Fast Market Card",
+                "buy_price": 10_000,
+                "sell_target": 12_000,
+                "entry_expires_at": entry_expires_at.isoformat(),
+            },
+            sent_at=sent_at,
+        )],
+        bin_history={
+            card_id: [
+                # The price only became affordable after the published
+                # entry window, so this must never count as an entry.
+                {"lowest_bin": 10_500, "captured_at": sent_at + timedelta(minutes=5)},
+                {"lowest_bin": 9_900, "captured_at": sent_at + timedelta(minutes=20)},
+            ],
+        },
+    )
+    fake_client = MagicMock()
+    fake_client.post_embed = AsyncMock(return_value=(200, {"id": "msg1"}))
+    server = ServerRecord(
+        id=1, guild_id="g1", name="Test", access_level="paid_partner", feed_channel_id="chan1",
+        proof_channel_id=None, status="active", expires_at=None,
+    )
+
+    updated = asyncio.run(feed_module.publish_opportunity_updates(conn, server, fake_client))
+
+    assert updated == 0
+    assert fake_client.post_embed.await_count == 0
+    assert conn.record_calls == 1
 
 
 def test_publish_opportunity_updates_reports_the_advertised_profit_not_a_glitched_entry(monkeypatch):

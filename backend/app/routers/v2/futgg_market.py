@@ -73,7 +73,6 @@ from app.services.market_data_provider import (
     MAX_RECENT_SALES,
     FutggMarketDataProvider,
     PlayerFilters,
-    row_matches_search,
 )
 from app.services.priority_config import PRIORITY_ENGINE_CONFIG
 from app.services.priority_recompute import (
@@ -105,6 +104,12 @@ MAX_PAGE_SIZE = 100
 # week cards, so extending this window does not bring those back.
 MAX_OPPORTUNITY_EVIDENCE_AGE_MINUTES = 48 * 60
 LIVE_OPPORTUNITY_MIN_LIQUIDITY_SCORE = 0.30
+# Launch-week actionable prices are only useful while extremely fresh.
+# This gates the zero-setup opportunity surfaces by default; Trade Finder
+# can still expose an explicit freshness control for research.
+LIVE_OPPORTUNITY_MAX_PRICE_AGE_MINUTES = int(
+    os.getenv("LIVE_OPPORTUNITY_MAX_PRICE_AGE_MINUTES", "3")
+)
 
 
 def _is_stale_for_tier(price_age_minutes: Optional[int], price_tier: Optional[str]) -> bool:
@@ -300,13 +305,8 @@ def _apply_filters_in_python(rows: List[Dict[str, Any]], f: "PlayerFilters") -> 
             return (now - observed).total_seconds() / 60.0 <= f.max_price_age_minutes
         out = [r for r in out if _age_ok(r)]
     if f.search:
-        # Same matching rules the DB-level search uses (see
-        # market_data_provider.row_matches_search / _apply_common_filters)
-        # - these rows are raw snapshot dicts, not yet run through
-        # _serialize_player's display_name coalescing, so checking only
-        # "name" would miss a card whose display_name (or a word split
-        # across it and full_name) is what the term actually matches.
-        out = [r for r in out if row_matches_search(r, f.search)]
+        term = f.search.strip().lower()
+        out = [r for r in out if term in (r.get("name") or "").lower()]
     return out
 
 
@@ -969,7 +969,10 @@ async def get_player_sales(
 async def free_pick_candidates(provider: "FutggMarketDataProvider") -> List[Dict[str, Any]]:
     rows = _apply_filters_in_python(
         await _segmented_candidates(provider),
-        _filters_from_query(None, None, None, None, None, None, None, None, None, None, None),
+        _filters_from_query(
+            None, None, None, None, None, None, None, None, None, None,
+            LIVE_OPPORTUNITY_MAX_PRICE_AGE_MINUTES,
+        ),
     )
     scored = await _score_and_filter(
         rows, signals={"buy", "strong_buy"},
@@ -1029,6 +1032,8 @@ async def list_opportunities(
 ) -> Dict[str, Any]:
     rating_min, rating_max = _resolve_rating_bounds(rating, rating_min, rating_max)
     max_price_age_minutes = max_price_age_minutes if max_price_age_minutes is not None else max_price_age
+    if max_price_age_minutes is None:
+        max_price_age_minutes = LIVE_OPPORTUNITY_MAX_PRICE_AGE_MINUTES
     filters = _filters_from_query(
         None, rating_min, rating_max, position, rarity, club, league, nation,
         max_price, min_price, max_price_age_minutes,
@@ -1121,7 +1126,13 @@ async def opportunities_preview(
     profit/ROI figure, no advanced rationale. See that function's
     docstring for why this is a separate, narrower serialisation rather
     than the same /opportunities payload with fields hidden client-side."""
-    rows = await _segmented_candidates(provider)
+    rows = _apply_filters_in_python(
+        await _segmented_candidates(provider),
+        _filters_from_query(
+            None, None, None, None, None, None, None, None, None, None,
+            LIVE_OPPORTUNITY_MAX_PRICE_AGE_MINUTES,
+        ),
+    )
     scored = await _score_and_filter(
         rows, signals={"buy", "strong_buy"},
         min_liquidity=LIVE_OPPORTUNITY_MIN_LIQUIDITY_SCORE,
