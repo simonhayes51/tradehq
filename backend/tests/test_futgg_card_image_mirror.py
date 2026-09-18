@@ -28,7 +28,8 @@ ADMIN_DSN = os.getenv(
 
 _SCHEMA_SQL = """
 CREATE TABLE futgg_players (
-    source_card_id BIGINT PRIMARY KEY,
+    game_year INTEGER NOT NULL DEFAULT 27,
+    source_card_id BIGINT NOT NULL,
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     card_image_url TEXT,
     card_image_stored_url TEXT,
@@ -36,7 +37,8 @@ CREATE TABLE futgg_players (
     card_image_stored_hash TEXT,
     card_image_stored_at TIMESTAMPTZ,
     card_image_stored_status TEXT,
-    card_image_stored_error TEXT
+    card_image_stored_error TEXT,
+    PRIMARY KEY (game_year, source_card_id)
 );
 """
 
@@ -155,7 +157,7 @@ def test_ensure_mirrored_card_image_uploads_and_records_stored_columns(dsn, monk
 
             result = await mod.ensure_mirrored_card_image(pool, 1)
             assert result["mirrored"] is True
-            assert result["url"].startswith("https://r2.example.com/fc26/futgg-card-images/1/")
+            assert result["url"].startswith("https://r2.example.com/fc27/futgg-card-images/1/")
 
             async with pool.acquire() as conn:
                 row = await conn.fetchrow("SELECT * FROM futgg_players WHERE source_card_id = 1")
@@ -163,6 +165,48 @@ def test_ensure_mirrored_card_image_uploads_and_records_stored_columns(dsn, monk
             assert row["card_image_stored_url"] == result["url"]
             assert row["card_image_stored_hash"] is not None
             assert row["card_image_stored_error"] is None
+        finally:
+            await pool.close()
+
+    _run(_t())
+
+
+def test_ensure_mirrored_card_image_isolated_by_game_year(dsn, monkeypatch):
+    async def _t():
+        pool = await _pool(dsn)
+        try:
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO futgg_players (
+                        game_year, source_card_id, card_image_url,
+                        card_image_stored_url, card_image_stored_status
+                    ) VALUES
+                        (26, 1, 'https://cdn/fc26.webp', 'https://r2.example.com/fc26.webp', 'ready'),
+                        (27, 1, 'https://cdn/fc27.webp', NULL, NULL)
+                    """
+                )
+            _patch_fetch(monkeypatch, body=b"fc27-card")
+            monkeypatch.setattr(
+                mod, "upload_bytes",
+                lambda key, data, ct: asyncio.sleep(0, result=f"https://r2.example.com/{key}"),
+            )
+
+            result = await mod.ensure_mirrored_card_image(pool, 1, game_year=27)
+            assert result["mirrored"] is True
+            assert "/fc27/futgg-card-images/1/" in result["url"]
+
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT game_year, card_image_stored_url, card_image_stored_status
+                    FROM futgg_players WHERE source_card_id = 1 ORDER BY game_year
+                    """
+                )
+            assert rows[0]["card_image_stored_url"] == "https://r2.example.com/fc26.webp"
+            assert rows[0]["card_image_stored_status"] == "ready"
+            assert "/fc27/futgg-card-images/1/" in rows[1]["card_image_stored_url"]
+            assert rows[1]["card_image_stored_status"] == "ready"
         finally:
             await pool.close()
 

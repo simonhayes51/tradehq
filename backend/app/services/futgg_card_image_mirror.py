@@ -40,7 +40,7 @@ _FETCH_TIMEOUT = aiohttp.ClientTimeout(total=15)
 # two-query version would have across concurrent replicas).
 _CLAIM_BATCH_SQL = """
     WITH candidates AS (
-        SELECT source_card_id
+        SELECT game_year, source_card_id
         FROM futgg_players
         WHERE is_active
           AND card_image_url IS NOT NULL
@@ -49,7 +49,7 @@ _CLAIM_BATCH_SQL = """
             OR card_image_stored_status = 'error'
             OR (card_image_stored_status = 'mirroring' AND card_image_stored_at < NOW() - INTERVAL '5 minutes')
           )
-        ORDER BY source_card_id
+        ORDER BY game_year DESC, source_card_id
         LIMIT $1
         FOR UPDATE SKIP LOCKED
     )
@@ -57,8 +57,9 @@ _CLAIM_BATCH_SQL = """
     SET card_image_stored_status = 'mirroring',
         card_image_stored_at = NOW()
     FROM candidates c
-    WHERE p.source_card_id = c.source_card_id
-    RETURNING p.source_card_id
+    WHERE p.game_year = c.game_year
+      AND p.source_card_id = c.source_card_id
+    RETURNING p.game_year, p.source_card_id
 """
 
 
@@ -66,23 +67,29 @@ class CardImageNotFoundError(RuntimeError):
     pass
 
 
-def _storage_key(card_id: int, content_hash: str) -> str:
-    return f"fc26/futgg-card-images/{card_id}/{content_hash[:16]}.webp"
+def _storage_key(game_year: int, card_id: int, content_hash: str) -> str:
+    return f"fc{game_year}/futgg-card-images/{card_id}/{content_hash[:16]}.webp"
 
 
-async def _mark_error(conn: asyncpg.Connection, card_id: int, error: str) -> None:
+async def _mark_error(
+    conn: asyncpg.Connection, game_year: int, card_id: int, error: str
+) -> None:
     await conn.execute(
         """
         UPDATE futgg_players
-        SET card_image_stored_status = 'error', card_image_stored_error = $2
-        WHERE source_card_id = $1
+        SET card_image_stored_status = 'error', card_image_stored_error = $3
+        WHERE game_year = $1 AND source_card_id = $2
         """,
-        card_id, error[:2000],
+        game_year, card_id, error[:2000],
     )
 
 
 async def ensure_mirrored_card_image(
-    pool: asyncpg.Pool, card_id: int, *, already_claimed: bool = False
+    pool: asyncpg.Pool,
+    card_id: int,
+    *,
+    game_year: int = 27,
+    already_claimed: bool = False,
 ) -> Dict[str, Any]:
     """Fetches futgg_players.card_image_url once and re-hosts it in R2 if
     not already mirrored. already_claimed=True means the caller (the
@@ -92,22 +99,26 @@ async def ensure_mirrored_card_image(
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
-            SELECT source_card_id, card_image_url, card_image_stored_url,
+            SELECT game_year, source_card_id, card_image_url, card_image_stored_url,
                    card_image_stored_status
-            FROM futgg_players WHERE source_card_id = $1
+            FROM futgg_players
+            WHERE game_year = $1 AND source_card_id = $2
             """,
-            card_id,
+            game_year, card_id,
         )
         if row is None or row["card_image_url"] is None:
-            raise CardImageNotFoundError(f"No card_image_url for source_card_id={card_id}")
+            raise CardImageNotFoundError(
+                f"No card_image_url for game_year={game_year}, source_card_id={card_id}"
+            )
 
         if not already_claimed:
             if row["card_image_stored_status"] == "ready" and row["card_image_stored_url"]:
                 return {"mirrored": False, "url": row["card_image_stored_url"]}
             await conn.execute(
                 "UPDATE futgg_players SET card_image_stored_status = 'mirroring', "
-                "card_image_stored_at = NOW() WHERE source_card_id = $1",
-                card_id,
+                "card_image_stored_at = NOW() "
+                "WHERE game_year = $1 AND source_card_id = $2",
+                game_year, card_id,
             )
 
         source_url = row["card_image_url"]
@@ -122,48 +133,53 @@ async def ensure_mirrored_card_image(
     except Exception as exc:
         logger.warning("card %s: fetch failed: %s", card_id, exc)
         async with pool.acquire() as conn:
-            await _mark_error(conn, card_id, f"Fetch failed: {exc}")
+            await _mark_error(conn, game_year, card_id, f"Fetch failed: {exc}")
         return {"mirrored": False, "error": str(exc)}
 
     if not data:
         async with pool.acquire() as conn:
-            await _mark_error(conn, card_id, "Empty response body")
+            await _mark_error(conn, game_year, card_id, "Empty response body")
         return {"mirrored": False, "error": "empty body"}
 
     content_hash = hashlib.sha256(data).hexdigest()
-    key = _storage_key(card_id, content_hash)
+    key = _storage_key(game_year, card_id, content_hash)
 
     try:
         stored_url = await upload_bytes(key, data, content_type or "image/webp")
     except ObjectStorageError as exc:
         logger.error("card %s: upload failed: %s", card_id, exc)
         async with pool.acquire() as conn:
-            await _mark_error(conn, card_id, f"Upload failed: {exc}")
+            await _mark_error(conn, game_year, card_id, f"Upload failed: {exc}")
         return {"mirrored": False, "error": str(exc)}
 
     async with pool.acquire() as conn:
         await conn.execute(
             """
             UPDATE futgg_players
-            SET card_image_stored_url = $2,
-                card_image_stored_key = $3,
-                card_image_stored_hash = $4,
+            SET card_image_stored_url = $3,
+                card_image_stored_key = $4,
+                card_image_stored_hash = $5,
                 card_image_stored_at = NOW(),
                 card_image_stored_status = 'ready',
                 card_image_stored_error = NULL
-            WHERE source_card_id = $1
+            WHERE game_year = $1 AND source_card_id = $2
             """,
-            card_id, stored_url, key, content_hash,
+            game_year, card_id, stored_url, key, content_hash,
         )
 
     return {"mirrored": True, "url": stored_url}
 
 
-async def _run_claimed(pool: asyncpg.Pool, card_id: int) -> None:
+async def _run_claimed(pool: asyncpg.Pool, game_year: int, card_id: int) -> None:
     try:
-        await ensure_mirrored_card_image(pool, card_id, already_claimed=True)
+        await ensure_mirrored_card_image(
+            pool, card_id, game_year=game_year, already_claimed=True
+        )
     except Exception:
-        logger.exception("card image mirror failed for card_id=%s", card_id)
+        logger.exception(
+            "card image mirror failed for game_year=%s card_id=%s",
+            game_year, card_id,
+        )
 
 
 async def mirror_pending_batch(pool: asyncpg.Pool, batch_size: int = 50) -> int:
@@ -174,10 +190,15 @@ async def mirror_pending_batch(pool: asyncpg.Pool, batch_size: int = 50) -> int:
     app/services/player_card_ondemand.py."""
     async with pool.acquire() as conn:
         claimed_rows = await conn.fetch(_CLAIM_BATCH_SQL, batch_size)
-    claimed = [int(r["source_card_id"]) for r in claimed_rows]
+    claimed = [
+        (int(r["game_year"]), int(r["source_card_id"]))
+        for r in claimed_rows
+    ]
     if not claimed:
         return 0
-    await asyncio.gather(*(_run_claimed(pool, cid) for cid in claimed))
+    await asyncio.gather(
+        *(_run_claimed(pool, game_year, card_id) for game_year, card_id in claimed)
+    )
     return len(claimed)
 
 

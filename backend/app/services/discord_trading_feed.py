@@ -461,12 +461,26 @@ def _liquidity_label(score: Optional[float]) -> str:
 _RISK_COLORS = {"low": embeds.BRAND_COLOR, "medium": embeds.BRAND_COLOR_WARN, "high": embeds.BRAND_COLOR_DANGER}
 
 
+def _card_thumbnail(row: dict[str, Any]) -> Optional[str]:
+    """Prefer mirrored art only when it belongs to this card's game cycle."""
+    stored = row.get("card_image_stored_url")
+    game_year = row.get("game_year")
+    if stored and game_year is not None:
+        try:
+            expected_path = f"fc{int(game_year)}/futgg-card-images/"
+        except (TypeError, ValueError):
+            expected_path = ""
+        if expected_path and expected_path not in str(stored):
+            stored = None
+    return stored or row.get("card_image_url") or row.get("card_design_image_url")
+
+
 def build_opportunity_post_embed(row: dict[str, Any], ci: Any, *, test: bool = False) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Returns (embed, components) - the link button is a separate
     top-level message field in Discord's API, not part of the embed
     itself."""
     app_url = os.getenv("FRONTEND_URL", "https://app.eafc.live")
-    thumbnail = row.get("card_image_stored_url") or row.get("card_image_url") or row.get("card_design_image_url")
+    thumbnail = _card_thumbnail(row)
     risk = str(ci.risk_level or "unknown").lower()
     profit = ci.expected_profit_after_tax
     fields = [

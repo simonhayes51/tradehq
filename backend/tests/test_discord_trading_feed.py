@@ -491,6 +491,30 @@ def test_publish_live_opportunities_posts_only_one_per_call(monkeypatch):
     assert fake_client.post_embed.await_count == 1
 
 
+def test_opportunity_embed_rejects_stale_cross_cycle_stored_image():
+    from app.services.discord_trading_feed import (
+        _FakeIntelligence,
+        build_opportunity_post_embed,
+    )
+
+    embed, _components = build_opportunity_post_embed(
+        {
+            "source_card_id": 1,
+            "game_year": 27,
+            "name": "Marco Palestra",
+            "rating": 78,
+            "rarity": "Rare",
+            "card_image_stored_url": (
+                "https://cdn.eafc.live/fc26/futgg-card-images/1/old.webp"
+            ),
+            "card_image_url": "https://cdn.fut.gg/fc27/palestra.webp",
+        },
+        _FakeIntelligence(),
+    )
+
+    assert embed["thumbnail"]["url"] == "https://cdn.fut.gg/fc27/palestra.webp"
+
+
 def test_card_repost_cooldown_is_one_rolling_day():
     from app.services.discord_trading_feed import CARD_REPOST_COOLDOWN_MINUTES
 
