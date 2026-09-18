@@ -66,8 +66,13 @@ def data_age_label(observed_at: Optional[datetime], *, now: Optional[datetime] =
     return f"{hours // 24}d ago"
 
 
+def player_name(row: dict[str, Any]) -> str:
+    """Return the familiar card name, not the player's full legal name."""
+    return row.get("display_name") or row.get("name") or "Unknown player"
+
+
 def card_label(row: dict[str, Any]) -> str:
-    name = row.get("name") or "Unknown player"
+    name = player_name(row)
     rating = row.get("rating")
     version = row.get("version") or row.get("rarity") or ""
     parts = [name]

@@ -836,7 +836,9 @@ async def publish_live_opportunities(pool, server: ServerRecord, client: Optiona
                 conn, server.id, "opportunity", dedup_key,
                 {
                     "source_card_id": row["source_card_id"],
-                    "name": row.get("name"),
+                    # Keep the same familiar player name in the later
+                    # TARGET HIT/result post as in the opportunity embed.
+                    "name": embeds.player_name(row),
                     "budget_band": band,
                     "buy_price": float(buy_price) if buy_price is not None else None,
                     "sell_target": float(ci.recommended_sell_target) if ci.recommended_sell_target is not None else None,

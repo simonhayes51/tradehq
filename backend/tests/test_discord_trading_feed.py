@@ -198,6 +198,29 @@ def test_opportunity_post_embed_includes_required_fields():
     assert link_url.endswith("/#/players/12345?src=discord_feed")
 
 
+def test_opportunity_post_prefers_familiar_display_name():
+    row = {
+        "source_card_id": 12345,
+        "name": "Gabriel Teodoro Martinelli Silva",
+        "display_name": "Gabriel Martinelli",
+        "version": "Rare",
+    }
+
+    class CI:
+        recommended_sell_target = 18_250
+        expected_profit_after_tax = 1_338.0
+        risk_level = "medium"
+        liquidity_score = 0.8
+        confidence_score = 0.65
+        recommended_buy_max = 16_000
+        current_executable_buy = 16_000
+
+    embed, _ = build_opportunity_post_embed(row, CI())
+
+    assert embed["title"] == "Gabriel Martinelli — Rare"
+    assert "Gabriel Teodoro Martinelli Silva" not in embed["title"]
+
+
 def test_the_buy_field_shows_the_price_profit_was_actually_computed_from():
     """Production bug, reported live: a Discord post showed BUY 985,000 /
     SELL TARGET 1,120,000 / EXPECTED PROFIT +129,000 - but 1,120,000 *
