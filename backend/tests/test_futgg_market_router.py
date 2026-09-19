@@ -68,6 +68,7 @@ class FakeProvider:
         self, rows: Optional[List[Dict[str, Any]]] = None,
         heartbeats: Optional[List[Dict[str, Any]]] = None,
         bin_observations_by_card: Optional[Dict[int, List[Any]]] = None,
+        live_state_by_card: Optional[Dict[int, Dict[str, Any]]] = None,
     ):
         self.rows = rows if rows is not None else [_row()]
         self.heartbeats = heartbeats
@@ -75,6 +76,7 @@ class FakeProvider:
         # the BIN-history fallback never being attempted (the sales-only
         # behaviour predating it), so this stays opt-in per test.
         self.bin_observations_by_card = bin_observations_by_card or {}
+        self.live_state_by_card = live_state_by_card or {}
         # Records the order_by every search_players() call was actually
         # made with, so tests can assert on candidate-scan ordering
         # without needing a real Postgres EXPLAIN.
@@ -97,6 +99,9 @@ class FakeProvider:
             "price_range_high": row["price_range_high"], "source_age_text": row["bin_source_age_text"],
             "captured_at": row["bin_captured_at"],
         }
+
+    async def get_live_card_market_state(self, card_id: int):
+        return self.live_state_by_card.get(card_id)
 
     async def get_recent_sales(self, card_id: int, limit: int = 50):
         return [
@@ -236,6 +241,44 @@ def test_get_player_detail_shape():
     assert body["intelligence"]["signal"] in (
         "strong_buy", "buy", "watch", "hold", "sell", "avoid", "insufficient_data",
     )
+
+
+def test_get_player_detail_reconciles_headline_with_live_bin_and_sales_history():
+    stale_snapshot = _row(
+        current_bin=None,
+        bin_captured_at=AS_OF - timedelta(days=7),
+        sales_count=0,
+        sales_median=None,
+        sales_trimmed_mean=None,
+        latest_sale_at=None,
+    )
+    live_state = {
+        "current_bin": 1_800,
+        "bin_captured_at": AS_OF - timedelta(minutes=2),
+        "bin_checked_at": AS_OF - timedelta(minutes=2),
+        "sales_count": 50,
+        "sales_median": 1_700,
+        "sales_trimmed_mean": 1_700,
+        "sales_low": 1_300,
+        "sales_high": 1_800,
+        "sales_stddev": 100,
+        "sales_window_earliest_at": AS_OF - timedelta(days=2),
+        "sales_window_latest_at": AS_OF - timedelta(days=2),
+        "sales_window_span_minutes": 0,
+        "sales_dispersion_ratio": 0.0588,
+        "sales_interdecile_ratio": 0.1765,
+        "latest_sale_price": 1_800,
+        "latest_sale_at": AS_OF - timedelta(days=2),
+    }
+    provider = FakeProvider([stale_snapshot], live_state_by_card={1: live_state})
+
+    resp = TestClient(_app_with(provider)).get("/api/v2/players/1")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["current_bin"] == 1_800
+    assert body["intelligence"]["sales_sample_size"] == 50
+    assert not any("Only 0 recent sale" in reason for reason in body["intelligence"]["reasons"])
 
 
 def test_get_player_detail_prefers_display_name_over_full_legal_name():
@@ -794,8 +837,9 @@ def test_sales_endpoint_serves_the_requested_window_not_a_fixed_one():
 
 
 def test_sales_endpoint_refuses_a_window_wider_than_the_sales_history_itself():
-    # futgg_market_snapshot's sales window stops at 14 days, so a wider
-    # range would promise data that structurally cannot exist.
+    # The human-facing chart deliberately caps context at 14 days, even
+    # though the valuation summary itself uses the newest 50 sales from
+    # the current seven-day window.
     assert _client().get("/api/v2/players/1/sales?days=30").status_code == 422
 
 

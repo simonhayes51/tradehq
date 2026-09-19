@@ -807,6 +807,18 @@ async def get_player_detail(
     if row is None:
         raise HTTPException(404, "Card not found in the FUT.GG-backed market layer")
 
+    # The player page also renders live BIN and sales-history endpoints.
+    # Do not pair those with an older materialized-view headline that can
+    # claim "no BIN" / "0 sales" while the evidence directly below proves
+    # otherwise. One indexed per-card rebuild is cheap here and keeps every
+    # number on the page on the same current 7-day valuation window.
+    try:
+        live_state = await provider.get_live_card_market_state(card_id)
+        if live_state:
+            row = {**row, **live_state}
+    except Exception:
+        log.warning("get_live_card_market_state failed for card_id=%s", card_id, exc_info=True)
+
     # The detail view is the one place we can always afford the extra
     # query for raw sales, so the trend layer runs with real data here
     # rather than degrading to "trend unknown". List endpoints fetch

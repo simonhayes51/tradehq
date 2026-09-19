@@ -38,7 +38,6 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import asyncpg
 
 from app.services.bin_market_signal import load_bin_observations
-from app.services.game_cycle import active_game_year
 from app.services.priority_config import PRIORITY_ENGINE_CONFIG
 from app.services.priority_config import TIERS as PRIORITY_TIERS
 
@@ -121,11 +120,8 @@ REFRESH_FAILURE_BACKOFF_SECONDS = float(
 #: Wall-clock time of the last failed refresh, so the loop can hold off.
 _last_refresh_failure_at: float = 0.0
 
-# Same bound the migration's own recent-sales window uses - kept as a
-# named constant here too since get_recent_sales() enforces it again on
-# top of the view (the view already only ever contains <=50 rows/card
-# within 14 days, this is just the query-time ceiling for callers asking
-# for fewer).
+# Same row bound the migration's own seven-day recent-sales window uses.
+# get_recent_sales() enforces both limits directly against the live table.
 MAX_RECENT_SALES = 50
 
 # The valuation window above is deliberately small - 50 rows is what the
@@ -137,10 +133,9 @@ MAX_RECENT_SALES = 50
 # the toggle appeared to do nothing at all.
 MAX_CHART_SALES = 500
 
-# The longest window any chart range may request. futgg_market_snapshot's
-# bounded_sales CTE cuts at 14 days, and get_recent_sales/get_sales_by_ids
-# now match it, so offering a "30d" range promised data that structurally
-# cannot exist.
+# The longest window the human-facing chart may request. This is wider
+# than the engine's seven-day valuation window on purpose: chart context
+# and current valuation are different jobs.
 MAX_CHART_DAYS = 14
 
 # Expected price-refresh cadence - used only for the freshness endpoint's
@@ -209,34 +204,6 @@ def normalize_search_term(term: str) -> str:
     return _strip_diacritics(term).lower().strip()
 
 
-#: The player fields a name search matches against - see
-#: _apply_common_filters' search clause for the DB-level twin of this.
-SEARCHABLE_NAME_FIELDS = ("name", "display_name", "full_name")
-
-
-def row_matches_search(row: Dict[str, Any], search: str) -> bool:
-    """True if EVERY whitespace-separated word in `search` appears
-    SOMEWHERE across name/display_name/full_name (any word may match any
-    field, independently of the others) once both sides are
-    case-folded and diacritic-stripped. Mirrors the DB-level per-token
-    ILIKE-across-three-fields AND in _apply_common_filters, for the
-    Python-side re-checks that run after a DB fetch (diacritic folding
-    here; segment-candidate re-filtering in app/routers/v2/futgg_market.
-    py's _apply_filters_in_python) - both need the same semantics or a
-    row that passed the DB query could still get dropped afterward.
-
-    Word-based rather than a single substring check because a phrase
-    search fails a real case: "Vinicius Junior" against
-    name="Vinicius Jose de Oliveira Junior" - both words are genuinely
-    present but not adjacent, so a whole-phrase ILIKE/substring check
-    would miss it."""
-    haystacks = [normalize_search_term(row.get(field) or "") for field in SEARCHABLE_NAME_FIELDS]
-    for token in normalize_search_term(search).split():
-        if not any(token in haystack for haystack in haystacks):
-            return False
-    return True
-
-
 class MarketDataProvider:
     """Documents the provider-neutral method shape. Not used
     polymorphically today - see module docstring."""
@@ -246,6 +213,8 @@ class MarketDataProvider:
     async def get_current_price(self, card_id: int, platform: Optional[str] = None) -> Optional[Dict[str, Any]]: ...
 
     async def get_recent_sales(self, card_id: int, limit: int = MAX_RECENT_SALES) -> List[Dict[str, Any]]: ...
+
+    async def get_live_card_market_state(self, card_id: int) -> Optional[Dict[str, Any]]: ...
 
     async def get_sales_series(self, card_id: int, *, days: int, limit: int = MAX_CHART_SALES) -> List[Dict[str, Any]]: ...
 
@@ -469,25 +438,11 @@ class PlayerFilters:
     min_price: Optional[int] = None
     max_price_age_minutes: Optional[int] = None
     tradeable_only: bool = True
-    #: None means "the active game cycle" (app/services/game_cycle.py),
-    #: resolved in _apply_common_filters rather than defaulted here so it
-    #: always reflects EAFC_GAME_YEAR at query time, not at import time.
-    #: An explicit value overrides it - e.g. an admin/research tool that
-    #: deliberately wants to look at a prior cycle's cards.
-    game_year: Optional[int] = None
 
 
 def _apply_common_filters(
     where: List[str], args: List[Any], f: PlayerFilters
 ) -> None:
-    # Player search/list surfaces show one game cycle at a time - without
-    # this, a prior cycle's cards (kept in futgg_market_snapshot as
-    # queryable historical/reference data, never deleted - see
-    # app/services/game_cycle.py) show up alongside the current cycle's,
-    # which is confusing at best and at worst returns the WRONG card for
-    # a name/rating combination that exists in both years.
-    args.append(f.game_year if f.game_year is not None else active_game_year())
-    where.append(f"game_year = ${len(args)}")
     if f.tradeable_only:
         where.append("is_tradeable IS NOT FALSE")
     if f.rating_min is not None:
@@ -533,31 +488,9 @@ def _apply_common_filters(
             f"EXTRACT(EPOCH FROM (now() - {age})) / 60.0 <= ${len(args)}"
         )
     if f.search:
-        # A search must match whichever of these three fields the user
-        # actually typed, not just `name`. Confirmed live: futgg_players
-        # carries name/display_name/full_name as genuinely different
-        # strings for the same card (e.g. name="Vinicius Jose de
-        # Oliveira Junior", display_name="Vini Jr.", full_name matching
-        # name) - searching "Vini Jr" matched nothing because only `name`
-        # was ever checked, even though display_name is what the UI
-        # itself shows for that card.
-        #
-        # One token per word, ANDed together (each token may match any
-        # of the three fields independently) rather than one ILIKE on
-        # the whole phrase - a phrase search fails "Vinicius Junior"
-        # against name="Vinicius Jose de Oliveira Junior", because the
-        # two words are not adjacent in that field even though both are
-        # genuinely present. Splitting on whitespace and requiring each
-        # word to appear SOMEWHERE across the three fields (not
-        # necessarily the same one, not necessarily adjacent) is what
-        # makes that match, while a single-word search degrades to
-        # exactly the OR-across-three-fields check above.
-        for token in f.search.strip().split():
-            args.append(f"%{token}%")
-            idx = len(args)
-            where.append(
-                f"(name ILIKE ${idx} OR display_name ILIKE ${idx} OR full_name ILIKE ${idx})"
-            )
+        term = f"%{f.search.strip()}%"
+        args.append(term)
+        where.append(f"name ILIKE ${len(args)}")
 
 
 class FutggMarketDataProvider(MarketDataProvider):
@@ -662,7 +595,7 @@ class FutggMarketDataProvider(MarketDataProvider):
                        source_age_text, source_age_seconds
                 FROM futgg_sales_history
                 WHERE source_card_id = $1
-                  -- Same 14-day bound futgg_market_snapshot's bounded_sales
+                  -- Same 7-day bound futgg_market_snapshot's bounded_sales
                   -- CTE applies. This feeds the detail view's trend
                   -- assessment (futgg_market.py::get_player_detail), so
                   -- without it the trend gate and the snapshot aggregates it
@@ -670,13 +603,119 @@ class FutggMarketDataProvider(MarketDataProvider):
                   -- same card. It also bounds the /players/{id}/sales chart,
                   -- which should not be splicing months-old prints into a
                   -- picture of today's market either.
-                  AND approximate_sold_at >= now() - interval '14 days'
+                  AND approximate_sold_at >= now() - interval '7 days'
                 ORDER BY approximate_sold_at DESC
                 LIMIT $2
                 """,
                 card_id, bounded_limit,
             )
         return [dict(r) for r in rows]
+
+    async def get_live_card_market_state(self, card_id: int) -> Optional[Dict[str, Any]]:
+        """Rebuild one card's headline market state from the live tables.
+
+        List surfaces correctly use futgg_market_snapshot for bounded bulk
+        reads, but a player-detail request can afford one indexed query. This
+        prevents the page showing live BIN/sales history underneath a stale
+        snapshot headline that claims there is no BIN and zero sales.
+        The SQL intentionally mirrors the snapshot's current 7-day, newest-50
+        valuation window so evaluate_card() receives the same shape and rules.
+        """
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                WITH latest_bin AS (
+                    SELECT lowest_bin AS current_bin,
+                           price_range_low,
+                           price_range_high,
+                           source_age_text AS bin_source_age_text,
+                           captured_at AS bin_captured_at
+                    FROM futgg_bin_history
+                    WHERE source_card_id = $1
+                    ORDER BY captured_at DESC
+                    LIMIT 1
+                ),
+                bounded_sales AS (
+                    SELECT sold_price, approximate_sold_at
+                    FROM futgg_sales_history
+                    WHERE source_card_id = $1
+                      AND approximate_sold_at >= now() - interval '7 days'
+                    ORDER BY approximate_sold_at DESC
+                    LIMIT 50
+                ),
+                sales_stats AS (
+                    SELECT count(*)::integer AS sales_count,
+                           percentile_cont(0.5) WITHIN GROUP (ORDER BY sold_price) AS sales_median,
+                           percentile_cont(0.1) WITHIN GROUP (ORDER BY sold_price) AS sales_p10,
+                           percentile_cont(0.9) WITHIN GROUP (ORDER BY sold_price) AS sales_p90,
+                           min(sold_price) AS sales_low,
+                           max(sold_price) AS sales_high,
+                           stddev_pop(sold_price) AS sales_stddev,
+                           min(approximate_sold_at) AS sales_window_earliest_at,
+                           max(approximate_sold_at) AS sales_window_latest_at
+                    FROM bounded_sales
+                ),
+                trimmed AS (
+                    SELECT avg(bs.sold_price) AS sales_trimmed_mean
+                    FROM bounded_sales bs
+                    CROSS JOIN sales_stats ss
+                    WHERE bs.sold_price BETWEEN ss.sales_p10 AND ss.sales_p90
+                ),
+                latest_sale AS (
+                    SELECT sold_price AS latest_sale_price,
+                           approximate_sold_at AS latest_sale_at
+                    FROM bounded_sales
+                    ORDER BY approximate_sold_at DESC
+                    LIMIT 1
+                )
+                SELECT lb.current_bin,
+                       lb.price_range_low,
+                       lb.price_range_high,
+                       lb.bin_source_age_text,
+                       lb.bin_captured_at,
+                       GREATEST(p.price_checked_at, lb.bin_captured_at) AS bin_checked_at,
+                       coalesce(ss.sales_count, 0) AS sales_count,
+                       ss.sales_median,
+                       coalesce(t.sales_trimmed_mean, ss.sales_median) AS sales_trimmed_mean,
+                       ss.sales_low,
+                       ss.sales_high,
+                       ss.sales_p10,
+                       ss.sales_p90,
+                       ss.sales_stddev,
+                       ls.latest_sale_price,
+                       ls.latest_sale_at,
+                       ss.sales_window_earliest_at,
+                       ss.sales_window_latest_at,
+                       CASE
+                           WHEN ss.sales_window_earliest_at IS NOT NULL
+                            AND ss.sales_window_latest_at IS NOT NULL
+                           THEN EXTRACT(EPOCH FROM (
+                               ss.sales_window_latest_at - ss.sales_window_earliest_at
+                           )) / 60.0
+                           ELSE NULL
+                       END AS sales_window_span_minutes,
+                       CASE
+                           WHEN ss.sales_median IS NOT NULL AND ss.sales_median > 0
+                            AND ss.sales_stddev IS NOT NULL
+                           THEN round((ss.sales_stddev / ss.sales_median)::numeric, 4)
+                           ELSE NULL
+                       END AS sales_dispersion_ratio,
+                       CASE
+                           WHEN ss.sales_median IS NOT NULL AND ss.sales_median > 0
+                            AND ss.sales_p10 IS NOT NULL AND ss.sales_p90 IS NOT NULL
+                           THEN round(((ss.sales_p90 - ss.sales_p10) / ss.sales_median)::numeric, 4)
+                           ELSE NULL
+                       END AS sales_interdecile_ratio
+                FROM futgg_players p
+                LEFT JOIN latest_bin lb ON TRUE
+                CROSS JOIN sales_stats ss
+                CROSS JOIN trimmed t
+                LEFT JOIN latest_sale ls ON TRUE
+                WHERE p.source_card_id = $1
+                """,
+                card_id,
+            )
+        return dict(row) if row is not None else None
 
     async def get_sales_coverage(self, card_id: int) -> Dict[str, Any]:
         """When we last LOOKED at this card's sales, as distinct from when
@@ -802,26 +841,18 @@ class FutggMarketDataProvider(MarketDataProvider):
                     SELECT source_card_id, sold_price, approximate_sold_at
                     FROM futgg_sales_history
                     WHERE source_card_id = ids.card_id
-                      -- Same 14-day bound futgg_market_snapshot's
+                      -- Same 7-day bound futgg_market_snapshot's
                       -- bounded_sales CTE applies (migration 038 onward).
                       -- Without it this series and the snapshot aggregates
                       -- could describe different periods, so the trend gate
                       -- and the fair value it gates were computed over
                       -- different windows for the same card.
-                      AND approximate_sold_at >= now() - interval '14 days'
-                      -- A source_card_id can collide across game years
-                      -- (migration 095 - confirmed live, not just Icons)
-                      -- and platform is a separate market entirely. Without
-                      -- these this batch loader fed evaluate_card() sales
-                      -- data from a completely unrelated card/market.
-                      AND game_year = $3
-                      AND platform = $4
+                      AND approximate_sold_at >= now() - interval '7 days'
                     ORDER BY approximate_sold_at DESC
                     LIMIT $2
                 ) s
                 """,
                 list(card_ids), max(1, min(limit_per_card, MAX_RECENT_SALES)),
-                active_game_year(), "ps5",
             )
         out: Dict[int, List[Dict[str, Any]]] = {}
         for row in rows:
@@ -903,15 +934,14 @@ class FutggMarketDataProvider(MarketDataProvider):
                 sql = f"""
                     SELECT {columns}
                     FROM futgg_market_snapshot
-                    WHERE game_year = $2
-                      AND is_tradeable IS DISTINCT FROM FALSE
+                    WHERE is_tradeable IS DISTINCT FROM FALSE
                       AND price_tier NOT IN ({EXCLUDED_PRICE_TIERS_SQL})
                       AND ({segment.where})
                       {recency_filter}
                     ORDER BY {segment.order_by}
                     LIMIT $1
                 """
-                rows = await conn.fetch(sql, segment.limit, active_game_year())
+                rows = await conn.fetch(sql, segment.limit)
                 out[segment.name] = [dict(r) for r in rows]
             for segment_rows in out.values():
                 await _attach_sbc_reward_watch(conn, segment_rows)
@@ -993,21 +1023,11 @@ class FutggMarketDataProvider(MarketDataProvider):
         if filters.search:
             args.append(filters.search.strip())
             term = f"${len(args)}"
-            # coalesce(display_name, name) is what the UI actually shows
-            # as this card's name (see _serialize_player in
-            # app/routers/v2/futgg_market.py) and so what a search term
-            # is most often typed against - "Vini Jr" should outrank on
-            # an exact/prefix match against the display name, not only
-            # against the longer legal `name` column. full_name is
-            # checked alongside it so a search on the legal name (e.g.
-            # "Vinicius Junior") still ranks well even when it differs
-            # from both.
-            display = "coalesce(display_name, name)"
             order_clause = (
-                # Exact match, on the displayed name or the full name.
-                f"(lower({display}) = lower({term}) OR lower(full_name) = lower({term})) DESC, "
-                # Starts with the term.
-                f"(lower({display}) LIKE lower({term}) || '%%' OR lower(full_name) LIKE lower({term}) || '%%') DESC, "
+                # Exact name.
+                f"(lower(name) = lower({term})) DESC, "
+                # Name starts with the term.
+                f"(lower(name) LIKE lower({term}) || '%%') DESC, "
                 # Term starts a WORD in the name. This is the case users
                 # actually hit: they type a surname, and "Haaland" is
                 # neither an exact nor a prefix match for "Erling
@@ -1015,7 +1035,7 @@ class FutggMarketDataProvider(MarketDataProvider):
                 # straight through to rating and buries the plain gold
                 # card under every promo whose name merely contains the
                 # same letters.
-                f"(lower({display}) LIKE '%% ' || lower({term}) || '%%' OR lower(full_name) LIKE '%% ' || lower({term}) || '%%') DESC, "
+                f"(lower(name) LIKE '%% ' || lower({term}) || '%%') DESC, "
                 f"{order_by}"
             )
 
@@ -1039,9 +1059,9 @@ class FutggMarketDataProvider(MarketDataProvider):
             # lower(name), which ILIKE can use for the common
             # case-folding path); this second pass only adds diacritic
             # folding on top of that already-small result set, never
-            # scans the full table itself. See row_matches_search for
-            # why this checks all three name fields, word-by-word.
-            results = [r for r in results if row_matches_search(r, filters.search)]
+            # scans the full table itself.
+            needle = normalize_search_term(filters.search)
+            results = [r for r in results if needle in normalize_search_term(r.get("name") or "")]
         return results
 
     async def count_players(self, filters: PlayerFilters) -> int:
@@ -1234,7 +1254,7 @@ async def _refresh_on_connection(conn) -> bool:
         # sales_stats GroupAggregate spilling its sort to DISK ("Sort
         # Method: external merge") because the session's default work_mem
         # was too small to hold it - a real, avoidable cost stacked on top
-        # of the unavoidable work of scanning futgg_sales_history's 14-day
+        # of the unavoidable work of scanning futgg_sales_history's 7-day
         # window. Session-scoped (not LOCAL - REFRESH runs as its own
         # implicit statement, not inside an explicit transaction block
         # this connection controls), reset in the finally below so a
@@ -1280,7 +1300,7 @@ async def _refresh_on_connection(conn) -> bool:
                 "showed the dominant cost is NOT futgg_bin_history (that "
                 "index has existed since migration 053) - it's the "
                 "bounded_sales WindowAgg scanning futgg_sales_history's "
-                "full 14-day window (millions of rows) for every card. If "
+                "full 7-day window (millions of rows) for every card. If "
                 "this recurs, check futgg_sales_history has been ANALYZEd "
                 "recently (pg_stat_user_tables.n_live_tup badly undercounted "
                 "the real row count last time this was checked) before "
