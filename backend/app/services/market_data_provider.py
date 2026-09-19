@@ -669,10 +669,14 @@ class FutggMarketDataProvider(MarketDataProvider):
                   -- which should not be splicing months-old prints into a
                   -- picture of today's market either.
                   AND approximate_sold_at >= now() - interval '7 days'
+                  -- source_card_id is not globally unique across game
+                  -- cycles, and sales are stored per market.
+                  AND game_year = $3
+                  AND platform = $4
                 ORDER BY approximate_sold_at DESC
                 LIMIT $2
                 """,
-                card_id, bounded_limit,
+                card_id, bounded_limit, active_game_year(), "ps5",
             )
         return [dict(r) for r in rows]
 
@@ -705,6 +709,8 @@ class FutggMarketDataProvider(MarketDataProvider):
                     FROM futgg_sales_history
                     WHERE source_card_id = $1
                       AND approximate_sold_at >= now() - interval '7 days'
+                      AND game_year = $2
+                      AND platform = $3
                     ORDER BY approximate_sold_at DESC
                     LIMIT 50
                 ),
@@ -777,8 +783,9 @@ class FutggMarketDataProvider(MarketDataProvider):
                 CROSS JOIN trimmed t
                 LEFT JOIN latest_sale ls ON TRUE
                 WHERE p.source_card_id = $1
+                  AND p.game_year = $2
                 """,
-                card_id,
+                card_id, active_game_year(), "ps5",
             )
         return dict(row) if row is not None else None
 
