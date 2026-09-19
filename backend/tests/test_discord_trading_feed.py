@@ -476,44 +476,60 @@ class _FakeAcquireConn:
         return None
 
 
-def test_final_recheck_accepts_only_fresh_stable_prices(monkeypatch):
-    import app.services.current_intelligence_surfaces as current
+def _live_recheck_provider(now, latest_price):
+    provider = MagicMock()
+    provider.get_player = AsyncMock(return_value={
+        "source_card_id": 1,
+        "bin_checked_at": now - timedelta(minutes=1),
+    })
+    provider.get_live_card_market_state = AsyncMock(return_value={
+        "current_bin": latest_price,
+        "bin_checked_at": now - timedelta(minutes=1),
+    })
+    provider.get_recent_sales = AsyncMock(return_value=[{"sold_price": 11_000}])
+    provider.get_bin_observations_by_ids = AsyncMock(return_value={1: []})
+    return provider
+
+
+def test_final_recheck_recalculates_from_live_market_data(monkeypatch):
     import app.services.discord_trading_feed as feed_module
+    import app.services.futgg_intelligence as intelligence
 
     now = datetime(2026, 9, 18, 19, 2, tzinfo=timezone.utc)
     monkeypatch.setattr(feed_module, "_now", lambda: now)
 
-    class CI:
-        signal = "buy"
-        current_executable_buy = 10_400
-        recommended_buy_max = 10_500
-
-    latest_row = {
-        "source_card_id": 1,
-        "bin_checked_at": now - timedelta(minutes=1),
-    }
-    monkeypatch.setattr(
-        current,
-        "load_current_intelligence_pairs",
-        AsyncMock(return_value=[(latest_row, CI())]),
+    latest_ci = MagicMock(
+        signal="buy",
+        current_executable_buy=10_400,
+        recommended_buy_max=10_500,
     )
+    evaluate = MagicMock(return_value=latest_ci)
+    monkeypatch.setattr(intelligence, "evaluate_card", evaluate)
+    provider = _live_recheck_provider(now, 10_400)
 
     original_ci = MagicMock(current_executable_buy=10_000, recommended_buy_max=10_500)
     result = asyncio.run(
-        feed_module._final_recheck_opportunity(object(), {"source_card_id": 1}, original_ci)
+        feed_module._final_recheck_opportunity(
+            provider, {"source_card_id": 1}, original_ci,
+        )
     )
 
     assert result is not None
     assert result[0]["price_age_minutes_at_post"] == 1
+    provider.get_live_card_market_state.assert_awaited_once_with(1)
+    evaluate.assert_called_once()
+    assert evaluate.call_args.kwargs["sales"] == [{"sold_price": 11_000}]
 
 
 @pytest.mark.parametrize(
     ("latest_price", "age_minutes"),
     [(10_600, 1), (10_400, 4)],
 )
-def test_final_recheck_rejects_moved_or_stale_prices(monkeypatch, latest_price, age_minutes):
-    import app.services.current_intelligence_surfaces as current
+def test_final_recheck_rejects_moved_or_stale_live_prices(
+    monkeypatch, latest_price, age_minutes,
+):
     import app.services.discord_trading_feed as feed_module
+    import app.services.futgg_intelligence as intelligence
 
     now = datetime(2026, 9, 18, 19, 2, tzinfo=timezone.utc)
     monkeypatch.setattr(feed_module, "_now", lambda: now)
@@ -523,20 +539,18 @@ def test_final_recheck_rejects_moved_or_stale_prices(monkeypatch, latest_price, 
         current_executable_buy=latest_price,
         recommended_buy_max=11_000,
     )
-    monkeypatch.setattr(
-        current,
-        "load_current_intelligence_pairs",
-        AsyncMock(return_value=[({
-            "source_card_id": 1,
-            "bin_checked_at": now - timedelta(minutes=age_minutes),
-        }, latest_ci)]),
+    monkeypatch.setattr(intelligence, "evaluate_card", MagicMock(return_value=latest_ci))
+    provider = _live_recheck_provider(now, latest_price)
+    provider.get_live_card_market_state.return_value["bin_checked_at"] = (
+        now - timedelta(minutes=age_minutes)
     )
     original_ci = MagicMock(current_executable_buy=10_000, recommended_buy_max=10_500)
 
     assert asyncio.run(
-        feed_module._final_recheck_opportunity(object(), {"source_card_id": 1}, original_ci)
+        feed_module._final_recheck_opportunity(
+            provider, {"source_card_id": 1}, original_ci,
+        )
     ) is None
-
 
 def test_publish_live_opportunities_posts_only_one_per_call(monkeypatch):
     monkeypatch.setenv("DISCORD_TRADING_FEED_ENABLED", "1")

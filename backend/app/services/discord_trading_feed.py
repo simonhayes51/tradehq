@@ -516,29 +516,44 @@ def _opportunity_price(ci: Any) -> Optional[Decimal]:
 
 
 async def _final_recheck_opportunity(provider, row: dict[str, Any], ci: Any):
-    """Reload one card immediately before posting and fail closed.
+    """Rebuild one card from live market tables immediately before posting.
 
-    The broad candidate scan can take long enough for an early-launch price
-    to become irrelevant. The persisted current-intelligence surface only
-    returns a pair while the market BIN still matches the evaluated BIN; the
-    checks below additionally require a fresh confirmation and reject a move
-    of more than 5% from the candidate the scan originally selected.
+    The broad scanner runs every ten minutes, while launch-week posting uses a
+    three-minute price-freshness limit. Reusing persisted scanner intelligence
+    here made valid cards postable for only a narrow slice of each cycle and
+    could starve the feed for hours. Re-evaluating the selected card from its
+    current BIN and seven-day sales window keeps the strict price limit without
+    coupling Discord to the slower catalogue scan.
     """
-    from app.services.current_intelligence_surfaces import load_current_intelligence_pairs
+    from app.services.futgg_intelligence import evaluate_card
 
     card_id = row.get("source_card_id")
     original_price = _opportunity_price(ci)
     if card_id is None or original_price is None or original_price <= 0:
         return None
-    pairs = await load_current_intelligence_pairs(
-        provider,
-        card_ids=[int(card_id)],
-        max_age_minutes=OPPORTUNITY_MAX_PRICE_AGE_MINUTES,
-        require_unexpired=True,
-    )
-    if not pairs:
+
+    try:
+        latest_row = await provider.get_player(int(card_id))
+        if latest_row is None:
+            return None
+        live_state = await provider.get_live_card_market_state(int(card_id))
+        if live_state:
+            latest_row = {**latest_row, **live_state}
+        sales = await provider.get_recent_sales(int(card_id))
+        observations = await provider.get_bin_observations_by_ids([int(card_id)])
+        latest_ci = evaluate_card(
+            latest_row,
+            sales=sales,
+            bin_observations=observations.get(int(card_id)),
+        )
+    except Exception:
+        log.warning(
+            "live Discord opportunity recheck failed for card_id=%s",
+            card_id,
+            exc_info=True,
+        )
         return None
-    latest_row, latest_ci = pairs[0]
+
     latest_price = _opportunity_price(latest_ci)
     age_minutes = _price_age_minutes(latest_row)
     if latest_price is None or latest_price <= 0 or age_minutes is None:
@@ -557,7 +572,6 @@ async def _final_recheck_opportunity(provider, row: dict[str, Any], ci: Any):
     latest_row["price_checked_at"] = _price_observed_at(latest_row)
     latest_row["price_age_minutes_at_post"] = age_minutes
     return latest_row, latest_ci
-
 
 def build_opportunity_post_embed(row: dict[str, Any], ci: Any, *, test: bool = False) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Returns (embed, components) - the link button is a separate
