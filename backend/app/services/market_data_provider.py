@@ -575,8 +575,8 @@ class FutggMarketDataProvider(MarketDataProvider):
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 f"SELECT {await resolve_snapshot_columns(conn)} FROM futgg_market_snapshot "
-                f"WHERE source_card_id = $1",
-                card_id,
+                f"WHERE source_card_id = $1 AND game_year = $2",
+                card_id, active_game_year(),
             )
             if row is None:
                 return None
@@ -594,8 +594,8 @@ class FutggMarketDataProvider(MarketDataProvider):
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 f"SELECT {await resolve_snapshot_columns(conn)} FROM futgg_market_snapshot "
-                f"WHERE source_card_id = ANY($1::bigint[])",
-                list(card_ids),
+                f"WHERE source_card_id = ANY($1::bigint[]) AND game_year = $2",
+                list(card_ids), active_game_year(),
             )
             results = [dict(row) for row in rows]
             await _attach_sbc_reward_watch(conn, results)
@@ -624,17 +624,17 @@ class FutggMarketDataProvider(MarketDataProvider):
                 UPDATE futgg_players
                 SET next_price_due_at = LEAST(COALESCE(next_price_due_at, NOW()), NOW())
                 WHERE source_card_id = $1
+                  AND game_year = $2
                   AND is_active
                   AND is_tradeable IS DISTINCT FROM FALSE
                 """,
-                card_id,
+                card_id, active_game_year(),
             )
 
     async def get_current_price(self, card_id: int, platform: Optional[str] = None) -> Optional[Dict[str, Any]]:
-        # `platform` accepted for interface parity with a future
-        # multi-platform provider - FUT.GG's scraper is console/PC
-        # agnostic today (no platform column on futgg_bin_history), so it
-        # is intentionally unused here rather than silently misapplied.
+        # The public app is currently console-priced. History rows carry
+        # both game cycle and platform, so a card id alone is not a unique
+        # market identity.
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
@@ -642,10 +642,12 @@ class FutggMarketDataProvider(MarketDataProvider):
                        source_age_text, captured_at
                 FROM futgg_bin_history
                 WHERE source_card_id = $1
+                  AND game_year = $2
+                  AND platform = $3
                 ORDER BY captured_at DESC
                 LIMIT 1
                 """,
-                card_id,
+                card_id, active_game_year(), platform or "ps5",
             )
         if row is None:
             return None
@@ -701,6 +703,8 @@ class FutggMarketDataProvider(MarketDataProvider):
                            captured_at AS bin_captured_at
                     FROM futgg_bin_history
                     WHERE source_card_id = $1
+                      AND game_year = $2
+                      AND platform = $3
                     ORDER BY captured_at DESC
                     LIMIT 1
                 ),
@@ -815,9 +819,10 @@ class FutggMarketDataProvider(MarketDataProvider):
                     """
                     SELECT last_sales_status, last_sales_status_at,
                            next_sales_due_at, sales_first_read_at, rating
-                    FROM futgg_players WHERE source_card_id = $1
+                    FROM futgg_players
+                    WHERE source_card_id = $1 AND game_year = $2
                     """,
-                    card_id,
+                    card_id, active_game_year(),
                 )
             except asyncpg.exceptions.UndefinedColumnError:
                 # SalesSync's ensure_schema has not run on this database
@@ -856,10 +861,12 @@ class FutggMarketDataProvider(MarketDataProvider):
                 FROM futgg_sales_history
                 WHERE source_card_id = $1
                   AND approximate_sold_at >= now() - make_interval(days => $2)
+                  AND game_year = $4
+                  AND platform = $5
                 ORDER BY approximate_sold_at DESC
                 LIMIT $3
                 """,
-                card_id, bounded_days, bounded_limit,
+                card_id, bounded_days, bounded_limit, active_game_year(), "ps5",
             )
         return [dict(r) for r in rows]
 
@@ -872,10 +879,13 @@ class FutggMarketDataProvider(MarketDataProvider):
                     SELECT lowest_bin, price_range_low, price_range_high,
                            source_age_text, captured_at
                     FROM futgg_bin_history
-                    WHERE source_card_id = $1 AND captured_at >= now() - $2::interval
+                    WHERE source_card_id = $1
+                      AND captured_at >= now() - $2::interval
+                      AND game_year = $3
+                      AND platform = $4
                     ORDER BY captured_at DESC
                     """,
-                    card_id, interval,
+                    card_id, interval, active_game_year(), "ps5",
                 )
             else:
                 rows = await conn.fetch(
@@ -884,9 +894,11 @@ class FutggMarketDataProvider(MarketDataProvider):
                            source_age_text, captured_at
                     FROM futgg_bin_history
                     WHERE source_card_id = $1
+                      AND game_year = $2
+                      AND platform = $3
                     ORDER BY captured_at DESC
                     """,
-                    card_id,
+                    card_id, active_game_year(), "ps5",
                 )
         return [dict(r) for r in rows]
 
