@@ -12,6 +12,7 @@ beautifulsoup4==4.12.3
 httpx<0.28  # starlette 0.27.x's TestClient breaks on httpx>=0.28 (dropped the `app=` kwarg); unpinned, this silently installed an incompatible httpx and made TestClient-based tests impossible to run
 PyJWT==2.9.0
 stripe==10.12.0
+discord.py==2.4.0
 lightweight-charts
 email-validator==2.2.0
 redis>=5.0
