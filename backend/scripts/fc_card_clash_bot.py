@@ -1,0 +1,439 @@
+from __future__ import annotations
+
+import json
+import logging
+import os
+from typing import Optional
+
+import asyncpg
+import discord
+from discord import app_commands
+from discord.ext import commands
+
+from app.fc_cards.cards import Card, STAT_KEYS, normalize_stat, pull_weighted_card, search_card, search_cards, stat_label
+from app.fc_cards.db import get_card_pool, get_game_pool
+from app.fc_cards.game import accept_battle, accept_trade, create_battle, create_trade, get_user, open_pack, owned_copies
+from app.fc_cards.schema import ensure_schema
+
+log = logging.getLogger("fc-card-clash")
+
+
+def _token() -> str:
+    token = os.getenv("FC_CARDS_BOT_TOKEN") or os.getenv("DISCORD_GAME_BOT_TOKEN") or os.getenv("DISCORD_BOT_TOKEN")
+    if not token:
+        raise RuntimeError("Set FC_CARDS_BOT_TOKEN, DISCORD_GAME_BOT_TOKEN or DISCORD_BOT_TOKEN")
+    return token
+
+
+def _guild_object() -> Optional[discord.Object]:
+    guild_id = os.getenv("FC_CARDS_DISCORD_GUILD_ID") or os.getenv("DISCORD_SERVER_ID")
+    return discord.Object(id=int(guild_id)) if guild_id else None
+
+
+def _short_id(value: object) -> str:
+    return str(value).split("-")[0]
+
+
+def _card_title(card: Card) -> str:
+    return f"{card.rating} {card.name} ({card.position})"
+
+
+def _card_line(card: Card) -> str:
+    return f"**{_card_title(card)}** - {card.version} - `{card.card_id}`"
+
+
+def _card_embed(title: str, card: Card, *, description: Optional[str] = None, color: int = 0xEABD45) -> discord.Embed:
+    embed = discord.Embed(title=title, description=description or _card_line(card), color=color)
+    embed.add_field(name="Card", value=_card_line(card), inline=False)
+    embed.add_field(name="Stats", value="  ".join(f"**{stat_label(s)}** {card.stat(s)}" for s in STAT_KEYS), inline=False)
+    if card.club or card.league or card.nation:
+        embed.add_field(
+            name="Details",
+            value=" / ".join(v for v in (card.club, card.league, card.nation) if v)[:1024],
+            inline=False,
+        )
+    if card.image_url:
+        embed.set_image(url=card.image_url)
+    embed.set_footer(text="FC Card Clash")
+    return embed
+
+
+class CardClashBot(commands.Bot):
+    def __init__(self) -> None:
+        intents = discord.Intents.default()
+        super().__init__(command_prefix="!", intents=intents)
+        self.game_pool: asyncpg.Pool | None = None
+        self.card_pool: asyncpg.Pool | None = None
+
+    async def setup_hook(self) -> None:
+        self.game_pool = await get_game_pool()
+        self.card_pool = await get_card_pool()
+        await ensure_schema(self.game_pool)
+        guild = _guild_object()
+        if guild:
+            self.tree.copy_global_to(guild=guild)
+            await self.tree.sync(guild=guild)
+            log.info("Synced FC Card Clash commands to guild %s", guild.id)
+        else:
+            await self.tree.sync()
+            log.info("Synced FC Card Clash global commands")
+
+
+bot = CardClashBot()
+
+
+async def _find_card(query: str) -> Card:
+    assert bot.card_pool is not None
+    async with bot.card_pool.acquire() as conn:
+        card = await search_card(conn, query)
+    if not card:
+        raise ValueError("I could not find that Gold+ card.")
+    return card
+
+
+async def _autocomplete_cards(_: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+    if not current or not bot.card_pool:
+        return []
+    async with bot.card_pool.acquire() as conn:
+        cards = await search_cards(conn, current, limit=10)
+    return [
+        app_commands.Choice(name=f"{card.rating} {card.name} - {card.version} [{card.card_id}]"[:100], value=str(card.card_id))
+        for card in cards
+    ]
+
+
+async def _send_error(interaction: discord.Interaction, message: str) -> None:
+    embed = discord.Embed(title="Not quite", description=message, color=0xE74C3C)
+    if interaction.response.is_done():
+        await interaction.followup.send(embed=embed, ephemeral=True)
+    else:
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@bot.event
+async def on_ready() -> None:
+    log.info("FC Card Clash logged in as %s (%s)", bot.user, bot.user.id if bot.user else "unknown")
+
+
+@bot.tree.command(name="pack", description="Open your daily FC Card Clash pack.")
+async def pack(interaction: discord.Interaction) -> None:
+    await interaction.response.defer()
+    assert bot.game_pool is not None and bot.card_pool is not None
+    try:
+        async with bot.game_pool.acquire() as game_conn:
+            user = await get_user(game_conn, str(interaction.user.id))
+            async with bot.card_pool.acquire() as card_conn:
+                card = await pull_weighted_card(card_conn, int(user["pack_streak"] or 0))
+            result = await open_pack(game_conn, str(interaction.user.id), card)
+        duplicate = "Duplicate pull" if result.is_duplicate else "New card"
+        description = f"{interaction.user.mention} pulled {_card_line(card)}\n{duplicate} - you now own **x{result.copies}**.\nDaily streak: **{result.streak}**"
+        embed = _card_embed("Pack Opened", card, description=description, color=0x2ECC71)
+        await interaction.followup.send(embed=embed)
+    except Exception as exc:
+        await _send_error(interaction, str(exc))
+
+
+@bot.tree.command(name="profile", description="View an FC Card Clash profile.")
+async def profile(interaction: discord.Interaction, user: Optional[discord.User] = None) -> None:
+    await interaction.response.defer()
+    target = user or interaction.user
+    assert bot.game_pool is not None
+    async with bot.game_pool.acquire() as conn:
+        row = await get_user(conn, str(target.id))
+        stats = await conn.fetchrow(
+            """
+            SELECT COALESCE(SUM(copies), 0) AS total_cards,
+                   COUNT(*) FILTER (WHERE copies > 0) AS unique_cards,
+                   COUNT(*) FILTER (WHERE copies > 1) AS duplicate_cards
+            FROM fc_card_inventory
+            WHERE discord_user_id = $1
+            """,
+            str(target.id),
+        )
+    wins = int(row["wins"] or 0)
+    losses = int(row["losses"] or 0)
+    played = wins + losses
+    win_rate = f"{(wins / played * 100):.1f}%" if played else "0.0%"
+    embed = discord.Embed(title=f"{target.display_name}'s FC Card Clash Profile", color=0x5865F2)
+    embed.add_field(name="Record", value=f"**{wins}W - {losses}L**\nWin rate: **{win_rate}**", inline=True)
+    embed.add_field(name="Streaks", value=f"Current: **{row['current_streak']}**\nBest: **{row['best_streak']}**", inline=True)
+    embed.add_field(name="Wallet", value=f"Coins: **{row['coins']}**\nShards: **{row['shards']}**", inline=True)
+    embed.add_field(name="Collection", value=f"Total: **{stats['total_cards']}**\nUnique: **{stats['unique_cards']}**\nDupes: **{stats['duplicate_cards']}**", inline=True)
+    embed.add_field(name="Packs", value=f"Daily streak: **{row['pack_streak']}**", inline=True)
+    await interaction.followup.send(embed=embed)
+
+
+@bot.tree.command(name="collection", description="Show your best cards or duplicates.")
+@app_commands.describe(view="Choose best cards or duplicate trade stock.")
+@app_commands.choices(view=[
+    app_commands.Choice(name="Best cards", value="best"),
+    app_commands.Choice(name="Duplicates", value="duplicates"),
+])
+async def collection(interaction: discord.Interaction, view: str = "best", user: Optional[discord.User] = None) -> None:
+    await interaction.response.defer()
+    target = user or interaction.user
+    assert bot.game_pool is not None and bot.card_pool is not None
+    filter_sql = "AND i.copies > 1" if view == "duplicates" else ""
+    async with bot.game_pool.acquire() as game_conn:
+        rows = await game_conn.fetch(
+            f"""
+            SELECT i.card_id, i.copies
+            FROM fc_card_inventory i
+            WHERE i.discord_user_id = $1
+              AND i.copies > 0
+              {filter_sql}
+            ORDER BY i.copies DESC, i.card_id DESC
+            LIMIT 25
+            """,
+            str(target.id),
+        )
+    if not rows:
+        await _send_error(interaction, "No cards found for that view yet.")
+        return
+    card_ids = [int(r["card_id"]) for r in rows]
+    copies = {int(r["card_id"]): int(r["copies"]) for r in rows}
+    async with bot.card_pool.acquire() as conn:
+        card_rows = await conn.fetch(
+            """
+            SELECT source_card_id, name, rating, primary_position, rarity,
+                   card_image_stored_url, card_image_url, player_image_url,
+                   pace, shooting, passing, dribbling, defending, physicality,
+                   club, league, nation
+            FROM futgg_market_snapshot
+            WHERE source_card_id = ANY($1::bigint[])
+            ORDER BY rating DESC, source_card_id DESC
+            """,
+            card_ids,
+        )
+    cards = [Card.from_row(r) for r in card_rows]
+    embed = discord.Embed(
+        title=f"{target.display_name}'s {'Duplicate Stock' if view == 'duplicates' else 'Best Cards'}",
+        color=0xEABD45,
+    )
+    embed.description = "\n".join(f"`x{copies[c.card_id]}` {_card_line(c)}" for c in cards[:15])
+    if cards and cards[0].image_url:
+        embed.set_thumbnail(url=cards[0].image_url)
+    await interaction.followup.send(embed=embed)
+
+
+@bot.tree.command(name="card", description="Inspect a card and see how many copies you own.")
+@app_commands.autocomplete(card=_autocomplete_cards)
+async def card(interaction: discord.Interaction, card: str) -> None:
+    await interaction.response.defer()
+    try:
+        found = await _find_card(card)
+        assert bot.game_pool is not None
+        async with bot.game_pool.acquire() as conn:
+            copies = await owned_copies(conn, str(interaction.user.id), found.card_id)
+        embed = _card_embed("Card Inspector", found, color=0x9B59B6)
+        embed.add_field(name="Your copies", value=f"**x{copies}**", inline=True)
+        embed.add_field(name="Battle risk", value="Can be staked even if this is your only copy.", inline=True)
+        await interaction.followup.send(embed=embed)
+    except Exception as exc:
+        await _send_error(interaction, str(exc))
+
+
+@bot.tree.command(name="trade", description="Offer a duplicate card trade.")
+@app_commands.autocomplete(your_card=_autocomplete_cards, requested_card=_autocomplete_cards)
+async def trade(
+    interaction: discord.Interaction,
+    user: discord.User,
+    your_card: str,
+    requested_card: Optional[str] = None,
+) -> None:
+    await interaction.response.defer()
+    try:
+        offered = await _find_card(your_card)
+        requested = await _find_card(requested_card) if requested_card else None
+        assert bot.game_pool is not None
+        async with bot.game_pool.acquire() as conn:
+            row = await create_trade(
+                conn,
+                str(interaction.guild_id) if interaction.guild_id else None,
+                str(interaction.channel_id) if interaction.channel_id else None,
+                str(interaction.user.id),
+                str(user.id),
+                offered.card_id,
+                requested.card_id if requested else None,
+            )
+        want = _card_line(requested) if requested else "any duplicate/counter-offer agreed in chat"
+        embed = discord.Embed(title="Trade Offer Created", color=0x3498DB)
+        embed.description = (
+            f"{interaction.user.mention} offers {user.mention}:\n"
+            f"Give: {_card_line(offered)}\n"
+            f"Request: {want}\n\n"
+            f"{user.mention}, accept with `/trade_accept trade_id:{row['id']}`.\n"
+            "Trades are duplicates-only for both sides."
+        )
+        if offered.image_url:
+            embed.set_thumbnail(url=offered.image_url)
+        embed.set_footer(text=f"Trade ID {_short_id(row['id'])} - expires in 15 minutes")
+        await interaction.followup.send(embed=embed)
+    except Exception as exc:
+        await _send_error(interaction, str(exc))
+
+
+@bot.tree.command(name="trade_accept", description="Accept a pending duplicate-only trade.")
+async def trade_accept(interaction: discord.Interaction, trade_id: str) -> None:
+    await interaction.response.defer()
+    try:
+        assert bot.game_pool is not None
+        async with bot.game_pool.acquire() as conn:
+            row = await accept_trade(conn, trade_id, str(interaction.user.id))
+        embed = discord.Embed(title="Trade Complete", description=f"Trade `{_short_id(row['id'])}` has been completed.", color=0x2ECC71)
+        await interaction.followup.send(embed=embed)
+    except Exception as exc:
+        await _send_error(interaction, str(exc))
+
+
+STAT_CHOICES = [
+    app_commands.Choice(name="PAC", value="pace"),
+    app_commands.Choice(name="SHO", value="shooting"),
+    app_commands.Choice(name="PAS", value="passing"),
+    app_commands.Choice(name="DRI", value="dribbling"),
+    app_commands.Choice(name="DEF", value="defending"),
+    app_commands.Choice(name="PHY", value="physicality"),
+]
+
+
+@bot.tree.command(name="clash", description="Stake one card in a winner-keeps-both Card Clash.")
+@app_commands.autocomplete(card=_autocomplete_cards)
+@app_commands.choices(stat=STAT_CHOICES)
+async def clash(interaction: discord.Interaction, user: discord.User, card: str, stat: str) -> None:
+    await interaction.response.defer()
+    try:
+        picked_stat = normalize_stat(stat)
+        staked = await _find_card(card)
+        assert bot.game_pool is not None
+        async with bot.game_pool.acquire() as conn:
+            copies = await owned_copies(conn, str(interaction.user.id), staked.card_id)
+            row = await create_battle(
+                conn,
+                str(interaction.guild_id) if interaction.guild_id else None,
+                str(interaction.channel_id) if interaction.channel_id else None,
+                str(interaction.user.id),
+                str(user.id),
+                staked.card_id,
+                picked_stat,
+            )
+        risk = "THIS IS YOUR ONLY COPY." if copies == 1 else f"You own x{copies}."
+        embed = _card_embed("Card Clash Challenge", staked, color=0xC0392B)
+        embed.description = (
+            f"{interaction.user.mention} has challenged {user.mention}.\n"
+            f"Stake: {_card_line(staked)}\n"
+            f"Chosen stat: **{stat_label(picked_stat)}**\n"
+            f"Risk: **{risk} If you lose, this card is gone.**\n\n"
+            f"{user.mention}, accept with `/clash_accept battle_id:{row['id']} card:<your card> stat:<your stat>`."
+        )
+        embed.set_footer(text=f"Battle ID {_short_id(row['id'])} - expires in 10 minutes")
+        await interaction.followup.send(embed=embed)
+    except Exception as exc:
+        await _send_error(interaction, str(exc))
+
+
+@bot.tree.command(name="clash_accept", description="Accept a Card Clash and stake one of your cards.")
+@app_commands.autocomplete(card=_autocomplete_cards)
+@app_commands.choices(stat=STAT_CHOICES)
+async def clash_accept(interaction: discord.Interaction, battle_id: str, card: str, stat: str) -> None:
+    await interaction.response.defer()
+    try:
+        opponent_stat = normalize_stat(stat)
+        opponent_card = await _find_card(card)
+        assert bot.game_pool is not None and bot.card_pool is not None
+        async with bot.game_pool.acquire() as game_conn:
+            battle = await game_conn.fetchrow("SELECT * FROM fc_card_battles WHERE id = $1::uuid", battle_id)
+            if not battle:
+                raise ValueError("Clash not found.")
+            async with bot.card_pool.acquire() as card_conn:
+                challenger_card = await search_card(card_conn, str(battle["challenger_card_id"]))
+            if not challenger_card:
+                raise ValueError("Challenger card no longer exists in the card pool.")
+            result = await accept_battle(game_conn, battle_id, str(interaction.user.id), opponent_card, opponent_stat, challenger_card)
+        rounds = result["rounds"] or []
+        if isinstance(rounds, str):
+            rounds = json.loads(rounds)
+        winner = f"<@{result['winner_id']}>"
+        loser = f"<@{result['loser_id']}>"
+        lines = []
+        for idx, r in enumerate(rounds, start=1):
+            source = {"challenger": "challenger pick", "opponent": "defender pick", "random": "random decider"}[r["source"]]
+            round_winner = "draw" if r["winner"] == "draw" else ("challenger" if r["winner"] == "challenger" else "defender")
+            lines.append(
+                f"**R{idx} {stat_label(r['stat'])}** ({source}): "
+                f"{r['challenger']} vs {r['opponent']} - **{round_winner}**"
+            )
+        embed = discord.Embed(title="Card Clash Result", color=0xF1C40F)
+        embed.description = (
+            f"{winner} beats {loser} and keeps both cards.\n\n"
+            f"**Stakes**\n"
+            f"<@{battle['challenger_id']}>: {_card_line(challenger_card)}\n"
+            f"{interaction.user.mention}: {_card_line(opponent_card)}\n\n"
+            + "\n".join(lines)
+        )
+        embed.add_field(name="Reward", value="Winner +50 coins. Loser -15 coins.", inline=False)
+        winning_image = challenger_card.image_url if str(result["winner_id"]) == str(battle["challenger_id"]) else opponent_card.image_url
+        if winning_image:
+            embed.set_image(url=winning_image)
+        await interaction.followup.send(embed=embed)
+    except Exception as exc:
+        await _send_error(interaction, str(exc))
+
+
+@bot.tree.command(name="leaderboard", description="Show global or server FC Card Clash rankings.")
+@app_commands.choices(scope=[
+    app_commands.Choice(name="Global", value="global"),
+    app_commands.Choice(name="Server", value="server"),
+])
+async def leaderboard(interaction: discord.Interaction, scope: str = "global") -> None:
+    await interaction.response.defer()
+    assert bot.game_pool is not None
+    async with bot.game_pool.acquire() as conn:
+        if scope == "server" and interaction.guild_id:
+            rows = await conn.fetch(
+                """
+                WITH guild_records AS (
+                    SELECT winner_id AS discord_user_id, COUNT(*)::int AS wins, 0::int AS losses
+                    FROM fc_card_battles
+                    WHERE status = 'completed' AND guild_id = $1
+                    GROUP BY winner_id
+                    UNION ALL
+                    SELECT loser_id AS discord_user_id, 0::int AS wins, COUNT(*)::int AS losses
+                    FROM fc_card_battles
+                    WHERE status = 'completed' AND guild_id = $1
+                    GROUP BY loser_id
+                )
+                SELECT discord_user_id, SUM(wins)::int AS wins, SUM(losses)::int AS losses,
+                       MAX(u.best_streak)::int AS best_streak
+                FROM guild_records gr
+                JOIN fc_card_users u USING (discord_user_id)
+                GROUP BY discord_user_id
+                ORDER BY SUM(wins) DESC, MAX(u.best_streak) DESC, SUM(losses) ASC
+                LIMIT 10
+                """,
+                str(interaction.guild_id),
+            )
+        else:
+            rows = await conn.fetch(
+                """
+                SELECT discord_user_id, wins, losses, current_streak, best_streak
+                FROM fc_card_users
+                ORDER BY wins DESC, best_streak DESC, losses ASC
+                LIMIT 10
+                """
+            )
+    embed = discord.Embed(title=f"FC Card Clash Leaderboard ({scope})", color=0x5865F2)
+    embed.description = "\n".join(
+        f"**{idx}.** <@{r['discord_user_id']}> - **{r['wins']}W/{r['losses']}L** - best streak {r['best_streak']}"
+        for idx, r in enumerate(rows, start=1)
+    ) or "No battles yet."
+    await interaction.followup.send(embed=embed)
+
+
+def main() -> int:
+    logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
+    bot.run(_token())
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
