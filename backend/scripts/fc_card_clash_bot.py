@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -14,8 +15,14 @@ from discord.ext import commands
 from app.fc_cards.cards import Card, STAT_KEYS, active_game_year, normalize_stat, pull_weighted_card, search_card, search_cards, stat_label
 from app.fc_cards.db import get_card_pool, get_game_pool
 from app.fc_cards.game import (
+    SHOP_EXTRA_PACK_COST,
+    SHOP_SHARD_PULL_COST,
+    SHOP_STREAK_SHIELD_COST,
     accept_battle,
     accept_trade,
+    buy_extra_pack,
+    buy_shard_pull,
+    buy_streak_shield,
     create_battle,
     create_trade,
     get_user,
@@ -127,6 +134,24 @@ def _next_daily_unlock() -> str:
     return f"{hours}h {minutes}m"
 
 
+def _progress_bar(fraction: float, *, length: int = 10) -> str:
+    fraction = max(0.0, min(1.0, fraction))
+    filled = round(fraction * length)
+    return "\N{BLACK RECTANGLE}" * filled + "\N{WHITE RECTANGLE}" * (length - filled)
+
+
+def _is_only_copy_confirmation_error(exc: Exception) -> bool:
+    return str(exc).startswith("ONLY_COPY_CONFIRMATION_REQUIRED:")
+
+
+def _friendly_message(exc: Exception) -> str:
+    message = str(exc)
+    prefix = "ONLY_COPY_CONFIRMATION_REQUIRED:"
+    if message.startswith(prefix):
+        return message[len(prefix):].strip()
+    return message
+
+
 def _next_weekly_unlock() -> str:
     now = datetime.now(timezone.utc)
     days_until_monday = (7 - now.weekday()) % 7 or 7
@@ -149,9 +174,11 @@ def _pack_embed(pack_name: str, result, user_mention: str, *, boosted: bool = Fa
         f"**{duplicate}** - now owned: **x{result.copies}**"
     )
     if result.streak:
-        embed.add_field(name="Daily streak", value=f"**{result.streak}**", inline=True)
+        embed.add_field(name="\N{FIRE} Daily streak", value=f"**{result.streak}**", inline=True)
         if result.streak in (3, 7, 30):
             embed.add_field(name="Streak bonus", value="Your odds are boosted while the streak keeps going.", inline=False)
+    if result.shards_gained:
+        embed.add_field(name="Shards gained", value=f"**+{result.shards_gained}**", inline=True)
     if boosted:
         embed.add_field(name="Weekly boost", value="Higher chance of 86+ cards.", inline=True)
     return embed
@@ -159,22 +186,70 @@ def _pack_embed(pack_name: str, result, user_mention: str, *, boosted: bool = Fa
 
 def _pack_results_embed(pack_name: str, results, user_mention: str, *, boosted: bool = False) -> discord.Embed:
     best = max((r.card for r in results), key=lambda card: (card.rating, card.card_id))
-    embed = discord.Embed(title=f"{pack_name} Opened", color=_pack_color(best))
+    tier = _pack_tier(best)
+    title = f"\N{SPARKLES} {tier}: {pack_name}" if tier != "PACK OPENED" else f"{pack_name} Opened"
+    embed = discord.Embed(title=title, color=_pack_color(best))
     embed.description = f"{user_mention} opened a **{len(results)} card** pack."
     lines = []
     for result in sorted(results, key=lambda r: (r.card.rating, r.card.card_id), reverse=True):
-        status = "dupe" if result.is_duplicate else "new"
+        if result.is_duplicate:
+            status = f"dupe (+{result.shards_gained} shards)" if result.shards_gained else "dupe"
+        else:
+            status = "new"
         lines.append(f"`x{result.copies}` {_card_line(result.card)} - **{status}**")
     embed.add_field(name="Pulls", value="\n".join(lines)[:1024], inline=False)
     streak = next((int(r.streak or 0) for r in results if int(r.streak or 0)), 0)
     if streak:
-        embed.add_field(name="Daily streak", value=f"**{streak}**", inline=True)
+        embed.add_field(name="\N{FIRE} Daily streak", value=f"**{streak}**", inline=True)
+    if any(r.shield_used for r in results):
+        embed.add_field(name="\N{SHIELD} Streak shield used", value="A missed day was forgiven.", inline=True)
     if boosted:
         embed.add_field(name="Weekly boost", value="Higher chance of 86+ cards.", inline=True)
     if best.image_url:
         embed.set_image(url=best.image_url)
     embed.set_footer(text="FC Card Clash")
     return embed
+
+
+class CollectionView(discord.ui.View):
+    def __init__(self, cards: list[Card], copies: dict[int, int], title: str, *, page_size: int = 10) -> None:
+        super().__init__(timeout=120)
+        self.cards = cards
+        self.copies = copies
+        self.title = title
+        self.page_size = page_size
+        self.page = 0
+        self._sync_buttons()
+
+    @property
+    def max_page(self) -> int:
+        return max(0, (len(self.cards) - 1) // self.page_size)
+
+    def _sync_buttons(self) -> None:
+        self.previous_page.disabled = self.page <= 0
+        self.next_page.disabled = self.page >= self.max_page
+
+    def build_embed(self) -> discord.Embed:
+        start = self.page * self.page_size
+        chunk = self.cards[start:start + self.page_size]
+        embed = discord.Embed(title=self.title, color=0xEABD45)
+        embed.description = "\n".join(f"`x{self.copies[c.card_id]}` {_card_line(c)}" for c in chunk) or "No cards found for that view yet."
+        if chunk and chunk[0].image_url:
+            embed.set_thumbnail(url=chunk[0].image_url)
+        embed.set_footer(text=f"Page {self.page + 1}/{self.max_page + 1} - {len(self.cards)} cards")
+        return embed
+
+    @discord.ui.button(label="\N{LEFTWARDS BLACK ARROW}", style=discord.ButtonStyle.secondary)
+    async def previous_page(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
+        self.page = max(0, self.page - 1)
+        self._sync_buttons()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    @discord.ui.button(label="\N{BLACK RIGHTWARDS ARROW}", style=discord.ButtonStyle.secondary)
+    async def next_page(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
+        self.page = min(self.max_page, self.page + 1)
+        self._sync_buttons()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
 
 
 async def _pool_total() -> int:
@@ -484,9 +559,12 @@ async def help_command(interaction: discord.Interaction) -> None:
         "**/dupes** - show cards you can trade\n"
         "**/trade** - trade duplicate cards\n"
         "**/clash** - stake a card in winner-keeps-both battle\n"
+        "**/shop** / **/shop_buy** - spend coins and shards\n"
         "**/profile** - view record and collection stats\n"
         "**/leaderboard** - global or server rankings\n\n"
-        "**Warning:** clash stakes are real. If you lose, the card leaves your collection."
+        "**Warning:** clash stakes are real. If you lose, the card leaves your collection. "
+        "Staking your only copy of a card requires `confirm: true`.\n"
+        "Duplicate copies beyond your 2nd earn shards - spend them in `/shop_buy`."
     )
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -656,20 +734,25 @@ async def profile(interaction: discord.Interaction, user: Optional[discord.User]
     played = wins + losses
     win_rate = f"{(wins / played * 100):.1f}%" if played else "0.0%"
     unique_cards = int(stats["unique_cards"] or 0)
-    completion = f"{(unique_cards / pool_total * 100):.1f}%" if pool_total else "0.0%"
-    embed = discord.Embed(title=f"{target.display_name}'s FC Card Clash Profile", color=0x5865F2)
-    embed.add_field(name="Record", value=f"**{wins}W - {losses}L**\nWin rate: **{win_rate}**", inline=True)
-    embed.add_field(name="Streaks", value=f"Current: **{row['current_streak']}**\nBest: **{row['best_streak']}**", inline=True)
-    embed.add_field(name="Wallet", value=f"Coins: **{row['coins']}**\nShards: **{row['shards']}**", inline=True)
+    fraction = (unique_cards / pool_total) if pool_total else 0.0
+    completion = f"{fraction * 100:.1f}%"
+    embed = discord.Embed(title=f"\N{SOCCER BALL} {target.display_name}'s FC Card Clash Profile", color=0x5865F2)
+    embed.add_field(name="\N{TROPHY} Record", value=f"**{wins}W - {losses}L**\nWin rate: **{win_rate}**", inline=True)
+    embed.add_field(name="\N{FIRE} Streaks", value=f"Current: **{row['current_streak']}**\nBest: **{row['best_streak']}**", inline=True)
+    embed.add_field(
+        name="\N{MONEY BAG} Wallet",
+        value=f"Coins: **{row['coins']}**\nShards: **{row['shards']}**\nShields: **{row['streak_shield']}**",
+        inline=True,
+    )
     embed.add_field(
         name="Collection",
         value=(
             f"Total: **{stats['total_cards']}**\n"
             f"Unique: **{unique_cards}/{pool_total}**\n"
-            f"Complete: **{completion}**\n"
+            f"{_progress_bar(fraction)} **{completion}**\n"
             f"Dupes: **{stats['duplicate_cards']}**"
         ),
-        inline=True,
+        inline=False,
     )
     embed.add_field(name="Packs", value=f"Daily streak: **{row['pack_streak']}**", inline=True)
     if last_pull:
@@ -695,11 +778,11 @@ async def progress(interaction: discord.Interaction, user: Optional[discord.User
         )
     pool_total = await _pool_total()
     unique_cards = int(stats["unique_cards"] or 0)
-    completion = f"{(unique_cards / pool_total * 100):.1f}%" if pool_total else "0.0%"
+    fraction = (unique_cards / pool_total) if pool_total else 0.0
     embed = discord.Embed(title=f"{target.display_name}'s Collection Progress", color=0x2ECC71)
     embed.description = (
+        f"{_progress_bar(fraction)} **{fraction * 100:.1f}%**\n\n"
         f"Unique cards: **{unique_cards}/{pool_total}**\n"
-        f"Completion: **{completion}**\n"
         f"Total cards owned: **{stats['total_cards']}**\n"
         f"Duplicate cards: **{stats['duplicate_cards']}**"
     )
@@ -760,7 +843,7 @@ async def collection(interaction: discord.Interaction, view: str = "best", user:
               AND i.copies > 0
               {filter_sql}
             ORDER BY i.copies DESC, i.card_id DESC
-            LIMIT 25
+            LIMIT 200
             """,
             str(target.id),
         )
@@ -787,14 +870,9 @@ async def collection(interaction: discord.Interaction, view: str = "best", user:
             active_game_year(),
         )
     cards = [Card.from_row(r) for r in card_rows]
-    embed = discord.Embed(
-        title=f"{target.display_name}'s {'Duplicate Stock' if view == 'duplicates' else 'Best Cards'}",
-        color=0xEABD45,
-    )
-    embed.description = "\n".join(f"`x{copies[c.card_id]}` {_card_line(c)}" for c in cards[:15])
-    if cards and cards[0].image_url:
-        embed.set_thumbnail(url=cards[0].image_url)
-    await interaction.followup.send(embed=embed)
+    title = f"{target.display_name}'s {'Duplicate Stock' if view == 'duplicates' else 'Best Cards'}"
+    pager = CollectionView(cards, copies, title)
+    await interaction.followup.send(embed=pager.build_embed(), view=pager if pager.max_page > 0 else None)
 
 
 @bot.tree.command(name="card", description="Inspect a card and see how many copies you own.")
@@ -882,7 +960,8 @@ STAT_CHOICES = [
 @bot.tree.command(name="clash", description="Stake one card in a winner-keeps-both Card Clash.")
 @app_commands.autocomplete(card=_autocomplete_my_cards)
 @app_commands.choices(stat=STAT_CHOICES)
-async def clash(interaction: discord.Interaction, user: discord.User, card: str, stat: str) -> None:
+@app_commands.describe(confirm="Set to true to allow staking your only copy of this card.")
+async def clash(interaction: discord.Interaction, user: discord.User, card: str, stat: str, confirm: bool = False) -> None:
     await interaction.response.defer()
     try:
         picked_stat = normalize_stat(stat)
@@ -898,9 +977,10 @@ async def clash(interaction: discord.Interaction, user: discord.User, card: str,
                 str(user.id),
                 staked.card_id,
                 picked_stat,
+                confirm_only_copy=confirm,
             )
-        risk = "THIS IS YOUR ONLY COPY." if copies == 1 else f"You own x{copies}."
-        embed = discord.Embed(title="Blind Card Clash Challenge", color=0xC0392B)
+        risk = "This is your only copy." if copies == 1 else f"You own x{copies}."
+        embed = discord.Embed(title="\N{CROSSED SWORDS} Blind Card Clash Challenge", color=0xC0392B)
         embed.description = (
             f"{interaction.user.mention} has challenged {user.mention}.\n"
             "**Their card and stat are locked in, but hidden.**\n\n"
@@ -911,13 +991,17 @@ async def clash(interaction: discord.Interaction, user: discord.User, card: str,
         embed.set_footer(text=f"Battle ID {_short_id(row['id'])} - expires in 10 minutes")
         await interaction.followup.send(embed=embed)
     except Exception as exc:
+        if _is_only_copy_confirmation_error(exc):
+            await _send_error(interaction, _friendly_message(exc))
+            return
         await _send_error(interaction, str(exc))
 
 
 @bot.tree.command(name="clash_accept", description="Accept a Card Clash and stake one of your cards.")
 @app_commands.autocomplete(battle_id=_autocomplete_pending_battles, card=_autocomplete_my_cards)
 @app_commands.choices(stat=STAT_CHOICES)
-async def clash_accept(interaction: discord.Interaction, battle_id: str, card: str, stat: str) -> None:
+@app_commands.describe(confirm="Set to true to allow staking your only copy of this card.")
+async def clash_accept(interaction: discord.Interaction, battle_id: str, card: str, stat: str, confirm: bool = False) -> None:
     await interaction.response.defer()
     try:
         opponent_stat = normalize_stat(stat)
@@ -931,44 +1015,140 @@ async def clash_accept(interaction: discord.Interaction, battle_id: str, card: s
                 challenger_card = await search_card(card_conn, str(battle["challenger_card_id"]))
             if not challenger_card:
                 raise ValueError("Challenger card no longer exists in the card pool.")
-            result = await accept_battle(game_conn, battle_id, str(interaction.user.id), opponent_card, opponent_stat, challenger_card)
-        rounds = result["rounds"] or []
-        if isinstance(rounds, str):
-            rounds = json.loads(rounds)
-        lines = []
-        for idx, r in enumerate(rounds, start=1):
-            source = {"challenger": "their pick", "opponent": "your pick", "random": "random"}[r["source"]]
-            round_winner = "draw" if r["winner"] == "draw" else ("challenger" if r["winner"] == "challenger" else "defender")
-            lines.append(
-                f"**R{idx} {stat_label(r['stat'])}** ({source}) - "
-                f"{challenger_card.name} {r['challenger']} vs {opponent_card.name} {r['opponent']} - **{round_winner}**"
+            result = await accept_battle(
+                game_conn,
+                battle_id,
+                str(interaction.user.id),
+                opponent_card,
+                opponent_stat,
+                challenger_card,
+                confirm_only_copy=confirm,
             )
-        if result["winner_id"] is None:
-            embed = discord.Embed(title="Card Clash Draw", color=0x95A5A6)
-            embed.description = (
-                "The clash finished level.\n\n"
-                "Both players keep their cards, and neither record or coin balance changes.\n\n"
-                "**Rounds**\n"
-                + "\n".join(lines)
+    except Exception as exc:
+        if _is_only_copy_confirmation_error(exc):
+            await _send_error(interaction, _friendly_message(exc))
+            return
+        await _send_error(interaction, str(exc))
+        return
+
+    rounds = result["rounds"] or []
+    if isinstance(rounds, str):
+        rounds = json.loads(rounds)
+
+    source_label = {"challenger": "their pick", "opponent": "your pick", "random": "random"}
+    reveal = discord.Embed(title="\N{CROSSED SWORDS} Card Clash", color=0xC0392B)
+    reveal.description = f"{challenger_card.name} vs {opponent_card.name}\n\nRevealing round 1..."
+    message = await interaction.followup.send(embed=reveal, wait=True)
+
+    lines: list[str] = []
+    for idx, r in enumerate(rounds, start=1):
+        round_winner = "draw" if r["winner"] == "draw" else ("challenger" if r["winner"] == "challenger" else "defender")
+        lines.append(
+            f"**R{idx} {stat_label(r['stat'])}** ({source_label[r['source']]}) - "
+            f"{challenger_card.name} {r['challenger']} vs {opponent_card.name} {r['opponent']} - **{round_winner}**"
+        )
+        reveal.description = "\n".join(lines)
+        if idx < len(rounds):
+            reveal.description += "\n\nRevealing next round..."
+            await message.edit(embed=reveal)
+            await asyncio.sleep(1.4)
+
+    if result["winner_id"] is None:
+        embed = discord.Embed(title="Card Clash Draw", color=0x95A5A6)
+        embed.description = (
+            "The clash finished level.\n\n"
+            "Both players keep their cards, and neither record or coin balance changes.\n\n"
+            "**Rounds**\n" + "\n".join(lines)
+        )
+    else:
+        winner = f"<@{result['winner_id']}>"
+        loser = f"<@{result['loser_id']}>"
+        winner_card = challenger_card if str(result["winner_id"]) == str(battle["challenger_id"]) else opponent_card
+        loser_card = opponent_card if str(result["winner_id"]) == str(battle["challenger_id"]) else challenger_card
+        embed = discord.Embed(title="\N{TROPHY} Card Clash Result", color=0xF1C40F)
+        embed.description = (
+            f"{winner} beat {loser} and won **{loser_card.name}**.\n\n"
+            f"**Winner now keeps**\n"
+            f"{_card_line(winner_card)}\n"
+            f"{_card_line(loser_card)}\n\n"
+            "**Rounds**\n" + "\n".join(lines)
+        )
+        embed.add_field(name="Reward", value="Winner +50 coins. Loser -15 coins.", inline=False)
+        if winner_card.image_url:
+            embed.set_image(url=winner_card.image_url)
+    await message.edit(embed=embed)
+
+
+SHOP_ITEMS = [
+    app_commands.Choice(name=f"Streak Shield - {SHOP_STREAK_SHIELD_COST} coins", value="shield"),
+    app_commands.Choice(name=f"Extra Pack - {SHOP_EXTRA_PACK_COST} coins", value="extra_pack"),
+    app_commands.Choice(name=f"Shard Pull - {SHOP_SHARD_PULL_COST} shards", value="shard_pull"),
+]
+
+
+@bot.tree.command(name="shop", description="See what coins and shards can buy in FC Card Clash.")
+async def shop(interaction: discord.Interaction) -> None:
+    await interaction.response.defer(ephemeral=True)
+    assert bot.game_pool is not None
+    async with bot.game_pool.acquire() as conn:
+        row = await get_user(conn, str(interaction.user.id))
+    embed = discord.Embed(title="\N{SHOPPING TROLLEY} FC Card Clash Shop", color=0x2ECC71)
+    embed.description = f"Your wallet: **{row['coins']}** coins, **{row['shards']}** shards."
+    embed.add_field(
+        name=f"\N{SHIELD} Streak Shield - {SHOP_STREAK_SHIELD_COST} coins",
+        value="Forgives one missed daily pack day so your streak survives.",
+        inline=False,
+    )
+    embed.add_field(
+        name=f"\N{PACKAGE} Extra Pack - {SHOP_EXTRA_PACK_COST} coins",
+        value="Opens one bonus pack instantly. Does not touch your daily cooldown or streak.",
+        inline=False,
+    )
+    embed.add_field(
+        name=f"\N{SPARKLES} Shard Pull - {SHOP_SHARD_PULL_COST} shards",
+        value="Turn duplicate dust into another shot at a Gold+ card.",
+        inline=False,
+    )
+    embed.set_footer(text="Use /shop_buy to spend.")
+    await interaction.followup.send(embed=embed)
+
+
+@bot.tree.command(name="shop_buy", description="Spend coins or shards in the FC Card Clash shop.")
+@app_commands.choices(item=SHOP_ITEMS)
+async def shop_buy(interaction: discord.Interaction, item: str) -> None:
+    await interaction.response.defer(ephemeral=True)
+    assert bot.game_pool is not None and bot.card_pool is not None
+    try:
+        if item == "shield":
+            async with bot.game_pool.acquire() as conn:
+                shields = await buy_streak_shield(conn, str(interaction.user.id))
+            embed = discord.Embed(
+                title="\N{SHIELD} Streak Shield Purchased",
+                description=f"You now hold **{shields}** streak shield(s).",
+                color=0x2ECC71,
             )
-        else:
-            winner = f"<@{result['winner_id']}>"
-            loser = f"<@{result['loser_id']}>"
-            winner_card = challenger_card if str(result["winner_id"]) == str(battle["challenger_id"]) else opponent_card
-            loser_card = opponent_card if str(result["winner_id"]) == str(battle["challenger_id"]) else challenger_card
-            embed = discord.Embed(title="Card Clash Result", color=0xF1C40F)
-            embed.description = (
-                f"{winner} beat {loser} and won **{loser_card.name}**.\n\n"
-                f"**Winner now keeps**\n"
-                f"{_card_line(winner_card)}\n"
-                f"{_card_line(loser_card)}\n\n"
-                "**Rounds**\n"
-                + "\n".join(lines)
-            )
-            embed.add_field(name="Reward", value="Winner +50 coins. Loser -15 coins.", inline=False)
-            if winner_card.image_url:
-                embed.set_image(url=winner_card.image_url)
-        await interaction.followup.send(embed=embed)
+            await interaction.followup.send(embed=embed)
+            return
+
+        if item == "extra_pack":
+            async with bot.card_pool.acquire() as card_conn:
+                pulled = await pull_weighted_card(card_conn, 0)
+            async with bot.game_pool.acquire() as conn:
+                result = await buy_extra_pack(conn, str(interaction.user.id), pulled)
+            embed = _pack_embed("Shop Pack", result, interaction.user.mention)
+            await interaction.followup.send(embed=embed)
+            return
+
+        if item == "shard_pull":
+            async with bot.card_pool.acquire() as card_conn:
+                pulled = await pull_weighted_card(card_conn, 0, odds_multiplier=1.5)
+            async with bot.game_pool.acquire() as conn:
+                result = await buy_shard_pull(conn, str(interaction.user.id), pulled)
+            embed = _pack_embed("Shard Pull", result, interaction.user.mention)
+            await interaction.followup.send(embed=embed)
+            return
+
+        raise ValueError("Unknown shop item.")
     except Exception as exc:
         await _send_error(interaction, str(exc))
 
@@ -1015,9 +1195,10 @@ async def leaderboard(interaction: discord.Interaction, scope: str = "global") -
                 LIMIT 10
                 """
             )
-    embed = discord.Embed(title=f"FC Card Clash Leaderboard ({scope})", color=0x5865F2)
+    medals = {1: "\N{FIRST PLACE MEDAL}", 2: "\N{SECOND PLACE MEDAL}", 3: "\N{THIRD PLACE MEDAL}"}
+    embed = discord.Embed(title=f"\N{TROPHY} FC Card Clash Leaderboard ({scope})", color=0x5865F2)
     embed.description = "\n".join(
-        f"**{idx}.** <@{r['discord_user_id']}> - **{r['wins']}W/{r['losses']}L** - best streak {r['best_streak']}"
+        f"{medals.get(idx, f'**{idx}.**')} <@{r['discord_user_id']}> - **{r['wins']}W/{r['losses']}L** - best streak {r['best_streak']}"
         for idx, r in enumerate(rows, start=1)
     ) or "No battles yet."
     await interaction.followup.send(embed=embed)
