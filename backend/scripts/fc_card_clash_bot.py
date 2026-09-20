@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import asyncpg
@@ -12,7 +13,16 @@ from discord.ext import commands
 
 from app.fc_cards.cards import Card, STAT_KEYS, active_game_year, normalize_stat, pull_weighted_card, search_card, search_cards, stat_label
 from app.fc_cards.db import get_card_pool, get_game_pool
-from app.fc_cards.game import accept_battle, accept_trade, create_battle, create_trade, get_user, open_pack, owned_copies
+from app.fc_cards.game import (
+    accept_battle,
+    accept_trade,
+    create_battle,
+    create_trade,
+    get_user,
+    open_pack,
+    open_weekly_pack,
+    owned_copies,
+)
 from app.fc_cards.schema import ensure_schema
 
 log = logging.getLogger("fc-card-clash")
@@ -55,6 +65,68 @@ def _card_embed(title: str, card: Card, *, description: Optional[str] = None, co
     if card.image_url:
         embed.set_image(url=card.image_url)
     embed.set_footer(text="FC Card Clash")
+    return embed
+
+
+def _pack_color(card: Card) -> int:
+    if card.rating >= 90:
+        return 0x9B59B6
+    if card.rating >= 88:
+        return 0xF1C40F
+    if card.rating >= 86:
+        return 0xE67E22
+    if card.rating >= 84:
+        return 0x3498DB
+    return 0x2ECC71
+
+
+def _pack_tier(card: Card) -> str:
+    if card.rating >= 90:
+        return "WALKOUT"
+    if card.rating >= 88:
+        return "BIG PULL"
+    if card.rating >= 86:
+        return "BOARD"
+    return "PACK OPENED"
+
+
+def _next_daily_unlock() -> str:
+    now = datetime.now(timezone.utc)
+    tomorrow = (now + timedelta(days=1)).date()
+    unlock = datetime(tomorrow.year, tomorrow.month, tomorrow.day, tzinfo=timezone.utc)
+    remaining = unlock - now
+    hours, rem = divmod(int(remaining.total_seconds()), 3600)
+    minutes = rem // 60
+    return f"{hours}h {minutes}m"
+
+
+def _next_weekly_unlock() -> str:
+    now = datetime.now(timezone.utc)
+    days_until_monday = (7 - now.weekday()) % 7 or 7
+    next_monday = (now + timedelta(days=days_until_monday)).date()
+    unlock = datetime(next_monday.year, next_monday.month, next_monday.day, tzinfo=timezone.utc)
+    remaining = unlock - now
+    days = remaining.days
+    hours = remaining.seconds // 3600
+    return f"{days}d {hours}h"
+
+
+def _pack_embed(pack_name: str, result, user_mention: str, *, boosted: bool = False) -> discord.Embed:
+    card = result.card
+    duplicate = "Duplicate" if result.is_duplicate else "New card"
+    tier = _pack_tier(card)
+    title = f"{tier}: {pack_name}" if tier != "PACK OPENED" else f"{pack_name} Opened"
+    embed = _card_embed(title, card, color=_pack_color(card))
+    embed.description = (
+        f"{user_mention} pulled {_card_line(card)}\n"
+        f"**{duplicate}** - now owned: **x{result.copies}**"
+    )
+    if result.streak:
+        embed.add_field(name="Daily streak", value=f"**{result.streak}**", inline=True)
+        if result.streak in (3, 7, 30):
+            embed.add_field(name="Streak bonus", value="Your odds are boosted while the streak keeps going.", inline=False)
+    if boosted:
+        embed.add_field(name="Weekly boost", value="Higher chance of 86+ cards.", inline=True)
     return embed
 
 
@@ -115,6 +187,23 @@ async def on_ready() -> None:
     log.info("FC Card Clash logged in as %s (%s)", bot.user, bot.user.id if bot.user else "unknown")
 
 
+@bot.tree.command(name="help", description="How FC Card Clash works.")
+async def help_command(interaction: discord.Interaction) -> None:
+    embed = discord.Embed(title="FC Card Clash Help", color=0x5865F2)
+    embed.description = (
+        "**/pack** - open your daily card\n"
+        "**/weekly** - open your boosted weekly pack\n"
+        "**/collection** - view your best cards\n"
+        "**/dupes** - show cards you can trade\n"
+        "**/trade** - trade duplicate cards\n"
+        "**/clash** - stake a card in winner-keeps-both battle\n"
+        "**/profile** - view record and collection stats\n"
+        "**/leaderboard** - global or server rankings\n\n"
+        "**Warning:** clash stakes are real. If you lose, the card leaves your collection."
+    )
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
 @bot.tree.command(name="pack", description="Open your daily FC Card Clash pack.")
 async def pack(interaction: discord.Interaction) -> None:
     await interaction.response.defer()
@@ -125,11 +214,30 @@ async def pack(interaction: discord.Interaction) -> None:
             async with bot.card_pool.acquire() as card_conn:
                 card = await pull_weighted_card(card_conn, int(user["pack_streak"] or 0))
             result = await open_pack(game_conn, str(interaction.user.id), card)
-        duplicate = "Duplicate pull" if result.is_duplicate else "New card"
-        description = f"{interaction.user.mention} pulled {_card_line(card)}\n{duplicate} - you now own **x{result.copies}**.\nDaily streak: **{result.streak}**"
-        embed = _card_embed("Pack Opened", card, description=description, color=0x2ECC71)
+        embed = _pack_embed("Daily Pack", result, interaction.user.mention)
         await interaction.followup.send(embed=embed)
     except Exception as exc:
+        if "Daily pack already opened" in str(exc):
+            await _send_error(interaction, f"You've already opened today's pack.\nNext pack unlocks in **{_next_daily_unlock()}**.")
+            return
+        await _send_error(interaction, str(exc))
+
+
+@bot.tree.command(name="weekly", description="Open your boosted weekly FC Card Clash pack.")
+async def weekly(interaction: discord.Interaction) -> None:
+    await interaction.response.defer()
+    assert bot.game_pool is not None and bot.card_pool is not None
+    try:
+        async with bot.game_pool.acquire() as game_conn:
+            async with bot.card_pool.acquire() as card_conn:
+                card = await pull_weighted_card(card_conn, 7, odds_multiplier=2.25)
+            result = await open_weekly_pack(game_conn, str(interaction.user.id), card)
+        embed = _pack_embed("Weekly Pack", result, interaction.user.mention, boosted=True)
+        await interaction.followup.send(embed=embed)
+    except Exception as exc:
+        if "Weekly pack already opened" in str(exc):
+            await _send_error(interaction, f"You've already opened this week's pack.\nNext weekly pack unlocks in **{_next_weekly_unlock()}**.")
+            return
         await _send_error(interaction, str(exc))
 
 
@@ -161,6 +269,11 @@ async def profile(interaction: discord.Interaction, user: Optional[discord.User]
     embed.add_field(name="Collection", value=f"Total: **{stats['total_cards']}**\nUnique: **{stats['unique_cards']}**\nDupes: **{stats['duplicate_cards']}**", inline=True)
     embed.add_field(name="Packs", value=f"Daily streak: **{row['pack_streak']}**", inline=True)
     await interaction.followup.send(embed=embed)
+
+
+@bot.tree.command(name="dupes", description="Show duplicate cards you can trade.")
+async def dupes(interaction: discord.Interaction, user: Optional[discord.User] = None) -> None:
+    await collection(interaction, view="duplicates", user=user)
 
 
 @bot.tree.command(name="collection", description="Show your best cards or duplicates.")
@@ -232,6 +345,7 @@ async def card(interaction: discord.Interaction, card: str) -> None:
         embed = _card_embed("Card Inspector", found, color=0x9B59B6)
         embed.add_field(name="Your copies", value=f"**x{copies}**", inline=True)
         embed.add_field(name="Battle risk", value="Can be staked even if this is your only copy.", inline=True)
+        embed.add_field(name="Trade rule", value="Only duplicate copies can be traded.", inline=True)
         await interaction.followup.send(embed=embed)
     except Exception as exc:
         await _send_error(interaction, str(exc))
@@ -321,12 +435,14 @@ async def clash(interaction: discord.Interaction, user: discord.User, card: str,
                 picked_stat,
             )
         risk = "THIS IS YOUR ONLY COPY." if copies == 1 else f"You own x{copies}."
-        embed = _card_embed("Card Clash Challenge", staked, color=0xC0392B)
+        embed = discord.Embed(title="Blind Card Clash Challenge", color=0xC0392B)
         embed.description = (
             f"{interaction.user.mention} has challenged {user.mention}.\n"
-            f"Stake: {_card_line(staked)}\n"
-            f"Chosen stat: **{stat_label(picked_stat)}**\n"
-            f"Risk: **{risk} If you lose, this card is gone.**\n\n"
+            f"Stake: **hidden locked card**\n"
+            f"Chosen stat: **hidden**\n"
+            f"Risk for challenger: **{risk} If they lose, their card is gone.**\n\n"
+            "Your accept card and stat are picked blind before seeing their card.\n"
+            "You cannot pick the same stat as the challenger.\n\n"
             f"{user.mention}, accept with `/clash_accept battle_id:{row['id']} card:<your card> stat:<your stat>`."
         )
         embed.set_footer(text=f"Battle ID {_short_id(row['id'])} - expires in 10 minutes")
@@ -364,7 +480,7 @@ async def clash_accept(interaction: discord.Interaction, battle_id: str, card: s
             round_winner = "draw" if r["winner"] == "draw" else ("challenger" if r["winner"] == "challenger" else "defender")
             lines.append(
                 f"**R{idx} {stat_label(r['stat'])}** ({source}): "
-                f"{r['challenger']} vs {r['opponent']} - **{round_winner}**"
+                f"{challenger_card.name} **{r['challenger']}** vs {opponent_card.name} **{r['opponent']}** - **{round_winner}**"
             )
         embed = discord.Embed(title="Card Clash Result", color=0xF1C40F)
         embed.description = (
