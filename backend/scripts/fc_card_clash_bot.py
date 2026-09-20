@@ -197,7 +197,7 @@ async def _autocomplete_owned_cards(
             WHERE discord_user_id = $1
               AND copies >= $2
             ORDER BY copies DESC, card_id DESC
-            LIMIT 60
+            LIMIT 500
             """,
             user_id,
             min_copies,
@@ -271,7 +271,7 @@ async def _autocomplete_pending_trades(interaction: discord.Interaction, current
             q,
         )
     return [
-        app_commands.Choice(name=f"{_short_id(row['id'])} from user {row['proposer_id']}"[:100], value=str(row["id"]))
+        app_commands.Choice(name=f"Trade {_short_id(row['id'])}", value=str(row["id"]))
         for row in rows
     ]
 
@@ -296,7 +296,7 @@ async def _autocomplete_pending_battles(interaction: discord.Interaction, curren
             q,
         )
     return [
-        app_commands.Choice(name=f"{_short_id(row['id'])} from user {row['challenger_id']}"[:100], value=str(row["id"]))
+        app_commands.Choice(name=f"Battle {_short_id(row['id'])}", value=str(row["id"]))
         for row in rows
     ]
 
@@ -507,7 +507,7 @@ async def trade(
             f"{interaction.user.mention} offers {user.mention}:\n"
             f"Give: {_card_line(offered)}\n"
             f"Request: {want}\n\n"
-            f"{user.mention}, accept with `/trade_accept` and pick trade **{_short_id(row['id'])}** from the list.\n"
+            f"{user.mention}, use `/trade_accept` and pick this trade from the list.\n"
             "Trades are duplicates-only for both sides."
         )
         if offered.image_url:
@@ -566,12 +566,10 @@ async def clash(interaction: discord.Interaction, user: discord.User, card: str,
         embed = discord.Embed(title="Blind Card Clash Challenge", color=0xC0392B)
         embed.description = (
             f"{interaction.user.mention} has challenged {user.mention}.\n"
-            f"Stake: **hidden locked card**\n"
-            f"Chosen stat: **hidden**\n"
-            f"Risk for challenger: **{risk} If they lose, their card is gone.**\n\n"
-            "Your accept card and stat are picked blind before seeing their card.\n"
-            "You cannot pick the same stat as the challenger.\n\n"
-            f"{user.mention}, accept with `/clash_accept`, pick battle **{_short_id(row['id'])}**, then choose one of your cards."
+            "**Their card and stat are locked in, but hidden.**\n\n"
+            f"Risk: **{risk} If they lose, their card is gone.**\n"
+            "You pick your card and stat blind. Same stat is not allowed.\n\n"
+            f"{user.mention}, use `/clash_accept` and pick this battle from the list."
         )
         embed.set_footer(text=f"Battle ID {_short_id(row['id'])} - expires in 10 minutes")
         await interaction.followup.send(embed=embed)
@@ -602,26 +600,28 @@ async def clash_accept(interaction: discord.Interaction, battle_id: str, card: s
             rounds = json.loads(rounds)
         winner = f"<@{result['winner_id']}>"
         loser = f"<@{result['loser_id']}>"
+        winner_card = challenger_card if str(result["winner_id"]) == str(battle["challenger_id"]) else opponent_card
+        loser_card = opponent_card if str(result["winner_id"]) == str(battle["challenger_id"]) else challenger_card
         lines = []
         for idx, r in enumerate(rounds, start=1):
-            source = {"challenger": "challenger pick", "opponent": "defender pick", "random": "random decider"}[r["source"]]
+            source = {"challenger": "their pick", "opponent": "your pick", "random": "random"}[r["source"]]
             round_winner = "draw" if r["winner"] == "draw" else ("challenger" if r["winner"] == "challenger" else "defender")
             lines.append(
-                f"**R{idx} {stat_label(r['stat'])}** ({source}): "
-                f"{challenger_card.name} **{r['challenger']}** vs {opponent_card.name} **{r['opponent']}** - **{round_winner}**"
+                f"**R{idx} {stat_label(r['stat'])}** ({source}) - "
+                f"{challenger_card.name} {r['challenger']} vs {opponent_card.name} {r['opponent']} - **{round_winner}**"
             )
         embed = discord.Embed(title="Card Clash Result", color=0xF1C40F)
         embed.description = (
-            f"{winner} beats {loser} and keeps both cards.\n\n"
-            f"**Stakes**\n"
-            f"<@{battle['challenger_id']}>: {_card_line(challenger_card)}\n"
-            f"{interaction.user.mention}: {_card_line(opponent_card)}\n\n"
+            f"{winner} beat {loser} and won **{loser_card.name}**.\n\n"
+            f"**Winner now keeps**\n"
+            f"{_card_line(winner_card)}\n"
+            f"{_card_line(loser_card)}\n\n"
+            "**Rounds**\n"
             + "\n".join(lines)
         )
         embed.add_field(name="Reward", value="Winner +50 coins. Loser -15 coins.", inline=False)
-        winning_image = challenger_card.image_url if str(result["winner_id"]) == str(battle["challenger_id"]) else opponent_card.image_url
-        if winning_image:
-            embed.set_image(url=winning_image)
+        if winner_card.image_url:
+            embed.set_image(url=winner_card.image_url)
         await interaction.followup.send(embed=embed)
     except Exception as exc:
         await _send_error(interaction, str(exc))
