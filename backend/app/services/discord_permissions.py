@@ -252,7 +252,7 @@ async def check_bot_channel_access(client, guild_id: str, channel_id: str) -> tu
     probe_status, probe_body = await client.post_embed(
         channel_id,
         probe_embed,
-        nonce=f"feed-probe-{guild_id[-8:]}-{channel_id[-8:]}",
+        nonce=f"fp-{guild_id[-8:]}-{channel_id[-8:]}",
         enforce_nonce=False,
         suppress_notifications=True,
     )
