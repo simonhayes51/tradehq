@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Iterable, Optional
 
@@ -66,11 +67,17 @@ class Card:
 
 
 CARD_SELECT = """
-    source_card_id, name, rating, primary_position, rarity,
+    source_card_id,
+    COALESCE(NULLIF(BTRIM(display_name), ''), NULLIF(BTRIM(name), ''), 'Card ' || source_card_id::text) AS name,
+    rating, primary_position, rarity,
     card_image_stored_url, card_image_url, player_image_url,
     pace, shooting, passing, dribbling, defending, physicality,
     club, league, nation
 """
+
+
+def active_game_year() -> int:
+    return int(os.getenv("FC_CARDS_GAME_YEAR", "27"))
 
 
 def normalize_stat(stat: str) -> str:
@@ -115,9 +122,11 @@ async def get_card(conn: "asyncpg.Connection", card_id: int | str) -> Optional[C
         SELECT {CARD_SELECT}
         FROM futgg_market_snapshot
         WHERE source_card_id = $1
+          AND game_year = $2
           AND rating >= 75
         """,
         int(card_id),
+        active_game_year(),
     )
     return Card.from_row(row) if row else None
 
@@ -132,14 +141,23 @@ async def search_card(conn: "asyncpg.Connection", query: str) -> Optional[Card]:
         SELECT {CARD_SELECT}
         FROM futgg_market_snapshot
         WHERE rating >= 75
-          AND name ILIKE '%' || $1 || '%'
+          AND game_year = $2
+          AND (
+            display_name ILIKE '%' || $1 || '%'
+            OR name ILIKE '%' || $1 || '%'
+          )
         ORDER BY
-          CASE WHEN name ILIKE $1 THEN 0 ELSE 1 END,
+          CASE
+            WHEN display_name ILIKE $1 THEN 0
+            WHEN name ILIKE $1 THEN 1
+            ELSE 2
+          END,
           rating DESC,
           source_card_id DESC
         LIMIT 1
         """,
         q,
+        active_game_year(),
     )
     return Card.from_row(row) if row else None
 
@@ -154,11 +172,16 @@ async def search_cards(conn: "asyncpg.Connection", query: str, limit: int = 10) 
         SELECT {CARD_SELECT}
         FROM futgg_market_snapshot
         WHERE rating >= 75
-          AND name ILIKE '%' || $1 || '%'
+          AND game_year = $2
+          AND (
+            display_name ILIKE '%' || $1 || '%'
+            OR name ILIKE '%' || $1 || '%'
+          )
         ORDER BY rating DESC, source_card_id DESC
-        LIMIT $2
+        LIMIT $3
         """,
         q,
+        active_game_year(),
         limit,
     )
     return [Card.from_row(r) for r in rows]
@@ -186,6 +209,7 @@ async def pull_weighted_card(conn: "asyncpg.Connection", streak: int) -> Card:
                END AS pull_weight
         FROM futgg_market_snapshot
         WHERE rating >= 75
+          AND game_year = $2
           AND pace IS NOT NULL
           AND shooting IS NOT NULL
           AND passing IS NOT NULL
@@ -198,6 +222,7 @@ async def pull_weighted_card(conn: "asyncpg.Connection", streak: int) -> Card:
         LIMIT 900
         """,
         odds_boost,
+        active_game_year(),
     )
     if not rows:
         raise RuntimeError("No eligible FC Card Clash cards found in futgg_market_snapshot.")
