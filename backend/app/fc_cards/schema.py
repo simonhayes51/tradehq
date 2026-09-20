@@ -48,6 +48,14 @@ CREATE TABLE IF NOT EXISTS fc_card_pack_openings (
 );
 CREATE INDEX IF NOT EXISTS idx_fc_pack_openings_user_created ON fc_card_pack_openings(discord_user_id, created_at DESC);
 
+CREATE TABLE IF NOT EXISTS fc_card_guild_channels (
+    guild_id TEXT NOT NULL,
+    channel_id TEXT NOT NULL,
+    created_by TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (guild_id, channel_id)
+);
+
 CREATE TABLE IF NOT EXISTS fc_card_trades (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     guild_id TEXT,
