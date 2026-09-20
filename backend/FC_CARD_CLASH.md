@@ -47,10 +47,9 @@ The bot creates its own `fc_card_*` tables on startup.
 - `/card <card>` - card inspection and owned copies.
 - `/trade <user> <your_card> [requested_card]` - duplicate-only trade offer.
 - `/trade_accept <trade_id>` - accept pending trade.
-- `/clash <user> <card> <stat> [confirm]` - stake one owned card. Staking your
-  only copy requires `confirm: true`.
-- `/clash_accept <battle_id> <card> <stat> [confirm]` - accept and resolve the
-  clash. Same only-copy confirmation applies.
+- `/clash <user> <card> <stat>` - stake one owned card, even your only copy.
+  The stat picker shows that card's live stat values once it's selected.
+- `/clash_accept <battle_id> <card> <stat>` - accept and resolve the clash.
 - `/shop` - view what coins and shards can buy.
 - `/shop_buy <item>` - spend coins/shards on a streak shield, an extra pack,
   or a shard-funded pull.
@@ -65,13 +64,12 @@ low-friction on purpose - two slash commands total resolve a full battle):
 2. Defender's chosen stat
 3. Random decider from the remaining stat pool
 
-Winner keeps both staked cards. Trades protect first copies; battles do not,
-though staking a sole copy now requires explicit confirmation on both the
-challenge and accept side. The initial challenge hides the challenger's card
-and chosen stat, so the defender picks their stake and stat blind. Both
-players must choose different stats. `/clash_accept` reveals rounds one at a
-time with a short delay between them for pacing before showing the final
-result.
+Winner keeps both staked cards. Trades protect first copies; battles do not -
+staking your only copy of a card is allowed and risks losing it outright. The
+initial challenge hides the challenger's card and chosen stat, so the
+defender picks their stake and stat blind. Both players must choose different
+stats. `/clash_accept` reveals rounds one at a time with a short delay between
+them for pacing before showing the final result.
 
 ## Economy
 
