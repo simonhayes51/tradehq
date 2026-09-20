@@ -1,5 +1,6 @@
 from app.fc_cards.cards import Card, normalize_stat, stat_label
 from app.fc_cards.game import resolve_battle
+import pytest
 
 
 def make_card(card_id: int, rating: int, **stats: int) -> Card:
@@ -54,4 +55,12 @@ def test_resolve_battle_rating_breaks_drawn_rounds(monkeypatch):
 
     assert [r["winner"] for r in rounds] == ["challenger", "opponent", "draw"]
     assert winner == "opponent"
+
+
+def test_resolve_battle_rejects_same_stat():
+    challenger = make_card(1, 84, pace=91)
+    opponent = make_card(2, 83, pace=77)
+
+    with pytest.raises(ValueError, match="same stat"):
+        resolve_battle(challenger, opponent, "pace", "pace")
 
