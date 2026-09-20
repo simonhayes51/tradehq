@@ -40,6 +40,20 @@ def _guild_object() -> Optional[discord.Object]:
     return discord.Object(id=int(guild_id)) if guild_id else None
 
 
+def _allowed_channel_ids() -> set[int]:
+    raw = os.getenv("FC_CARDS_ALLOWED_CHANNEL_IDS") or os.getenv("FC_CARD_CLASH_CHANNEL_IDS") or ""
+    channel_ids: set[int] = set()
+    for part in raw.replace(";", ",").split(","):
+        value = part.strip()
+        if not value:
+            continue
+        try:
+            channel_ids.add(int(value))
+        except ValueError:
+            log.warning("Ignoring invalid FC Card Clash channel id: %s", value)
+    return channel_ids
+
+
 def _short_id(value: object) -> str:
     return str(value).split("-")[0]
 
@@ -152,6 +166,22 @@ class CardClashBot(commands.Bot):
 
 
 bot = CardClashBot()
+ALLOWED_CHANNEL_IDS = _allowed_channel_ids()
+
+
+@bot.tree.interaction_check
+async def channel_check(interaction: discord.Interaction) -> bool:
+    if not ALLOWED_CHANNEL_IDS:
+        return True
+    if interaction.channel_id in ALLOWED_CHANNEL_IDS:
+        return True
+
+    channel_list = " or ".join(f"<#{channel_id}>" for channel_id in sorted(ALLOWED_CHANNEL_IDS))
+    await interaction.response.send_message(
+        f"Use FC Card Clash commands in {channel_list}.",
+        ephemeral=True,
+    )
+    return False
 
 
 async def _find_card(query: str) -> Card:
