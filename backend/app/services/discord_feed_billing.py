@@ -283,11 +283,12 @@ async def confirm_channel_access(guild_id: str, channel_id: str) -> tuple[bool, 
 
 
 CHANNEL_ACCESS_MESSAGES = {
-    "channel_not_found": "I can't find that channel - please check it still exists.",
+    "channel_not_found": "I can't find that channel - please check it still exists and that I can see it.",
     "invalid_channel_type": "Please pick a text or announcement channel.",
-    "bot_not_in_guild": "It looks like I'm no longer a member of this server - please re-invite the bot.",
-    "missing_permissions": "I need View Channel, Send Messages, and Embed Links in that channel.",
-    "discord_unavailable": "Discord didn't respond - please try again shortly.",
+    "bot_not_in_guild": "The EAFC.Live bot isn't available in this server. Re-invite it with the bot scope, then try again.",
+    "missing_permissions": "I can't access that channel. Give the EAFC.Live bot View Channel, Send Messages, and Embed Links there, then try again.",
+    "bot_auth_failed": "EAFC.Live's Discord bot connection needs attention. Please contact EAFC.Live support.",
+    "discord_unavailable": "Discord's API is temporarily unavailable - please try again shortly.",
 }
 
 
