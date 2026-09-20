@@ -12,7 +12,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from app.fc_cards.cards import Card, STAT_KEYS, active_game_year, normalize_stat, pull_weighted_card, search_card, search_cards, stat_label
+from app.fc_cards.cards import Card, STAT_KEYS, active_game_year, candidate_pool_size, normalize_stat, pull_weighted_card, search_card, search_cards, stat_label
 from app.fc_cards.db import get_card_pool, get_game_pool
 from app.fc_cards.game import (
     SHOP_EXTRA_PACK_COST,
@@ -290,24 +290,7 @@ class CollectionView(discord.ui.View):
 async def _pool_total() -> int:
     assert bot.card_pool is not None
     async with bot.card_pool.acquire() as conn:
-        value = await conn.fetchval(
-            """
-            SELECT COUNT(*)
-            FROM futgg_market_snapshot
-            WHERE rating >= 75
-              AND game_year = $1
-              AND pace IS NOT NULL
-              AND shooting IS NOT NULL
-              AND passing IS NOT NULL
-              AND dribbling IS NOT NULL
-              AND defending IS NOT NULL
-              AND physicality IS NOT NULL
-              AND COALESCE(card_image_stored_url, card_image_url, player_image_url) IS NOT NULL
-              AND COALESCE(is_active, TRUE) = TRUE
-            """,
-            active_game_year(),
-        )
-    return int(value or 0)
+        return await candidate_pool_size(conn)
 
 
 class CardClashCommandTree(app_commands.CommandTree):
