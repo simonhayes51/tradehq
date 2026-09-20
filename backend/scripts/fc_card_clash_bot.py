@@ -10,7 +10,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from app.fc_cards.cards import Card, STAT_KEYS, normalize_stat, pull_weighted_card, search_card, search_cards, stat_label
+from app.fc_cards.cards import Card, STAT_KEYS, active_game_year, normalize_stat, pull_weighted_card, search_card, search_cards, stat_label
 from app.fc_cards.db import get_card_pool, get_game_pool
 from app.fc_cards.game import accept_battle, accept_trade, create_battle, create_trade, get_user, open_pack, owned_copies
 from app.fc_cards.schema import ensure_schema
@@ -195,15 +195,19 @@ async def collection(interaction: discord.Interaction, view: str = "best", user:
     async with bot.card_pool.acquire() as conn:
         card_rows = await conn.fetch(
             """
-            SELECT source_card_id, name, rating, primary_position, rarity,
+            SELECT source_card_id,
+                   COALESCE(NULLIF(BTRIM(display_name), ''), NULLIF(BTRIM(name), ''), 'Card ' || source_card_id::text) AS name,
+                   rating, primary_position, rarity,
                    card_image_stored_url, card_image_url, player_image_url,
                    pace, shooting, passing, dribbling, defending, physicality,
                    club, league, nation
             FROM futgg_market_snapshot
             WHERE source_card_id = ANY($1::bigint[])
+              AND game_year = $2
             ORDER BY rating DESC, source_card_id DESC
             """,
             card_ids,
+            active_game_year(),
         )
     cards = [Card.from_row(r) for r in card_rows]
     embed = discord.Embed(
@@ -437,3 +441,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
