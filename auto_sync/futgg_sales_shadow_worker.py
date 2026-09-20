@@ -34,6 +34,7 @@ from typing import Any
 
 import asyncpg
 
+from db_connect import create_pool_with_retry
 import futgg_sales_sync as sales
 import futgg_sales_triggers as triggers
 from futgg_sales_information_shadow import (
@@ -325,7 +326,7 @@ async def run() -> None:
 
     if watchlist_dsn and not watchlist_is_core:
         try:
-            watchlist_pool = await asyncpg.create_pool(
+            watchlist_pool = await create_pool_with_retry(
                 dsn=watchlist_dsn,
                 min_size=1,
                 max_size=2,
