@@ -1,5 +1,5 @@
 from app.fc_cards.cards import Card, normalize_stat, stat_label
-from app.fc_cards.game import resolve_battle
+from app.fc_cards.game import resolve_battle, shard_reward
 import pytest
 
 
@@ -63,4 +63,14 @@ def test_resolve_battle_rejects_same_stat():
 
     with pytest.raises(ValueError, match="same stat"):
         resolve_battle(challenger, opponent, "pace", "pace")
+
+
+def test_shard_reward_scales_with_rarity():
+    assert shard_reward(91) == 40
+    assert shard_reward(88) == 25
+    assert shard_reward(86) == 15
+    assert shard_reward(84) == 8
+    assert shard_reward(82) == 4
+    assert shard_reward(75) == 2
+    assert shard_reward(91) > shard_reward(88) > shard_reward(86) > shard_reward(84) > shard_reward(82) > shard_reward(75)
 
