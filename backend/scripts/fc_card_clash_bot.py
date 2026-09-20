@@ -20,7 +20,9 @@ from app.fc_cards.game import (
     create_trade,
     get_user,
     open_pack,
+    open_pack_many,
     open_weekly_pack,
+    open_weekly_pack_many,
     owned_copies,
 )
 from app.fc_cards.schema import ensure_schema
@@ -38,6 +40,14 @@ def _token() -> str:
 def _guild_object() -> Optional[discord.Object]:
     guild_id = os.getenv("FC_CARDS_DISCORD_GUILD_ID") or os.getenv("DISCORD_SERVER_ID")
     return discord.Object(id=int(guild_id)) if guild_id else None
+
+
+def _int_env(name: str, default: int, *, minimum: int = 1, maximum: int = 10) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+    return max(minimum, min(maximum, value))
 
 
 def _short_id(value: object) -> str:
@@ -130,6 +140,49 @@ def _pack_embed(pack_name: str, result, user_mention: str, *, boosted: bool = Fa
     return embed
 
 
+def _pack_results_embed(pack_name: str, results, user_mention: str, *, boosted: bool = False) -> discord.Embed:
+    best = max((r.card for r in results), key=lambda card: (card.rating, card.card_id))
+    embed = discord.Embed(title=f"{pack_name} Opened", color=_pack_color(best))
+    embed.description = f"{user_mention} opened a **{len(results)} card** pack."
+    lines = []
+    for result in sorted(results, key=lambda r: (r.card.rating, r.card.card_id), reverse=True):
+        status = "dupe" if result.is_duplicate else "new"
+        lines.append(f"`x{result.copies}` {_card_line(result.card)} - **{status}**")
+    embed.add_field(name="Pulls", value="\n".join(lines)[:1024], inline=False)
+    streak = next((int(r.streak or 0) for r in results if int(r.streak or 0)), 0)
+    if streak:
+        embed.add_field(name="Daily streak", value=f"**{streak}**", inline=True)
+    if boosted:
+        embed.add_field(name="Weekly boost", value="Higher chance of 86+ cards.", inline=True)
+    if best.image_url:
+        embed.set_image(url=best.image_url)
+    embed.set_footer(text="FC Card Clash")
+    return embed
+
+
+async def _pool_total() -> int:
+    assert bot.card_pool is not None
+    async with bot.card_pool.acquire() as conn:
+        value = await conn.fetchval(
+            """
+            SELECT COUNT(*)
+            FROM futgg_market_snapshot
+            WHERE rating >= 75
+              AND game_year = $1
+              AND pace IS NOT NULL
+              AND shooting IS NOT NULL
+              AND passing IS NOT NULL
+              AND dribbling IS NOT NULL
+              AND defending IS NOT NULL
+              AND physicality IS NOT NULL
+              AND COALESCE(card_image_stored_url, card_image_url, player_image_url) IS NOT NULL
+              AND COALESCE(is_active, TRUE) = TRUE
+            """,
+            active_game_year(),
+        )
+    return int(value or 0)
+
+
 class CardClashBot(commands.Bot):
     def __init__(self) -> None:
         intents = discord.Intents.default()
@@ -146,8 +199,12 @@ class CardClashBot(commands.Bot):
             self.tree.copy_global_to(guild=guild)
             await self.tree.sync(guild=guild)
             log.info("Synced FC Card Clash commands to guild %s", guild.id)
-        await self.tree.sync()
-        log.info("Synced FC Card Clash global commands")
+            self.tree.clear_commands(guild=None)
+            await self.tree.sync()
+            log.info("Cleared FC Card Clash global commands while guild sync is enabled")
+        else:
+            await self.tree.sync()
+            log.info("Synced FC Card Clash global commands")
 
 
 bot = CardClashBot()
@@ -351,6 +408,8 @@ async def help_command(interaction: discord.Interaction) -> None:
     embed.description = (
         "**/pack** - open your daily card\n"
         "**/weekly** - open your boosted weekly pack\n"
+        "**/lastpull** - show off your latest pull\n"
+        "**/progress** - show collection completion\n"
         "**/collection** - view your best cards\n"
         "**/dupes** - show cards you can trade\n"
         "**/trade** - trade duplicate cards\n"
@@ -454,12 +513,13 @@ async def pack(interaction: discord.Interaction) -> None:
     await interaction.response.defer(ephemeral=True)
     assert bot.game_pool is not None and bot.card_pool is not None
     try:
+        pack_size = _int_env("FC_CARDS_DAILY_PACK_SIZE", 3, minimum=1, maximum=10)
         async with bot.game_pool.acquire() as game_conn:
             user = await get_user(game_conn, str(interaction.user.id))
             async with bot.card_pool.acquire() as card_conn:
-                card = await pull_weighted_card(card_conn, int(user["pack_streak"] or 0))
-            result = await open_pack(game_conn, str(interaction.user.id), card)
-        embed = _pack_embed("Daily Pack", result, interaction.user.mention)
+                cards = [await pull_weighted_card(card_conn, int(user["pack_streak"] or 0)) for _ in range(pack_size)]
+            results = await open_pack_many(game_conn, str(interaction.user.id), cards)
+        embed = _pack_results_embed("Daily Pack", results, interaction.user.mention)
         await interaction.followup.send(embed=embed)
     except Exception as exc:
         if "Daily pack already opened" in str(exc):
@@ -473,11 +533,12 @@ async def weekly(interaction: discord.Interaction) -> None:
     await interaction.response.defer(ephemeral=True)
     assert bot.game_pool is not None and bot.card_pool is not None
     try:
+        pack_size = _int_env("FC_CARDS_WEEKLY_PACK_SIZE", 5, minimum=1, maximum=10)
         async with bot.game_pool.acquire() as game_conn:
             async with bot.card_pool.acquire() as card_conn:
-                card = await pull_weighted_card(card_conn, 7, odds_multiplier=2.25)
-            result = await open_weekly_pack(game_conn, str(interaction.user.id), card)
-        embed = _pack_embed("Weekly Pack", result, interaction.user.mention, boosted=True)
+                cards = [await pull_weighted_card(card_conn, 7, odds_multiplier=2.25) for _ in range(pack_size)]
+            results = await open_weekly_pack_many(game_conn, str(interaction.user.id), cards)
+        embed = _pack_results_embed("Weekly Pack", results, interaction.user.mention, boosted=True)
         await interaction.followup.send(embed=embed)
     except Exception as exc:
         if "Weekly pack already opened" in str(exc):
@@ -503,16 +564,98 @@ async def profile(interaction: discord.Interaction, user: Optional[discord.User]
             """,
             str(target.id),
         )
+        last_pull = await conn.fetchrow(
+            """
+            SELECT card_id, source, created_at
+            FROM fc_card_pack_openings
+            WHERE discord_user_id = $1
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            str(target.id),
+        )
+    pool_total = await _pool_total()
     wins = int(row["wins"] or 0)
     losses = int(row["losses"] or 0)
     played = wins + losses
     win_rate = f"{(wins / played * 100):.1f}%" if played else "0.0%"
+    unique_cards = int(stats["unique_cards"] or 0)
+    completion = f"{(unique_cards / pool_total * 100):.1f}%" if pool_total else "0.0%"
     embed = discord.Embed(title=f"{target.display_name}'s FC Card Clash Profile", color=0x5865F2)
     embed.add_field(name="Record", value=f"**{wins}W - {losses}L**\nWin rate: **{win_rate}**", inline=True)
     embed.add_field(name="Streaks", value=f"Current: **{row['current_streak']}**\nBest: **{row['best_streak']}**", inline=True)
     embed.add_field(name="Wallet", value=f"Coins: **{row['coins']}**\nShards: **{row['shards']}**", inline=True)
-    embed.add_field(name="Collection", value=f"Total: **{stats['total_cards']}**\nUnique: **{stats['unique_cards']}**\nDupes: **{stats['duplicate_cards']}**", inline=True)
+    embed.add_field(
+        name="Collection",
+        value=(
+            f"Total: **{stats['total_cards']}**\n"
+            f"Unique: **{unique_cards}/{pool_total}**\n"
+            f"Complete: **{completion}**\n"
+            f"Dupes: **{stats['duplicate_cards']}**"
+        ),
+        inline=True,
+    )
     embed.add_field(name="Packs", value=f"Daily streak: **{row['pack_streak']}**", inline=True)
+    if last_pull:
+        embed.add_field(name="Last pull", value=f"`{last_pull['card_id']}` from **{last_pull['source']}** pack", inline=True)
+    await interaction.followup.send(embed=embed)
+
+
+@bot.tree.command(name="progress", description="Show FC Card Clash collection progress.")
+async def progress(interaction: discord.Interaction, user: Optional[discord.User] = None) -> None:
+    await interaction.response.defer()
+    target = user or interaction.user
+    assert bot.game_pool is not None
+    async with bot.game_pool.acquire() as conn:
+        stats = await conn.fetchrow(
+            """
+            SELECT COALESCE(SUM(copies), 0) AS total_cards,
+                   COUNT(*) FILTER (WHERE copies > 0) AS unique_cards,
+                   COUNT(*) FILTER (WHERE copies > 1) AS duplicate_cards
+            FROM fc_card_inventory
+            WHERE discord_user_id = $1
+            """,
+            str(target.id),
+        )
+    pool_total = await _pool_total()
+    unique_cards = int(stats["unique_cards"] or 0)
+    completion = f"{(unique_cards / pool_total * 100):.1f}%" if pool_total else "0.0%"
+    embed = discord.Embed(title=f"{target.display_name}'s Collection Progress", color=0x2ECC71)
+    embed.description = (
+        f"Unique cards: **{unique_cards}/{pool_total}**\n"
+        f"Completion: **{completion}**\n"
+        f"Total cards owned: **{stats['total_cards']}**\n"
+        f"Duplicate cards: **{stats['duplicate_cards']}**"
+    )
+    await interaction.followup.send(embed=embed)
+
+
+@bot.tree.command(name="lastpull", description="Show off your latest FC Card Clash pull.")
+async def lastpull(interaction: discord.Interaction, user: Optional[discord.User] = None) -> None:
+    await interaction.response.defer()
+    target = user or interaction.user
+    assert bot.game_pool is not None and bot.card_pool is not None
+    async with bot.game_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT card_id, source, created_at
+            FROM fc_card_pack_openings
+            WHERE discord_user_id = $1
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            str(target.id),
+        )
+    if not row:
+        await _send_error(interaction, "No pulls found yet.")
+        return
+    async with bot.card_pool.acquire() as conn:
+        card = await search_card(conn, str(row["card_id"]))
+    if not card:
+        await _send_error(interaction, "That pull is no longer in the active card pool.")
+        return
+    embed = _card_embed(f"{target.display_name}'s Last Pull", card, color=_pack_color(card))
+    embed.description = f"Latest pull from a **{row['source']}** pack:\n{_card_line(card)}"
     await interaction.followup.send(embed=embed)
 
 
