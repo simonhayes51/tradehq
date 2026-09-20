@@ -965,19 +965,29 @@ async def trade_accept(interaction: discord.Interaction, trade_id: str) -> None:
         await _send_error(interaction, str(exc))
 
 
-STAT_CHOICES = [
-    app_commands.Choice(name="PAC", value="pace"),
-    app_commands.Choice(name="SHO", value="shooting"),
-    app_commands.Choice(name="PAS", value="passing"),
-    app_commands.Choice(name="DRI", value="dribbling"),
-    app_commands.Choice(name="DEF", value="defending"),
-    app_commands.Choice(name="PHY", value="physicality"),
-]
+async def _autocomplete_stat_with_values(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+    """Show each stat's live value for whichever card is already picked in this command."""
+    card_value = getattr(interaction.namespace, "card", None)
+    card: Optional[Card] = None
+    if card_value and bot.card_pool:
+        try:
+            async with bot.card_pool.acquire() as conn:
+                card = await search_card(conn, str(card_value))
+        except Exception:
+            log.exception("Failed to load card for stat autocomplete value=%s", card_value)
+
+    q = (current or "").strip().lower()
+    choices = []
+    for stat in STAT_KEYS:
+        label = stat_label(stat)
+        name = f"{label} {card.stat(stat)}" if card else label
+        if not q or q in name.lower() or q in stat.lower():
+            choices.append(app_commands.Choice(name=name, value=stat))
+    return choices[:25]
 
 
 @bot.tree.command(name="clash", description="Stake one card in a winner-keeps-both Card Clash.")
-@app_commands.autocomplete(card=_autocomplete_my_cards)
-@app_commands.choices(stat=STAT_CHOICES)
+@app_commands.autocomplete(card=_autocomplete_my_cards, stat=_autocomplete_stat_with_values)
 @app_commands.describe(confirm="Set to true to allow staking your only copy of this card.")
 async def clash(interaction: discord.Interaction, user: discord.User, card: str, stat: str, confirm: bool = False) -> None:
     await interaction.response.defer()
@@ -1017,8 +1027,11 @@ async def clash(interaction: discord.Interaction, user: discord.User, card: str,
 
 
 @bot.tree.command(name="clash_accept", description="Accept a Card Clash and stake one of your cards.")
-@app_commands.autocomplete(battle_id=_autocomplete_pending_battles, card=_autocomplete_my_cards)
-@app_commands.choices(stat=STAT_CHOICES)
+@app_commands.autocomplete(
+    battle_id=_autocomplete_pending_battles,
+    card=_autocomplete_my_cards,
+    stat=_autocomplete_stat_with_values,
+)
 @app_commands.describe(confirm="Set to true to allow staking your only copy of this card.")
 async def clash_accept(interaction: discord.Interaction, battle_id: str, card: str, stat: str, confirm: bool = False) -> None:
     await interaction.response.defer()
