@@ -78,12 +78,32 @@ def _short_id(value: object) -> str:
     return str(value).split("-")[0]
 
 
+STAT_EMOJI = {
+    "pace": "\N{HIGH VOLTAGE SIGN}",
+    "shooting": "\N{SOCCER BALL}",
+    "passing": "\N{DIRECT HIT}",
+    "dribbling": "\N{CYCLONE}",
+    "defending": "\N{SHIELD}",
+    "physicality": "\N{FLEXED BICEPS}",
+}
+
+
 def _card_title(card: Card) -> str:
     return f"{card.rating} {card.name} ({card.position})"
 
 
 def _card_line(card: Card) -> str:
     return f"**{_card_title(card)}** - {card.version} - `{card.card_id}`"
+
+
+def _stat_line(card: Card, *, highlight: Optional[str] = None) -> str:
+    parts = []
+    for s in STAT_KEYS:
+        chip = f"{STAT_EMOJI.get(s, '')} {stat_label(s)} **{card.stat(s)}**"
+        if s == highlight:
+            chip = f"\N{WHITE MEDIUM STAR} {chip} \N{WHITE MEDIUM STAR}"
+        parts.append(chip)
+    return "   ".join(parts)
 
 
 def _card_embed(title: str, card: Card, *, description: Optional[str] = None, color: int = 0xEABD45) -> discord.Embed:
@@ -99,6 +119,21 @@ def _card_embed(title: str, card: Card, *, description: Optional[str] = None, co
     if card.image_url:
         embed.set_image(url=card.image_url)
     embed.set_footer(text="FC Card Clash")
+    return embed
+
+
+def _pick_confirmation_embed(card: Card, stat: str, opponent_mention: str) -> discord.Embed:
+    embed = discord.Embed(
+        title="\N{LOCK} Your Pick Is Locked In",
+        description=(
+            f"{_card_line(card)}\n\n"
+            f"{_stat_line(card, highlight=stat)}\n\n"
+            f"Staking **{stat_label(stat)}** against {opponent_mention}. Only you can see this."
+        ),
+        color=_pack_color(card),
+    )
+    if card.image_url:
+        embed.set_thumbnail(url=card.image_url)
     return embed
 
 
@@ -990,6 +1025,7 @@ async def clash(interaction: discord.Interaction, user: discord.User, card: str,
         )
         embed.set_footer(text=f"Battle ID {_short_id(row['id'])} - expires in 10 minutes")
         await interaction.followup.send(embed=embed)
+        await interaction.followup.send(embed=_pick_confirmation_embed(staked, picked_stat, user.mention), ephemeral=True)
     except Exception as exc:
         if _is_only_copy_confirmation_error(exc):
             await _send_error(interaction, _friendly_message(exc))
@@ -1031,34 +1067,55 @@ async def clash_accept(interaction: discord.Interaction, battle_id: str, card: s
         await _send_error(interaction, str(exc))
         return
 
+    await interaction.followup.send(
+        embed=_pick_confirmation_embed(opponent_card, opponent_stat, f"<@{battle['challenger_id']}>"),
+        ephemeral=True,
+    )
+
     rounds = result["rounds"] or []
     if isinstance(rounds, str):
         rounds = json.loads(rounds)
 
-    source_label = {"challenger": "their pick", "opponent": "your pick", "random": "random"}
-    reveal = discord.Embed(title="\N{CROSSED SWORDS} Card Clash", color=0xC0392B)
-    reveal.description = f"{challenger_card.name} vs {opponent_card.name}\n\nRevealing round 1..."
+    challenger_mention = f"<@{battle['challenger_id']}>"
+    opponent_mention = interaction.user.mention
+    picked_by = {"challenger": challenger_mention, "opponent": opponent_mention, "random": "\N{GAME DIE} random"}
+
+    reveal = discord.Embed(
+        title="\N{CROSSED SWORDS} Card Clash",
+        description=(
+            f"{challenger_mention} ({_card_title(challenger_card)}) \N{SQUARED VS} "
+            f"{opponent_mention} ({_card_title(opponent_card)})\n\nRevealing round 1..."
+        ),
+        color=0xC0392B,
+    )
+    if challenger_card.image_url:
+        reveal.set_thumbnail(url=challenger_card.image_url)
     message = await interaction.followup.send(embed=reveal, wait=True)
 
     lines: list[str] = []
     for idx, r in enumerate(rounds, start=1):
-        round_winner = "draw" if r["winner"] == "draw" else ("challenger" if r["winner"] == "challenger" else "defender")
+        emoji = STAT_EMOJI.get(r["stat"], "")
+        if r["winner"] == "draw":
+            outcome = "\N{HANDSHAKE} draw"
+        else:
+            round_winner_mention = challenger_mention if r["winner"] == "challenger" else opponent_mention
+            outcome = f"\N{CROWN} {round_winner_mention}"
         lines.append(
-            f"**R{idx} {stat_label(r['stat'])}** ({source_label[r['source']]}) - "
-            f"{challenger_card.name} {r['challenger']} vs {opponent_card.name} {r['opponent']} - **{round_winner}**"
+            f"**R{idx} {emoji} {stat_label(r['stat'])}** (picked by {picked_by[r['source']]}) - "
+            f"{challenger_card.name} **{r['challenger']}** vs {opponent_card.name} **{r['opponent']}** - {outcome}"
         )
-        reveal.description = "\n".join(lines)
+        reveal.description = "\n\n".join(lines)
         if idx < len(rounds):
-            reveal.description += "\n\nRevealing next round..."
+            reveal.description += "\n\n_Revealing next round..._"
             await message.edit(embed=reveal)
             await asyncio.sleep(1.4)
 
     if result["winner_id"] is None:
-        embed = discord.Embed(title="Card Clash Draw", color=0x95A5A6)
+        embed = discord.Embed(title="\N{HANDSHAKE} Card Clash - Draw", color=0x95A5A6)
         embed.description = (
-            "The clash finished level.\n\n"
+            f"{challenger_mention} and {opponent_mention} finished level.\n\n"
             "Both players keep their cards, and neither record or coin balance changes.\n\n"
-            "**Rounds**\n" + "\n".join(lines)
+            "**Rounds**\n" + "\n\n".join(lines)
         )
     else:
         winner = f"<@{result['winner_id']}>"
@@ -1067,13 +1124,13 @@ async def clash_accept(interaction: discord.Interaction, battle_id: str, card: s
         loser_card = opponent_card if str(result["winner_id"]) == str(battle["challenger_id"]) else challenger_card
         embed = discord.Embed(title="\N{TROPHY} Card Clash Result", color=0xF1C40F)
         embed.description = (
-            f"{winner} beat {loser} and won **{loser_card.name}**.\n\n"
-            f"**Winner now keeps**\n"
+            f"\N{PARTY POPPER} {winner} beat {loser} and won **{loser_card.name}**!\n\n"
+            f"**{winner} now keeps**\n"
             f"{_card_line(winner_card)}\n"
             f"{_card_line(loser_card)}\n\n"
-            "**Rounds**\n" + "\n".join(lines)
+            "**Rounds**\n" + "\n\n".join(lines)
         )
-        embed.add_field(name="Reward", value="Winner +50 coins. Loser -15 coins.", inline=False)
+        embed.add_field(name="Reward", value=f"{winner} +50 coins. {loser} -15 coins.", inline=False)
         if winner_card.image_url:
             embed.set_image(url=winner_card.image_url)
     await message.edit(embed=embed)
