@@ -13,6 +13,9 @@ CREATE TABLE IF NOT EXISTS fc_card_users (
     pack_streak INTEGER NOT NULL DEFAULT 0,
     last_pack_at TIMESTAMPTZ,
     last_pack_date DATE,
+    last_weekly_pack_at TIMESTAMPTZ,
+    last_weekly_pack_year INTEGER,
+    last_weekly_pack_week INTEGER,
     wins INTEGER NOT NULL DEFAULT 0,
     losses INTEGER NOT NULL DEFAULT 0,
     current_streak INTEGER NOT NULL DEFAULT 0,
@@ -20,6 +23,10 @@ CREATE TABLE IF NOT EXISTS fc_card_users (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE fc_card_users ADD COLUMN IF NOT EXISTS last_weekly_pack_at TIMESTAMPTZ;
+ALTER TABLE fc_card_users ADD COLUMN IF NOT EXISTS last_weekly_pack_year INTEGER;
+ALTER TABLE fc_card_users ADD COLUMN IF NOT EXISTS last_weekly_pack_week INTEGER;
 
 CREATE TABLE IF NOT EXISTS fc_card_inventory (
     discord_user_id TEXT NOT NULL REFERENCES fc_card_users(discord_user_id) ON DELETE CASCADE,
