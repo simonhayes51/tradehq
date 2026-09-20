@@ -40,20 +40,6 @@ def _guild_object() -> Optional[discord.Object]:
     return discord.Object(id=int(guild_id)) if guild_id else None
 
 
-def _allowed_channel_ids() -> set[int]:
-    raw = os.getenv("FC_CARDS_ALLOWED_CHANNEL_IDS") or os.getenv("FC_CARD_CLASH_CHANNEL_IDS") or ""
-    channel_ids: set[int] = set()
-    for part in raw.replace(";", ",").split(","):
-        value = part.strip()
-        if not value:
-            continue
-        try:
-            channel_ids.add(int(value))
-        except ValueError:
-            log.warning("Ignoring invalid FC Card Clash channel id: %s", value)
-    return channel_ids
-
-
 def _short_id(value: object) -> str:
     return str(value).split("-")[0]
 
@@ -160,23 +146,38 @@ class CardClashBot(commands.Bot):
             self.tree.copy_global_to(guild=guild)
             await self.tree.sync(guild=guild)
             log.info("Synced FC Card Clash commands to guild %s", guild.id)
-        else:
-            await self.tree.sync()
-            log.info("Synced FC Card Clash global commands")
+        await self.tree.sync()
+        log.info("Synced FC Card Clash global commands")
 
 
 bot = CardClashBot()
-ALLOWED_CHANNEL_IDS = _allowed_channel_ids()
 
 
 @bot.tree.interaction_check
 async def channel_check(interaction: discord.Interaction) -> bool:
-    if not ALLOWED_CHANNEL_IDS:
+    if interaction.command and interaction.command.name == "clash_channel":
         return True
-    if interaction.channel_id in ALLOWED_CHANNEL_IDS:
+    if not interaction.guild_id or not bot.game_pool:
         return True
 
-    channel_list = " or ".join(f"<#{channel_id}>" for channel_id in sorted(ALLOWED_CHANNEL_IDS))
+    async with bot.game_pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT channel_id
+            FROM fc_card_guild_channels
+            WHERE guild_id = $1
+            ORDER BY created_at ASC
+            """,
+            str(interaction.guild_id),
+        )
+    if not rows:
+        return True
+
+    allowed = {str(row["channel_id"]) for row in rows}
+    if str(interaction.channel_id) in allowed:
+        return True
+
+    channel_list = " or ".join(f"<#{channel_id}>" for channel_id in allowed)
     await interaction.response.send_message(
         f"Use FC Card Clash commands in {channel_list}.",
         ephemeral=True,
@@ -359,6 +360,93 @@ async def help_command(interaction: discord.Interaction) -> None:
         "**Warning:** clash stakes are real. If you lose, the card leaves your collection."
     )
     await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="clash_channel", description="Set which channels can use FC Card Clash commands.")
+@app_commands.describe(
+    mode="Add, remove, list or clear allowed channels.",
+    channel="Channel to add/remove. Defaults to this channel.",
+)
+@app_commands.choices(mode=[
+    app_commands.Choice(name="Add channel", value="add"),
+    app_commands.Choice(name="Remove channel", value="remove"),
+    app_commands.Choice(name="List channels", value="list"),
+    app_commands.Choice(name="Clear all", value="clear"),
+])
+async def clash_channel(
+    interaction: discord.Interaction,
+    mode: str,
+    channel: Optional[discord.TextChannel] = None,
+) -> None:
+    if not interaction.guild_id:
+        await interaction.response.send_message("This can only be used inside a server.", ephemeral=True)
+        return
+    if not isinstance(interaction.user, discord.Member) or not interaction.user.guild_permissions.manage_guild:
+        await interaction.response.send_message("You need Manage Server permission to change FC Card Clash channels.", ephemeral=True)
+        return
+
+    assert bot.game_pool is not None
+    guild_id = str(interaction.guild_id)
+    target_channel = channel or interaction.channel
+    async with bot.game_pool.acquire() as conn:
+        if mode == "add":
+            if not target_channel:
+                await interaction.response.send_message("Pick a channel to add.", ephemeral=True)
+                return
+            await conn.execute(
+                """
+                INSERT INTO fc_card_guild_channels (guild_id, channel_id, created_by)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (guild_id, channel_id) DO NOTHING
+                """,
+                guild_id,
+                str(target_channel.id),
+                str(interaction.user.id),
+            )
+            await interaction.response.send_message(
+                f"FC Card Clash commands are now allowed in {target_channel.mention}.",
+                ephemeral=True,
+            )
+            return
+
+        if mode == "remove":
+            if not target_channel:
+                await interaction.response.send_message("Pick a channel to remove.", ephemeral=True)
+                return
+            await conn.execute(
+                "DELETE FROM fc_card_guild_channels WHERE guild_id = $1 AND channel_id = $2",
+                guild_id,
+                str(target_channel.id),
+            )
+            await interaction.response.send_message(
+                f"Removed {target_channel.mention} from FC Card Clash allowed channels.",
+                ephemeral=True,
+            )
+            return
+
+        if mode == "clear":
+            await conn.execute("DELETE FROM fc_card_guild_channels WHERE guild_id = $1", guild_id)
+            await interaction.response.send_message(
+                "FC Card Clash commands can now be used in any channel in this server.",
+                ephemeral=True,
+            )
+            return
+
+        rows = await conn.fetch(
+            """
+            SELECT channel_id
+            FROM fc_card_guild_channels
+            WHERE guild_id = $1
+            ORDER BY created_at ASC
+            """,
+            guild_id,
+        )
+
+    if not rows:
+        message = "No channel limit is set. FC Card Clash commands can be used in any channel."
+    else:
+        message = "FC Card Clash commands are allowed in:\n" + "\n".join(f"<#{row['channel_id']}>" for row in rows)
+    await interaction.response.send_message(message, ephemeral=True)
 
 
 @bot.tree.command(name="pack", description="Open your daily FC Card Clash pack.")
