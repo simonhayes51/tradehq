@@ -206,7 +206,7 @@ async def help_command(interaction: discord.Interaction) -> None:
 
 @bot.tree.command(name="pack", description="Open your daily FC Card Clash pack.")
 async def pack(interaction: discord.Interaction) -> None:
-    await interaction.response.defer()
+    await interaction.response.defer(ephemeral=True)
     assert bot.game_pool is not None and bot.card_pool is not None
     try:
         async with bot.game_pool.acquire() as game_conn:
@@ -225,7 +225,7 @@ async def pack(interaction: discord.Interaction) -> None:
 
 @bot.tree.command(name="weekly", description="Open your boosted weekly FC Card Clash pack.")
 async def weekly(interaction: discord.Interaction) -> None:
-    await interaction.response.defer()
+    await interaction.response.defer(ephemeral=True)
     assert bot.game_pool is not None and bot.card_pool is not None
     try:
         async with bot.game_pool.acquire() as game_conn:
@@ -243,7 +243,7 @@ async def weekly(interaction: discord.Interaction) -> None:
 
 @bot.tree.command(name="profile", description="View an FC Card Clash profile.")
 async def profile(interaction: discord.Interaction, user: Optional[discord.User] = None) -> None:
-    await interaction.response.defer()
+    await interaction.response.defer(ephemeral=True)
     target = user or interaction.user
     assert bot.game_pool is not None
     async with bot.game_pool.acquire() as conn:
@@ -283,7 +283,7 @@ async def dupes(interaction: discord.Interaction, user: Optional[discord.User] =
     app_commands.Choice(name="Duplicates", value="duplicates"),
 ])
 async def collection(interaction: discord.Interaction, view: str = "best", user: Optional[discord.User] = None) -> None:
-    await interaction.response.defer()
+    await interaction.response.defer(ephemeral=True)
     target = user or interaction.user
     assert bot.game_pool is not None and bot.card_pool is not None
     filter_sql = "AND i.copies > 1" if view == "duplicates" else ""
@@ -336,7 +336,7 @@ async def collection(interaction: discord.Interaction, view: str = "best", user:
 @bot.tree.command(name="card", description="Inspect a card and see how many copies you own.")
 @app_commands.autocomplete(card=_autocomplete_cards)
 async def card(interaction: discord.Interaction, card: str) -> None:
-    await interaction.response.defer()
+    await interaction.response.defer(ephemeral=True)
     try:
         found = await _find_card(card)
         assert bot.game_pool is not None
@@ -505,7 +505,7 @@ async def clash_accept(interaction: discord.Interaction, battle_id: str, card: s
     app_commands.Choice(name="Server", value="server"),
 ])
 async def leaderboard(interaction: discord.Interaction, scope: str = "global") -> None:
-    await interaction.response.defer()
+    await interaction.response.defer(ephemeral=True)
     assert bot.game_pool is not None
     async with bot.game_pool.acquire() as conn:
         if scope == "server" and interaction.guild_id:
@@ -557,4 +557,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
