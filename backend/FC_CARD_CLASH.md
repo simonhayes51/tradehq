@@ -38,8 +38,11 @@ The bot creates its own `fc_card_*` tables on startup.
 ## Commands
 
 - `/pack` - daily weighted pack from Gold+ cards with stats and images.
+- `/weekly` - boosted weekly pack with a higher chance of strong pulls.
+- `/help` - quick in-Discord rules and command list.
 - `/profile [user]` - record, streaks, wallet, and collection counts.
 - `/collection [view] [user]` - best cards or duplicate trade stock.
+- `/dupes [user]` - shortcut for tradeable duplicate cards.
 - `/card <card>` - card inspection and owned copies.
 - `/trade <user> <your_card> [requested_card]` - duplicate-only trade offer.
 - `/trade_accept <trade_id>` - accept pending trade.
@@ -56,4 +59,7 @@ Card Clash is best of 3:
 3. Random decider from the remaining stat pool
 
 Winner keeps both staked cards. Trades protect first copies; battles do not.
+The initial challenge hides the challenger's card and chosen stat, so the
+defender picks their stake and stat blind. Both players must choose different
+stats.
 
