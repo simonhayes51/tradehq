@@ -877,7 +877,10 @@ async def collection(interaction: discord.Interaction, view: str = "best", user:
     cards = [Card.from_row(r) for r in card_rows]
     title = f"{target.display_name}'s {'Duplicate Stock' if view == 'duplicates' else 'Best Cards'}"
     pager = CollectionView(cards, copies, title)
-    await interaction.followup.send(embed=pager.build_embed(), view=pager if pager.max_page > 0 else None)
+    if pager.max_page > 0:
+        await interaction.followup.send(embed=pager.build_embed(), view=pager)
+    else:
+        await interaction.followup.send(embed=pager.build_embed())
 
 
 @bot.tree.command(name="card", description="Inspect a card and see how many copies you own.")
