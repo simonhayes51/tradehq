@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import random
 import os
+import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Iterable, Optional
 
@@ -187,6 +188,74 @@ async def search_cards(conn: "asyncpg.Connection", query: str, limit: int = 10) 
     return [Card.from_row(r) for r in rows]
 
 
+_CANDIDATE_POOL_CACHE: dict[int, tuple[float, list[dict]]] = {}
+
+
+def _candidate_pool_ttl_seconds() -> float:
+    try:
+        return float(os.getenv("FC_CARDS_POOL_CACHE_SECONDS", "300"))
+    except ValueError:
+        return 300.0
+
+
+async def _get_candidate_pool(conn: "asyncpg.Connection", game_year: int) -> list[dict]:
+    """Eligible Gold+ pull pool, cached in-process.
+
+    This set only changes when new cards sync in, so hitting Postgres for it
+    on every single card pulled (previously via ORDER BY random() over the
+    whole filtered table) was a needless full scan + sort on the hot path -
+    it ran once per card in a pack, so a 5-card weekly pull fired it 5 times
+    back to back. Cache it and do the weighted pick in Python instead.
+    """
+    now = time.monotonic()
+    cached = _CANDIDATE_POOL_CACHE.get(game_year)
+    if cached and now - cached[0] < _candidate_pool_ttl_seconds():
+        return cached[1]
+
+    rows = await conn.fetch(
+        f"""
+        SELECT {CARD_SELECT}
+        FROM futgg_market_snapshot
+        WHERE rating >= 75
+          AND game_year = $1
+          AND pace IS NOT NULL
+          AND shooting IS NOT NULL
+          AND passing IS NOT NULL
+          AND dribbling IS NOT NULL
+          AND defending IS NOT NULL
+          AND physicality IS NOT NULL
+          AND COALESCE(card_image_stored_url, card_image_url, player_image_url) IS NOT NULL
+          AND COALESCE(is_active, TRUE) = TRUE
+        """,
+        game_year,
+    )
+    if not rows:
+        raise RuntimeError("No eligible FC Card Clash cards found in futgg_market_snapshot.")
+
+    pool = [dict(r) for r in rows]
+    _CANDIDATE_POOL_CACHE[game_year] = (now, pool)
+    return pool
+
+
+def _base_pull_weight(rating: int, odds_boost: float) -> float:
+    if rating >= 90:
+        return 1.0 * odds_boost
+    if rating >= 88:
+        return 2.5 * odds_boost
+    if rating >= 86:
+        return 6.0 * odds_boost
+    if rating >= 84:
+        return 14.0
+    if rating >= 82:
+        return 28.0
+    return 58.0
+
+
+async def candidate_pool_size(conn: "asyncpg.Connection") -> int:
+    pool = await _get_candidate_pool(conn, active_game_year())
+    return len(pool)
+
+
 async def pull_weighted_card(
     conn: "asyncpg.Connection",
     streak: int,
@@ -202,37 +271,7 @@ async def pull_weighted_card(
         odds_boost = 1.25
     odds_boost *= odds_multiplier
 
-    rows = await conn.fetch(
-        f"""
-        SELECT {CARD_SELECT},
-               CASE
-                 WHEN rating >= 90 THEN 1.0 * $1
-                 WHEN rating >= 88 THEN 2.5 * $1
-                 WHEN rating >= 86 THEN 6.0 * $1
-                 WHEN rating >= 84 THEN 14.0
-                 WHEN rating >= 82 THEN 28.0
-                 ELSE 58.0
-               END AS pull_weight
-        FROM futgg_market_snapshot
-        WHERE rating >= 75
-          AND game_year = $2
-          AND pace IS NOT NULL
-          AND shooting IS NOT NULL
-          AND passing IS NOT NULL
-          AND dribbling IS NOT NULL
-          AND defending IS NOT NULL
-          AND physicality IS NOT NULL
-          AND COALESCE(card_image_stored_url, card_image_url, player_image_url) IS NOT NULL
-          AND COALESCE(is_active, TRUE) = TRUE
-        ORDER BY random()
-        LIMIT 900
-        """,
-        odds_boost,
-        active_game_year(),
-    )
-    if not rows:
-        raise RuntimeError("No eligible FC Card Clash cards found in futgg_market_snapshot.")
-
-    weights = [float(r["pull_weight"] or 1) for r in rows]
-    return Card.from_row(random.choices(rows, weights=weights, k=1)[0])
+    pool = await _get_candidate_pool(conn, active_game_year())
+    weights = [_base_pull_weight(int(r["rating"] or 0), odds_boost) for r in pool]
+    return Card.from_row(random.choices(pool, weights=weights, k=1)[0])
 
