@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Optional, Sequence
 
 from app.fc_cards.cards import Card, random_decider
 
@@ -105,7 +105,10 @@ async def remove_card(conn: "asyncpg.Connection", discord_user_id: str, card_id:
     return copies
 
 
-async def open_pack(conn: "asyncpg.Connection", discord_user_id: str, card: Card) -> PackResult:
+async def open_pack_many(conn: "asyncpg.Connection", discord_user_id: str, cards: Sequence[Card]) -> list[PackResult]:
+    if not cards:
+        raise ValueError("No cards were pulled.")
+
     async with conn.transaction():
         user = await get_user(conn, discord_user_id)
         if user["last_pack_date"] == _today_utc():
@@ -114,8 +117,11 @@ async def open_pack(conn: "asyncpg.Connection", discord_user_id: str, card: Card
         last_date = user["last_pack_date"]
         current_streak = int(user["pack_streak"] or 0)
         streak = current_streak + 1 if last_date and last_date.toordinal() == _today_utc().toordinal() - 1 else 1
-        before = await owned_copies(conn, discord_user_id, card.card_id)
-        copies = await grant_card(conn, discord_user_id, card.card_id)
+        results: list[PackResult] = []
+        for card in cards:
+            before = await owned_copies(conn, discord_user_id, card.card_id)
+            copies = await grant_card(conn, discord_user_id, card.card_id)
+            results.append(PackResult(card=card, streak=streak, copies=copies, is_duplicate=before > 0))
 
         await conn.execute(
             """
@@ -129,27 +135,35 @@ async def open_pack(conn: "asyncpg.Connection", discord_user_id: str, card: Card
             str(discord_user_id),
             streak,
         )
-        await conn.execute(
+        await conn.executemany(
             """
-            INSERT INTO fc_card_pack_openings (discord_user_id, card_id, streak)
-            VALUES ($1, $2, $3)
+            INSERT INTO fc_card_pack_openings (discord_user_id, card_id, streak, source)
+            VALUES ($1, $2, $3, 'daily')
             """,
-            str(discord_user_id),
-            card.card_id,
-            streak,
+            [(str(discord_user_id), card.card_id, streak) for card in cards],
         )
-        return PackResult(card=card, streak=streak, copies=copies, is_duplicate=before > 0)
+        return results
 
 
-async def open_weekly_pack(conn: "asyncpg.Connection", discord_user_id: str, card: Card) -> PackResult:
+async def open_pack(conn: "asyncpg.Connection", discord_user_id: str, card: Card) -> PackResult:
+    return (await open_pack_many(conn, discord_user_id, [card]))[0]
+
+
+async def open_weekly_pack_many(conn: "asyncpg.Connection", discord_user_id: str, cards: Sequence[Card]) -> list[PackResult]:
+    if not cards:
+        raise ValueError("No cards were pulled.")
+
     async with conn.transaction():
         user = await get_user(conn, discord_user_id)
         year, week = current_week_key()
         if user["last_weekly_pack_year"] == year and user["last_weekly_pack_week"] == week:
             raise ValueError("Weekly pack already opened.")
 
-        before = await owned_copies(conn, discord_user_id, card.card_id)
-        copies = await grant_card(conn, discord_user_id, card.card_id)
+        results: list[PackResult] = []
+        for card in cards:
+            before = await owned_copies(conn, discord_user_id, card.card_id)
+            copies = await grant_card(conn, discord_user_id, card.card_id)
+            results.append(PackResult(card=card, streak=0, copies=copies, is_duplicate=before > 0))
 
         await conn.execute(
             """
@@ -164,15 +178,18 @@ async def open_weekly_pack(conn: "asyncpg.Connection", discord_user_id: str, car
             year,
             week,
         )
-        await conn.execute(
+        await conn.executemany(
             """
             INSERT INTO fc_card_pack_openings (discord_user_id, card_id, source)
             VALUES ($1, $2, 'weekly')
             """,
-            str(discord_user_id),
-            card.card_id,
+            [(str(discord_user_id), card.card_id) for card in cards],
         )
-        return PackResult(card=card, streak=0, copies=copies, is_duplicate=before > 0)
+        return results
+
+
+async def open_weekly_pack(conn: "asyncpg.Connection", discord_user_id: str, card: Card) -> PackResult:
+    return (await open_weekly_pack_many(conn, discord_user_id, [card]))[0]
 
 
 async def create_trade(
