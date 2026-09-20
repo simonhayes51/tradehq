@@ -174,6 +174,133 @@ async def _autocomplete_cards(_: discord.Interaction, current: str) -> list[app_
     ]
 
 
+def _choice_name(card: Card, copies: int) -> str:
+    return f"x{copies} | {card.rating} {card.name} ({card.position}) - {card.version}"[:100]
+
+
+async def _autocomplete_owned_cards(
+    interaction: discord.Interaction,
+    current: str,
+    *,
+    discord_user_id: Optional[str] = None,
+    min_copies: int = 1,
+) -> list[app_commands.Choice[str]]:
+    if not bot.game_pool or not bot.card_pool:
+        return []
+    user_id = discord_user_id or str(interaction.user.id)
+    q = (current or "").strip()
+    async with bot.game_pool.acquire() as game_conn:
+        inventory = await game_conn.fetch(
+            """
+            SELECT card_id, copies
+            FROM fc_card_inventory
+            WHERE discord_user_id = $1
+              AND copies >= $2
+            ORDER BY copies DESC, card_id DESC
+            LIMIT 60
+            """,
+            user_id,
+            min_copies,
+        )
+    if not inventory:
+        return []
+
+    copies = {int(r["card_id"]): int(r["copies"]) for r in inventory}
+    card_ids = list(copies)
+    async with bot.card_pool.acquire() as card_conn:
+        rows = await card_conn.fetch(
+            """
+            SELECT source_card_id,
+                   COALESCE(NULLIF(BTRIM(display_name), ''), NULLIF(BTRIM(name), ''), 'Card ' || source_card_id::text) AS name,
+                   rating, primary_position, rarity,
+                   card_image_stored_url, card_image_url, player_image_url,
+                   pace, shooting, passing, dribbling, defending, physicality,
+                   club, league, nation
+            FROM futgg_market_snapshot
+            WHERE source_card_id = ANY($1::bigint[])
+              AND game_year = $2
+              AND (
+                $3 = ''
+                OR display_name ILIKE '%' || $3 || '%'
+                OR name ILIKE '%' || $3 || '%'
+                OR source_card_id::text ILIKE '%' || $3 || '%'
+              )
+            ORDER BY rating DESC, source_card_id DESC
+            LIMIT 25
+            """,
+            card_ids,
+            active_game_year(),
+            q,
+        )
+    cards = [Card.from_row(row) for row in rows]
+    return [app_commands.Choice(name=_choice_name(card, copies[card.card_id]), value=str(card.card_id)) for card in cards]
+
+
+async def _autocomplete_my_cards(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+    return await _autocomplete_owned_cards(interaction, current)
+
+
+async def _autocomplete_my_duplicates(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+    return await _autocomplete_owned_cards(interaction, current, min_copies=2)
+
+
+async def _autocomplete_trade_request_cards(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+    target = getattr(interaction.namespace, "user", None)
+    if not target:
+        return []
+    return await _autocomplete_owned_cards(interaction, current, discord_user_id=str(target.id), min_copies=2)
+
+
+async def _autocomplete_pending_trades(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+    if not bot.game_pool:
+        return []
+    q = (current or "").strip()
+    async with bot.game_pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, proposer_id, proposer_card_id, recipient_card_id
+            FROM fc_card_trades
+            WHERE recipient_id = $1
+              AND status = 'pending'
+              AND expires_at > NOW()
+              AND ($2 = '' OR id::text ILIKE '%' || $2 || '%')
+            ORDER BY created_at DESC
+            LIMIT 10
+            """,
+            str(interaction.user.id),
+            q,
+        )
+    return [
+        app_commands.Choice(name=f"{_short_id(row['id'])} from user {row['proposer_id']}"[:100], value=str(row["id"]))
+        for row in rows
+    ]
+
+
+async def _autocomplete_pending_battles(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+    if not bot.game_pool:
+        return []
+    q = (current or "").strip()
+    async with bot.game_pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, challenger_id
+            FROM fc_card_battles
+            WHERE opponent_id = $1
+              AND status = 'pending'
+              AND expires_at > NOW()
+              AND ($2 = '' OR id::text ILIKE '%' || $2 || '%')
+            ORDER BY created_at DESC
+            LIMIT 10
+            """,
+            str(interaction.user.id),
+            q,
+        )
+    return [
+        app_commands.Choice(name=f"{_short_id(row['id'])} from user {row['challenger_id']}"[:100], value=str(row["id"]))
+        for row in rows
+    ]
+
+
 async def _send_error(interaction: discord.Interaction, message: str) -> None:
     embed = discord.Embed(title="Not quite", description=message, color=0xE74C3C)
     if interaction.response.is_done():
@@ -334,7 +461,7 @@ async def collection(interaction: discord.Interaction, view: str = "best", user:
 
 
 @bot.tree.command(name="card", description="Inspect a card and see how many copies you own.")
-@app_commands.autocomplete(card=_autocomplete_cards)
+@app_commands.autocomplete(card=_autocomplete_my_cards)
 async def card(interaction: discord.Interaction, card: str) -> None:
     await interaction.response.defer(ephemeral=True)
     try:
@@ -352,7 +479,7 @@ async def card(interaction: discord.Interaction, card: str) -> None:
 
 
 @bot.tree.command(name="trade", description="Offer a duplicate card trade.")
-@app_commands.autocomplete(your_card=_autocomplete_cards, requested_card=_autocomplete_cards)
+@app_commands.autocomplete(your_card=_autocomplete_my_duplicates, requested_card=_autocomplete_trade_request_cards)
 async def trade(
     interaction: discord.Interaction,
     user: discord.User,
@@ -380,7 +507,7 @@ async def trade(
             f"{interaction.user.mention} offers {user.mention}:\n"
             f"Give: {_card_line(offered)}\n"
             f"Request: {want}\n\n"
-            f"{user.mention}, accept with `/trade_accept trade_id:{row['id']}`.\n"
+            f"{user.mention}, accept with `/trade_accept` and pick trade **{_short_id(row['id'])}** from the list.\n"
             "Trades are duplicates-only for both sides."
         )
         if offered.image_url:
@@ -392,6 +519,7 @@ async def trade(
 
 
 @bot.tree.command(name="trade_accept", description="Accept a pending duplicate-only trade.")
+@app_commands.autocomplete(trade_id=_autocomplete_pending_trades)
 async def trade_accept(interaction: discord.Interaction, trade_id: str) -> None:
     await interaction.response.defer()
     try:
@@ -415,7 +543,7 @@ STAT_CHOICES = [
 
 
 @bot.tree.command(name="clash", description="Stake one card in a winner-keeps-both Card Clash.")
-@app_commands.autocomplete(card=_autocomplete_cards)
+@app_commands.autocomplete(card=_autocomplete_my_cards)
 @app_commands.choices(stat=STAT_CHOICES)
 async def clash(interaction: discord.Interaction, user: discord.User, card: str, stat: str) -> None:
     await interaction.response.defer()
@@ -443,7 +571,7 @@ async def clash(interaction: discord.Interaction, user: discord.User, card: str,
             f"Risk for challenger: **{risk} If they lose, their card is gone.**\n\n"
             "Your accept card and stat are picked blind before seeing their card.\n"
             "You cannot pick the same stat as the challenger.\n\n"
-            f"{user.mention}, accept with `/clash_accept battle_id:{row['id']} card:<your card> stat:<your stat>`."
+            f"{user.mention}, accept with `/clash_accept`, pick battle **{_short_id(row['id'])}**, then choose one of your cards."
         )
         embed.set_footer(text=f"Battle ID {_short_id(row['id'])} - expires in 10 minutes")
         await interaction.followup.send(embed=embed)
@@ -452,7 +580,7 @@ async def clash(interaction: discord.Interaction, user: discord.User, card: str,
 
 
 @bot.tree.command(name="clash_accept", description="Accept a Card Clash and stake one of your cards.")
-@app_commands.autocomplete(card=_autocomplete_cards)
+@app_commands.autocomplete(battle_id=_autocomplete_pending_battles, card=_autocomplete_my_cards)
 @app_commands.choices(stat=STAT_CHOICES)
 async def clash_accept(interaction: discord.Interaction, battle_id: str, card: str, stat: str) -> None:
     await interaction.response.defer()
@@ -557,3 +685,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
