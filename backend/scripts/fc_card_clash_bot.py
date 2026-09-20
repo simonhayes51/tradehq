@@ -465,7 +465,7 @@ async def clash_channel(
     if not interaction.guild_id:
         await interaction.response.send_message("This can only be used inside a server.", ephemeral=True)
         return
-    if not isinstance(interaction.user, discord.Member) or not interaction.user.guild_permissions.manage_guild:
+    if not interaction.permissions.manage_guild:
         await interaction.response.send_message("You need Manage Server permission to change FC Card Clash channels.", ephemeral=True)
         return
 
@@ -890,10 +890,6 @@ async def clash_accept(interaction: discord.Interaction, battle_id: str, card: s
         rounds = result["rounds"] or []
         if isinstance(rounds, str):
             rounds = json.loads(rounds)
-        winner = f"<@{result['winner_id']}>"
-        loser = f"<@{result['loser_id']}>"
-        winner_card = challenger_card if str(result["winner_id"]) == str(battle["challenger_id"]) else opponent_card
-        loser_card = opponent_card if str(result["winner_id"]) == str(battle["challenger_id"]) else challenger_card
         lines = []
         for idx, r in enumerate(rounds, start=1):
             source = {"challenger": "their pick", "opponent": "your pick", "random": "random"}[r["source"]]
@@ -902,18 +898,31 @@ async def clash_accept(interaction: discord.Interaction, battle_id: str, card: s
                 f"**R{idx} {stat_label(r['stat'])}** ({source}) - "
                 f"{challenger_card.name} {r['challenger']} vs {opponent_card.name} {r['opponent']} - **{round_winner}**"
             )
-        embed = discord.Embed(title="Card Clash Result", color=0xF1C40F)
-        embed.description = (
-            f"{winner} beat {loser} and won **{loser_card.name}**.\n\n"
-            f"**Winner now keeps**\n"
-            f"{_card_line(winner_card)}\n"
-            f"{_card_line(loser_card)}\n\n"
-            "**Rounds**\n"
-            + "\n".join(lines)
-        )
-        embed.add_field(name="Reward", value="Winner +50 coins. Loser -15 coins.", inline=False)
-        if winner_card.image_url:
-            embed.set_image(url=winner_card.image_url)
+        if result["winner_id"] is None:
+            embed = discord.Embed(title="Card Clash Draw", color=0x95A5A6)
+            embed.description = (
+                "The clash finished level.\n\n"
+                "Both players keep their cards, and neither record or coin balance changes.\n\n"
+                "**Rounds**\n"
+                + "\n".join(lines)
+            )
+        else:
+            winner = f"<@{result['winner_id']}>"
+            loser = f"<@{result['loser_id']}>"
+            winner_card = challenger_card if str(result["winner_id"]) == str(battle["challenger_id"]) else opponent_card
+            loser_card = opponent_card if str(result["winner_id"]) == str(battle["challenger_id"]) else challenger_card
+            embed = discord.Embed(title="Card Clash Result", color=0xF1C40F)
+            embed.description = (
+                f"{winner} beat {loser} and won **{loser_card.name}**.\n\n"
+                f"**Winner now keeps**\n"
+                f"{_card_line(winner_card)}\n"
+                f"{_card_line(loser_card)}\n\n"
+                "**Rounds**\n"
+                + "\n".join(lines)
+            )
+            embed.add_field(name="Reward", value="Winner +50 coins. Loser -15 coins.", inline=False)
+            if winner_card.image_url:
+                embed.set_image(url=winner_card.image_url)
         await interaction.followup.send(embed=embed)
     except Exception as exc:
         await _send_error(interaction, str(exc))
