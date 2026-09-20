@@ -187,7 +187,12 @@ async def search_cards(conn: "asyncpg.Connection", query: str, limit: int = 10) 
     return [Card.from_row(r) for r in rows]
 
 
-async def pull_weighted_card(conn: "asyncpg.Connection", streak: int) -> Card:
+async def pull_weighted_card(
+    conn: "asyncpg.Connection",
+    streak: int,
+    *,
+    odds_multiplier: float = 1.0,
+) -> Card:
     odds_boost = 1.0
     if streak >= 30:
         odds_boost = 2.0
@@ -195,6 +200,7 @@ async def pull_weighted_card(conn: "asyncpg.Connection", streak: int) -> Card:
         odds_boost = 1.55
     elif streak >= 3:
         odds_boost = 1.25
+    odds_boost *= odds_multiplier
 
     rows = await conn.fetch(
         f"""
