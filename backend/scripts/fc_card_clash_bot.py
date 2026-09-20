@@ -397,6 +397,31 @@ async def _send_error(interaction: discord.Interaction, message: str) -> None:
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
+def _resolve_channel(interaction: discord.Interaction, channel: Optional[str]) -> discord.abc.GuildChannel | discord.Thread | None:
+    if not channel:
+        return interaction.channel
+    if not interaction.guild:
+        return None
+
+    value = channel.strip()
+    if value.startswith("<#") and value.endswith(">"):
+        value = value[2:-1]
+
+    if value.isdigit():
+        found = interaction.guild.get_channel_or_thread(int(value))
+        if found:
+            return found
+
+    value = value.lstrip("#").casefold()
+    for guild_channel in interaction.guild.channels:
+        if guild_channel.name.casefold() == value:
+            return guild_channel
+    for thread in interaction.guild.threads:
+        if thread.name.casefold() == value:
+            return thread
+    return None
+
+
 @bot.event
 async def on_ready() -> None:
     log.info("FC Card Clash logged in as %s (%s)", bot.user, bot.user.id if bot.user else "unknown")
@@ -424,7 +449,7 @@ async def help_command(interaction: discord.Interaction) -> None:
 @bot.tree.command(name="clash_channel", description="Set which channels can use FC Card Clash commands.")
 @app_commands.describe(
     mode="Add, remove, list or clear allowed channels.",
-    channel="Channel to add/remove. Defaults to this channel.",
+    channel="Channel name, #mention or ID. Defaults to this channel.",
 )
 @app_commands.choices(mode=[
     app_commands.Choice(name="Add channel", value="add"),
@@ -435,7 +460,7 @@ async def help_command(interaction: discord.Interaction) -> None:
 async def clash_channel(
     interaction: discord.Interaction,
     mode: str,
-    channel: Optional[discord.TextChannel] = None,
+    channel: Optional[str] = None,
 ) -> None:
     if not interaction.guild_id:
         await interaction.response.send_message("This can only be used inside a server.", ephemeral=True)
@@ -446,7 +471,13 @@ async def clash_channel(
 
     assert bot.game_pool is not None
     guild_id = str(interaction.guild_id)
-    target_channel = channel or interaction.channel
+    target_channel = _resolve_channel(interaction, channel)
+    if channel and not target_channel:
+        await interaction.response.send_message(
+            "I couldn't find that channel. Use its name, #mention, or channel ID.",
+            ephemeral=True,
+        )
+        return
     async with bot.game_pool.acquire() as conn:
         if mode == "add":
             if not target_channel:
