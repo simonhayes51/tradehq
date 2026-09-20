@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import random
 from typing import Any
 
@@ -42,9 +43,26 @@ import asyncpg
 
 log = logging.getLogger("db_connect")
 
-DEFAULT_ATTEMPTS = 5
-DEFAULT_BASE_DELAY = 2.0
-DEFAULT_MAX_DELAY = 30.0
+
+def _env_int(name: str, default: int, minimum: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+    return max(minimum, value)
+
+
+def _env_float(name: str, default: float, minimum: float) -> float:
+    try:
+        value = float(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+    return max(minimum, value)
+
+
+DEFAULT_ATTEMPTS = _env_int("DB_CONNECT_ATTEMPTS", 12, minimum=1)
+DEFAULT_BASE_DELAY = _env_float("DB_CONNECT_RETRY_BASE_SECONDS", 2.0, minimum=0.1)
+DEFAULT_MAX_DELAY = _env_float("DB_CONNECT_RETRY_MAX_SECONDS", 90.0, minimum=DEFAULT_BASE_DELAY)
 
 #: Failures that mean "the connection did not survive", not "you may not
 #: connect". ConnectionResetError and friends are all OSError subclasses;
