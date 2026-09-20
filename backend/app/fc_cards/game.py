@@ -285,7 +285,12 @@ async def create_battle(
     )
 
 
-def resolve_battle(challenger: Card, opponent: Card, challenger_stat: str, opponent_stat: str) -> tuple[str, list[dict]]:
+def resolve_battle(
+    challenger: Card,
+    opponent: Card,
+    challenger_stat: str,
+    opponent_stat: str,
+) -> tuple[Optional[str], list[dict]]:
     if challenger_stat == opponent_stat:
         raise ValueError("Both players cannot pick the same stat.")
 
@@ -315,12 +320,9 @@ def resolve_battle(challenger: Card, opponent: Card, challenger_stat: str, oppon
         )
 
     if challenger_wins == opponent_wins:
-        if challenger.rating == opponent.rating:
-            winner = "challenger" if challenger.card_id >= opponent.card_id else "opponent"
-        else:
-            winner = "challenger" if challenger.rating > opponent.rating else "opponent"
-    else:
-        winner = "challenger" if challenger_wins > opponent_wins else "opponent"
+        return None, rounds
+
+    winner = "challenger" if challenger_wins > opponent_wins else "opponent"
     return winner, rounds
 
 
@@ -352,6 +354,29 @@ async def accept_battle(
             battle["challenger_stat"],
             opponent_stat,
         )
+
+        if winner_side is None:
+            return await conn.fetchrow(
+                """
+                UPDATE fc_card_battles
+                SET status = 'completed',
+                    opponent_card_id = $2,
+                    opponent_stat = $3,
+                    random_stat = $4,
+                    rounds = $5::jsonb,
+                    winner_id = NULL,
+                    loser_id = NULL,
+                    completed_at = NOW()
+                WHERE id = $1::uuid
+                RETURNING *
+                """,
+                battle_id,
+                opponent_card.card_id,
+                opponent_stat,
+                rounds[-1]["stat"],
+                json.dumps(rounds),
+            )
+
         winner_id = battle["challenger_id"] if winner_side == "challenger" else opponent_id
         loser_id = opponent_id if winner_side == "challenger" else battle["challenger_id"]
         losing_card_id = opponent_card.card_id if winner_side == "challenger" else battle["challenger_card_id"]
