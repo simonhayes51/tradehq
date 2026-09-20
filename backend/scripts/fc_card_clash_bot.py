@@ -175,18 +175,6 @@ def _progress_bar(fraction: float, *, length: int = 10) -> str:
     return "\N{BLACK RECTANGLE}" * filled + "\N{WHITE RECTANGLE}" * (length - filled)
 
 
-def _is_only_copy_confirmation_error(exc: Exception) -> bool:
-    return str(exc).startswith("ONLY_COPY_CONFIRMATION_REQUIRED:")
-
-
-def _friendly_message(exc: Exception) -> str:
-    message = str(exc)
-    prefix = "ONLY_COPY_CONFIRMATION_REQUIRED:"
-    if message.startswith(prefix):
-        return message[len(prefix):].strip()
-    return message
-
-
 def _next_weekly_unlock() -> str:
     now = datetime.now(timezone.utc)
     days_until_monday = (7 - now.weekday()) % 7 or 7
@@ -580,8 +568,7 @@ async def help_command(interaction: discord.Interaction) -> None:
         "**/shop** / **/shop_buy** - spend coins and shards\n"
         "**/profile** - view record and collection stats\n"
         "**/leaderboard** - global or server rankings\n\n"
-        "**Warning:** clash stakes are real. If you lose, the card leaves your collection. "
-        "Staking your only copy of a card requires `confirm: true`.\n"
+        "**Warning:** clash stakes are real, even your only copy of a card. If you lose, the card leaves your collection.\n"
         "Duplicate copies beyond your 2nd earn shards - spend them in `/shop_buy`."
     )
     await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -988,8 +975,7 @@ async def _autocomplete_stat_with_values(interaction: discord.Interaction, curre
 
 @bot.tree.command(name="clash", description="Stake one card in a winner-keeps-both Card Clash.")
 @app_commands.autocomplete(card=_autocomplete_my_cards, stat=_autocomplete_stat_with_values)
-@app_commands.describe(confirm="Set to true to allow staking your only copy of this card.")
-async def clash(interaction: discord.Interaction, user: discord.User, card: str, stat: str, confirm: bool = False) -> None:
+async def clash(interaction: discord.Interaction, user: discord.User, card: str, stat: str) -> None:
     await interaction.response.defer()
     try:
         picked_stat = normalize_stat(stat)
@@ -1005,9 +991,8 @@ async def clash(interaction: discord.Interaction, user: discord.User, card: str,
                 str(user.id),
                 staked.card_id,
                 picked_stat,
-                confirm_only_copy=confirm,
             )
-        risk = "This is your only copy." if copies == 1 else f"You own x{copies}."
+        risk = "THIS IS YOUR ONLY COPY." if copies == 1 else f"You own x{copies}."
         embed = discord.Embed(title="\N{CROSSED SWORDS} Blind Card Clash Challenge", color=0xC0392B)
         embed.description = (
             f"{interaction.user.mention} has challenged {user.mention}.\n"
@@ -1020,9 +1005,6 @@ async def clash(interaction: discord.Interaction, user: discord.User, card: str,
         await interaction.followup.send(embed=embed)
         await interaction.followup.send(embed=_pick_confirmation_embed(staked, picked_stat, user.mention), ephemeral=True)
     except Exception as exc:
-        if _is_only_copy_confirmation_error(exc):
-            await _send_error(interaction, _friendly_message(exc))
-            return
         await _send_error(interaction, str(exc))
 
 
@@ -1032,8 +1014,7 @@ async def clash(interaction: discord.Interaction, user: discord.User, card: str,
     card=_autocomplete_my_cards,
     stat=_autocomplete_stat_with_values,
 )
-@app_commands.describe(confirm="Set to true to allow staking your only copy of this card.")
-async def clash_accept(interaction: discord.Interaction, battle_id: str, card: str, stat: str, confirm: bool = False) -> None:
+async def clash_accept(interaction: discord.Interaction, battle_id: str, card: str, stat: str) -> None:
     await interaction.response.defer()
     try:
         opponent_stat = normalize_stat(stat)
@@ -1054,19 +1035,10 @@ async def clash_accept(interaction: discord.Interaction, battle_id: str, card: s
                 opponent_card,
                 opponent_stat,
                 challenger_card,
-                confirm_only_copy=confirm,
             )
     except Exception as exc:
-        if _is_only_copy_confirmation_error(exc):
-            await _send_error(interaction, _friendly_message(exc))
-            return
         await _send_error(interaction, str(exc))
         return
-
-    await interaction.followup.send(
-        embed=_pick_confirmation_embed(opponent_card, opponent_stat, f"<@{battle['challenger_id']}>"),
-        ephemeral=True,
-    )
 
     rounds = result["rounds"] or []
     if isinstance(rounds, str):
@@ -1086,7 +1058,16 @@ async def clash_accept(interaction: discord.Interaction, battle_id: str, card: s
     )
     if challenger_card.image_url:
         reveal.set_thumbnail(url=challenger_card.image_url)
+    # Sent first so it becomes the primary (public) followup to the non-ephemeral
+    # defer above - an ephemeral followup sent before this one gets silently
+    # coerced to public by Discord, which is why the pick-confirmation below
+    # must come second, not first.
     message = await interaction.followup.send(embed=reveal, wait=True)
+
+    await interaction.followup.send(
+        embed=_pick_confirmation_embed(opponent_card, opponent_stat, challenger_mention),
+        ephemeral=True,
+    )
 
     lines: list[str] = []
     for idx, r in enumerate(rounds, start=1):

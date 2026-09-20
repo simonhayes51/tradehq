@@ -397,21 +397,13 @@ async def create_battle(
     opponent_id: str,
     challenger_card_id: int,
     challenger_stat: str,
-    *,
-    confirm_only_copy: bool = False,
 ) -> "asyncpg.Record":
     if challenger_id == opponent_id:
         raise ValueError("You cannot clash yourself.")
     await ensure_user(conn, challenger_id)
     await ensure_user(conn, opponent_id)
-    copies = await owned_copies(conn, challenger_id, challenger_card_id)
-    if copies < 1:
+    if await owned_copies(conn, challenger_id, challenger_card_id) < 1:
         raise ValueError("You do not own that card.")
-    if copies == 1 and not confirm_only_copy:
-        raise ValueError(
-            "ONLY_COPY_CONFIRMATION_REQUIRED: that's your only copy of that card. "
-            "Re-run /clash with confirm set to true if you want to risk it."
-        )
 
     return await conn.fetchrow(
         """
@@ -478,8 +470,6 @@ async def accept_battle(
     opponent_card: Card,
     opponent_stat: str,
     challenger_card: Card,
-    *,
-    confirm_only_copy: bool = False,
 ) -> "asyncpg.Record":
     async with conn.transaction():
         battle = await conn.fetchrow("SELECT * FROM fc_card_battles WHERE id = $1::uuid FOR UPDATE", battle_id)
@@ -490,14 +480,8 @@ async def accept_battle(
             raise ValueError("That clash has expired.")
         if await owned_copies(conn, battle["challenger_id"], battle["challenger_card_id"]) < 1:
             raise ValueError("The challenger no longer owns their staked card.")
-        opponent_copies = await owned_copies(conn, opponent_id, opponent_card.card_id)
-        if opponent_copies < 1:
+        if await owned_copies(conn, opponent_id, opponent_card.card_id) < 1:
             raise ValueError("You do not own that card.")
-        if opponent_copies == 1 and not confirm_only_copy:
-            raise ValueError(
-                "ONLY_COPY_CONFIRMATION_REQUIRED: that's your only copy of that card. "
-                "Re-run /clash_accept with confirm set to true if you want to risk it."
-            )
         if opponent_stat == battle["challenger_stat"]:
             raise ValueError("Pick a different stat. Both players cannot choose the same stat.")
 
