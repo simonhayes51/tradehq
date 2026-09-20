@@ -236,4 +236,68 @@ async def check_bot_channel_access(client, guild_id: str, channel_id: str) -> tu
     )
     if bot_can_post_embeds(effective):
         return True, None
-    return False, "missing_permissions"
+
+    # Discord is authoritative. Our REST-only permission reconstruction can
+    # disagree with Discord for private/category-synced channels, integration
+    # managed roles, or newer permission semantics. Before rejecting setup,
+    # make a real suppressed-notification embed post and immediately delete it.
+    # This only runs when the computed permission check says "no", so normal
+    # setup remains noise-free.
+    probe_embed = {
+        "title": "EAFC.Live channel check",
+        "description": "Verifying Server Feed access.",
+        "color": 0x22C55E,
+        "footer": {"text": "This message will be removed automatically."},
+    }
+    probe_status, probe_body = await client.post_embed(
+        channel_id,
+        probe_embed,
+        nonce=f"feed-probe-{guild_id[-8:]}-{channel_id[-8:]}",
+        enforce_nonce=False,
+        suppress_notifications=True,
+    )
+    if probe_status in (200, 201) and isinstance(probe_body, dict):
+        message_id = probe_body.get("id")
+        if message_id:
+            delete_status, _ = await client.delete_message(channel_id, str(message_id))
+            if delete_status not in (200, 204):
+                log.warning(
+                    "Discord feed access probe posted successfully but cleanup failed: "
+                    "guild=%s channel=%s message=%s status=%s",
+                    guild_id,
+                    channel_id,
+                    message_id,
+                    delete_status,
+                )
+        log.warning(
+            "Discord permission reconstruction said missing permissions, but a real embed "
+            "post succeeded: guild=%s channel=%s. Trusting Discord.",
+            guild_id,
+            channel_id,
+        )
+        return True, None
+    if probe_status == 401:
+        log.error(
+            "Discord feed access probe failed authentication: guild=%s channel=%s",
+            guild_id,
+            channel_id,
+        )
+        return False, "bot_auth_failed"
+    if probe_status == 403:
+        log.info(
+            "Discord feed access probe confirmed missing post permissions: guild=%s channel=%s",
+            guild_id,
+            channel_id,
+        )
+        return False, "missing_permissions"
+    if probe_status == 404:
+        return False, "channel_not_found"
+
+    log.warning(
+        "Discord feed access probe unavailable: guild=%s channel=%s status=%s body=%s",
+        guild_id,
+        channel_id,
+        probe_status,
+        str(probe_body)[:200],
+    )
+    return False, "discord_unavailable"
