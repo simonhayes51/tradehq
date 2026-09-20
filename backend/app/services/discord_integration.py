@@ -221,6 +221,7 @@ class DiscordClient:
         nonce: str,
         enforce_nonce: bool,
         components: Optional[list[dict[str, Any]]] = None,
+        suppress_notifications: bool = False,
     ) -> tuple[int, Any]:
         if not channel_id or not embed:
             return 0, {"message": "Missing channel or embed"}
@@ -230,12 +231,22 @@ class DiscordClient:
             "enforce_nonce": enforce_nonce,
             "allowed_mentions": {"parse": []},
         }
+        if suppress_notifications:
+            payload["flags"] = 1 << 12
         if components:
             payload["components"] = components
         return await self._request(
             "POST",
             f"/channels/{channel_id}/messages",
             payload=payload,
+        )
+
+    async def delete_message(self, channel_id: str, message_id: str) -> tuple[int, Any]:
+        if not channel_id or not message_id:
+            return 0, {"message": "Missing channel or message"}
+        return await self._request(
+            "DELETE",
+            f"/channels/{channel_id}/messages/{message_id}",
         )
 
 
