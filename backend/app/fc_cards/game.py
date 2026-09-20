@@ -44,6 +44,12 @@ def _today_utc() -> datetime.date:
     return datetime.now(timezone.utc).date()
 
 
+def current_week_key() -> tuple[int, int]:
+    today = _today_utc()
+    iso = today.isocalendar()
+    return iso.year, iso.week
+
+
 async def owned_copies(conn: "asyncpg.Connection", discord_user_id: str, card_id: int) -> int:
     value = await conn.fetchval(
         "SELECT copies FROM fc_card_inventory WHERE discord_user_id = $1 AND card_id = $2",
@@ -133,6 +139,40 @@ async def open_pack(conn: "asyncpg.Connection", discord_user_id: str, card: Card
             streak,
         )
         return PackResult(card=card, streak=streak, copies=copies, is_duplicate=before > 0)
+
+
+async def open_weekly_pack(conn: "asyncpg.Connection", discord_user_id: str, card: Card) -> PackResult:
+    async with conn.transaction():
+        user = await get_user(conn, discord_user_id)
+        year, week = current_week_key()
+        if user["last_weekly_pack_year"] == year and user["last_weekly_pack_week"] == week:
+            raise ValueError("Weekly pack already opened.")
+
+        before = await owned_copies(conn, discord_user_id, card.card_id)
+        copies = await grant_card(conn, discord_user_id, card.card_id)
+
+        await conn.execute(
+            """
+            UPDATE fc_card_users
+            SET last_weekly_pack_at = NOW(),
+                last_weekly_pack_year = $2,
+                last_weekly_pack_week = $3,
+                updated_at = NOW()
+            WHERE discord_user_id = $1
+            """,
+            str(discord_user_id),
+            year,
+            week,
+        )
+        await conn.execute(
+            """
+            INSERT INTO fc_card_pack_openings (discord_user_id, card_id, source)
+            VALUES ($1, $2, 'weekly')
+            """,
+            str(discord_user_id),
+            card.card_id,
+        )
+        return PackResult(card=card, streak=0, copies=copies, is_duplicate=before > 0)
 
 
 async def create_trade(
@@ -229,6 +269,9 @@ async def create_battle(
 
 
 def resolve_battle(challenger: Card, opponent: Card, challenger_stat: str, opponent_stat: str) -> tuple[str, list[dict]]:
+    if challenger_stat == opponent_stat:
+        raise ValueError("Both players cannot pick the same stat.")
+
     decider = random_decider([challenger_stat, opponent_stat])
     rounds = []
     challenger_wins = 0
@@ -283,6 +326,8 @@ async def accept_battle(
             raise ValueError("The challenger no longer owns their staked card.")
         if await owned_copies(conn, opponent_id, opponent_card.card_id) < 1:
             raise ValueError("You do not own that card.")
+        if opponent_stat == battle["challenger_stat"]:
+            raise ValueError("Pick a different stat. Both players cannot choose the same stat.")
 
         winner_side, rounds = resolve_battle(
             challenger_card,
@@ -343,3 +388,4 @@ async def accept_battle(
             winner_id,
             loser_id,
         )
+
