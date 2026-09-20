@@ -25,6 +25,8 @@ member/role state to read locally; compute_channel_permissions() is
 always fed data freshly fetched over the REST API by the caller.
 """
 
+import logging
+
 from typing import Any, Iterable, Optional
 
 ADMINISTRATOR = 1 << 3
@@ -38,6 +40,8 @@ GUILD_ANNOUNCEMENT = 5
 ALLOWED_CHANNEL_TYPES = frozenset({GUILD_TEXT, GUILD_ANNOUNCEMENT})
 
 REQUIRED_BOT_CHANNEL_PERMISSIONS = VIEW_CHANNEL | SEND_MESSAGES | EMBED_LINKS
+
+log = logging.getLogger("discord_permissions")
 
 
 def _perm_int(value: Any) -> int:
@@ -159,28 +163,60 @@ async def check_bot_channel_access(client, guild_id: str, channel_id: str) -> tu
     'channel_not_found', 'invalid_channel_type', 'bot_not_in_guild',
     'missing_permissions', 'discord_unavailable'."""
     status, channel = await client.get_channel(channel_id)
+    if status == 401:
+        log.error("Discord channel check failed authentication: guild=%s channel=%s status=401", guild_id, channel_id)
+        return False, "bot_auth_failed"
+    if status == 403:
+        # A 403 here usually means the bot exists in the guild but cannot
+        # View Channel. Distinguish that from a bot that is not installed
+        # in the guild at all so /feed setup gives the owner a useful fix.
+        guild_status, _ = await client.get_guild(guild_id)
+        if guild_status in (403, 404):
+            log.warning("Discord channel check: bot is not accessible in guild=%s", guild_id)
+            return False, "bot_not_in_guild"
+        if guild_status == 401:
+            log.error("Discord guild check failed authentication: guild=%s status=401", guild_id)
+            return False, "bot_auth_failed"
+        if guild_status == 200:
+            log.info("Discord channel check: bot lacks access to guild=%s channel=%s", guild_id, channel_id)
+            return False, "missing_permissions"
+        log.warning("Discord guild lookup unavailable while checking channel: guild=%s status=%s", guild_id, guild_status)
+        return False, "discord_unavailable"
     if status == 404:
         return False, "channel_not_found"
     if status != 200 or not isinstance(channel, dict):
+        log.warning("Discord channel lookup unavailable: guild=%s channel=%s status=%s", guild_id, channel_id, status)
         return False, "discord_unavailable"
     if channel.get("type") not in ALLOWED_CHANNEL_TYPES:
         return False, "invalid_channel_type"
 
     bot_status, bot_user = await client.get_bot_user()
+    if bot_status == 401:
+        log.error("Discord bot identity lookup failed authentication: status=401")
+        return False, "bot_auth_failed"
     if bot_status != 200 or not isinstance(bot_user, dict):
+        log.warning("Discord bot identity lookup unavailable: status=%s", bot_status)
         return False, "discord_unavailable"
     bot_user_id = str(bot_user["id"])
 
     roles_status, roles = await client.get_guild_roles(guild_id)
+    if roles_status == 401:
+        log.error("Discord guild role lookup failed authentication: guild=%s status=401", guild_id)
+        return False, "bot_auth_failed"
     if roles_status in (403, 404):
         return False, "bot_not_in_guild"
     if roles_status != 200 or not isinstance(roles, list):
+        log.warning("Discord guild role lookup unavailable: guild=%s status=%s", guild_id, roles_status)
         return False, "discord_unavailable"
 
     member_status, member = await client.get_guild_member_in(guild_id, bot_user_id)
+    if member_status == 401:
+        log.error("Discord bot member lookup failed authentication: guild=%s status=401", guild_id)
+        return False, "bot_auth_failed"
     if member_status in (403, 404):
         return False, "bot_not_in_guild"
     if member_status != 200 or not isinstance(member, dict):
+        log.warning("Discord bot member lookup unavailable: guild=%s status=%s", guild_id, member_status)
         return False, "discord_unavailable"
 
     everyone_perms = 0
