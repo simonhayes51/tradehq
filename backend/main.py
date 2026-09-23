@@ -82,6 +82,7 @@ from app.routers.trades import router as trades_router
 from app.routers.api_keys import router as api_keys_router
 from app.routers.public_api import router as public_api_router
 from app.routers.public_api_v2 import router as public_api_v2_router
+from app.routers.public_api_v3 import router as public_api_v3_router
 from app.routers.fair_value import router as fair_value_router
 from app.routers.ops import router as ops_router
 from app.routers.launch_health import router as launch_health_router
@@ -1293,6 +1294,7 @@ app.include_router(trades_router)           # /api/trades/*
 app.include_router(api_keys_router)         # /api/api-keys/* (session-authed key management)
 app.include_router(public_api_router)       # /api/public/v1/* (API-key-authed, frozen contract)
 app.include_router(public_api_v2_router)    # /api/public/v2/* (tiers/quotas + fair-value layer)
+app.include_router(public_api_v3_router)    # /api/public/v3/* (FC27 live market data)
 
 # Fair Value engine + ops
 app.include_router(fair_value_router)       # /api/market/fair-value, /undervalued, /anomalies
