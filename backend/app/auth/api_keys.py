@@ -34,7 +34,7 @@ from app.db import get_db
 
 log = logging.getLogger("api_keys")
 
-API_KEY_PREFIX = "futhub_"
+API_KEY_PREFIX = "eafclive_"
 DEFAULT_RATE_LIMIT_PER_MINUTE = 60
 
 # tier -> (rate_limit_per_minute, monthly_quota)
