@@ -63,6 +63,8 @@ export default function AdminUsers() {
   const [busy, setBusy] = useState(false);
   const [rowBusy, setRowBusy] = useState(null);
   const [msg, setMsg] = useState(null);
+  const [newCustomer, setNewCustomer] = useState("");
+  const [newKey, setNewKey] = useState(null);
 
   const search = async (e) => {
     e?.preventDefault();
@@ -96,6 +98,45 @@ export default function AdminUsers() {
       setMsg({ ok: true, text: `${data.username || data.user_id}: ${data.previous_tier || "basic"} → ${data.tier}. Live within ~60s.` });
     } catch (err) {
       setMsg({ ok: false, text: err?.userMessage || "Update failed." });
+    } finally {
+      setRowBusy(null);
+    }
+  };
+
+  const createApiKey = async () => {
+    const customer = newCustomer.trim();
+    if (!customer) return;
+    setRowBusy("create-key");
+    setMsg(null);
+    setNewKey(null);
+    try {
+      const { data } = await api.post("/api/admin/api-keys", {
+        customer,
+        name: customer,
+        tier: "starter",
+      });
+      setNewKey(data);
+      setNewCustomer("");
+      setMsg({ ok: true, text: `${customer}: API key created. Copy it now - it will not be shown again.` });
+      const refreshed = await api.get("/api/admin/api-keys", { params: { q: "" } });
+      setKeys(refreshed.data.keys || []);
+    } catch (err) {
+      setMsg({ ok: false, text: err?.userMessage || "Could not create API key." });
+    } finally {
+      setRowBusy(null);
+    }
+  };
+
+  const revokeKey = async (key) => {
+    if (!window.confirm(`Revoke ${key.key_prefix}…? Any bot using it will stop immediately.`)) return;
+    setRowBusy(`k${key.id}`);
+    setMsg(null);
+    try {
+      await api.delete(`/api/admin/api-keys/${key.id}`);
+      setKeys((ks) => ks.filter((k) => k.id !== key.id));
+      setMsg({ ok: true, text: `${key.key_prefix}… revoked.` });
+    } catch (err) {
+      setMsg({ ok: false, text: err?.userMessage || "Revoke failed." });
     } finally {
       setRowBusy(null);
     }
@@ -158,6 +199,45 @@ export default function AdminUsers() {
           ? "Search by username or Discord ID, then grant or revoke premium. Audited; live within a minute."
           : "Data API sales fulfilment: after a buyer pays, find their key and bump its tier. Applies on their next request."}
       </p>
+
+      {view === "keys" && (
+        <div className="mt-4 rounded-xl border border-gray-800 bg-gray-900/60 p-3">
+          <div className="text-sm font-bold text-white">Create external API key</div>
+          <div className="mt-1 text-[11px] text-gray-500">
+            Creates a Starter key (60 rpm / 5,000 requests per month). You can change the tier below.
+          </div>
+          <div className="mt-3 flex gap-2">
+            <input
+              value={newCustomer}
+              onChange={(e) => setNewCustomer(e.target.value)}
+              placeholder="Customer name, e.g. Flashyy"
+              className="flex-1 px-3 py-2 rounded-xl bg-gray-950 border border-gray-800 text-sm text-white placeholder-gray-500"
+            />
+            <button
+              type="button"
+              onClick={createApiKey}
+              disabled={!newCustomer.trim() || rowBusy === "create-key"}
+              className="px-4 py-2 rounded-xl text-sm font-bold text-black disabled:opacity-50"
+              style={{ background: LIME }}
+            >
+              {rowBusy === "create-key" ? "Creating…" : "Create key"}
+            </button>
+          </div>
+          {newKey?.key && (
+            <div className="mt-3 rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-3">
+              <div className="text-[11px] font-bold text-yellow-300">COPY NOW — SHOWN ONCE</div>
+              <code className="mt-1 block break-all text-xs text-white select-all">{newKey.key}</code>
+              <button
+                type="button"
+                onClick={() => navigator.clipboard?.writeText(newKey.key)}
+                className="mt-2 text-xs font-bold text-gray-200 underline"
+              >
+                Copy key
+              </button>
+            </div>
+          )}
+        </div>
+      )}
 
       <form onSubmit={search} className="mt-4 flex gap-2">
         <input
@@ -227,6 +307,14 @@ export default function AdminUsers() {
                 busy={rowBusy === `k${k.id}`}
                 onPick={(t) => setKeyTier(k, t)}
               />
+              <button
+                type="button"
+                onClick={() => revokeKey(k)}
+                disabled={rowBusy === `k${k.id}`}
+                className="px-2 py-1.5 rounded-lg text-xs font-bold border border-red-900/70 text-red-400 hover:border-red-700 disabled:opacity-50"
+              >
+                Revoke
+              </button>
             </div>
           ))}
         </div>
