@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from app.auth.entitlements import compute_entitlements, invalidate_entitlements_cache
-from app.auth.api_keys import TIER_LIMITS
+from app.auth.api_keys import TIER_LIMITS, generate_api_key, hash_api_key
 from app.db import get_db, get_core_pool, get_player_pool
 from app.routers.dashboard import _heartbeats_by_worker, _parse_detail_counts, _status_card, _iso
 from app.services import market_events as me
@@ -156,6 +156,107 @@ async def set_user_tier(
 
 class KeyTierUpdate(BaseModel):
     tier: str = Field(pattern="^(starter|trader|dev)$")
+
+
+class AdminApiKeyCreate(BaseModel):
+    customer: str = Field(min_length=1, max_length=100)
+    name: Optional[str] = Field(None, max_length=100)
+    tier: str = Field("starter", pattern="^(starter|trader|dev)$")
+
+
+@router.post("/api-keys")
+async def create_external_api_key(
+    payload: AdminApiKeyCreate,
+    admin=Depends(require_admin),
+    conn=Depends(get_db),
+):
+    """Issue a show-once key for an external API customer.
+
+    External customers do not need an EAFC.Live login. api_keys.user_id is
+    intentionally not a foreign key, so service identities use an api: prefix.
+    """
+    customer = payload.customer.strip()
+    if not customer:
+        raise HTTPException(400, "Customer name is required")
+    service_id = "api:" + "".join(ch.lower() if ch.isalnum() else "-" for ch in customer).strip("-")
+    if service_id == "api:":
+        raise HTTPException(400, "Customer name must contain letters or numbers")
+
+    rpm, quota = TIER_LIMITS[payload.tier]
+    plaintext = generate_api_key()
+    row = await conn.fetchrow(
+        """
+        INSERT INTO api_keys
+            (user_id, name, key_hash, key_prefix, rate_limit_per_minute, tier, monthly_quota)
+        VALUES ($1,$2,$3,$4,$5,$6,$7)
+        RETURNING id, user_id, name, key_prefix, tier, rate_limit_per_minute,
+                  monthly_quota, created_at
+        """,
+        service_id,
+        payload.name or customer,
+        hash_api_key(plaintext),
+        plaintext[:14],
+        rpm,
+        payload.tier,
+        quota,
+    )
+
+    try:
+        await conn.execute(
+            "INSERT INTO admin_audit_log (admin_user_id, action, target_user_id, detail) VALUES ($1,$2,$3,$4)",
+            str(admin["user_id"]),
+            "create_api_key",
+            service_id,
+            f"key_id={row['id']} prefix={row['key_prefix']} tier={payload.tier}",
+        )
+    except Exception:
+        pass
+
+    return {
+        "ok": True,
+        "id": row["id"],
+        "customer": customer,
+        "user_id": row["user_id"],
+        "name": row["name"],
+        "key": plaintext,
+        "keyPrefix": row["key_prefix"],
+        "tier": row["tier"],
+        "rpm": row["rate_limit_per_minute"],
+        "monthlyQuota": row["monthly_quota"],
+        "createdAt": row["created_at"].isoformat(),
+        "warning": "Copy this key now. Only its hash is stored and it cannot be shown again.",
+    }
+
+
+@router.delete("/api-keys/{key_id}")
+async def revoke_external_api_key(
+    key_id: int,
+    admin=Depends(require_admin),
+    conn=Depends(get_db),
+):
+    row = await conn.fetchrow(
+        """
+        UPDATE api_keys
+        SET revoked_at = NOW()
+        WHERE id = $1 AND revoked_at IS NULL
+        RETURNING id, user_id, key_prefix
+        """,
+        key_id,
+    )
+    if not row:
+        raise HTTPException(404, "Key not found or already revoked")
+
+    try:
+        await conn.execute(
+            "INSERT INTO admin_audit_log (admin_user_id, action, target_user_id, detail) VALUES ($1,$2,$3,$4)",
+            str(admin["user_id"]),
+            "revoke_api_key",
+            str(row["user_id"]),
+            f"key_id={key_id} prefix={row['key_prefix']}",
+        )
+    except Exception:
+        pass
+    return {"ok": True, "key_id": row["id"], "key_prefix": row["key_prefix"]}
 
 
 @router.get("/api-keys")
