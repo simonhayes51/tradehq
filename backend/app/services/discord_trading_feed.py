@@ -1136,8 +1136,28 @@ async def publish_opportunity_updates(pool, server: ServerRecord, client: Option
                     )
                 except ValueError:
                     entry_expires_at = sent_at + timedelta(minutes=OPPORTUNITY_ENTRY_WINDOW_MINUTES)
+            # The live post itself is execution evidence. Every new feed
+            # opportunity is final-rechecked immediately before Discord send
+            # and stores that checked executable price as observed_buy_price.
+            # Do not require futgg_bin_history to write *another* row after
+            # sent_at before accepting an entry that was already below MAX BUY
+            # in the message users actually received. Unchanged prices are not
+            # guaranteed to create a new history row, which previously caused
+            # valid calls (e.g. live 14,000 / max buy 17,750) to be falsely
+            # closed as ENTRY NOT REACHED exactly 15 minutes later.
+            observed_buy_raw = payload.get("observed_buy_price")
+            published_entry_proven = False
+            if observed_buy_raw is not None:
+                try:
+                    published_entry_proven = (
+                        Decimal(str(observed_buy_raw)) >= tm.EA_MIN_PRICE
+                        and Decimal(str(observed_buy_raw)) <= Decimal(str(buy_price))
+                    )
+                except Exception:
+                    published_entry_proven = False
+
             if entry_expires_at is not None:
-                entry_was_available = any(
+                entry_was_available = published_entry_proven or any(
                     _aware(o["captured_at"]) <= entry_expires_at
                     and Decimal(str(o["lowest_bin"])) <= Decimal(str(buy_price))
                     for o in observations
@@ -1162,12 +1182,26 @@ async def publish_opportunity_updates(pool, server: ServerRecord, client: Option
                             if ok:
                                 updated += 1
                     continue
+            grading_observations = [
+                (o["lowest_bin"], o["captured_at"]) for o in observations
+            ]
+            if published_entry_proven:
+                # grade_recommendation deliberately ignores observations at
+                # exactly evaluated_at because its generic scanner normally
+                # wants post-signal evidence. Discord is different: the final
+                # live recheck stored in the published payload proves the card
+                # was executable at publication. Seed that proven entry just
+                # inside the grading window so later target observations are
+                # evaluated chronologically from the real advertised entry.
+                grading_observations.insert(
+                    0, (observed_buy_raw, sent_at + timedelta(microseconds=1))
+                )
             grade = grade_recommendation(
                 horizon=OPPORTUNITY_UPDATE_HORIZON,
                 evaluated_at=sent_at,
                 buy_price=float(buy_price),
                 sell_target=float(sell_target),
-                observations=[(o["lowest_bin"], o["captured_at"]) for o in observations],
+                observations=grading_observations,
             )
             window_elapsed = _now() >= grade.window_end
             if not grade.target_hit:
