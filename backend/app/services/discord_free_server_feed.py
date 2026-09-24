@@ -27,8 +27,12 @@ log = logging.getLogger("discord_free_server_feed")
 
 FREE_PLAN = "free"
 FREE_MAX_POSTS_PER_DAY = 1
-FREE_MIN_CONFIDENCE = float(os.getenv("DISCORD_FREE_TRADE_MIN_CONFIDENCE", "0.80"))
-FREE_MIN_ROI = float(os.getenv("DISCORD_FREE_TRADE_MIN_ROI", "0.06"))
+# Still stricter than the site's 0.55 defensible-free-pick confidence floor,
+# but not so strict that launch-day evidence can leave every Free server
+# silent. BUY/STRONG BUY, confirmed sales, freshness, liquidity and the
+# meaningful absolute-profit floor below all remain mandatory.
+FREE_MIN_CONFIDENCE = float(os.getenv("DISCORD_FREE_TRADE_MIN_CONFIDENCE", "0.60"))
+FREE_MIN_ROI = float(os.getenv("DISCORD_FREE_TRADE_MIN_ROI", "0.03"))
 FREE_MAX_EVIDENCE_AGE_MINUTES = int(
     os.getenv("DISCORD_FREE_TRADE_MAX_EVIDENCE_AGE_MINUTES", "360")
 )

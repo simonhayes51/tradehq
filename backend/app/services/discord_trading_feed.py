@@ -75,8 +75,13 @@ FREE_OVERVIEW_BEST_TRADES_MAX = 3
 # Paid/partner feeds are a showcase, not a quota-filling firehose. Server
 # preferences may make these stricter, never looser. "Up to N/day" is a
 # ceiling: if no candidate clears these quality gates, nothing is posted.
-DISCORD_FEED_MIN_CONFIDENCE = float(os.getenv("DISCORD_FEED_MIN_CONFIDENCE", "0.78"))
-DISCORD_FEED_MIN_ROI = float(os.getenv("DISCORD_FEED_MIN_ROI", "0.06"))
+# Keep a modest global safety floor, but do not invent a second trading
+# engine here. The per-server confidence/profit policy and the canonical
+# BUY/STRONG BUY engine remain the primary quality gates. The previous
+# 0.78 confidence + 6% ROI defaults were materially stricter than the
+# product's own opportunity definition and could starve a healthy feed.
+DISCORD_FEED_MIN_CONFIDENCE = float(os.getenv("DISCORD_FEED_MIN_CONFIDENCE", "0.60"))
+DISCORD_FEED_MIN_ROI = float(os.getenv("DISCORD_FEED_MIN_ROI", "0.00"))
 DISCORD_FEED_MIN_LIQUIDITY = float(os.getenv("DISCORD_FEED_MIN_LIQUIDITY", "0.25"))
 DISCORD_FEED_MAX_EVIDENCE_AGE_MINUTES = int(os.getenv("DISCORD_FEED_MAX_EVIDENCE_AGE_MINUTES", "180"))
 
@@ -921,6 +926,20 @@ async def publish_live_opportunities(pool, server: ServerRecord, client: Optiona
         max_evidence_age_minutes=DISCORD_FEED_MAX_EVIDENCE_AGE_MINUTES,
         sales_by_card=sales_by_card,
     )
+    if not scored:
+        log.info(
+            "Discord feed has no qualifying candidates server_id=%s scanned=%s "
+            "min_confidence=%.2f min_profit=%s min_roi=%.3f min_liquidity=%.2f "
+            "confirmed_sales=true max_evidence_age_minutes=%s",
+            server.id,
+            len(candidate_rows),
+            max(float(settings["min_confidence"]), DISCORD_FEED_MIN_CONFIDENCE),
+            settings["min_expected_profit"],
+            DISCORD_FEED_MIN_ROI,
+            DISCORD_FEED_MIN_LIQUIDITY,
+            DISCORD_FEED_MAX_EVIDENCE_AGE_MINUTES,
+        )
+
     scored.sort(
         key=lambda pair: (
             -(pair[1].confidence_score or 0.0),
