@@ -29,7 +29,6 @@ from datetime import datetime, timezone
 from typing import Any, Iterable, Optional
 from urllib.parse import urljoin
 
-import aiohttp
 import asyncpg
 
 from monitoring import alert, heartbeat
@@ -57,9 +56,10 @@ HEADERS = {
     "Accept-Language": "en-GB,en;q=0.9",
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36"
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36"
     ),
 }
+HEADLESS = (os.getenv("PLAYWRIGHT_HEADLESS") or "false").lower() in {"1", "true", "yes"}
 
 SBC_LINK_RE = re.compile(
     rf'href=["\'](?P<path>/sbc/(?:[^/]+)/{GAME_YEAR}-(?:\d+)-[^"\'#?]+/)["\']',
@@ -132,39 +132,63 @@ def squad_uuid(value: Any) -> Optional[str]:
     return match.group("uuid") if match else None
 
 
-async def _request(
-    session: aiohttp.ClientSession, url: str, *, expect_json: bool
-) -> Any:
-    last_error: Optional[Exception] = None
-    for attempt in range(1, MAX_RETRIES + 1):
+class BrowserTransport:
+    """Small organic-navigation pool for FUT.GG's Cloudflare-protected pages.
+
+    Plain aiohttp receives an immediate 403 from production. These requests use
+    normal headed Chromium navigations instead: the same transport already
+    proven by the sales collector and the same path a user follows in Chrome.
+    """
+
+    def __init__(self, pages: list[Any]):
+        self.pages: asyncio.Queue[Any] = asyncio.Queue()
+        for page in pages:
+            self.pages.put_nowait(page)
+
+    async def request(self, url: str, *, expect_json: bool) -> Any:
+        page = await self.pages.get()
         try:
-            async with session.get(url, headers=HEADERS) as response:
-                body = await response.text()
-                if response.status == 200:
-                    if not expect_json:
-                        return body
-                    try:
-                        return json.loads(body)
-                    except json.JSONDecodeError as exc:
-                        raise RuntimeError(f"non-JSON response from {url}") from exc
-                if response.status not in {429, 500, 502, 503, 504}:
-                    raise RuntimeError(f"GET {url} returned HTTP {response.status}")
-                raise RuntimeError(f"transient HTTP {response.status} from {url}")
-        except (aiohttp.ClientError, asyncio.TimeoutError, RuntimeError) as exc:
-            last_error = exc
-            if attempt >= MAX_RETRIES:
-                break
-            delay = min(8.0, (2 ** (attempt - 1)) + random.random())
-            log.warning("%s; retrying in %.1fs", exc, delay)
-            await asyncio.sleep(delay)
-    raise RuntimeError(str(last_error or f"request failed: {url}"))
+            last_error: Optional[Exception] = None
+            for attempt in range(1, MAX_RETRIES + 1):
+                try:
+                    response = await page.goto(
+                        url, wait_until="domcontentloaded", timeout=TIMEOUT_SECONDS * 1000
+                    )
+                    status = response.status if response else None
+                    if status == 200:
+                        if expect_json:
+                            body = await page.locator("body").inner_text()
+                            try:
+                                return json.loads(body)
+                            except json.JSONDecodeError as exc:
+                                raise RuntimeError(f"non-JSON browser response from {url}") from exc
+                        return await page.content()
+                    if status not in {403, 429, 500, 502, 503, 504}:
+                        raise RuntimeError(f"GET {url} returned HTTP {status}")
+                    raise RuntimeError(f"browser GET {url} returned HTTP {status}")
+                except Exception as exc:
+                    last_error = exc
+                    if attempt >= MAX_RETRIES:
+                        break
+                    delay = min(8.0, (2 ** (attempt - 1)) + random.random())
+                    log.warning("%s; retrying in %.1fs", exc, delay)
+                    await asyncio.sleep(delay)
+            raise RuntimeError(str(last_error or f"request failed: {url}"))
+        finally:
+            self.pages.put_nowait(page)
 
 
-async def _get_text(session: aiohttp.ClientSession, url: str) -> str:
+async def _request(
+    session: BrowserTransport, url: str, *, expect_json: bool
+) -> Any:
+    return await session.request(url, expect_json=expect_json)
+
+
+async def _get_text(session: BrowserTransport, url: str) -> str:
     return str(await _request(session, url, expect_json=False))
 
 
-async def _get_json(session: aiohttp.ClientSession, url: str) -> dict[str, Any]:
+async def _get_json(session: BrowserTransport, url: str) -> dict[str, Any]:
     payload = await _request(session, url, expect_json=True)
     if not isinstance(payload, dict):
         raise RuntimeError(f"unexpected JSON shape from {url}: {type(payload).__name__}")
@@ -296,7 +320,7 @@ def normalise_squad(payload: dict[str, Any]) -> list[dict[str, int]]:
     return result
 
 
-async def collect_sbc_data(session: aiohttp.ClientSession) -> list[dict[str, Any]]:
+async def collect_sbc_data(session: BrowserTransport) -> list[dict[str, Any]]:
     listing = await _get_text(session, SBC_LIST_URL)
     links = discover_sbc_links(listing)
     if not links:
@@ -427,7 +451,7 @@ def normalise_gallery(base: dict[str, Any], solutions: dict[str, Any]) -> dict[s
     }
 
 
-async def collect_gallery_data(session: aiohttp.ClientSession) -> dict[str, Any]:
+async def collect_gallery_data(session: BrowserTransport) -> dict[str, Any]:
     base, solutions = await asyncio.gather(
         _get_json(session, GALLERY_URL), _get_json(session, GALLERY_SOLUTIONS_URL)
     )
@@ -661,12 +685,40 @@ async def write_gallery(conn: asyncpg.Connection, gallery: dict[str, Any]) -> in
     return len(active_ids)
 
 
+async def _collect_remote_content() -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    from playwright.async_api import async_playwright
+
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch(
+            headless=HEADLESS, args=["--no-sandbox", "--disable-dev-shm-usage"]
+        )
+        try:
+            context = await browser.new_context(
+                user_agent=HEADERS["User-Agent"], locale="en-GB",
+                viewport={"width": 1440, "height": 1000},
+            )
+            warmup = await context.new_page()
+            response = await warmup.goto(
+                SITE_ROOT, wait_until="domcontentloaded", timeout=TIMEOUT_SECONDS * 1000
+            )
+            if not response or response.status != 200:
+                raise RuntimeError(
+                    f"FUT.GG browser warm-up returned HTTP {response.status if response else 'none'}"
+                )
+            await warmup.wait_for_timeout(1500)
+            pages = [warmup] + [await context.new_page() for _ in range(CONCURRENCY + 1)]
+            session = BrowserTransport(pages)
+            sbcs, gallery = await asyncio.gather(
+                collect_sbc_data(session), collect_gallery_data(session)
+            )
+        finally:
+            await browser.close()
+    return sbcs, gallery
+
+
 async def crawl_once() -> bool:
-    timeout = aiohttp.ClientTimeout(total=TIMEOUT_SECONDS)
-    connector = aiohttp.TCPConnector(limit=CONCURRENCY + 2)
-    async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
-        sbcs, gallery = await asyncio.gather(collect_sbc_data(session), collect_gallery_data(session))
     if DIAGNOSTIC:
+        sbcs, gallery = await _collect_remote_content()
         log.info("diagnostic success: sbcs=%d gallery_sets=%d tags=%d", len(sbcs), len(gallery["sets"]), len(gallery["tags"]))
         return True
     if not DATABASE_URL:
@@ -678,7 +730,11 @@ async def crawl_once() -> bool:
         if not locked:
             log.info("another FUT.GG content sync is already running; exiting cleanly")
             return True
+        # Initialise the read schema before network collection. Even if FUT.GG
+        # is temporarily unavailable, the site returns a clean empty state
+        # instead of falling back to stale EasySBC rows or raising table errors.
         await ensure_schema(conn)
+        sbcs, gallery = await _collect_remote_content()
         solution_items = 0
         async with conn.transaction():
             for sbc in sbcs:

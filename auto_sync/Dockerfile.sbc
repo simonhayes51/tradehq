@@ -4,27 +4,22 @@
 # writes into the existing market-event tables plus the Gallery/solution
 # tables introduced by backend migration 100.
 #
-# ONE-SHOT: crawl_once() runs once and exits (same shape as
-# futgg_player_sync.py's crawl_once()). No loop wrapper here, matching
-# the script's own documented Cron Job design and avoiding the exact
-# restart-loop failure mode this repo's PlayerSync worker hit - deploy
-# this as a Coolify Scheduled Task, not a continuous service. See
-# auto_sync/COOLIFY.md.
+# The Python collector remains one-shot and advisory-locked. The entrypoint
+# supervises it at a six-hour cadence because the deployed Coolify resource is
+# a normal service; this prevents failure/restart storms. A Scheduled Task can
+# set FUTGG_CONTENT_RUN_ONCE=true.
 #
-# FUT.GG's listing and content APIs are public HTTP resources, so this remains
-# a small aiohttp-only scheduled image with no browser/Xvfb dependency.
+# FUT.GG returns Cloudflare 403s to plain server HTTP. The collector therefore
+# uses headed Chromium through Xvfb, matching the proven sales-worker path.
 #
-# ONLY REQUIRED DEPENDENCIES: requirements-sbc.txt (aiohttp + asyncpg).
+# ONLY REQUIRED DEPENDENCIES: requirements-sbc.txt.
 #
-# EXIT CODE: futgg_content_sync.py exits 0 on a genuinely
-# successful (or benignly lock-skipped) run and non-zero on a real
-# failure (crawl_once() returning False, or an uncaught exception) - so
-# Coolify's Scheduled Task run history reflects real success/failure, not
-# just "the container didn't crash".
+# The supervisor retries failures after 15 minutes and successful runs after
+# six hours; both intervals are configurable in the entrypoint.
 #
 # No port: this worker only talks to FUT.GG and DATABASE_URL.
 
-FROM python:3.11-slim
+FROM mcr.microsoft.com/playwright/python:v1.61.0-noble
 
 WORKDIR /app
 
@@ -33,6 +28,10 @@ RUN pip install --no-cache-dir -r requirements-sbc.txt
 
 COPY . .
 
-ENV PYTHONUNBUFFERED=1
+RUN chmod +x /app/docker-entrypoint-sbc.sh
 
-CMD ["python", "futgg_content_sync.py"]
+ENV PYTHONUNBUFFERED=1
+ENV DISPLAY=:99
+ENV PLAYWRIGHT_HEADLESS=false
+
+CMD ["bash", "/app/docker-entrypoint-sbc.sh"]

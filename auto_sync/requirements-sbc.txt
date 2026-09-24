@@ -1,11 +1,10 @@
 # Minimal dependency set for futgg_content_sync.py - see Dockerfile.sbc.
-# FUT.GG's server-rendered listing and JSON endpoints need only aiohttp;
-# asyncpg persists SBC, exact-squad and Gallery data.
-# Deliberately NOT the shared auto_sync/requirements.txt, which also
-# pulls in beautifulsoup4/requests/python-dotenv/playwright/tzdata for
-# the Playwright-based workers (PlayerSync, PriceSync) - none of which
-# this script imports. Versions pinned to match requirements.txt so both
+# FUT.GG blocks plain server HTTP with 403, so the collector uses headed
+# Playwright navigation. asyncpg persists SBC, squad and Gallery data;
+# aiohttp remains for monitoring webhook delivery. Versions match the
+# shared worker requirements so both
 # files can't silently drift onto different releases of the same
 # packages.
 aiohttp==3.14.1
 asyncpg==0.31.0
+playwright==1.61.0

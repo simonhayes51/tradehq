@@ -141,7 +141,9 @@ def test_futgg_bulk_price_sync_is_actually_long_running():
 
 def test_dockerfile_sbc_runs_futgg_content_collector():
     text = _read(AUTO_SYNC_DIR / "Dockerfile.sbc")
-    assert re.search(r'CMD\s*\[\s*"python"\s*,\s*"futgg_content_sync\.py"\s*\]', text)
+    assert re.search(r'CMD\s*\[\s*"bash"\s*,\s*"/app/docker-entrypoint-sbc\.sh"\s*\]', text)
+    entrypoint = _read(AUTO_SYNC_DIR / "docker-entrypoint-sbc.sh")
+    assert "python futgg_content_sync.py" in entrypoint
     # futbin_sbc_sync.py may legitimately be mentioned in comments
     # explaining why it was replaced - it must not appear in a CMD/RUN
     # instruction actually invoking it.
@@ -149,12 +151,12 @@ def test_dockerfile_sbc_runs_futgg_content_collector():
     assert not any("futbin_sbc_sync.py" in line for line in cmd_lines)
 
 
-def test_dockerfile_sbc_does_not_need_playwright():
+def test_dockerfile_sbc_uses_headed_playwright_for_cloudflare():
     text = _read(AUTO_SYNC_DIR / "Dockerfile.sbc")
-    assert "FROM python:3.11-slim" in text
-    assert "playwright/python" not in text
-    # Must not invoke the old Xvfb + headed-Chromium entrypoint.
-    assert 'CMD ["/app/docker-entrypoint-sbc.sh"]' not in text
+    assert "playwright/python:v1.61.0-noble" in text
+    assert "PLAYWRIGHT_HEADLESS=false" in text
+    entrypoint = _read(AUTO_SYNC_DIR / "docker-entrypoint-sbc.sh")
+    assert "Xvfb" in entrypoint
 
 
 def test_dockerfile_sbc_exposes_no_port():
@@ -164,9 +166,8 @@ def test_dockerfile_sbc_exposes_no_port():
 
 def test_dockerfile_sbc_installs_only_its_own_minimal_requirements():
     """SBCSync must not install the shared requirements.txt (which also
-    pulls in beautifulsoup4/requests/python-dotenv/playwright/tzdata for
-    the Playwright-based workers) - only requirements-sbc.txt
-    (aiohttp + asyncpg), which futgg_content_sync.py + monitoring.py
+    pulls in unrelated worker dependencies) - only requirements-sbc.txt
+    (aiohttp + asyncpg + playwright), which futgg_content_sync.py + monitoring.py
     actually import."""
     text = _read(AUTO_SYNC_DIR / "Dockerfile.sbc")
     assert "requirements-sbc.txt" in text
@@ -178,7 +179,7 @@ def test_dockerfile_sbc_installs_only_its_own_minimal_requirements():
     ]
     assert any(p.lower().startswith("aiohttp") for p in pinned)
     assert any(p.lower().startswith("asyncpg") for p in pinned)
-    assert not any("playwright" in p.lower() for p in pinned)
+    assert any(p.lower().startswith("playwright") for p in pinned)
     assert not any("beautifulsoup4" in p.lower() for p in pinned)
 
 

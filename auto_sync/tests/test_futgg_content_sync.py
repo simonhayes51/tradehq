@@ -109,3 +109,31 @@ def test_normalises_gallery_sets_and_items():
     assert gallery_set["total_cost_coins"] == 11850
     assert gallery_set["items"][0]["player_ea_id"] == 246697
 
+
+def test_browser_transport_reuses_page_after_json_request():
+    import asyncio
+
+    class Response:
+        status = 200
+
+    class Locator:
+        async def inner_text(self):
+            return '{"data":{"ok":true}}'
+
+    class Page:
+        async def goto(self, url, **kwargs):
+            assert url == "https://www.fut.gg/api/test/"
+            assert kwargs["wait_until"] == "domcontentloaded"
+            return Response()
+
+        def locator(self, selector):
+            assert selector == "body"
+            return Locator()
+
+    async def exercise():
+        transport = sync.BrowserTransport([Page()])
+        payload = await transport.request("https://www.fut.gg/api/test/", expect_json=True)
+        assert payload == {"data": {"ok": True}}
+        assert transport.pages.qsize() == 1
+
+    asyncio.run(exercise())
