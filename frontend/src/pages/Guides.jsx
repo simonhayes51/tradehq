@@ -228,7 +228,7 @@ const feedCommands = [
   ["/feed activate", "Start live opportunity posts after checkout and testing."],
   ["/feed status", "See the current plan, feed state, channel, allowance and posts used today."],
   ["/feed channel", "Move future opportunity posts to a different channel."],
-  ["/feed sell_channel", "Send target-hit and result posts to a separate channel, or clear the setting."],
+  ["/feed sell_channel", "Send 72-hour target-hit / target-not-reached results to a separate channel, or clear the setting."],
   ["/feed preferences", "Change platform, budget mix, minimum confidence, minimum profit or posting hours."],
   ["/feed pause", "Stop new posts without cancelling or changing billing."],
   ["/feed resume", "Restart a paused feed."],
