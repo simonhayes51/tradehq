@@ -13,9 +13,12 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
+import asyncpg
+
 from fastapi import APIRouter, HTTPException, Query, Request
 
 from app.auth.entitlements import require_feature
+from app.services import futgg_content
 from app.services import market_events as me
 
 router = APIRouter(tags=["v2-sbc"])
@@ -31,13 +34,33 @@ def _player_pool(request: Request):
 @router.get("/sbc/events")
 async def list_sbc_events(
     request: Request,
-    kind: str = "sbc",
-    limit: int = Query(30, ge=1, le=100),
+    limit: int = Query(60, ge=1, le=100),
     offset: int = Query(0, ge=0),
+    q: str | None = Query(None, max_length=80),
+    category: str | None = Query(None, max_length=40),
+    status: str = Query("live", pattern="^(live|expired|all)$"),
+    sort: str = Query("newest", pattern="^(newest|expiring|cheapest|costliest)$"),
 ) -> Dict[str, Any]:
     pool = _player_pool(request)
-    events = await me.get_events(pool, kind=kind, limit=limit, offset=offset)
-    return {"items": events, "count": len(events)}
+    try:
+        return await futgg_content.list_sbc_events(
+            pool, limit=limit, offset=offset, search=q, category=category,
+            status=status, sort=sort,
+        )
+    except (asyncpg.exceptions.UndefinedColumnError, asyncpg.exceptions.UndefinedTableError):
+        # Safe deploy-order fallback while migration 100 catches up.
+        events = await me.get_events(pool, kind="sbc", limit=limit, offset=offset)
+        return {"items": events, "count": len(events), "categories": []}
+
+
+@router.get("/sbc/solution-exposure")
+async def get_solution_exposure(
+    request: Request,
+    limit: int = Query(20, ge=1, le=50),
+) -> Dict[str, Any]:
+    pool = _player_pool(request)
+    items = await futgg_content.solution_exposure(pool, limit=limit)
+    return {"items": items, "count": len(items)}
 
 
 @router.get("/sbc/events/{event_id}")

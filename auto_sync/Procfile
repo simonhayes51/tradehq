@@ -33,8 +33,8 @@ futgg_bulk_price_worker: python futgg_bulk_price_sync.py
 # process lifetime; every card after that is a fetch() from inside it.
 futgg_sales_worker: python futgg_sales_sync.py
 
-# SBC collector: easysbc_sbc_sync.py, not futbin_sbc_sync.py (FUTBIN's
+# FUT.GG content collector: live FC27 SBCs, exact squads and Gallery. (FUTBIN's
 # Cloudflare hard-blocks every network origin tested, including Railway -
-# see easysbc_sbc_sync.py's own docstring and README.md). One-shot -
+# see futgg_content_sync.py's own docstring and README.md). One-shot -
 # schedule as a Railway Cron Job, not a permanent worker.
-futgg_sbc_worker: python easysbc_sbc_sync.py
+futgg_sbc_worker: python futgg_content_sync.py

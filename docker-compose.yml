@@ -91,8 +91,8 @@ services:
   # Four dedicated Dockerfiles, not one shared image with overridden
   # commands - see each Dockerfile's own header comment for why each
   # worker needs its own base image/behaviour. No worker exposes a port
-  # or has a domain; all four only ever talk outbound (to fut.gg /
-  # api-fc26.easysbc.io) and to DATABASE_URL.
+  # or has a domain; all four only ever talk outbound to fut.gg and
+  # DATABASE_URL.
   #
   # futgg_price_sync.py (the old per-card Playwright price scraper) is
   # obsolete now that futgg_bulk_price_sync.py's bulk feed replaces it

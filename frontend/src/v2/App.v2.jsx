@@ -20,6 +20,10 @@ import Onboarding from "./pages/Onboarding/Onboarding";
 import Billing from "./pages/Billing/Billing";
 import PreseasonBilling from "./pages/Billing/PreseasonBilling";
 import DiscordFeed from "./pages/DiscordFeed/DiscordFeed";
+import SbcHub from "./pages/SbcHub/SbcHub";
+import SbcEventDetail from "./pages/SbcEventDetail/SbcEventDetail";
+import GalleryHub from "./pages/GalleryHub/GalleryHub";
+import GallerySetDetail from "./pages/GallerySetDetail/GallerySetDetail";
 import { useEntitlements } from "../context/EntitlementsContext";
 import "./styles/mobile-screenshot-fixes.css";
 import "./styles/mobile-player-redesign.css";
@@ -59,6 +63,10 @@ export default function V2App() {
       <Route path="trade-finder" element={<ShellLayout><TradeFinder /></ShellLayout>} />
       <Route path="players" element={<ShellLayout><Players /></ShellLayout>} />
       <Route path="players/:cardId" element={<ShellLayout><PlayerPage /></ShellLayout>} />
+      <Route path="sbc" element={<ShellLayout><SbcHub /></ShellLayout>} />
+      <Route path="sbc/:eventId" element={<ShellLayout><SbcEventDetail /></ShellLayout>} />
+      <Route path="gallery" element={<ShellLayout><GalleryHub /></ShellLayout>} />
+      <Route path="gallery/:setId" element={<ShellLayout><GallerySetDetail /></ShellLayout>} />
       {/* FC26 launch-to-full-release price leaderboard - GET
           /api/v2/release-price-rises. Ungated, read-only, same as
           /players - no PrivateRoute wrapper needed. */}

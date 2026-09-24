@@ -1,21 +1,8 @@
-# SBCSync - SBC set/challenge collector.
+# ContentSync - FUT.GG SBC, exact cheapest squads, and FC27 Gallery.
 #
-# CANONICAL SCRIPT: easysbc_sbc_sync.py, not futbin_sbc_sync.py.
-#
-# futbin_sbc_sync.py (Playwright + Xvfb, headed Chromium) is confirmed
-# NOT reliably usable: FUTBIN's Cloudflare hard-blocks it from every
-# network origin tested, including a real Railway deployment with Xvfb
-# working correctly right up to the actual page request (immediate HTTP
-# 403 "Just a moment...", a WAF block on IP/network origin - not a
-# solvable JS challenge). See futbin_sbc_sync.py's and easysbc_sbc_sync.
-# py's own module docstrings, and README.md's "SBC collector" sections,
-# for the full history.
-#
-# easysbc_sbc_sync.py replaces it: EasySBC.io's frontend is backed by a
-# plain, unauthenticated JSON API, so this is aiohttp-only - no browser,
-# no Xvfb, no Cloudflare challenge to fight. Its own docstring states the
-# design explicitly: "Same one-shot-per-invocation Cron Job design ... not
-# a permanent worker, no Procfile entry."
+# CANONICAL SCRIPT: futgg_content_sync.py. It replaces EasySBC entirely and
+# writes into the existing market-event tables plus the Gallery/solution
+# tables introduced by backend migration 100.
 #
 # ONE-SHOT: crawl_once() runs once and exits (same shape as
 # futgg_player_sync.py's crawl_once()). No loop wrapper here, matching
@@ -24,27 +11,18 @@
 # this as a Coolify Scheduled Task, not a continuous service. See
 # auto_sync/COOLIFY.md.
 #
-# No Playwright needed for this script, so this uses the plain slim
-# Python base (matching backend/Dockerfile's own python:3.11-slim
-# convention) rather than the ~1.5GB Playwright browser image the other
-# two workers require - smaller image, faster Scheduled Task cold start.
-# docker-entrypoint-sbc.sh (Xvfb bootstrap for the old futbin_sbc_sync.py
-# path) is left in the repo, unused by this Dockerfile, in case FUTBIN's
-# block ever lifts and that path needs revisiting - see README.md.
+# FUT.GG's listing and content APIs are public HTTP resources, so this remains
+# a small aiohttp-only scheduled image with no browser/Xvfb dependency.
 #
-# ONLY REQUIRED DEPENDENCIES: requirements-sbc.txt (aiohttp + asyncpg),
-# not the shared auto_sync/requirements.txt - see that file's own header
-# comment for why. easysbc_sbc_sync.py itself and its one local import,
-# monitoring.py, need nothing else.
+# ONLY REQUIRED DEPENDENCIES: requirements-sbc.txt (aiohttp + asyncpg).
 #
-# EXIT CODE: easysbc_sbc_sync.py's __main__ exits 0 on a genuinely
+# EXIT CODE: futgg_content_sync.py exits 0 on a genuinely
 # successful (or benignly lock-skipped) run and non-zero on a real
 # failure (crawl_once() returning False, or an uncaught exception) - so
 # Coolify's Scheduled Task run history reflects real success/failure, not
 # just "the container didn't crash".
 #
-# No port: this worker only talks to api-fc26.easysbc.io and
-# DATABASE_URL, never serves HTTP.
+# No port: this worker only talks to FUT.GG and DATABASE_URL.
 
 FROM python:3.11-slim
 
@@ -57,4 +35,4 @@ COPY . .
 
 ENV PYTHONUNBUFFERED=1
 
-CMD ["python", "easysbc_sbc_sync.py"]
+CMD ["python", "futgg_content_sync.py"]

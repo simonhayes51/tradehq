@@ -1,7 +1,6 @@
 // src/v2/pages/SbcHub/sections/SbcListSection.jsx
 import { Link } from "react-router-dom";
-import SectionCard from "../../../components/SectionCard";
-import CardArtThumb from "../../../components/CardArtThumb";
+import { ArrowRight, RefreshCw } from "lucide-react";
 import { formatCoins, formatCountdown } from "../../../lib/format";
 
 // get_events() prefixes the reward card's fields with reward_card_* to
@@ -10,57 +9,10 @@ import { formatCoins, formatCountdown } from "../../../lib/format";
 // Many SBCs (upgrades, non-reward types) legitimately have no reward
 // card at all - that's a real "nothing to show" case, distinct from "art
 // not backfilled yet" (which CardArtThumb's own fallbackImage handles).
-function rewardCard(ev) {
-  if (!ev.reward_card_name) return null;
-  return {
-    name: ev.reward_card_name,
-    rating: ev.reward_card_rating,
-    version: ev.reward_card_version,
-    image_url: ev.reward_card_image_url,
-    card_bg_image: ev.reward_card_bg_image,
-    card_cutout_image: ev.reward_card_cutout_image,
-    card_cutout_type: ev.reward_card_cutout_type,
-    card_name: ev.reward_card_card_name,
-  };
-}
-
-export default function SbcListSection({ events }) {
-  if (!events || events.length === 0) {
-    return (
-      <SectionCard title="Live SBCs">
-        <p className="text-xs text-[var(--v2-muted)]">No SBC sets tracked yet.</p>
-      </SectionCard>
-    );
-  }
-
-  return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-      {events.map((ev) => {
-        const reward = rewardCard(ev);
-        return (
-          <Link
-            key={ev.id}
-            to={`/sbc/${ev.id}`}
-            className="rounded-[var(--v2-radius)] border border-[var(--v2-border)] bg-[var(--v2-card)] p-4 flex flex-col gap-2 hover:border-[var(--v2-accent)] transition-colors"
-          >
-            <div className="flex items-start justify-between gap-2">
-              <div className="flex items-center gap-2 min-w-0">
-                {reward && <CardArtThumb card={reward} widthClass="w-9" />}
-                <span className="text-sm font-semibold text-[var(--v2-text)] truncate">{ev.title}</span>
-              </div>
-              {ev.category && (
-                <span className="text-[10px] uppercase tracking-wide text-[var(--v2-accent)] whitespace-nowrap">
-                  {ev.category}
-                </span>
-              )}
-            </div>
-            <div className="flex items-center justify-between text-xs text-[var(--v2-muted)]">
-              <span>{ev.total_cost_coins ? formatCoins(ev.total_cost_coins) : "—"}</span>
-              <span>{ev.ends_at ? `ends in ${formatCountdown(ev.ends_at)}` : "—"}</span>
-            </div>
-          </Link>
-        );
-      })}
-    </div>
-  );
+export default function SbcListSection({ events = [] }) {
+  if (!events.length) return <div className="content-empty">No SBC sets match these filters.</div>;
+  return <div className="content-card-grid">{events.map((event) => <Link className="content-set-card" to={`/sbc/${event.id}`} key={event.id}>
+    <div className="content-set-art">{event.image_url ? <img src={event.image_url} alt="" loading="lazy" /> : <span>SBC</span>}</div>
+    <div className="content-set-body"><div className="content-set-meta"><span>{event.category || "SBC"}</span><b>{event.ends_at ? `${formatCountdown(event.ends_at)} left` : "No expiry"}</b></div><h3>{event.title}</h3><p>{event.challenge_count || 0} challenge{event.challenge_count === 1 ? "" : "s"} · {event.solution_item_count || 0} solution cards</p><div className="content-price-row"><div><span>Console</span><strong>{formatCoins(event.total_cost_coins)}</strong></div><div><span>PC</span><strong>{formatCoins(event.total_cost_pc)}</strong></div><ArrowRight size={18}/></div>{event.repeatable ? <small><RefreshCw size={12}/> Repeatable{event.repeat_count ? ` ×${event.repeat_count}` : ""}</small> : null}</div>
+  </Link>)}</div>;
 }

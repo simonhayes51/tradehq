@@ -6,11 +6,11 @@ against files in this repo, so they run anywhere with no network or DB.
 
 What these guard against, concretely:
   - The reported bug: a one-shot script (futgg_player_sync.py /
-    easysbc_sbc_sync.py) getting deployed as a normal restart-looping
+    futgg_content_sync.py) getting deployed as a normal restart-looping
     service instead of a Coolify Scheduled Task.
   - Silently picking the wrong script (the obsolete per-card
     futgg_price_sync.py instead of futgg_bulk_price_sync.py; the
-    Cloudflare-blocked futbin_sbc_sync.py instead of easysbc_sbc_sync.py).
+    Cloudflare-blocked futbin_sbc_sync.py instead of futgg_content_sync.py).
   - A worker Dockerfile/compose service growing a port/EXPOSE it doesn't
     need, or docker-compose.yml growing a second Postgres service.
 """
@@ -139,9 +139,9 @@ def test_futgg_bulk_price_sync_is_actually_long_running():
 # ---------------------------------------------------------------------
 
 
-def test_dockerfile_sbc_runs_easysbc_not_the_cloudflare_blocked_futbin_scraper():
+def test_dockerfile_sbc_runs_futgg_content_collector():
     text = _read(AUTO_SYNC_DIR / "Dockerfile.sbc")
-    assert re.search(r'CMD\s*\[\s*"python"\s*,\s*"easysbc_sbc_sync\.py"\s*\]', text)
+    assert re.search(r'CMD\s*\[\s*"python"\s*,\s*"futgg_content_sync\.py"\s*\]', text)
     # futbin_sbc_sync.py may legitimately be mentioned in comments
     # explaining why it was replaced - it must not appear in a CMD/RUN
     # instruction actually invoking it.
@@ -166,7 +166,7 @@ def test_dockerfile_sbc_installs_only_its_own_minimal_requirements():
     """SBCSync must not install the shared requirements.txt (which also
     pulls in beautifulsoup4/requests/python-dotenv/playwright/tzdata for
     the Playwright-based workers) - only requirements-sbc.txt
-    (aiohttp + asyncpg), which easysbc_sbc_sync.py + monitoring.py
+    (aiohttp + asyncpg), which futgg_content_sync.py + monitoring.py
     actually import."""
     text = _read(AUTO_SYNC_DIR / "Dockerfile.sbc")
     assert "requirements-sbc.txt" in text
@@ -182,33 +182,33 @@ def test_dockerfile_sbc_installs_only_its_own_minimal_requirements():
     assert not any("beautifulsoup4" in p.lower() for p in pinned)
 
 
-def test_easysbc_sbc_sync_exits_nonzero_on_failure_zero_on_success():
+def test_futgg_content_sync_exits_nonzero_on_failure_zero_on_success():
     """Dockerfile.sbc requires: exit 0 on success, non-zero on a real
     failure - so Coolify's Scheduled Task run history reflects real
     outcomes, not just "the container didn't crash"."""
-    text = _read(AUTO_SYNC_DIR / "easysbc_sbc_sync.py")
+    text = _read(AUTO_SYNC_DIR / "futgg_content_sync.py")
     main_block = text.rsplit('if __name__ == "__main__":', 1)[-1]
-    assert "ok = asyncio.run(crawl_once())" in main_block
-    assert "sys.exit(0 if ok else 1)" in main_block
+    assert "sys.exit(asyncio.run(_main()))" in main_block
+    assert "return 0 if await crawl_once() else 1" in text
     assert "async def crawl_once() -> bool:" in text
 
 
-def test_easysbc_sbc_sync_guards_against_overlapping_runs():
+def test_futgg_content_sync_guards_against_overlapping_runs():
     """A Coolify Scheduled Task run that overlaps the previous one (a
     slow run still going, or a manual trigger during a scheduled one)
     must not race writes - guarded by a Postgres advisory lock, same
     idiom futgg_player_sync.py uses."""
-    text = _read(AUTO_SYNC_DIR / "easysbc_sbc_sync.py")
+    text = _read(AUTO_SYNC_DIR / "futgg_content_sync.py")
     assert "pg_try_advisory_lock" in text
     assert "pg_advisory_unlock" in text
-    assert "EASYSBC_LOCK_KEY" in text
+    assert "LOCK_KEY" in text
 
 
-def test_easysbc_sbc_sync_is_actually_one_shot():
+def test_futgg_content_sync_is_actually_one_shot():
     """Guards the Scheduled Task deployment choice for SBCSync, same
     reasoning as the PlayerSync check above."""
-    text = _read(AUTO_SYNC_DIR / "easysbc_sbc_sync.py")
-    assert "asyncio.run(crawl_once())" in text
+    text = _read(AUTO_SYNC_DIR / "futgg_content_sync.py")
+    assert "asyncio.run(_main())" in text
     body = text.split('if __name__ == "__main__":')[0]
     assert "while True" not in body
 
@@ -497,6 +497,6 @@ def test_coolify_doc_documents_sbc_setup_exactly():
     assert "simonhayes51/tradehq" in sbc_section
     assert "**Branch:** `main`" in sbc_section
     assert "Build pack:** Dockerfile" in sbc_section
-    assert "python easysbc_sbc_sync.py" in sbc_section
+    assert "python futgg_content_sync.py" in sbc_section
     assert "30 6 * * *" in sbc_section
-    assert "EASYSBC_DIAGNOSTIC=true" in sbc_section
+    assert "FUTGG_CONTENT_DIAGNOSTIC=true" in sbc_section

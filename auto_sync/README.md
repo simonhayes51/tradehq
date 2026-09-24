@@ -132,17 +132,21 @@ variable (Task Scheduler doesn't read a local `.env` file).
 Xvfb starts, Chromium launches headed, navigation is attempted) in case
 this network-origin block ever lifts and the headed-Chromium approach is
 worth revisiting. **`Dockerfile.sbc` itself no longer builds that path** -
-it now builds `easysbc_sbc_sync.py` (section 6b below) on a plain
+it now builds `futgg_content_sync.py` (section 6b below) on a plain
 `python:3.11-slim` image with no Xvfb/Playwright at all, since that's the
 Coolify-deployed collector (see `COOLIFY.md`). To try the headed-Chromium
 approach again, build directly from `docker-entrypoint-sbc.sh` with a
 Playwright base image rather than via `Dockerfile.sbc`.
 
-## 6b. SBC collector v2 - EasySBC API (recommended over section 6)
+## 6b. Content collector - FUT.GG SBCs + Gallery (canonical)
 ```bash
-pip install -r requirements.txt   # only needs aiohttp/asyncpg, already listed
-python easysbc_sbc_sync.py
+pip install -r requirements-sbc.txt
+FUTGG_CONTENT_DIAGNOSTIC=true python futgg_content_sync.py  # read-only check
+python futgg_content_sync.py
 ```
+`futgg_content_sync.py` is the deployed FC27 collector. It writes FUT.GG
+SBC sets, exact Console/PC cheapest squads, and FUT Gallery solutions.
+The EasySBC material below is retained only as historical context.
 Same `market_events`/`sbc_details`/`sbc_challenges` tables as the FUTBIN
 collector above, but `source='easysbc'` instead of `'futbin'` (the two
 coexist - not deduplicated against each other), and a completely different

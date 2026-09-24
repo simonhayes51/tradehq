@@ -3,7 +3,7 @@
 Four independent Dockerfile-based Coolify resources, all built from this
 same `/auto_sync` base directory, each with its own dedicated Dockerfile.
 None of them expose a port or need a domain - they only ever talk
-outbound (to fut.gg / api-fc26.easysbc.io) and to `DATABASE_URL`.
+outbound (to fut.gg / www.fut.gg) and to `DATABASE_URL`.
 
 All four point `DATABASE_URL` at the **same single Postgres database**
 used by `backend` - there is no separate auto_sync database. Do not
@@ -14,7 +14,7 @@ the Postgres instance already backing the rest of the deployment.
 |------------|---------------------|------------------------------|------------------------|
 | PlayerSync | `Dockerfile.player` | `futgg_player_sync.py`       | Scheduled Task |
 | PriceSync  | `Dockerfile.price`  | `futgg_bulk_price_sync.py`   | Continuous service |
-| SBCSync    | `Dockerfile.sbc`    | `easysbc_sbc_sync.py`        | Scheduled Task |
+| SBCSync    | `Dockerfile.sbc`    | `futgg_content_sync.py`      | Scheduled Task |
 | SalesSync  | `Dockerfile.sales`  | `futgg_sales_sync.py`        | Continuous service |
 
 The old per-card Playwright price scraper (`futgg_price_sync.py`) and the
@@ -548,42 +548,42 @@ Never resets a card whose last recorded attempt was `last_sales_status =
 - **Dockerfile:** `/Dockerfile.sbc`
 - **Domain:** none
 - **Ports:** none - do not expose any port
-- **Command:** `python easysbc_sbc_sync.py` (this is `Dockerfile.sbc`'s
+- **Command:** `python futgg_content_sync.py` (this is `Dockerfile.sbc`'s
   `CMD` already - no override needed, only relevant if you're setting up
   the resource by hand without the Dockerfile build pack)
 - **Coolify resource type: Scheduled Task**, not a normal service - same
-  reasoning as PlayerSync. `easysbc_sbc_sync.py`'s canonical script
+  reasoning as PlayerSync. `futgg_content_sync.py`'s canonical script
   (`crawl_once()`) is one-shot, and its own module docstring says so
   explicitly: "Same one-shot-per-invocation Cron Job design ... not a
   permanent worker, no Procfile entry."
-- **Canonical script: `easysbc_sbc_sync.py`, not `futbin_sbc_sync.py`.**
+- **Canonical script: `futgg_content_sync.py`, not `futbin_sbc_sync.py`.**
   `futbin_sbc_sync.py` (Playwright + Xvfb, headed Chromium) is confirmed
   NOT reliably usable - FUTBIN's Cloudflare hard-blocks every network
   origin tested, including a real Railway deployment where Xvfb/Chromium
   worked correctly right up to the actual page request (immediate HTTP
   403 "Just a moment..." - a WAF block on IP/network origin, not a
-  solvable JS challenge). `easysbc_sbc_sync.py` gets the same data
+  solvable JS challenge). `futgg_content_sync.py` gets the same data
   (`market_events`/`sbc_details`/`sbc_challenges`, `source='easysbc'`)
   from EasySBC.io's plain, unauthenticated JSON API instead - aiohttp
   only, no browser, no Cloudflare challenge to fight. See
-  `easysbc_sbc_sync.py`'s own module docstring and `README.md`'s "SBC
+  `futgg_content_sync.py`'s own module docstring and `README.md`'s "SBC
   collector" sections for the full history.
 - **Recommended cron:** `30 6 * * *` (06:30 UTC daily, staggered from
   PlayerSync) - "once daily, not more often" per the same caution
   `README.md` already documents for the FUTBIN-based collector; SBC sets
   don't change often enough to justify more frequent runs, and this API's
   rate-limit behavior at real crawl volume hasn't been proven yet (see
-  `easysbc_sbc_sync.py`'s "still genuinely open" section).
+  `futgg_content_sync.py`'s "still genuinely open" section).
 
 **Required env vars:**
 - `DATABASE_URL` - required, no default. The same shared database
   `backend` and PriceSync use - no separate SBC database.
 
-**No API key/authentication required.** api-fc26.easysbc.io is a plain,
+**No API key/authentication required.** www.fut.gg is a plain,
 unauthenticated public JSON API - there is nothing else credential-shaped
 to configure for this worker beyond `DATABASE_URL`.
 
-**Optional tuning env vars:** `EASYSBC_LISTING_PAGE_SIZE` (default `50`),
+**Optional tuning env vars:** `EAFC_GAME_YEAR` (default `27`), `FUTGG_CONTENT_CONCURRENCY` (default `2`, capped at `4`), `FUTGG_CONTENT_TIMEOUT_SECONDS` (default `30`), and
 `EASYSBC_MAX_LISTING_PAGES` (default `50`), `SBC_DETAIL_STALE_HOURS`
 (default `20`), `SBC_MAX_DETAIL_PAGES` (default `0` = no cap),
 `SBC_REQUEST_DELAY_SECONDS` (default `1.5`), `SBC_MAX_RETRIES` (default
@@ -597,7 +597,7 @@ trusting it unattended (see `README.md`). Two steps:
 
 **1. Diagnostic pass (read-only, no database writes, no advisory lock):**
 ```bash
-DATABASE_URL=postgresql://... EASYSBC_DIAGNOSTIC=true python easysbc_sbc_sync.py
+DATABASE_URL=postgresql://... FUTGG_CONTENT_DIAGNOSTIC=true python futgg_content_sync.py
 ```
 Confirms the listing/detail/challenge endpoints still return the shape
 this script expects, without touching any table. Reach for this first if
@@ -607,7 +607,7 @@ below) rather than guessing.
 
 **2. Real run:**
 ```bash
-DATABASE_URL=postgresql://... python easysbc_sbc_sync.py
+DATABASE_URL=postgresql://... python futgg_content_sync.py
 ```
 Or, against a Coolify-deployed resource, trigger the Scheduled Task
 manually once from its own "Run now" / manual-trigger action instead of
@@ -623,7 +623,7 @@ will differ):
 ... INFO Ensuring tables exist...
 ... INFO Tables ready
 ... INFO Loaded 43 real nation names and 28 real league names from fut_players for requirement classification
-... INFO Fetching SBC set listing from https://api-fc26.easysbc.io...
+... INFO Fetching SBC set listing from https://www.fut.gg...
 ... INFO Listing: 37 sets found
 ... INFO SBC details due: 12 of 37 (25 unchanged/not yet stale, skipped)
 ... INFO Loading SBC detail 1/12: 1 of 4 95+ FOF or FUTTIES T1 Player Pick (id=1293)
@@ -667,7 +667,7 @@ Any existing SBC-worker resource built from the old `Dockerfile.sbc`
 (headed Chromium + Xvfb + `futbin_sbc_sync.py`) should also be **deleted
 and recreated**: `Dockerfile.sbc` now builds a different, much smaller
 image (`python:3.11-slim`, no Playwright/Xvfb) running
-`easysbc_sbc_sync.py` instead - a straight redeploy of the same resource
+`futgg_content_sync.py` instead - a straight redeploy of the same resource
 picks this up automatically (rebuild from the updated Dockerfile), but if
 that resource was previously set up as a continuous service rather than a
 Scheduled Task, it still needs recreating as a Scheduled Task per the

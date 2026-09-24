@@ -1,83 +1,28 @@
 // src/v2/pages/SbcEventDetail/sections/ChallengeBreakdownSection.jsx
-import SectionCard from "../../../components/SectionCard";
-import CardArtThumb from "../../../components/CardArtThumb";
+import { ExternalLink, RefreshCw } from "lucide-react";
+import ContentPlayerStrip from "../../../components/ContentPlayerStrip";
 import { formatCoins, formatCountdown } from "../../../lib/format";
 
 // sbc_details' reward_card_* fields are already flat on the details
 // object (get_event()'s LEFT JOIN aliases them directly) - reshape into
 // CardArtThumb's expected shape, same as SbcListSection.jsx.
-function rewardCard(details) {
-  if (!details?.reward_card_name) return null;
-  return {
-    name: details.reward_card_name,
-    rating: details.reward_card_rating,
-    version: details.reward_card_version,
-    image_url: details.reward_card_image_url,
-    card_bg_image: details.reward_card_bg_image,
-    card_cutout_image: details.reward_card_cutout_image,
-    card_cutout_type: details.reward_card_cutout_type,
-    card_name: details.reward_card_card_name,
-  };
-}
-
 export default function ChallengeBreakdownSection({ event }) {
   if (!event) return null;
   const details = event.sbc_details;
   const challenges = event.sbc_challenges || [];
-  const reward = rewardCard(details);
-
-  return (
-    <SectionCard title={event.title} subtitle={details?.category}>
-      <div className="flex items-start gap-4 mb-4">
-        {reward && <CardArtThumb card={reward} widthClass="w-20" />}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 flex-1">
-          <div>
-            <span className="text-xs text-[var(--v2-muted)]">Total cost</span>
-            <p className="text-lg font-semibold">{formatCoins(details?.total_cost_coins)}</p>
-          </div>
-          <div>
-            <span className="text-xs text-[var(--v2-muted)]">Repeatable</span>
-            <p className="text-lg font-semibold">{details?.repeatable ? "Yes" : "No"}</p>
-          </div>
-          <div>
-            <span className="text-xs text-[var(--v2-muted)]">Expires</span>
-            <p className="text-lg font-semibold">
-              {event.ends_at ? formatCountdown(event.ends_at) : "—"}
-            </p>
-          </div>
-          <div>
-            <span className="text-xs text-[var(--v2-muted)]">Reward</span>
-            <p className="text-lg font-semibold">{details?.reward_description || "—"}</p>
-          </div>
-        </div>
-      </div>
-
-      {challenges.length === 0 ? (
-        <p className="text-xs text-[var(--v2-muted)]">No challenge breakdown available.</p>
-      ) : (
-        <ul className="flex flex-col divide-y divide-[var(--v2-border)]">
-          {challenges.map((c) => (
-            <li key={c.id} className="py-2">
-              <div className="flex items-center justify-between text-sm">
-                <span className="font-medium">{c.challenge_name}</span>
-                <span className="text-[var(--v2-muted)]">{formatCoins(c.estimated_cost_coins)}</span>
-              </div>
-              {c.requirements && Object.keys(c.requirements).length > 0 && (
-                <div className="flex flex-wrap gap-1.5 mt-1.5">
-                  {Object.entries(c.requirements).map(([k, v]) => (
-                    <span
-                      key={k}
-                      className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--v2-elevated)] text-[var(--v2-muted)]"
-                    >
-                      {k.replace(/_/g, " ")}: {String(v)}
-                    </span>
-                  ))}
-                </div>
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
-    </SectionCard>
-  );
+  return <>
+    <header className="content-detail-hero"><div><span className="content-kicker">{details?.category || "SBC"}</span><h1>{event.title}</h1><p>{event.description || details?.reward_description || "Live FC27 Squad Building Challenge."}</p>{details?.repeatable ? <small><RefreshCw size={13}/> Repeatable{details.repeat_count ? ` ×${details.repeat_count}` : ""}</small> : null}</div>{details?.image_url ? <img className="sbc-detail-art" src={details.image_url} alt="" /> : null}</header>
+    <section className="content-stats"><div><span>Console cost</span><strong>{formatCoins(details?.total_cost_coins)}</strong></div><div><span>PC cost</span><strong>{formatCoins(details?.total_cost_pc)}</strong></div><div><span>Expires</span><strong>{event.ends_at ? formatCountdown(event.ends_at) : "—"}</strong></div><div><span>Challenges</span><strong>{challenges.length}</strong></div></section>
+    <section className="content-panel"><div className="content-section-head"><div><span>Verified solutions</span><h2>Challenge breakdown</h2></div><p>{details?.reward_description || "Cheapest tracked solutions from FUT.GG."}</p></div>
+      {!challenges.length ? <div className="content-empty">No challenge breakdown is available yet.</div> : <div className="challenge-list">{challenges.map((challenge, index) => {
+        const consoleItems = (challenge.solution_items || []).filter((item) => item.platform === "console");
+        const pcItems = (challenge.solution_items || []).filter((item) => item.platform === "pc");
+        return <article className="challenge-card" key={challenge.id}><header><div><span>Challenge {index + 1}</span><h3>{challenge.challenge_name}</h3></div><div><span>Console</span><strong>{formatCoins(challenge.estimated_cost_coins)}</strong><small>PC {formatCoins(challenge.estimated_cost_pc)}</small></div></header>
+          {challenge.requirements && Object.keys(challenge.requirements).length ? <div className="content-tags">{Object.entries(challenge.requirements).map(([key, value]) => <span key={key}>{String(value).replace(/_/g, " ")}</span>)}</div> : null}
+          {consoleItems.length ? <><div className="solution-label"><span>Console solution</span>{challenge.solution_console_url ? <a href={challenge.solution_console_url} target="_blank" rel="noreferrer">Open squad <ExternalLink size={12}/></a> : null}</div><ContentPlayerStrip items={consoleItems} /></> : null}
+          {pcItems.length ? <><div className="solution-label"><span>PC solution</span>{challenge.solution_pc_url ? <a href={challenge.solution_pc_url} target="_blank" rel="noreferrer">Open squad <ExternalLink size={12}/></a> : null}</div><ContentPlayerStrip items={pcItems} /></> : null}
+        </article>;
+      })}</div>}
+    </section>
+  </>;
 }

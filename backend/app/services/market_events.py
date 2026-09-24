@@ -110,15 +110,17 @@ async def get_event(pool: asyncpg.Pool, event_id: int) -> Optional[Dict[str, Any
         if not event:
             return None
         result = dict(event)
-        if result.get("payload") is not None:
+        if isinstance(result.get("payload"), str):
             result["payload"] = json.loads(result["payload"])
 
         if event["kind"] == "sbc":
             try:
                 details = await conn.fetchrow(
                     """
-                    SELECT d.set_name, d.category, d.total_cost_coins, d.repeatable,
+                    SELECT d.set_name, d.category, d.total_cost_coins, d.total_cost_pc,
+                           d.repeatable, d.repeat_count, d.repeat_refresh_seconds,
                            d.reward_card_id, d.reward_description, d.expires_at,
+                           d.image_url, d.futgg_url, d.detail_scraped_at,
                            rc.name AS reward_card_name, rc.rating AS reward_card_rating,
                            rc.version AS reward_card_version, rc.image_url AS reward_card_image_url,
                            rc.card_bg_image AS reward_card_bg_image,
@@ -139,7 +141,10 @@ async def get_event(pool: asyncpg.Pool, event_id: int) -> Optional[Dict[str, Any
             try:
                 challenges = await conn.fetch(
                     """
-                    SELECT id, challenge_name, requirements, estimated_cost_coins, display_order
+                    SELECT id, challenge_name, requirements, estimated_cost_coins,
+                           estimated_cost_pc, display_order, external_challenge_id,
+                           image_url, reward, solution_console_uuid, solution_pc_uuid,
+                           solution_console_url, solution_pc_url
                     FROM sbc_challenges WHERE event_id = $1
                     ORDER BY display_order ASC, id ASC
                     """,
@@ -150,8 +155,28 @@ async def get_event(pool: asyncpg.Pool, event_id: int) -> Optional[Dict[str, Any
             parsed_challenges = []
             for c in challenges:
                 cd = dict(c)
-                if cd.get("requirements") is not None:
+                if isinstance(cd.get("requirements"), str):
                     cd["requirements"] = json.loads(cd["requirements"])
+                if isinstance(cd.get("reward"), str):
+                    cd["reward"] = json.loads(cd["reward"])
+                try:
+                    solution_rows = await conn.fetch(
+                        """
+                        SELECT si.platform,si.squad_uuid,si.position_idx,si.player_ea_id,
+                               si.source_card_id,
+                               coalesce(p.display_name,p.name,'Player ' || si.player_ea_id::text) AS display_name,
+                               p.rating,p.primary_position,p.rarity,p.club,p.league,p.nation,
+                               p.card_image_url,p.card_image_stored_url,p.player_image_url
+                        FROM sbc_solution_items si
+                        LEFT JOIN futgg_players p ON p.source_card_id=si.source_card_id
+                        WHERE si.challenge_id=$1
+                        ORDER BY si.platform,si.position_idx
+                        """,
+                        c["id"],
+                    )
+                    cd["solution_items"] = [dict(item) for item in solution_rows]
+                except (asyncpg.exceptions.UndefinedColumnError, asyncpg.exceptions.UndefinedTableError):
+                    cd["solution_items"] = []
                 parsed_challenges.append(cd)
             result["sbc_challenges"] = parsed_challenges
 

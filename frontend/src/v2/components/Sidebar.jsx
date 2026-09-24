@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { ArrowUpRight, Briefcase, ChevronRight, Home, Lock, MoreHorizontal, Rocket, Server, SlidersHorizontal, Sparkles, Star, TrendingUp, User, Users, X } from "lucide-react";
+import { ArrowUpRight, Briefcase, ChevronRight, Grid, Home, Lock, MoreHorizontal, Puzzle, Rocket, Server, SlidersHorizontal, Sparkles, Star, TrendingUp, User, Users, X } from "lucide-react";
 import { useEntitlements } from "../../context/EntitlementsContext";
 import { useAuth } from "../../context/AuthContext";
 import { useAiChatAvailability } from "../hooks/useAiChatAvailability";
@@ -12,6 +12,8 @@ const ITEMS = [
   { to: "/opportunities", label: "Opportunities", short: "Opps", icon: TrendingUp, match: (p) => p.startsWith("/opportunities") },
   { to: "/trade-finder", label: "Trade Finder", short: "Finder", icon: SlidersHorizontal, match: (p) => p.startsWith("/trade-finder"), eliteFeature: "trade_finder", authOnly: true },
   { to: "/players", label: "Players", short: "Players", icon: Users, match: (p) => p.startsWith("/players") },
+  { to: "/sbc", label: "SBC Market", short: "SBC", icon: Puzzle, match: (p) => p.startsWith("/sbc"), mobileOverflow: true },
+  { to: "/gallery", label: "FUT Gallery", short: "Gallery", icon: Grid, match: (p) => p.startsWith("/gallery"), mobileOverflow: true },
   { to: "/release-price-rises", label: "Launch Movers", short: "Launch", icon: Rocket, match: (p) => p.startsWith("/release-price-rises"), mobileOverflow: true },
   { to: "/chat", label: "AI Chat", short: "Chat", icon: Sparkles, match: (p) => p.startsWith("/chat"), authOnly: true, requiresAiChat: true, eliteFeature: "ai_chat", mobileOverflow: true },
   { to: "/watchlist", label: "Watchlist", short: "Watch", icon: Star, match: (p) => p.startsWith("/watchlist"), authOnly: true, mobileOverflow: true },

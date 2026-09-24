@@ -1,7 +1,6 @@
-# Minimal dependency set for easysbc_sbc_sync.py (SBCSync) - see
-# Dockerfile.sbc. easysbc_sbc_sync.py and its one local import,
-# monitoring.py, together need only aiohttp (the EasySBC API is plain
-# JSON over HTTP - no browser, no HTML parsing) and asyncpg (Postgres).
+# Minimal dependency set for futgg_content_sync.py - see Dockerfile.sbc.
+# FUT.GG's server-rendered listing and JSON endpoints need only aiohttp;
+# asyncpg persists SBC, exact-squad and Gallery data.
 # Deliberately NOT the shared auto_sync/requirements.txt, which also
 # pulls in beautifulsoup4/requests/python-dotenv/playwright/tzdata for
 # the Playwright-based workers (PlayerSync, PriceSync) - none of which
