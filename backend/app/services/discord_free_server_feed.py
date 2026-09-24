@@ -33,8 +33,13 @@ FREE_MAX_POSTS_PER_DAY = 1
 # meaningful absolute-profit floor below all remain mandatory.
 FREE_MIN_CONFIDENCE = float(os.getenv("DISCORD_FREE_TRADE_MIN_CONFIDENCE", "0.60"))
 FREE_MIN_ROI = float(os.getenv("DISCORD_FREE_TRADE_MIN_ROI", "0.03"))
+# The Trade of the Day still requires confirmed completed-sales evidence,
+# but use the same evidence horizon as the canonical Opportunities surface.
+# SalesSync is intentionally capacity-limited and does not revisit every
+# eligible card inside six hours; a 6h Discord-only window can therefore
+# make the free feed silent even while the site has defensible opportunities.
 FREE_MAX_EVIDENCE_AGE_MINUTES = int(
-    os.getenv("DISCORD_FREE_TRADE_MAX_EVIDENCE_AGE_MINUTES", "360")
+    os.getenv("DISCORD_FREE_TRADE_MAX_EVIDENCE_AGE_MINUTES", str(48 * 60))
 )
 FREE_CURRENT_INTELLIGENCE_MAX_AGE_MINUTES = int(
     os.getenv("DISCORD_FREE_TRADE_INTELLIGENCE_MAX_AGE_MINUTES", "30")
