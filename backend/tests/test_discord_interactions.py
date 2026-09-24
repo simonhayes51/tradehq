@@ -840,3 +840,36 @@ def test_feed_help_explains_up_to_wording_and_no_quota_filling():
     text = str(reply["embeds"][0])
     assert "weak trade" in text.lower()
     assert "up to" in text.lower()
+
+
+# ---------------------------------------------------------------------------
+# Feed message components (interaction type 3)
+# ---------------------------------------------------------------------------
+
+
+def test_track_trade_button_creates_watchlist_target_alert(monkeypatch):
+    mock_track = AsyncMock(return_value={
+        "ok": True,
+        "player_name": "Sergio Agüero",
+        "sell_target": 125000,
+        "platform": "ps",
+    })
+    monkeypatch.setattr(data, "track_trade", mock_track)
+
+    result = run(interactions.handle_component("track_trade:153079:100000:125000:ps", "123456"))
+    assert result["type"] == interactions.CHANNEL_MESSAGE_WITH_SOURCE
+    assert result["data"]["flags"] == EPHEMERAL
+    assert "125,000 coins" in result["data"]["content"]
+    mock_track.assert_awaited_once_with(
+        "123456", card_id=153079, buy_price=100000, sell_target=125000, platform="ps"
+    )
+
+
+def test_track_trade_button_requires_linked_account(monkeypatch):
+    mock_track = AsyncMock(side_effect=data.NotLinked())
+    monkeypatch.setattr(data, "track_trade", mock_track)
+
+    result = run(interactions.handle_component("track_trade:153079:100000:125000:ps", "123456"))
+    assert result["data"]["flags"] == EPHEMERAL
+    assert "Link/sign in" in result["data"]["content"]
+    assert result["data"]["components"][0]["components"][0]["label"] == "Open EAFC.Live"

@@ -507,6 +507,9 @@ class TestAggregatePublishedOutcomes:
         assert result["target_hits"] == 15
         assert result["target_not_reached"] == 5
         assert result["target_hit_rate_pct"] == 75.0
+        assert result["target_hit_within_24h_rate_pct"] == 75.0
+        assert result["target_hit_within_72h_rate_pct"] == 75.0
+        assert result["target_expiry_rate_pct"] == 25.0
         # Every published row is, by construction, entered - the publish
         # pipeline has never tracked "recommended but never entered".
         assert result["entry_reached"] == 20

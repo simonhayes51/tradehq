@@ -17,6 +17,8 @@ Handles three interaction types:
                                         database/engine work never risks
                                         missing Discord's 3-second
                                         response deadline
+  - MESSAGE_COMPONENT (3)             -> handles signed feed buttons such
+                                        as "Track this trade"
   - APPLICATION_COMMAND_AUTOCOMPLETE (4) -> answered synchronously (type 8)
                                         - Discord has no deferred form of
                                         autocomplete, so the underlying
@@ -58,6 +60,7 @@ router = APIRouter(prefix="/api/discord/interactions", tags=["discord"])
 
 PING = 1
 APPLICATION_COMMAND = 2
+MESSAGE_COMPONENT = 3
 APPLICATION_COMMAND_AUTOCOMPLETE = 4
 
 PONG = 1
@@ -164,6 +167,92 @@ async def handle_autocomplete(name: str, options: List[Dict[str, Any]]) -> Dict[
     rows = await data.search_cards(query, limit=25)
     choices = [embeds.autocomplete_choice(r) for r in rows]
     return {"type": APPLICATION_COMMAND_AUTOCOMPLETE_RESULT, "data": {"choices": choices}}
+
+
+async def handle_component(custom_id: str, discord_id: Optional[str]) -> Dict[str, Any]:
+    """Handle signed Discord message buttons.
+
+    Mutating actions are only accepted from Discord's already signature-
+    verified interactions endpoint. The custom id contains public trade
+    numbers only; identity always comes from the signed interaction member.
+    """
+    if not custom_id.startswith("track_trade:"):
+        return {
+            "type": CHANNEL_MESSAGE_WITH_SOURCE,
+            "data": {"content": "That button is no longer supported.", "flags": EPHEMERAL},
+        }
+    if not discord_id:
+        return {
+            "type": CHANNEL_MESSAGE_WITH_SOURCE,
+            "data": {"content": "I couldn't identify your Discord account.", "flags": EPHEMERAL},
+        }
+    if _rate_limited(discord_id, "track_trade"):
+        return {
+            "type": CHANNEL_MESSAGE_WITH_SOURCE,
+            "data": {"content": "You're using that button too quickly — try again in a moment.", "flags": EPHEMERAL},
+        }
+
+    try:
+        _prefix, card_raw, buy_raw, target_raw, platform = custom_id.split(":", 4)
+        card_id, buy_price, sell_target = int(card_raw), int(buy_raw), int(target_raw)
+    except (TypeError, ValueError):
+        return {
+            "type": CHANNEL_MESSAGE_WITH_SOURCE,
+            "data": {"content": "That trade button is invalid or has expired.", "flags": EPHEMERAL},
+        }
+
+    try:
+        result = await data.track_trade(
+            str(discord_id),
+            card_id=card_id,
+            buy_price=buy_price,
+            sell_target=sell_target,
+            platform=platform,
+        )
+    except data.NotLinked:
+        return {
+            "type": CHANNEL_MESSAGE_WITH_SOURCE,
+            "data": {
+                "content": "Link/sign in to EAFC.Live with this Discord account first, then press the button again.",
+                "flags": EPHEMERAL,
+                "components": [embeds.link_row("Open EAFC.Live", _app_url())],
+            },
+        }
+    except Exception:
+        log.exception("Track-trade button failed: discord_id=%s card_id=%s", discord_id, card_id)
+        return {
+            "type": CHANNEL_MESSAGE_WITH_SOURCE,
+            "data": {"content": "Couldn't start tracking that trade just now. Try again shortly.", "flags": EPHEMERAL},
+        }
+
+    if not result.get("ok"):
+        reason = result.get("reason")
+        if reason in {"watchlist_limit", "alerts_limit"}:
+            noun = "watchlist" if reason == "watchlist_limit" else "price-alert"
+            return {
+                "type": CHANNEL_MESSAGE_WITH_SOURCE,
+                "data": {
+                    "content": f"Your {noun} limit is full. Manage it in EAFC.Live, then try again.",
+                    "flags": EPHEMERAL,
+                    "components": [embeds.link_row("Manage watchlist", f"{_app_url().rstrip('/')}/#/watchlist")],
+                },
+            }
+        return {
+            "type": CHANNEL_MESSAGE_WITH_SOURCE,
+            "data": {"content": "Couldn't track that trade because its market data is no longer valid.", "flags": EPHEMERAL},
+        }
+
+    return {
+        "type": CHANNEL_MESSAGE_WITH_SOURCE,
+        "data": {
+            "content": (
+                f"🔔 **{result['player_name']}** is now tracked. "
+                f"I'll DM you when it reaches **{result['sell_target']:,} coins**."
+            ),
+            "flags": EPHEMERAL,
+            "components": [embeds.link_row("Open watchlist", f"{_app_url().rstrip('/')}/#/watchlist")],
+        },
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -429,6 +518,10 @@ async def interactions(request: Request, background_tasks: BackgroundTasks) -> J
         if _rate_limited(discord_id, name, autocomplete=True):
             return JSONResponse({"type": APPLICATION_COMMAND_AUTOCOMPLETE_RESULT, "data": {"choices": []}})
         return JSONResponse(await handle_autocomplete(name, options))
+
+    if interaction_type == MESSAGE_COMPONENT:
+        custom_id = str(data_block.get("custom_id") or "")
+        return JSONResponse(await handle_component(custom_id, str(discord_id) if discord_id else None))
 
     if interaction_type != APPLICATION_COMMAND:
         return JSONResponse({"type": CHANNEL_MESSAGE_WITH_SOURCE, "data": {"content": "Unsupported interaction type.", "flags": EPHEMERAL}})

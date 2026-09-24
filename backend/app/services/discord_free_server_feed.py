@@ -21,11 +21,14 @@ import asyncpg
 from app.db import get_core_pool
 from app.services.discord_daily_proof import DailyProofSchedule
 from app.services.discord_integration import DiscordClient
+from app.services import discord_embeds as embeds
 
 log = logging.getLogger("discord_free_server_feed")
 
 FREE_PLAN = "free"
 FREE_MAX_POSTS_PER_DAY = 1
+FREE_MIN_CONFIDENCE = float(os.getenv("DISCORD_FREE_TRADE_MIN_CONFIDENCE", "0.80"))
+FREE_MIN_ROI = float(os.getenv("DISCORD_FREE_TRADE_MIN_ROI", "0.06"))
 FREE_MAX_EVIDENCE_AGE_MINUTES = int(
     os.getenv("DISCORD_FREE_TRADE_MAX_EVIDENCE_AGE_MINUTES", "360")
 )
@@ -305,6 +308,8 @@ async def _select_candidate(conn) -> Optional[dict[str, Any]]:
           AND c.expected_profit_after_tax IS NOT NULL
           AND c.expected_roi IS NOT NULL
           AND c.confidence_score IS NOT NULL
+          AND c.confidence_score >= $3
+          AND c.expected_roi >= $4
           AND m.current_bin = c.current_bin
           AND m.is_tradeable IS DISTINCT FROM FALSE
           AND c.expected_profit_after_tax >= GREATEST(
@@ -320,6 +325,8 @@ async def _select_candidate(conn) -> Optional[dict[str, Any]]:
         """,
         FREE_CURRENT_INTELLIGENCE_MAX_AGE_MINUTES,
         FREE_MAX_EVIDENCE_AGE_MINUTES,
+        FREE_MIN_CONFIDENCE,
+        FREE_MIN_ROI,
     )
     return dict(row) if row else None
 
@@ -401,11 +408,20 @@ async def publish_free_trade_of_day(
         if post_id is None:
             return False
 
+        app_url = os.getenv("FRONTEND_URL", "https://app.eafc.live")
+        components = [embeds.track_trade_row(
+            card_id=int(payload["source_card_id"]),
+            buy_price=int(Decimal(str(payload["buy_price"]))),
+            sell_target=int(Decimal(str(payload["sell_target"]))),
+            platform="ps",
+            url=f"{app_url.rstrip('/')}/#/players/{payload['source_card_id']}?src=discord_feed",
+        )]
         status, body = await client.post_embed(
             server.feed_channel_id,
             embed,
             nonce=dedup_key[:25],
             enforce_nonce=True,
+            components=components,
         )
         ok = status in (200, 201)
         message_id = body.get("id") if ok and isinstance(body, dict) else None

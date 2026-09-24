@@ -357,3 +357,21 @@ class TestProvenance:
             "max_favourable_excursion", "max_adverse_excursion",
             "outcome_status", "grader_version",
         }
+
+
+def test_72h_horizon_can_hit_after_the_old_24h_window():
+    grade = grade_recommendation(
+        horizon="72h",
+        evaluated_at=T0,
+        buy_price=100_000,
+        sell_target=120_000,
+        observations=[
+            (99_000, T0 + timedelta(minutes=10)),
+            (105_000, T0 + timedelta(hours=24)),
+            (121_000, T0 + timedelta(hours=48)),
+        ],
+    )
+    assert grade.target_hit is True
+    assert grade.outcome_status == TARGET_HIT
+    assert grade.window_end == T0 + timedelta(hours=72)
+    assert grade.minutes_to_target > 24 * 60

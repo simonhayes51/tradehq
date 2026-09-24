@@ -282,7 +282,7 @@ def _rate(numerator: Optional[int], denominator: Optional[int]) -> Optional[floa
 
 
 async def track_record(
-    pool, *, horizon: str = "24h", window_days: int = 90,
+    pool, *, horizon: str = "72h", window_days: int = 90,
     min_sample: int = MIN_SAMPLE_FOR_RATE, include_breakdowns: bool = True,
 ) -> Dict[str, Any]:
     """Aggregate graded outcomes into the public track record.
@@ -502,7 +502,7 @@ def _outcome_row_to_dict(row) -> Dict[str, Any]:
 
 
 async def recent_outcomes(
-    pool, *, horizon: str = "24h", window_days: int = 90,
+    pool, *, horizon: str = "72h", window_days: int = 90,
     result_filter: str = "all", limit: int = 40,
 ) -> List[Dict[str, Any]]:
     """Individual graded outcome rows, most recently graded first, joined

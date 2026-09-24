@@ -56,17 +56,17 @@ function daysSince(iso) {
 // loss split look better than the record actually is.
 const RESULT_FILTERS = [
   ["all", "All"],
-  ["wins", "Up at 24h"],
-  ["losses", "Down at 24h"],
+  ["wins", "Target hit"],
+  ["losses", "Target not reached"],
   ["no_entry", "Never entered"],
 ];
 
 const RESULT_COPY = {
   target_hit: { text: "Target hit", tone: "positive" },
   target_miss: { text: "Target not reached", tone: "" },
-  win: { text: "Up at 24h", tone: "positive" },
-  loss: { text: "Down at 24h", tone: "negative" },
-  flat: { text: "Flat at 24h", tone: "" },
+  win: { text: "Up at 72h", tone: "positive" },
+  loss: { text: "Target not reached", tone: "" },
+  flat: { text: "Target not reached", tone: "" },
   no_entry: { text: "No entry", tone: "muted" },
 };
 
@@ -296,7 +296,10 @@ export default function TrackRecordPanel() {
           <div className="track-record-grid compact-grid">
             <StatTile label="Target hits" value={targetHits.toLocaleString()} tone="positive" />
             <StatTile label="Target not reached" value={targetMisses.toLocaleString()} />
-            <StatTile label="Target hit rate" value={fmtPct(targetHitRate)} tone={targetHitRate >= 50 ? "positive" : ""} />
+            <StatTile label="Hit within 24h" value={fmtPct(published.target_hit_within_24h_rate_pct)} />
+            <StatTile label="Hit within 72h" value={fmtPct(published.target_hit_within_72h_rate_pct ?? targetHitRate)} tone={targetHitRate >= 50 ? "positive" : ""} />
+            <StatTile label="72h expiry rate" value={fmtPct(published.target_expiry_rate_pct)} />
+            <StatTile label="Median drawdown" value={fmtPct(published.median_max_drawdown_pct)} />
             <StatTile label="Calls tracked" value={published.published_opportunities.toLocaleString()} />
             <StatTile label="Median time to target" value={fmtMinutes(published.median_time_to_target_minutes)} />
           </div>
@@ -355,7 +358,7 @@ export default function TrackRecordPanel() {
         <p className="track-record-disclosure small">
           A different, much larger technical dataset from the published figures above: every buy signal the
           engine graded in this window, including ones that were never sent to anyone. Useful for
-          model checking, not a record of user trades. "Up" and "down" describe the 24-hour market
+          model checking, not a record of user trades. "Up" and "down" describe the 72-hour market
           mark only, not what any user made. Shows {ledgerLimit} rows at a time.
         </p>
         {recentQuery.isLoading ? (

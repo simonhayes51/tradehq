@@ -487,10 +487,10 @@ def _ledger_item(row: dict[str, Any]) -> dict[str, Any]:
     best_profit = (Decimal(str(peak_price)) * Decimal("0.95") - entry) if peak_price is not None else None
     return {
         "snapshot_id": int(row["snapshot_id"]),
-        # _SELECT_DAILY_OUTCOMES hardcodes horizon='24h' in its WHERE
+        # _SELECT_DAILY_OUTCOMES hardcodes horizon='72h' in its WHERE
         # clause and doesn't select the column itself, so this is a
         # constant, not a read of row data.
-        "outcome_id": f"{row['snapshot_id']}:24h",
+        "outcome_id": f"{row['snapshot_id']}:72h",
         "source_card_id": int(row["outcome_source_card_id"]),
         "player_name": str(row["name"]),
         "card_rating": int(row["card_rating"]) if row.get("card_rating") is not None else None,
@@ -531,6 +531,15 @@ def aggregate_published_outcomes(rows: list[dict[str, Any]]) -> dict[str, Any]:
         int(row["minutes_to_target"]) for row in eligible
         if row.get("target_hit") and row.get("minutes_to_target") is not None
     ]
+    hits_within_24h = [
+        row for row in target_hits
+        if row.get("minutes_to_target") is not None and int(row["minutes_to_target"]) <= 24 * 60
+    ]
+    drawdowns = [
+        abs(min(Decimal("0"), Decimal(str(row["max_adverse_excursion"])))) * Decimal("100")
+        for row in eligible
+        if row.get("max_adverse_excursion") is not None
+    ]
     total = len(eligible)
     has_enough = total >= PROOF_MIN_SAMPLE
 
@@ -543,6 +552,11 @@ def aggregate_published_outcomes(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "target_hits": len(target_hits),
         "target_not_reached": len(target_misses),
         "target_hit_rate_pct": round(100 * len(target_hits) / total, 1) if has_enough else None,
+        "target_hits_within_24h": len(hits_within_24h),
+        "target_hit_within_24h_rate_pct": round(100 * len(hits_within_24h) / total, 1) if has_enough else None,
+        "target_hit_within_72h_rate_pct": round(100 * len(target_hits) / total, 1) if has_enough else None,
+        "target_expiry_rate_pct": round(100 * len(target_misses) / total, 1) if has_enough else None,
+        "median_max_drawdown_pct": round(float(median(drawdowns)), 1) if has_enough and drawdowns else None,
         "target_profit_after_tax": float(sum(target_profits, Decimal("0"))) if has_enough else None,
         "median_target_profit_after_tax": float(median(target_profits)) if has_enough and target_profits else None,
         "median_target_roi_pct": round(float(median(target_rois)) * 100, 2) if has_enough and target_rois else None,
@@ -557,7 +571,7 @@ def _coins(value: Any, *, signed: bool = False) -> str:
 
 def _result_line(item: dict[str, Any], rank: Optional[int] = None) -> str:
     prefix = f"{rank}. " if rank is not None else ""
-    exit_label = "Target exit" if item["exit_type"] == "target_exit" else "24h mark"
+    exit_label = "Target exit" if item["exit_type"] == "target_exit" else "72h mark"
     roi = Decimal(str(item["roi"])) * Decimal("100")
     version = " ".join(
         str(value) for value in (item.get("card_rating"), item.get("rarity")) if value
@@ -630,7 +644,7 @@ def build_daily_proof_embed(report: dict[str, Any], app_url: str) -> dict[str, A
         {
             "name": "ABOUT THESE RESULTS",
             "value": (
-                "Recorded 24-hour outcomes for independent EAFC.Live opportunities. "
+                "Recorded 72-hour outcomes for independent EAFC.Live opportunities. "
                 "They are not an actual user portfolio and do not assume every opportunity "
                 "was purchased. Past performance does not guarantee future results."
             ),
@@ -696,7 +710,7 @@ _SELECT_DAILY_OUTCOMES = """
     JOIN discord_integration_state st ON st.singleton=TRUE
     WHERE st.daily_proof_enabled_at IS NOT NULL
       AND s.evaluated_at >= st.daily_proof_enabled_at
-      AND o.horizon='24h'
+      AND o.horizon='72h'
       AND o.graded_at >= $1 AND o.graded_at < $2
       AND o.outcome_status = ANY($3::text[])
       AND o.observation_count >= 2

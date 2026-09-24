@@ -136,6 +136,123 @@ async def count_alerts(user_id: str) -> int:
     return int(await pool.fetchval("SELECT COUNT(*) FROM watchlist_alerts WHERE user_id=$1", user_id))
 
 
+async def track_trade(
+    discord_id: str,
+    *,
+    card_id: int,
+    buy_price: int,
+    sell_target: int,
+    platform: str = "ps",
+) -> dict[str, Any]:
+    """Add a Discord feed call to the caller's real watchlist and create a
+    DM price alert at the published sell target.
+
+    This deliberately writes to the SAME watchlist/watchlist_alerts tables as
+    the website. It never creates a Discord-only shadow watchlist.
+    """
+    user_id = await resolve_user_id(discord_id)
+    if not user_id:
+        raise NotLinked()
+
+    card = await get_card(int(card_id))
+    if not card:
+        return {"ok": False, "reason": "card_not_found"}
+
+    platform = str(platform or "ps").lower()
+    if platform not in {"ps", "xbox", "pc"}:
+        platform = "ps"
+    buy_price = int(buy_price)
+    sell_target = int(sell_target)
+    if buy_price <= 0 or sell_target <= buy_price:
+        return {"ok": False, "reason": "invalid_trade"}
+
+    from app.auth.entitlements import _limits_for, resolve_user_tier
+
+    core_pool = await get_core_pool()
+    tier = await resolve_user_tier(core_pool, user_id, discord_id=str(discord_id))
+    limits = _limits_for(tier)
+    watch_pool = await get_watchlist_pool()
+
+    existing_watch = await watch_pool.fetchval(
+        "SELECT id FROM watchlist WHERE user_id=$1 AND card_id=$2 AND platform=$3",
+        user_id, int(card_id), platform,
+    )
+    if existing_watch is None:
+        used = int(await watch_pool.fetchval("SELECT COUNT(*) FROM watchlist WHERE user_id=$1", user_id) or 0)
+        if used >= int(limits["watchlist_max"]):
+            return {"ok": False, "reason": "watchlist_limit", "limit": int(limits["watchlist_max"])}
+
+    existing_alert = await watch_pool.fetchval(
+        """SELECT id FROM watchlist_alerts
+           WHERE user_id=$1 AND card_id=$2 AND platform=$3 AND metric='price'""",
+        user_id, int(card_id), platform,
+    )
+    if existing_alert is None:
+        used_alerts = int(await watch_pool.fetchval(
+            "SELECT COUNT(*) FROM watchlist_alerts WHERE user_id=$1", user_id
+        ) or 0)
+        if used_alerts >= int(limits["alerts_max"]):
+            return {"ok": False, "reason": "alerts_limit", "limit": int(limits["alerts_max"])}
+
+    current_price = card.get("current_bin")
+    last_price = int(current_price) if isinstance(current_price, (int, float)) and current_price > 0 else buy_price
+    name = card.get("display_name") or card.get("name") or f"Card {card_id}"
+    version = card.get("rarity") or card.get("version")
+    await watch_pool.execute(
+        """
+        INSERT INTO watchlist (
+            user_id, card_id, player_name, version, platform,
+            started_price, last_price, last_checked, notes, source
+        )
+        VALUES ($1,$2,$3,$4,$5,$6,$7,NOW(),$8,'futgg')
+        ON CONFLICT (user_id, card_id, platform) DO UPDATE SET
+            player_name=EXCLUDED.player_name,
+            version=EXCLUDED.version,
+            last_price=EXCLUDED.last_price,
+            last_checked=NOW(),
+            notes=COALESCE(watchlist.notes, EXCLUDED.notes),
+            source='futgg'
+        """,
+        user_id, int(card_id), str(name), version, platform,
+        buy_price, last_price,
+        f"Discord trade target: {sell_target:,}",
+    )
+
+    # Existing alert machinery is percentage-based. A fixed reference equal
+    # to the published buy price plus this exact rise percentage fires at the
+    # published target. fall_pct=100 prevents an unrelated downside DM; the
+    # button promises a target notification, not a stop-loss call.
+    rise_pct = ((sell_target - buy_price) / buy_price) * 100.0
+    await watch_pool.execute(
+        """
+        INSERT INTO watchlist_alerts (
+            user_id, user_discord_id, card_id, platform, metric, source,
+            ref_mode, ref_price, rise_pct, fall_pct, cooloff_minutes,
+            prefer_dm, fallback_channel_id
+        )
+        VALUES ($1,$2,$3,$4,'price','futgg','fixed',$5,$6,100,43200,TRUE,NULL)
+        ON CONFLICT (user_id, card_id, platform, metric) DO UPDATE SET
+            user_discord_id=EXCLUDED.user_discord_id,
+            source='futgg',
+            ref_mode='fixed',
+            ref_price=EXCLUDED.ref_price,
+            rise_pct=EXCLUDED.rise_pct,
+            fall_pct=100,
+            cooloff_minutes=43200,
+            prefer_dm=TRUE,
+            fallback_channel_id=NULL,
+            last_alert_at=NULL
+        """,
+        user_id, str(discord_id), int(card_id), platform, buy_price, rise_pct,
+    )
+    return {
+        "ok": True,
+        "player_name": str(name),
+        "sell_target": sell_target,
+        "platform": platform,
+    }
+
+
 async def get_trades(user_id: str, *, limit: int = 5) -> list[dict[str, Any]]:
     """profit/version/timestamp are declared NOT NULL in
     migrations/010_consolidate_core_bootstrap.sql, but that migration is a

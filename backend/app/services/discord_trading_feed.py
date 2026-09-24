@@ -72,6 +72,14 @@ PROMO_MESSAGE = (
 # to reconstruct the live Premium feed.
 FREE_OVERVIEW_BEST_TRADES_MAX = 3
 
+# Paid/partner feeds are a showcase, not a quota-filling firehose. Server
+# preferences may make these stricter, never looser. "Up to N/day" is a
+# ceiling: if no candidate clears these quality gates, nothing is posted.
+DISCORD_FEED_MIN_CONFIDENCE = float(os.getenv("DISCORD_FEED_MIN_CONFIDENCE", "0.78"))
+DISCORD_FEED_MIN_ROI = float(os.getenv("DISCORD_FEED_MIN_ROI", "0.06"))
+DISCORD_FEED_MIN_LIQUIDITY = float(os.getenv("DISCORD_FEED_MIN_LIQUIDITY", "0.25"))
+DISCORD_FEED_MAX_EVIDENCE_AGE_MINUTES = int(os.getenv("DISCORD_FEED_MAX_EVIDENCE_AGE_MINUTES", "180"))
+
 
 def feed_globally_enabled() -> bool:
     return (os.getenv("DISCORD_TRADING_FEED_ENABLED") or "0").strip() == "1"
@@ -632,13 +640,18 @@ def build_opportunity_post_embed(row: dict[str, Any], ci: Any, *, test: bool = F
         embed["thumbnail"] = {"url": thumbnail}
     components: list[dict[str, Any]] = []
     card_id = row.get("source_card_id")
-    if not test and card_id is not None and int(card_id) > 0:
-        # ?src=discord_feed lets PlayerPage.jsx recognise a signed-out
-        # visitor already saw this exact trade's buy/sell numbers here in
-        # Discord, so its account-signup prompt can say so instead of
-        # reading as re-hiding what was just given away for free.
-        components = [embeds.link_row(
-            "View in EAFC.Live", f"{app_url.rstrip('/')}/#/players/{card_id}?src=discord_feed"
+    if (
+        not test and card_id is not None and int(card_id) > 0
+        and buy_ceiling is not None and sell_target is not None
+    ):
+        # The interaction button writes to the same live watchlist + alert
+        # tables as the site. The link remains beside it for full analysis.
+        components = [embeds.track_trade_row(
+            card_id=int(card_id),
+            buy_price=int(buy_ceiling),
+            sell_target=int(sell_target),
+            platform="ps",
+            url=f"{app_url.rstrip('/')}/#/players/{card_id}?src=discord_feed",
         )]
     return embed, components
 
@@ -647,23 +660,40 @@ def build_opportunity_update_embed(post: dict[str, Any], outcome: dict[str, Any]
     status = str(outcome.get("outcome_status") or "")
     label = {
         "target_hit": "🎯 TARGET HIT",
+        "target_not_reached": "⏱️ TARGET NOT REACHED",
+        "entry_not_reached": "ENTRY NOT REACHED",
+        # Retained for synthetic/admin test compatibility. Live feed expiry
+        # no longer labels an unrealised market mark as a user's loss.
         "loss_unrealised": "CLOSED — LOSS",
         "downside_hit": "CLOSED — STOP",
     }.get(status, "UPDATE")
     profit = outcome.get("net_profit_after_tax")
+    if status == "target_not_reached":
+        result_text = "Sell target was not reached within the 72-hour tracking window."
+    elif status == "entry_not_reached":
+        result_text = "The published MAX BUY was not observed inside the entry window."
+    else:
+        result_text = f"{embeds.coins(profit, signed=True)} coins" if profit is not None else "n/a"
+    fields = [{"name": "RESULT", "value": result_text, "inline": False}]
+    minutes_to_target = outcome.get("minutes_to_target")
+    if status == "target_hit" and minutes_to_target is not None:
+        minutes = int(minutes_to_target)
+        hours, mins = divmod(minutes, 60)
+        hold = f"{hours}h {mins}m" if hours else f"{mins}m"
+        fields.append({"name": "TIME TO TARGET", "value": hold, "inline": True})
     app_url = os.getenv("FRONTEND_URL", "https://app.eafc.live")
+    if status == "target_hit":
+        color = embeds.BRAND_COLOR
+    elif status in {"target_not_reached", "entry_not_reached"}:
+        color = 0xEAB308  # neutral amber: closed/expired, not a claimed loss
+    else:
+        color = embeds.BRAND_COLOR_DANGER
     return {
         "title": f"{post.get('name', 'Opportunity')} — {label}",
-        "color": embeds.BRAND_COLOR if status == "target_hit" else embeds.BRAND_COLOR_DANGER,
+        "color": color,
         "author": embeds.brand_author(app_url),
-        "fields": [
-            {
-                "name": "RESULT",
-                "value": f"{embeds.coins(profit, signed=True)} coins" if profit is not None else "n/a",
-                "inline": False,
-            }
-        ],
-        "footer": {"text": "EAFC.Live"},
+        "fields": fields,
+        "footer": {"text": "EAFC.Live — server-feed results are tracked for 72 hours."},
         "timestamp": _now().isoformat(),
     }
 
@@ -881,8 +911,14 @@ async def publish_live_opportunities(pool, server: ServerRecord, client: Optiona
     scored = await _score_and_filter(
         candidate_rows,
         signals={"buy", "strong_buy"},
-        min_confidence=float(settings["min_confidence"]),
+        # Per-server settings can demand more quality, never less than the
+        # EAFC.Live feed floor. Daily package counts remain ceilings only.
+        min_confidence=max(float(settings["min_confidence"]), DISCORD_FEED_MIN_CONFIDENCE),
         min_expected_profit=float(settings["min_expected_profit"]),
+        min_roi=DISCORD_FEED_MIN_ROI,
+        min_liquidity=DISCORD_FEED_MIN_LIQUIDITY,
+        require_confirmed_sales=True,
+        max_evidence_age_minutes=DISCORD_FEED_MAX_EVIDENCE_AGE_MINUTES,
         sales_by_card=sales_by_card,
     )
     scored.sort(
@@ -980,10 +1016,10 @@ async def publish_live_opportunities(pool, server: ServerRecord, client: Optiona
 
 
 #: How long after posting an opportunity we watch its own actual price
-#: history for a target hit. Target hits are posted immediately. Anything
-#: else is closed silently after the window because users choose their own
-#: exit and a later market mark cannot truthfully be called their loss.
-OPPORTUNITY_UPDATE_HORIZON = "24h"
+#: history for a target hit. Target hits are posted immediately. At the end
+#: of the window an honest "Target not reached" result is posted; it is NOT
+#: labelled a loss because EAFC.Live cannot know the user's actual exit.
+OPPORTUNITY_UPDATE_HORIZON = "72h"
 
 
 async def publish_opportunity_updates(pool, server: ServerRecord, client: Optional[DiscordClient] = None) -> int:
@@ -1031,7 +1067,7 @@ async def publish_opportunity_updates(pool, server: ServerRecord, client: Option
                     AND u.dedup_key = p.dedup_key
               )
             ORDER BY p.sent_at DESC
-            LIMIT 25
+            LIMIT 100
             """,
             server.id,
         )
@@ -1080,19 +1116,23 @@ async def publish_opportunity_updates(pool, server: ServerRecord, client: Option
                 )
                 if not entry_was_available:
                     if _now() >= entry_expires_at:
-                        await conn.fetchval(
-                            """
-                            INSERT INTO discord_server_posts
-                                (server_id, kind, dedup_key, status, payload, last_error)
-                            VALUES ($1, 'opportunity_update', $2, 'abandoned', $3::jsonb,
-                                    'entry_not_reached_before_expiry_no_discord_post')
-                            ON CONFLICT (server_id, kind, dedup_key) DO NOTHING
-                            RETURNING id
-                            """,
-                            server.id,
-                            row["dedup_key"],
-                            json.dumps({"outcome_status": "entry_not_reached"}),
+                        outcome = {"outcome_status": "entry_not_reached", "net_profit_after_tax": None}
+                        update_post_id = await _record_post(
+                            conn, server.id, "opportunity_update", row["dedup_key"], outcome
                         )
+                        if update_post_id is not None:
+                            embed = build_opportunity_update_embed({"name": payload.get("name")}, outcome)
+                            status, body = await client.post_embed(
+                                target_channel_id, embed, nonce=row["dedup_key"][:25], enforce_nonce=True
+                            )
+                            ok = status in (200, 201)
+                            message_id = body.get("id") if ok and isinstance(body, dict) else None
+                            await _finish_post(
+                                conn, update_post_id, ok=ok, message_id=message_id,
+                                error=None if ok else f"discord_http_{status or 'network'}",
+                            )
+                            if ok:
+                                updated += 1
                     continue
             grade = grade_recommendation(
                 horizon=OPPORTUNITY_UPDATE_HORIZON,
@@ -1104,22 +1144,26 @@ async def publish_opportunity_updates(pool, server: ServerRecord, client: Option
             window_elapsed = _now() >= grade.window_end
             if not grade.target_hit:
                 if window_elapsed:
-                    # Mark tracking complete without posting to Discord.
-                    # The final 24h market mark is not a user's sale price,
-                    # so labelling it LOSS/STOP caused avoidable confusion.
-                    await conn.fetchval(
-                        """
-                        INSERT INTO discord_server_posts
-                            (server_id, kind, dedup_key, status, payload, last_error)
-                        VALUES ($1, 'opportunity_update', $2, 'abandoned', $3::jsonb,
-                                'target_not_reached_no_discord_post')
-                        ON CONFLICT (server_id, kind, dedup_key) DO NOTHING
-                        RETURNING id
-                        """,
-                        server.id,
-                        row["dedup_key"],
-                        json.dumps({"outcome_status": "target_not_reached"}),
+                    # Close every published call visibly. This is deliberately
+                    # neutral: missing the target inside 72h is not proof that
+                    # a user sold at a loss (or sold at all).
+                    outcome = {"outcome_status": "target_not_reached", "net_profit_after_tax": None}
+                    update_post_id = await _record_post(
+                        conn, server.id, "opportunity_update", row["dedup_key"], outcome
                     )
+                    if update_post_id is not None:
+                        embed = build_opportunity_update_embed({"name": payload.get("name")}, outcome)
+                        status, body = await client.post_embed(
+                            target_channel_id, embed, nonce=row["dedup_key"][:25], enforce_nonce=True
+                        )
+                        ok = status in (200, 201)
+                        message_id = body.get("id") if ok and isinstance(body, dict) else None
+                        await _finish_post(
+                            conn, update_post_id, ok=ok, message_id=message_id,
+                            error=None if ok else f"discord_http_{status or 'network'}",
+                        )
+                        if ok:
+                            updated += 1
                 continue
             if grade.target_hit:
                 # grade.net_profit_after_tax is computed from grade.entry_
@@ -1142,7 +1186,11 @@ async def publish_opportunity_updates(pool, server: ServerRecord, client: Option
                 # target) - report THAT, not a re-derived figure that can
                 # be thrown off by a single noisy observation.
                 net_profit_after_tax = tm.net_profit(Decimal(str(sell_target)), Decimal(str(buy_price)))
-            outcome = {"outcome_status": grade.outcome_status, "net_profit_after_tax": net_profit_after_tax}
+            outcome = {
+                "outcome_status": grade.outcome_status,
+                "net_profit_after_tax": net_profit_after_tax,
+                "minutes_to_target": grade.minutes_to_target,
+            }
             update_post_id = await _record_post(conn, server.id, "opportunity_update", row["dedup_key"], outcome)
             if update_post_id is None:
                 continue
