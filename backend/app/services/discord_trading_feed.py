@@ -82,8 +82,17 @@ FREE_OVERVIEW_BEST_TRADES_MAX = 3
 # product's own opportunity definition and could starve a healthy feed.
 DISCORD_FEED_MIN_CONFIDENCE = float(os.getenv("DISCORD_FEED_MIN_CONFIDENCE", "0.60"))
 DISCORD_FEED_MIN_ROI = float(os.getenv("DISCORD_FEED_MIN_ROI", "0.00"))
-DISCORD_FEED_MIN_LIQUIDITY = float(os.getenv("DISCORD_FEED_MIN_LIQUIDITY", "0.25"))
-DISCORD_FEED_MAX_EVIDENCE_AGE_MINUTES = int(os.getenv("DISCORD_FEED_MAX_EVIDENCE_AGE_MINUTES", "180"))
+# Keep Discord aligned with the canonical Opportunities surface for market
+# evidence. SalesSync does not revisit every card every three hours, so a
+# Discord-only 180-minute evidence window can reject otherwise identical
+# opportunities for most of the day. The site deliberately uses a 48-hour
+# confirmed-sales window plus a 0.30 liquidity floor for this reason.
+# Environment overrides remain available for operators who intentionally
+# want a stricter server-feed policy.
+DISCORD_FEED_MIN_LIQUIDITY = float(os.getenv("DISCORD_FEED_MIN_LIQUIDITY", "0.30"))
+DISCORD_FEED_MAX_EVIDENCE_AGE_MINUTES = int(
+    os.getenv("DISCORD_FEED_MAX_EVIDENCE_AGE_MINUTES", str(48 * 60))
+)
 
 
 def feed_globally_enabled() -> bool:
