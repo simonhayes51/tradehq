@@ -109,11 +109,11 @@ describe("TrackRecordPanel", () => {
     const published = {
       ...PUBLISHED_WITH_DATA,
       recent_target_hits: [
-        { outcome_id: "1:24h", player_name: "Winner Card", card_rating: 91, rarity: "gold_rare",
+        { outcome_id: "1:72h", player_name: "Winner Card", card_rating: 91, rarity: "gold_rare",
           detected_at: "2026-08-01T00:00:00Z", entry_price: 50000, net_profit_after_tax: 5200, realised_roi_pct: 10.4 },
       ],
       recent_target_misses: [
-        { outcome_id: "2:24h", player_name: "Loser Card", card_rating: 88, rarity: "gold_rare",
+        { outcome_id: "2:72h", player_name: "Loser Card", card_rating: 88, rarity: "gold_rare",
           detected_at: "2026-08-02T00:00:00Z", entry_price: 30000, peak_price: 34000,
           best_available_profit_after_tax: 2300, best_available_roi_pct: 7.67 },
       ],
