@@ -210,7 +210,7 @@ async def track_trade(
             version=EXCLUDED.version,
             last_price=EXCLUDED.last_price,
             last_checked=NOW(),
-            notes=EXCLUDED.notes,
+            notes=COALESCE(watchlist.notes, EXCLUDED.notes),
             source='futgg'
         """,
         user_id, int(card_id), str(name), version, platform,
