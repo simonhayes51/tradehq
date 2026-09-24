@@ -49,6 +49,24 @@ def link_row(label: str, url: str) -> dict[str, Any]:
     return {"type": ACTION_ROW, "components": [{"type": BUTTON, "style": LINK_BUTTON_STYLE, "label": label[:80], "url": url}]}
 
 
+def track_trade_row(*, card_id: int, buy_price: int, sell_target: int, platform: str, url: str) -> dict[str, Any]:
+    """Action row for a published trade.
+
+    The first button is a signed Discord interaction (handled by
+    discord_interactions.py), not a public URL that can mutate a watchlist.
+    Its compact payload stays well below Discord's 100-character custom_id
+    limit. The second button keeps the existing route into the full card page.
+    """
+    custom_id = f"track_trade:{int(card_id)}:{int(buy_price)}:{int(sell_target)}:{platform}"
+    return {
+        "type": ACTION_ROW,
+        "components": [
+            {"type": BUTTON, "style": 1, "label": "🔔 Track this trade", "custom_id": custom_id},
+            {"type": BUTTON, "style": LINK_BUTTON_STYLE, "label": "View in EAFC.Live", "url": url},
+        ],
+    }
+
+
 def data_age_label(observed_at: Optional[datetime], *, now: Optional[datetime] = None) -> str:
     if observed_at is None:
         return "unknown"
