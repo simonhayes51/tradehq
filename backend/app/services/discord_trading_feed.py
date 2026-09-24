@@ -674,6 +674,13 @@ def build_opportunity_update_embed(post: dict[str, Any], outcome: dict[str, Any]
         result_text = "The published MAX BUY was not observed inside the entry window."
     else:
         result_text = f"{embeds.coins(profit, signed=True)} coins" if profit is not None else "n/a"
+    fields = [{"name": "RESULT", "value": result_text, "inline": False}]
+    minutes_to_target = outcome.get("minutes_to_target")
+    if status == "target_hit" and minutes_to_target is not None:
+        minutes = int(minutes_to_target)
+        hours, mins = divmod(minutes, 60)
+        hold = f"{hours}h {mins}m" if hours else f"{mins}m"
+        fields.append({"name": "TIME TO TARGET", "value": hold, "inline": True})
     app_url = os.getenv("FRONTEND_URL", "https://app.eafc.live")
     if status == "target_hit":
         color = embeds.BRAND_COLOR
@@ -685,7 +692,7 @@ def build_opportunity_update_embed(post: dict[str, Any], outcome: dict[str, Any]
         "title": f"{post.get('name', 'Opportunity')} — {label}",
         "color": color,
         "author": embeds.brand_author(app_url),
-        "fields": [{"name": "RESULT", "value": result_text, "inline": False}],
+        "fields": fields,
         "footer": {"text": "EAFC.Live — server-feed results are tracked for 72 hours."},
         "timestamp": _now().isoformat(),
     }
@@ -1179,7 +1186,11 @@ async def publish_opportunity_updates(pool, server: ServerRecord, client: Option
                 # target) - report THAT, not a re-derived figure that can
                 # be thrown off by a single noisy observation.
                 net_profit_after_tax = tm.net_profit(Decimal(str(sell_target)), Decimal(str(buy_price)))
-            outcome = {"outcome_status": grade.outcome_status, "net_profit_after_tax": net_profit_after_tax}
+            outcome = {
+                "outcome_status": grade.outcome_status,
+                "net_profit_after_tax": net_profit_after_tax,
+                "minutes_to_target": grade.minutes_to_target,
+            }
             update_post_id = await _record_post(conn, server.id, "opportunity_update", row["dedup_key"], outcome)
             if update_post_id is None:
                 continue
