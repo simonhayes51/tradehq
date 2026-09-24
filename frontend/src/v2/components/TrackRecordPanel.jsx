@@ -296,7 +296,10 @@ export default function TrackRecordPanel() {
           <div className="track-record-grid compact-grid">
             <StatTile label="Target hits" value={targetHits.toLocaleString()} tone="positive" />
             <StatTile label="Target not reached" value={targetMisses.toLocaleString()} />
-            <StatTile label="Target hit rate" value={fmtPct(targetHitRate)} tone={targetHitRate >= 50 ? "positive" : ""} />
+            <StatTile label="Hit within 24h" value={fmtPct(published.target_hit_within_24h_rate_pct)} />
+            <StatTile label="Hit within 72h" value={fmtPct(published.target_hit_within_72h_rate_pct ?? targetHitRate)} tone={targetHitRate >= 50 ? "positive" : ""} />
+            <StatTile label="72h expiry rate" value={fmtPct(published.target_expiry_rate_pct)} />
+            <StatTile label="Median drawdown" value={fmtPct(published.median_max_drawdown_pct)} />
             <StatTile label="Calls tracked" value={published.published_opportunities.toLocaleString()} />
             <StatTile label="Median time to target" value={fmtMinutes(published.median_time_to_target_minutes)} />
           </div>
