@@ -64,7 +64,7 @@ const RESULT_FILTERS = [
 const RESULT_COPY = {
   target_hit: { text: "Target hit", tone: "positive" },
   target_miss: { text: "Target not reached", tone: "" },
-  win: { text: "Up at 24h", tone: "positive" },
+  win: { text: "Up at 72h", tone: "positive" },
   loss: { text: "Target not reached", tone: "" },
   flat: { text: "Target not reached", tone: "" },
   no_entry: { text: "No entry", tone: "muted" },
@@ -355,7 +355,7 @@ export default function TrackRecordPanel() {
         <p className="track-record-disclosure small">
           A different, much larger technical dataset from the published figures above: every buy signal the
           engine graded in this window, including ones that were never sent to anyone. Useful for
-          model checking, not a record of user trades. "Up" and "down" describe the 24-hour market
+          model checking, not a record of user trades. "Up" and "down" describe the 72-hour market
           mark only, not what any user made. Shows {ledgerLimit} rows at a time.
         </p>
         {recentQuery.isLoading ? (
