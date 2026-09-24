@@ -675,10 +675,15 @@ def build_opportunity_update_embed(post: dict[str, Any], outcome: dict[str, Any]
     else:
         result_text = f"{embeds.coins(profit, signed=True)} coins" if profit is not None else "n/a"
     app_url = os.getenv("FRONTEND_URL", "https://app.eafc.live")
-    neutral = status in {"target_not_reached", "entry_not_reached"}
+    if status == "target_hit":
+        color = embeds.BRAND_COLOR
+    elif status in {"target_not_reached", "entry_not_reached"}:
+        color = 0xEAB308  # neutral amber: closed/expired, not a claimed loss
+    else:
+        color = embeds.BRAND_COLOR_DANGER
     return {
         "title": f"{post.get('name', 'Opportunity')} — {label}",
-        "color": embeds.BRAND_COLOR if status == "target_hit" or neutral else embeds.BRAND_COLOR_DANGER,
+        "color": color,
         "author": embeds.brand_author(app_url),
         "fields": [{"name": "RESULT", "value": result_text, "inline": False}],
         "footer": {"text": "EAFC.Live — server-feed results are tracked for 72 hours."},
