@@ -26,6 +26,7 @@ from app.routers.v2.sales_shadow import router as sales_shadow_router
 from app.routers.v2.sbc_reinforcement import router as sbc_reinforcement_router
 from app.routers.v2.release_price_rises import router as release_price_rises_router
 from app.routers.v2.discord_feed_delivery import router as discord_feed_delivery_router
+from app.routers.v2.content_sync import router as content_sync_router
 
 router = APIRouter(prefix="/api/v2")
 router.include_router(health_router)
@@ -93,3 +94,6 @@ router.include_router(release_price_rises_router)
 # installs the small delivery decorators that add platform labels and safe,
 # exact-role mentions without duplicating any of the trading-feed engine.
 router.include_router(discord_feed_delivery_router)
+# Token-authenticated machine endpoint used by the Railway browser collector.
+# Database credentials never leave the backend's private deployment network.
+router.include_router(content_sync_router)

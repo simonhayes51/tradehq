@@ -38,6 +38,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger("futgg_content_sync")
 
 DATABASE_URL = (os.getenv("DATABASE_URL") or "").strip()
+INGEST_URL = (os.getenv("FUTGG_CONTENT_INGEST_URL") or "").strip()
+INGEST_TOKEN = (os.getenv("FUTGG_CONTENT_SYNC_TOKEN") or "").strip()
 GAME_YEAR = int(os.getenv("EAFC_GAME_YEAR") or os.getenv("FUTGG_GAME_YEAR") or "27")
 SITE_ROOT = "https://www.fut.gg"
 SBC_LIST_URL = f"{SITE_ROOT}/sbc/"
@@ -717,10 +719,56 @@ async def _collect_remote_content() -> tuple[list[dict[str, Any]], dict[str, Any
     return sbcs, gallery
 
 
+async def _push_to_backend(
+    sbcs: list[dict[str, Any]], gallery: dict[str, Any]
+) -> dict[str, Any]:
+    if not INGEST_URL or not INGEST_TOKEN:
+        raise RuntimeError(
+            "FUTGG_CONTENT_INGEST_URL and FUTGG_CONTENT_SYNC_TOKEN must both be configured"
+        )
+    import aiohttp
+
+    body = json.dumps(
+        {"game_year": GAME_YEAR, "sbcs": sbcs, "gallery": gallery}, default=str
+    )
+    timeout = aiohttp.ClientTimeout(total=max(60, TIMEOUT_SECONDS * 4))
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.post(
+            INGEST_URL,
+            data=body,
+            headers={
+                "Content-Type": "application/json",
+                "X-Content-Sync-Token": INGEST_TOKEN,
+                "User-Agent": "EAFC.Live-FUTGG-ContentSync/1.0",
+            },
+        ) as response:
+            response_text = await response.text()
+            if response.status != 200:
+                raise RuntimeError(
+                    f"backend ingest returned HTTP {response.status}: {response_text[:300]}"
+                )
+            try:
+                result = json.loads(response_text)
+            except json.JSONDecodeError as exc:
+                raise RuntimeError("backend ingest returned invalid JSON") from exc
+            if not isinstance(result, dict) or not result.get("ok"):
+                raise RuntimeError("backend ingest did not confirm success")
+            return result
+
+
 async def crawl_once() -> bool:
     if DIAGNOSTIC:
         sbcs, gallery = await _collect_remote_content()
         log.info("diagnostic success: sbcs=%d gallery_sets=%d tags=%d", len(sbcs), len(gallery["sets"]), len(gallery["tags"]))
+        return True
+    if INGEST_URL or INGEST_TOKEN:
+        sbcs, gallery = await _collect_remote_content()
+        result = await _push_to_backend(sbcs, gallery)
+        detail = (
+            f"sbcs={result.get('sbcs', 0)} solution_items={result.get('solution_items', 0)} "
+            f"gallery_sets={result.get('gallery_sets', 0)} gallery_tags={result.get('gallery_tags', 0)}"
+        )
+        log.info("FUT.GG content sync complete via backend: %s", detail)
         return True
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL not configured")

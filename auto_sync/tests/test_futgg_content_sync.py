@@ -193,3 +193,27 @@ def test_crawl_uses_retrying_database_connection(monkeypatch):
     assert calls == [("postgresql://shared/prod", {"command_timeout": 120})]
     assert conn.unlocked is True
     assert conn.closed is True
+
+
+def test_ingest_mode_collects_before_touching_database(monkeypatch):
+    import asyncio
+
+    async def collect():
+        return [{"external_id": "1"}], {"sets": [{}], "tags": []}
+
+    async def push(sbcs, gallery):
+        assert len(sbcs) == 1
+        assert len(gallery["sets"]) == 1
+        return {"ok": True, "sbcs": 1, "solution_items": 0, "gallery_sets": 1, "gallery_tags": 0}
+
+    async def database_must_not_be_used(*args, **kwargs):
+        raise AssertionError("ingest mode must not connect directly to Postgres")
+
+    monkeypatch.setattr(sync, "DIAGNOSTIC", False)
+    monkeypatch.setattr(sync, "INGEST_URL", "https://api.eafc.live/api/v2/internal/futgg-content")
+    monkeypatch.setattr(sync, "INGEST_TOKEN", "secret")
+    monkeypatch.setattr(sync, "_collect_remote_content", collect)
+    monkeypatch.setattr(sync, "_push_to_backend", push)
+    monkeypatch.setattr(sync, "connect_with_retry", database_must_not_be_used)
+
+    assert asyncio.run(sync.crawl_once()) is True
