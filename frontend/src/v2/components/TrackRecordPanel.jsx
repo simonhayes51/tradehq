@@ -56,8 +56,8 @@ function daysSince(iso) {
 // loss split look better than the record actually is.
 const RESULT_FILTERS = [
   ["all", "All"],
-  ["wins", "Up at 24h"],
-  ["losses", "Down at 24h"],
+  ["wins", "Target hit"],
+  ["losses", "Target not reached"],
   ["no_entry", "Never entered"],
 ];
 
@@ -65,8 +65,8 @@ const RESULT_COPY = {
   target_hit: { text: "Target hit", tone: "positive" },
   target_miss: { text: "Target not reached", tone: "" },
   win: { text: "Up at 24h", tone: "positive" },
-  loss: { text: "Down at 24h", tone: "negative" },
-  flat: { text: "Flat at 24h", tone: "" },
+  loss: { text: "Target not reached", tone: "" },
+  flat: { text: "Target not reached", tone: "" },
   no_entry: { text: "No entry", tone: "muted" },
 };
 
