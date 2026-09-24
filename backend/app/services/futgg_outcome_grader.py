@@ -56,6 +56,7 @@ log = logging.getLogger("futgg_outcome_grader")
 HORIZONS: Dict[str, timedelta] = {
     "24h": timedelta(hours=24),
     "48h": timedelta(hours=48),
+    "72h": timedelta(hours=72),
     "7d": timedelta(days=7),
 }
 
