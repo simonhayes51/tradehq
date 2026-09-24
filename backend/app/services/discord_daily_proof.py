@@ -531,6 +531,15 @@ def aggregate_published_outcomes(rows: list[dict[str, Any]]) -> dict[str, Any]:
         int(row["minutes_to_target"]) for row in eligible
         if row.get("target_hit") and row.get("minutes_to_target") is not None
     ]
+    hits_within_24h = [
+        row for row in target_hits
+        if row.get("minutes_to_target") is not None and int(row["minutes_to_target"]) <= 24 * 60
+    ]
+    drawdowns = [
+        abs(min(Decimal("0"), Decimal(str(row["max_adverse_excursion"])))) * Decimal("100")
+        for row in eligible
+        if row.get("max_adverse_excursion") is not None
+    ]
     total = len(eligible)
     has_enough = total >= PROOF_MIN_SAMPLE
 
@@ -543,6 +552,11 @@ def aggregate_published_outcomes(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "target_hits": len(target_hits),
         "target_not_reached": len(target_misses),
         "target_hit_rate_pct": round(100 * len(target_hits) / total, 1) if has_enough else None,
+        "target_hits_within_24h": len(hits_within_24h),
+        "target_hit_within_24h_rate_pct": round(100 * len(hits_within_24h) / total, 1) if has_enough else None,
+        "target_hit_within_72h_rate_pct": round(100 * len(target_hits) / total, 1) if has_enough else None,
+        "target_expiry_rate_pct": round(100 * len(target_misses) / total, 1) if has_enough else None,
+        "median_max_drawdown_pct": round(float(median(drawdowns)), 1) if has_enough and drawdowns else None,
         "target_profit_after_tax": float(sum(target_profits, Decimal("0"))) if has_enough else None,
         "median_target_profit_after_tax": float(median(target_profits)) if has_enough and target_profits else None,
         "median_target_roi_pct": round(float(median(target_rois)) * 100, 2) if has_enough and target_rois else None,
