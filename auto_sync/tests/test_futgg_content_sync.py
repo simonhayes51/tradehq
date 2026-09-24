@@ -137,3 +137,59 @@ def test_browser_transport_reuses_page_after_json_request():
         assert transport.pages.qsize() == 1
 
     asyncio.run(exercise())
+
+
+def test_crawl_uses_retrying_database_connection(monkeypatch):
+    import asyncio
+
+    class Transaction:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+    class Connection:
+        def __init__(self):
+            self.closed = False
+            self.unlocked = False
+
+        async def fetchval(self, query, *args):
+            assert "pg_try_advisory_lock" in query
+            return True
+
+        async def execute(self, query, *args):
+            if "pg_advisory_unlock" in query:
+                self.unlocked = True
+
+        def transaction(self):
+            return Transaction()
+
+        async def close(self):
+            self.closed = True
+
+    conn = Connection()
+    calls = []
+
+    async def retry_connect(dsn, **kwargs):
+        calls.append((dsn, kwargs))
+        return conn
+
+    async def noop(*args, **kwargs):
+        return None
+
+    async def collect():
+        return [], {"sets": [], "tags": []}
+
+    monkeypatch.setattr(sync, "DATABASE_URL", "postgresql://shared/prod")
+    monkeypatch.setattr(sync, "DIAGNOSTIC", False)
+    monkeypatch.setattr(sync, "connect_with_retry", retry_connect)
+    monkeypatch.setattr(sync, "ensure_schema", noop)
+    monkeypatch.setattr(sync, "_collect_remote_content", collect)
+    monkeypatch.setattr(sync, "write_gallery", noop)
+    monkeypatch.setattr(sync, "heartbeat", noop)
+
+    assert asyncio.run(sync.crawl_once()) is True
+    assert calls == [("postgresql://shared/prod", {"command_timeout": 120})]
+    assert conn.unlocked is True
+    assert conn.closed is True

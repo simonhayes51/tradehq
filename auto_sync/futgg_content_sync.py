@@ -31,6 +31,7 @@ from urllib.parse import urljoin
 
 import asyncpg
 
+from db_connect import connect_with_retry
 from monitoring import alert, heartbeat
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -723,7 +724,12 @@ async def crawl_once() -> bool:
         return True
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL not configured")
-    conn = await asyncpg.connect(DATABASE_URL)
+    # The shared Railway/Postgres endpoint occasionally accepts TCP and then
+    # drops the connection during asyncpg's TLS upgrade.  Other workers use
+    # this bounded retry helper for that exact transient failure; ContentSync
+    # must do the same instead of turning a one-second database blip into a
+    # failed 15-minute cycle.
+    conn = await connect_with_retry(DATABASE_URL, command_timeout=120)
     locked = False
     try:
         locked = bool(await conn.fetchval("SELECT pg_try_advisory_lock($1)", LOCK_KEY))
