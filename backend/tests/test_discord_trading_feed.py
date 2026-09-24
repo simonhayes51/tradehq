@@ -605,6 +605,33 @@ def test_publish_live_opportunities_posts_only_one_per_call(monkeypatch):
     posted = asyncio.run(publish_live_opportunities(conn, server, fake_client))
     assert posted == 1
     assert fake_client.post_embed.await_count == 1
+    score_kwargs = futgg_market._score_and_filter.await_args.kwargs
+    assert score_kwargs["min_confidence"] == feed_module.DISCORD_FEED_MIN_CONFIDENCE
+    assert score_kwargs["min_roi"] == feed_module.DISCORD_FEED_MIN_ROI
+    assert score_kwargs["min_liquidity"] == feed_module.DISCORD_FEED_MIN_LIQUIDITY
+    assert score_kwargs["require_confirmed_sales"] is True
+    assert score_kwargs["max_evidence_age_minutes"] == feed_module.DISCORD_FEED_MAX_EVIDENCE_AGE_MINUTES
+
+
+def test_discord_result_window_is_72_hours():
+    from app.services.discord_trading_feed import OPPORTUNITY_UPDATE_HORIZON
+    from app.services.futgg_outcome_grader import HORIZONS
+
+    assert OPPORTUNITY_UPDATE_HORIZON == "72h"
+    assert HORIZONS["72h"] == timedelta(hours=72)
+
+
+def test_live_opportunity_has_track_trade_button():
+    from app.services.discord_trading_feed import _FakeIntelligence, build_opportunity_post_embed
+
+    _embed, components = build_opportunity_post_embed(
+        {"source_card_id": 123, "name": "Test Player", "rating": 85, "rarity": "Rare"},
+        _FakeIntelligence(),
+    )
+    buttons = components[0]["components"]
+    assert buttons[0]["label"] == "🔔 Track this trade"
+    assert buttons[0]["custom_id"].startswith("track_trade:123:")
+    assert buttons[1]["label"] == "View in EAFC.Live"
 
 
 def test_opportunity_embed_rejects_stale_cross_cycle_stored_image():
@@ -1018,7 +1045,7 @@ def test_publish_opportunity_updates_withholds_a_loss_until_the_window_elapses(m
 
     now = datetime(2026, 8, 20, 12, 0, tzinfo=timezone.utc)
     monkeypatch.setattr(feed_module, "_now", lambda: now)
-    sent_at = now - timedelta(hours=1)  # 24h horizon window has not elapsed yet
+    sent_at = now - timedelta(hours=1)  # 72h horizon window has not elapsed yet
 
     card_id = 999
     conn = _FakeUpdatesConn(
@@ -1047,13 +1074,13 @@ def test_publish_opportunity_updates_withholds_a_loss_until_the_window_elapses(m
     assert fake_client.post_embed.await_count == 0
 
 
-def test_publish_opportunity_updates_closes_non_target_silently_after_window(monkeypatch):
+def test_publish_opportunity_updates_posts_target_not_reached_after_72h(monkeypatch):
     monkeypatch.setenv("DISCORD_TRADING_FEED_ENABLED", "1")
     import app.services.discord_trading_feed as feed_module
 
     now = datetime(2026, 8, 20, 12, 0, tzinfo=timezone.utc)
     monkeypatch.setattr(feed_module, "_now", lambda: now)
-    sent_at = now - timedelta(hours=25)  # 24h horizon window has fully elapsed
+    sent_at = now - timedelta(hours=73)  # 72h horizon window has fully elapsed
 
     card_id = 999
     conn = _FakeUpdatesConn(
@@ -1078,8 +1105,11 @@ def test_publish_opportunity_updates_closes_non_target_silently_after_window(mon
     from app.services.discord_trading_feed import publish_opportunity_updates
 
     updated = asyncio.run(publish_opportunity_updates(conn, server, fake_client))
-    assert updated == 0
-    assert fake_client.post_embed.await_count == 0
-    # A durable opportunity_update marker prevents the same expired call
-    # being reconsidered on every worker pass, without sending a message.
+    assert updated == 1
+    assert fake_client.post_embed.await_count == 1
+    embed = fake_client.post_embed.call_args.args[1]
+    assert "TARGET NOT REACHED" in embed["title"]
+    assert "72-hour" in embed["fields"][0]["value"]
+    # A durable sent opportunity_update prevents the same expired call
+    # being reconsidered on every worker pass.
     assert conn.record_calls == 1
