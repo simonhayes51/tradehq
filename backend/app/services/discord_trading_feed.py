@@ -640,7 +640,10 @@ def build_opportunity_post_embed(row: dict[str, Any], ci: Any, *, test: bool = F
         embed["thumbnail"] = {"url": thumbnail}
     components: list[dict[str, Any]] = []
     card_id = row.get("source_card_id")
-    if not test and card_id is not None and int(card_id) > 0:
+    if (
+        not test and card_id is not None and int(card_id) > 0
+        and buy_ceiling is not None and sell_target is not None
+    ):
         # The interaction button writes to the same live watchlist + alert
         # tables as the site. The link remains beside it for full analysis.
         components = [embeds.track_trade_row(
