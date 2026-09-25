@@ -18,6 +18,7 @@ import { api } from "../lib/api";
 // and retry:false means a 404 surfaces immediately as query.isError
 // instead of hammering a route that plainly doesn't exist yet.
 const REQUEST_OPTS = { __skipAuthRedirect: true, __noRetry: true, timeout: 8_000 };
+const DETAIL_REQUEST_OPTS = { __skipAuthRedirect: true, __noRetry: true, timeout: 20_000 };
 
 // /opportunities, /trade-finder and its strategy tabs all run through the
 // backend's shared candidate/evaluation pipeline. A cold server-side pass
@@ -58,7 +59,7 @@ export function useFutggPlayer(cardId) {
   return useQuery({
     queryKey: ["v2", "futgg", "player", cardId],
     queryFn: async ({ signal }) =>
-      (await api.get(`/api/v2/players/${cardId}`, { signal, ...REQUEST_OPTS })).data,
+      (await api.get(`/api/v2/players/${cardId}`, { signal, ...DETAIL_REQUEST_OPTS })).data,
     enabled: !!cardId,
     retry: false,
     staleTime: 30_000,

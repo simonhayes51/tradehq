@@ -33,6 +33,28 @@ class FreshCardEvaluation:
     intelligence: CardIntelligence
 
 
+def _failed_card_intelligence(card_id: int) -> CardIntelligence:
+    """Return an honest non-actionable result when one card cannot evaluate."""
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+    return CardIntelligence(
+        card_id=int(card_id),
+        signal="insufficient_data",
+        status="insufficient_data",
+        risk_level="high",
+        signal_reasons=["Market analysis is temporarily unavailable for this card."],
+        reason_codes=["evaluation_failed"],
+        reasons=[{
+            "code": "evaluation_failed",
+            "severity": "blocker",
+            "message": "Market analysis is temporarily unavailable for this card.",
+        }],
+        blocking_codes=["evaluation_failed"],
+        evaluated_at=now,
+    )
+
+
 async def evaluate_fresh_card(
     provider: FutggMarketDataProvider,
     card_id: int,
@@ -79,9 +101,18 @@ async def evaluate_fresh_card(
             exc_info=True,
         )
 
-    intelligence = evaluate_card(
-        row,
-        sales=sales,
-        bin_observations=bin_observations,
-    )
+    try:
+        intelligence = evaluate_card(
+            row,
+            sales=sales,
+            bin_observations=bin_observations,
+        )
+    except Exception:
+        log.warning(
+            "fresh card evaluation failed card_id=%s requested_by=%s",
+            card_id,
+            requested_by,
+            exc_info=True,
+        )
+        intelligence = _failed_card_intelligence(int(card_id))
     return FreshCardEvaluation(row=row, intelligence=intelligence)
