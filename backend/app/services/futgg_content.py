@@ -176,7 +176,19 @@ async def list_gallery_sets(
                        FROM futgg_gallery_solution_items gi
                        WHERE gi.set_id=gs.set_id AND gi.grade=gs.best_grade
                    ),gs.item_count) AS item_count,
-                   gs.best_grade,gs.total_cost_coins,gs.total_score,gs.max_tokens,
+                   gs.best_grade,
+                   coalesce((
+                       SELECT sum(d.price)::bigint
+                       FROM (
+                           SELECT DISTINCT gi.card_ea_id,gi.player_ea_id,gi.overall,
+                                           gi.rarity_ea_id,gi.club_ea_id,gi.nation_ea_id,
+                                           gi.price,gi.score
+                           FROM futgg_gallery_solution_items gi
+                           WHERE gi.set_id=gs.set_id AND gi.grade=gs.best_grade
+                             AND gi.price IS NOT NULL
+                       ) d
+                   ),gs.total_cost_coins) AS total_cost_coins,
+                   gs.total_score,gs.max_tokens,
                    gs.status,gs.source_updated_at,gs.updated_at
             FROM futgg_gallery_sets gs WHERE {where}
             ORDER BY {order} LIMIT {limit_marker} OFFSET {offset_marker}
@@ -198,9 +210,19 @@ async def list_gallery_sets(
         summary = await conn.fetchrow(
             """
             SELECT count(*)::int AS sets,coalesce(sum(max_tokens),0)::int AS tokens,
-                   coalesce(sum(total_cost_coins),0)::bigint AS total_cost,
+                   coalesce(sum(coalesce((
+                       SELECT sum(d.price)::bigint
+                       FROM (
+                           SELECT DISTINCT gi.card_ea_id,gi.player_ea_id,gi.overall,
+                                           gi.rarity_ea_id,gi.club_ea_id,gi.nation_ea_id,
+                                           gi.price,gi.score
+                           FROM futgg_gallery_solution_items gi
+                           WHERE gi.set_id=gs.set_id AND gi.grade=gs.best_grade
+                             AND gi.price IS NOT NULL
+                       ) d
+                   ),gs.total_cost_coins)),0)::bigint AS total_cost,
                    max(updated_at) AS updated_at
-            FROM futgg_gallery_sets WHERE game_year=27
+            FROM futgg_gallery_sets gs WHERE game_year=27
             """
         )
     return {
@@ -300,13 +322,19 @@ async def get_gallery_set(pool: asyncpg.Pool, set_id: int) -> Optional[dict[str,
             "cost": source_cost,
             "tokens": _int(meta.get("tokens")),
             "score": _int(meta.get("score") or meta.get("baseGrade")),
+            "is_recommendation": tier_grade == recommendation_grade,
+            "item_count": len(parsed_items) if tier_grade == recommendation_grade else None,
         })
     tiers.sort(key=lambda tier: (tier["cost"] is None, tier["cost"] or 0, tier["grade"]))
+    result["total_cost_coins"] = recommendation_cost or result.get("total_cost_coins")
+    result["item_count"] = len(parsed_items) or result.get("item_count")
     result["tiers"] = tiers
     result["items"] = parsed_items
     result["selected_grade"] = recommendation_grade
     result["recommendation"] = {
         "grade": recommendation_grade,
+        "cost": recommendation_cost or result.get("total_cost_coins"),
+        "score": result.get("total_score"),
         "item_count": len(parsed_items),
         "items": parsed_items,
     }

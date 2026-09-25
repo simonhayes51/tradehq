@@ -106,9 +106,9 @@ def test_normalises_gallery_sets_and_items():
     gallery_set = gallery["sets"][0]
     assert gallery_set["name"] == "Leeds United"
     assert gallery_set["category_slug"] == "premier-league"
-    # FUT.GG's tier cost is the target estimate; the root item list is the
-    # single optimized collection attached to that target.
-    assert gallery_set["total_cost_coins"] == 11850
+    # The set cost is the displayed recommendation cost. Tier costs remain
+    # available as target estimates.
+    assert gallery_set["total_cost_coins"] == 700
     assert gallery_set["items"][0]["player_ea_id"] == 246697
 
 
@@ -131,7 +131,7 @@ def test_preserves_each_gallery_cost_tier_instead_of_flattening_them():
     }]}}
     gallery_set = sync.normalise_gallery({"data": {}}, solutions)["sets"][0]
     assert [tier["grade"] for tier in gallery_set["tiers"]] == ["B", "A", "S"]
-    assert gallery_set["total_cost_coins"] == 2000
+    assert gallery_set["total_cost_coins"] == 10000
     assert gallery_set["item_count"] == 1
     assert gallery_set["max_tokens"] == 95
     assert [len(tier["items"]) for tier in gallery_set["tiers"]] == [0, 0, 1]

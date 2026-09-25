@@ -472,19 +472,23 @@ def normalise_gallery(base: dict[str, Any], solutions: dict[str, Any]) -> dict[s
         same_grade = next(
             (tier for tier in tiers if tier["grade"] == top_tier["grade"]), None
         )
+        recommendation_cost = top_tier["cost"]
         if same_grade is not None:
             # The root `items` list is the authoritative recommendation.
             same_grade["items"] = top_tier["items"]
+            if same_grade["cost"] in (None, 0):
+                same_grade["cost"] = recommendation_cost
             if same_grade["tokens"] is None:
                 same_grade["tokens"] = top_tier["tokens"]
             if same_grade["score"] is None:
                 same_grade["score"] = top_tier["score"]
         elif top_tier["items"]:
             tiers.append(top_tier)
+        else:
+            recommendation_cost = None
         if not tiers:
             tiers = [top_tier]
         tiers.sort(key=lambda tier: (tier["cost"] is None, tier["cost"] or 0, tier["grade"]))
-        cheapest = tiers[0]
         selected_items = top_tier["items"]
         token_values = [tier["tokens"] for tier in tiers if tier["tokens"] is not None]
         sets.append(
@@ -495,7 +499,7 @@ def normalise_gallery(base: dict[str, Any], solutions: dict[str, Any]) -> dict[s
                 "category_slug": category_slug,
                 "item_count": len(selected_items) or _int(solution.get("poolSize")),
                 "best_grade": solution.get("grade"),
-                "total_cost_coins": cheapest["cost"],
+                "total_cost_coins": recommendation_cost,
                 "total_score": _int(solution.get("score") or solution.get("baseGrade")),
                 "max_tokens": max(token_values) if token_values else _int(solution.get("tokens")),
                 "status": solution.get("status"),
