@@ -391,6 +391,26 @@ def _serialize_intelligence(ci: CardIntelligence) -> Dict[str, Any]:
     }
 
 
+def _failed_detail_intelligence(card_id: int) -> CardIntelligence:
+    """Keep one malformed card from taking down the whole detail page."""
+    now = datetime.now(timezone.utc)
+    return CardIntelligence(
+        card_id=card_id,
+        signal="insufficient_data",
+        status="insufficient_data",
+        risk_level="high",
+        signal_reasons=["Market analysis is temporarily unavailable for this card."],
+        reason_codes=["evaluation_failed"],
+        reasons=[{
+            "code": "evaluation_failed",
+            "severity": "blocker",
+            "message": "Market analysis is temporarily unavailable for this card.",
+        }],
+        blocking_codes=["evaluation_failed"],
+        evaluated_at=now,
+    )
+
+
 def _serialize_player(row: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(row)
     # User-facing name: FUT.GG's short display name ("Bruno Fernandes")
@@ -838,7 +858,11 @@ async def get_player_detail(
         log.warning("get_bin_observations_by_ids failed for card_id=%s", card_id, exc_info=True)
         bin_observations = {}
 
-    ci = evaluate_card(row, sales=sales, bin_observations=bin_observations.get(card_id))
+    try:
+        ci = evaluate_card(row, sales=sales, bin_observations=bin_observations.get(card_id))
+    except Exception:
+        log.warning("evaluate_card failed for detail card_id=%s", card_id, exc_info=True)
+        ci = _failed_detail_intelligence(card_id)
     if _is_stale_for_tier(ci.price_age_minutes, row.get("price_tier")):
         # A user actually opening this card is the strongest "someone
         # might act on this" signal short of it already being a surfaced

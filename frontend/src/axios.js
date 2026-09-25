@@ -15,7 +15,7 @@ import axios from "axios";
  * To change max retries per request: api.get("/x", { __maxRetries: 1 })
  */
 
-const FALLBACK_API = "https://api.futhub.co.uk";
+const FALLBACK_API = "https://api.eafc.live";
 
 const base =
   (import.meta.env?.VITE_API_URL && import.meta.env.VITE_API_URL.replace(/\/$/, "")) ||
