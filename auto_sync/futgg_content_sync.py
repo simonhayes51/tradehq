@@ -387,13 +387,32 @@ def _category_map(base: dict[str, Any]) -> dict[int, tuple[Optional[str], Option
 def _solution_items(solution: dict[str, Any]) -> list[dict[str, Any]]:
     items = _as_list(solution.get("items")) or _as_list(solution.get("players"))
     result: list[dict[str, Any]] = []
-    for idx, raw in enumerate(items):
+    seen: set[tuple[Any, ...]] = set()
+    for raw in items:
         item = _as_dict(raw)
+        card_ea_id = _int(item.get("eaId") or item.get("eald"))
+        player_ea_id = _int(item.get("playerEaId") or item.get("playerEald"))
+        # FUT.GG can repeat the identical card entry in the recommendation
+        # payload. Different versions of one player have different eaIds and
+        # remain distinct; only an exact card duplicate is discarded.
+        identity = (
+            card_ea_id,
+            player_ea_id,
+            _int(item.get("overall")),
+            _int(item.get("rarityEaId") or item.get("rarityEald")),
+            _int(item.get("clubEaId") or item.get("clubEald")),
+            _int(item.get("nationEaId") or item.get("nationEald")),
+            _int(item.get("price")),
+            _int(item.get("score")),
+        )
+        if identity in seen:
+            continue
+        seen.add(identity)
         result.append(
             {
-                "position_idx": idx,
-                "card_ea_id": _int(item.get("eaId") or item.get("eald")),
-                "player_ea_id": _int(item.get("playerEaId") or item.get("playerEald")),
+                "position_idx": len(result),
+                "card_ea_id": card_ea_id,
+                "player_ea_id": player_ea_id,
                 "price": _int(item.get("price")),
                 "score": _int(item.get("score")),
                 "overall": _int(item.get("overall")),

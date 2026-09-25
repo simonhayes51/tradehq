@@ -168,9 +168,17 @@ async def list_gallery_sets(
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             f"""
-            SELECT set_id,name,category_name,category_slug,item_count,best_grade,
-                   total_cost_coins,total_score,max_tokens,status,source_updated_at,updated_at
-            FROM futgg_gallery_sets WHERE {where}
+            SELECT gs.set_id,gs.name,gs.category_name,gs.category_slug,
+                   coalesce((
+                       SELECT count(DISTINCT (gi.card_ea_id,gi.player_ea_id,gi.overall,
+                                              gi.rarity_ea_id,gi.club_ea_id,gi.nation_ea_id,
+                                              gi.price,gi.score))::int
+                       FROM futgg_gallery_solution_items gi
+                       WHERE gi.set_id=gs.set_id AND gi.grade=gs.best_grade
+                   ),gs.item_count) AS item_count,
+                   gs.best_grade,gs.total_cost_coins,gs.total_score,gs.max_tokens,
+                   gs.status,gs.source_updated_at,gs.updated_at
+            FROM futgg_gallery_sets gs WHERE {where}
             ORDER BY {order} LIMIT {limit_marker} OFFSET {offset_marker}
             """,
             *params,
@@ -249,7 +257,24 @@ async def get_gallery_set(pool: asyncpg.Pool, set_id: int) -> Optional[dict[str,
         )
     result = dict(row)
     result["solution_payload"] = _decode(result.get("solution_payload"))
-    parsed_items = [dict(item) for item in items]
+    parsed_items: list[dict[str, Any]] = []
+    seen_items: set[tuple[Any, ...]] = set()
+    for row_item in items:
+        item = dict(row_item)
+        identity = (
+            item.get("card_ea_id"),
+            item.get("player_ea_id"),
+            item.get("overall"),
+            item.get("rarity_ea_id"),
+            item.get("club_ea_id"),
+            item.get("nation_ea_id"),
+            item.get("price"),
+            item.get("score"),
+        )
+        if identity in seen_items:
+            continue
+        seen_items.add(identity)
+        parsed_items.append(item)
     raw_solution = result["solution_payload"] if isinstance(result["solution_payload"], dict) else {}
     raw_tiers = raw_solution.get("costTiers") if isinstance(raw_solution.get("costTiers"), list) else []
     tier_meta: dict[str, dict[str, Any]] = {}
@@ -261,12 +286,15 @@ async def get_gallery_set(pool: asyncpg.Pool, set_id: int) -> Optional[dict[str,
             tier_meta.setdefault(tier_grade, raw_tier)
     tiers: list[dict[str, Any]] = []
     recommendation_grade = str(result.get("best_grade") or "").upper()
+    recommendation_cost = sum(_int(item.get("price")) or 0 for item in parsed_items)
     grades = list(dict.fromkeys([*tier_meta.keys(), recommendation_grade]))
     for tier_grade in grades:
         if not tier_grade:
             continue
         meta = tier_meta.get(tier_grade, {})
         source_cost = _int(meta.get("cost"))
+        if tier_grade == recommendation_grade and source_cost in (None, 0):
+            source_cost = recommendation_cost or None
         tiers.append({
             "grade": tier_grade,
             "cost": source_cost,

@@ -138,6 +138,20 @@ def test_preserves_each_gallery_cost_tier_instead_of_flattening_them():
     assert gallery_set["items"][0]["card_ea_id"] == 9001
 
 
+def test_gallery_recommendation_removes_exact_cards_but_keeps_player_versions():
+    repeated = {"eaId": 9001, "playerEaId": 101, "overall": 89, "rarityEaId": 7, "clubEaId": 10, "price": 350000}
+    other_version = {"eaId": 9002, "playerEaId": 101, "overall": 88, "rarityEaId": 7, "clubEaId": 10, "price": 105000}
+    solutions = {"data": {"sets": [{
+        "setId": 10, "name": "Duplicates", "grade": "B",
+        "items": [repeated, repeated.copy(), other_version, other_version.copy()],
+        "costTiers": [{"grade": "D", "cost": 10000, "tokens": 10}],
+    }]}}
+    gallery_set = sync.normalise_gallery({"data": {}}, solutions)["sets"][0]
+    assert len(gallery_set["items"]) == 2
+    assert [item["card_ea_id"] for item in gallery_set["items"]] == [9001, 9002]
+    assert [item["position_idx"] for item in gallery_set["items"]] == [0, 1]
+
+
 def test_browser_transport_reuses_page_after_json_request():
     import asyncio
 
