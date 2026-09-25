@@ -235,9 +235,11 @@ async def get_gallery_set(pool: asyncpg.Pool, set_id: int) -> Optional[dict[str,
                 ORDER BY snap.bin_captured_at DESC NULLS LAST
                 LIMIT 1
             ) m ON true
-            WHERE gi.set_id=$1 ORDER BY gi.grade,gi.position_idx
+            WHERE gi.set_id=$1
+              AND (gi.grade=$2 OR $2 IS NULL OR $2='')
+            ORDER BY gi.position_idx
             """,
-            set_id,
+            set_id, row["best_grade"],
         )
         tags = await conn.fetch(
             """
@@ -257,32 +259,29 @@ async def get_gallery_set(pool: asyncpg.Pool, set_id: int) -> Optional[dict[str,
         tier_grade = str(raw_tier.get("grade") or "").upper()
         if tier_grade:
             tier_meta.setdefault(tier_grade, raw_tier)
-    grouped: dict[str, list[dict[str, Any]]] = {}
-    for item in parsed_items:
-        grouped.setdefault(str(item.get("grade") or "").upper(), []).append(item)
     tiers: list[dict[str, Any]] = []
-    grades = list(dict.fromkeys([*tier_meta.keys(), *grouped.keys()]))
+    recommendation_grade = str(result.get("best_grade") or "").upper()
+    grades = list(dict.fromkeys([*tier_meta.keys(), recommendation_grade]))
     for tier_grade in grades:
-        tier_items = grouped.get(tier_grade, [])
+        if not tier_grade:
+            continue
         meta = tier_meta.get(tier_grade, {})
-        item_cost = sum(_int(item.get("price")) or 0 for item in tier_items)
         source_cost = _int(meta.get("cost"))
         tiers.append({
             "grade": tier_grade,
-            "cost": item_cost if source_cost in (None, 0) and item_cost else source_cost,
+            "cost": source_cost,
             "tokens": _int(meta.get("tokens")),
             "score": _int(meta.get("score") or meta.get("baseGrade")),
-            "item_count": len(tier_items),
-            "items": tier_items,
         })
     tiers.sort(key=lambda tier: (tier["cost"] is None, tier["cost"] or 0, tier["grade"]))
-    selected = next((tier for tier in tiers if tier["items"]), tiers[0] if tiers else None)
     result["tiers"] = tiers
-    result["items"] = selected["items"] if selected else []
-    if selected:
-        result["total_cost_coins"] = selected["cost"]
-        result["item_count"] = selected["item_count"]
-        result["selected_grade"] = selected["grade"]
+    result["items"] = parsed_items
+    result["selected_grade"] = recommendation_grade
+    result["recommendation"] = {
+        "grade": recommendation_grade,
+        "item_count": len(parsed_items),
+        "items": parsed_items,
+    }
     result["tags"] = [{**dict(tag), "payload": _decode(tag["payload"])} for tag in tags]
     return result
 

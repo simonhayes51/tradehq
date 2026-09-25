@@ -405,8 +405,13 @@ def _solution_items(solution: dict[str, Any]) -> list[dict[str, Any]]:
     return result
 
 
-def _gallery_tier(raw: dict[str, Any], fallback_grade: Any = None) -> dict[str, Any]:
-    items = _solution_items(raw)
+def _gallery_tier(
+    raw: dict[str, Any], fallback_grade: Any = None, *, include_items: bool = False
+) -> dict[str, Any]:
+    # costTiers describes grade/cost targets. Only the solution-set root has
+    # FUT.GG's chosen collection. Treating nested tier data as a second lineup
+    # duplicates the same player/card candidates in the UI.
+    items = _solution_items(raw) if include_items else []
     captured_cost = _int(raw.get("cost"))
     item_cost = sum(
         value for item in items
@@ -444,13 +449,13 @@ def normalise_gallery(base: dict[str, Any], solutions: dict[str, Any]) -> dict[s
             _gallery_tier(_as_dict(tier), solution.get("grade"))
             for tier in cost_tiers
         ]
-        top_tier = _gallery_tier(solution, solution.get("grade"))
+        top_tier = _gallery_tier(solution, solution.get("grade"), include_items=True)
         same_grade = next(
             (tier for tier in tiers if tier["grade"] == top_tier["grade"]), None
         )
         if same_grade is not None:
-            if not same_grade["items"]:
-                same_grade["items"] = top_tier["items"]
+            # The root `items` list is the authoritative recommendation.
+            same_grade["items"] = top_tier["items"]
             if same_grade["tokens"] is None:
                 same_grade["tokens"] = top_tier["tokens"]
             if same_grade["score"] is None:
@@ -461,7 +466,7 @@ def normalise_gallery(base: dict[str, Any], solutions: dict[str, Any]) -> dict[s
             tiers = [top_tier]
         tiers.sort(key=lambda tier: (tier["cost"] is None, tier["cost"] or 0, tier["grade"]))
         cheapest = tiers[0]
-        selected_items = next((tier["items"] for tier in tiers if tier["items"]), [])
+        selected_items = top_tier["items"]
         token_values = [tier["tokens"] for tier in tiers if tier["tokens"] is not None]
         sets.append(
             {
@@ -475,7 +480,7 @@ def normalise_gallery(base: dict[str, Any], solutions: dict[str, Any]) -> dict[s
                 "total_score": _int(solution.get("score") or solution.get("baseGrade")),
                 "max_tokens": max(token_values) if token_values else _int(solution.get("tokens")),
                 "status": solution.get("status"),
-                "items": cheapest["items"] or selected_items,
+                "items": selected_items,
                 "tiers": tiers,
                 "raw": solution,
             }

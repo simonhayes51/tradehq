@@ -106,9 +106,9 @@ def test_normalises_gallery_sets_and_items():
     gallery_set = gallery["sets"][0]
     assert gallery_set["name"] == "Leeds United"
     assert gallery_set["category_slug"] == "premier-league"
-    # The displayed solution total is the sum of its displayed cards. FUT.GG's
-    # costTiers is progressive bonus metadata and must not replace that total.
-    assert gallery_set["total_cost_coins"] == 700
+    # FUT.GG's tier cost is the target estimate; the root item list is the
+    # single optimized collection attached to that target.
+    assert gallery_set["total_cost_coins"] == 11850
     assert gallery_set["items"][0]["player_ea_id"] == 246697
 
 
@@ -132,8 +132,10 @@ def test_preserves_each_gallery_cost_tier_instead_of_flattening_them():
     gallery_set = sync.normalise_gallery({"data": {}}, solutions)["sets"][0]
     assert [tier["grade"] for tier in gallery_set["tiers"]] == ["B", "A", "S"]
     assert gallery_set["total_cost_coins"] == 2000
-    assert gallery_set["item_count"] == 2
+    assert gallery_set["item_count"] == 1
     assert gallery_set["max_tokens"] == 95
+    assert [len(tier["items"]) for tier in gallery_set["tiers"]] == [0, 0, 1]
+    assert gallery_set["items"][0]["card_ea_id"] == 9001
 
 
 def test_browser_transport_reuses_page_after_json_request():

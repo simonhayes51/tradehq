@@ -12,20 +12,22 @@ export default function GallerySetDetail() {
   const [selectedGrade, setSelectedGrade] = useState("");
   if (isLoading) return <main className="content-page"><div className="content-loading">Loading Gallery solution…</div></main>;
   if (error || !set) return <main className="content-page"><div className="content-error">This Gallery set could not be loaded.</div></main>;
-  const tiers = set.tiers?.length ? set.tiers : [{ grade: set.selected_grade || set.best_grade, cost: set.total_cost_coins, tokens: set.max_tokens, score: set.total_score, items: set.items || [] }];
-  const selectedTier = tiers.find((tier) => tier.grade === selectedGrade) || tiers[0];
+  const recommendation = set.recommendation || { grade: set.selected_grade || set.best_grade, item_count: set.items?.length || 0, items: set.items || [] };
+  const tiers = set.tiers?.length ? set.tiers : [{ grade: recommendation.grade, cost: set.total_cost_coins, tokens: set.max_tokens, score: set.total_score }];
+  const defaultTier = tiers.find((tier) => tier.grade === recommendation.grade) || tiers[tiers.length - 1];
+  const selectedTier = tiers.find((tier) => tier.grade === selectedGrade) || defaultTier;
   const activeTags = (set.solution_payload?.tags || set.solution_payload?.activeTags || []).map(String);
   const tags = (set.tags || []).filter((tag) => activeTags.includes(String(tag.tag_id)) || activeTags.includes(tag.name));
   return <main className="content-page">
     <div className="content-detail-nav"><Link to="/gallery"><ArrowLeft size={15}/> Gallery</Link><a href="https://www.fut.gg/fut-gallery/" target="_blank" rel="noreferrer">FUT.GG source <ExternalLink size={14}/></a></div>
-    <header className="content-detail-hero"><div><span className="content-kicker">{set.category_name || "FUT GALLERY"}</span><h1>{set.name}</h1><p>Compare every FUT.GG solution tier, its cost and the cards required.</p></div><span className={`gallery-grade gallery-grade-large grade-${(selectedTier.grade || "d").toLowerCase()}`}>{selectedTier.grade || "—"}</span></header>
-    <section className="content-stats"><div><span>Solution cost</span><strong>{formatCoins(selectedTier.cost)}</strong></div><div><span>Tokens</span><strong>{selectedTier.tokens ?? set.max_tokens ?? "—"}</strong></div><div><span>Required cards</span><strong>{selectedTier.items?.length ?? "—"}</strong></div><div><span>Score</span><strong>{selectedTier.score?.toLocaleString?.() ?? set.total_score?.toLocaleString?.() ?? "—"}</strong></div></section>
+    <header className="content-detail-hero"><div><span className="content-kicker">{set.category_name || "FUT GALLERY"}</span><h1>{set.name}</h1><p>Compare FUT.GG grade targets, then inspect its current optimized collection.</p></div><span className={`gallery-grade gallery-grade-large grade-${(selectedTier.grade || "d").toLowerCase()}`}>{selectedTier.grade || "—"}</span></header>
+    <section className="content-stats"><div><span>Target cost</span><strong>{formatCoins(selectedTier.cost)}</strong></div><div><span>Tokens</span><strong>{selectedTier.tokens ?? "—"}</strong></div><div><span>Recommended cards</span><strong>{recommendation.item_count || "—"}</strong></div><div><span>Target score</span><strong>{selectedTier.score?.toLocaleString?.() ?? (selectedTier.grade === recommendation.grade ? set.total_score?.toLocaleString?.() : null) ?? "—"}</strong></div></section>
     {tags.length ? <section className="content-panel"><div className="content-section-head"><div><span>Active bonuses</span><h2>Collection conditions</h2></div></div><div className="content-tags">{tags.map((tag) => <span key={tag.tag_id}>{tag.name}</span>)}</div></section> : null}
     <section className="content-panel">
-      <div className="content-section-head"><div><span>Solution tiers</span><h2>Choose cost versus reward</h2></div><p>Live market prices can move after the solution is captured.</p></div>
-      <div className="content-chips">{tiers.map((tier) => <button type="button" className={selectedTier.grade === tier.grade ? "active" : ""} onClick={() => setSelectedGrade(tier.grade)} key={tier.grade || tier.cost}>Grade {tier.grade || "—"} · {formatCoins(tier.cost)} · {tier.items?.length || 0} cards</button>)}</div>
-      <div className="content-section-head"><div><span>Grade {selectedTier.grade || "—"} solution</span><h2>{selectedTier.items?.length || 0} required cards</h2></div></div>
-      {selectedTier.items?.length ? <ContentPlayerStrip items={selectedTier.items} metric={(p) => formatCoins(p.price ?? p.current_bin)} /> : <div className="content-empty">FUT.GG provides the cost for this tier but not its exact card list.</div>}
+      <div className="content-section-head"><div><span>Grade targets</span><h2>Choose cost versus reward</h2></div><p>These are target estimates, not separate zero-card lineups. Market prices can move after capture.</p></div>
+      <div className="content-chips">{tiers.map((tier) => <button type="button" className={selectedTier.grade === tier.grade ? "active" : ""} onClick={() => setSelectedGrade(tier.grade)} key={tier.grade || tier.cost}>Grade {tier.grade || "—"} · {formatCoins(tier.cost)}</button>)}</div>
+      <div className="content-section-head"><div><span>FUT.GG recommendation · Grade {recommendation.grade || "—"}</span><h2>{recommendation.item_count || 0} card collection</h2></div><p>Different versions of the same player are separate cards and may be used for Multiples bonuses.</p></div>
+      {recommendation.items?.length ? <ContentPlayerStrip items={recommendation.items} metric={(p) => formatCoins(p.price ?? p.current_bin)} /> : <div className="content-empty">FUT.GG has not published a card recommendation for this set.</div>}
     </section>
   </main>;
 }
