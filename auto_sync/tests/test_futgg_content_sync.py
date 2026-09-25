@@ -112,6 +112,30 @@ def test_normalises_gallery_sets_and_items():
     assert gallery_set["items"][0]["player_ea_id"] == 246697
 
 
+def test_preserves_each_gallery_cost_tier_instead_of_flattening_them():
+    solutions = {"data": {"sets": [{
+        "setId": 9,
+        "name": "Serie A Enilive",
+        "grade": "S",
+        "tokens": 95,
+        "items": [{"eaId": 9001, "playerEaId": 101, "price": 10000}],
+        "costTiers": [
+            {"grade": "B", "cost": 2000, "tokens": 50, "items": [
+                {"eaId": 9002, "playerEaId": 102, "price": 700},
+                {"eaId": 9003, "playerEaId": 103, "price": 800},
+            ]},
+            {"grade": "A", "cost": 5000, "tokens": 75, "items": [
+                {"eaId": 9004, "playerEaId": 104, "price": 5000},
+            ]},
+        ],
+    }]}}
+    gallery_set = sync.normalise_gallery({"data": {}}, solutions)["sets"][0]
+    assert [tier["grade"] for tier in gallery_set["tiers"]] == ["B", "A", "S"]
+    assert gallery_set["total_cost_coins"] == 2000
+    assert gallery_set["item_count"] == 2
+    assert gallery_set["max_tokens"] == 95
+
+
 def test_browser_transport_reuses_page_after_json_request():
     import asyncio
 

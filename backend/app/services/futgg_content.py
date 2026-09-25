@@ -114,7 +114,13 @@ async def solution_exposure(pool: asyncpg.Pool, *, limit: int = 20) -> list[dict
             JOIN sbc_challenges c ON c.id=si.challenge_id
             JOIN market_events e ON e.id=c.event_id
             LEFT JOIN futgg_players p ON p.source_card_id=si.source_card_id
-            LEFT JOIN futgg_market_snapshot m ON m.source_card_id=si.source_card_id
+            LEFT JOIN LATERAL (
+                SELECT snap.current_bin
+                FROM futgg_market_snapshot snap
+                WHERE snap.source_card_id=si.source_card_id
+                ORDER BY snap.bin_captured_at DESC NULLS LAST
+                LIMIT 1
+            ) m ON true
             WHERE si.platform='console' AND e.source='futgg'
               AND (e.ends_at IS NULL OR e.ends_at > now())
             GROUP BY si.player_ea_id,si.source_card_id,p.source_card_id,m.current_bin
@@ -202,18 +208,10 @@ async def get_gallery_set(pool: asyncpg.Pool, set_id: int) -> Optional[dict[str,
         row = await conn.fetchrow(
             """
             SELECT gs.set_id,gs.name,gs.category_name,gs.category_slug,
-                   coalesce(actual.item_count,gs.item_count) AS item_count,
-                   gs.best_grade,
-                   coalesce(actual.total_cost_coins,gs.total_cost_coins) AS total_cost_coins,
+                   gs.item_count,gs.best_grade,gs.total_cost_coins,
                    gs.total_score,gs.max_tokens,gs.status,gs.solution_payload,
                    gs.source_updated_at,gs.updated_at
             FROM futgg_gallery_sets gs
-            LEFT JOIN LATERAL (
-                SELECT count(*)::int AS item_count,
-                       coalesce(sum(price),0)::bigint AS total_cost_coins
-                FROM futgg_gallery_solution_items gi
-                WHERE gi.set_id=gs.set_id
-            ) actual ON true
             WHERE gs.set_id=$1 AND gs.game_year=27
             """,
             set_id,
@@ -230,8 +228,14 @@ async def get_gallery_set(pool: asyncpg.Pool, set_id: int) -> Optional[dict[str,
                    p.card_image_url,p.card_image_stored_url,p.player_image_url,m.current_bin
             FROM futgg_gallery_solution_items gi
             LEFT JOIN futgg_players p ON p.source_card_id=gi.source_card_id
-            LEFT JOIN futgg_market_snapshot m ON m.source_card_id=gi.source_card_id
-            WHERE gi.set_id=$1 ORDER BY gi.position_idx
+            LEFT JOIN LATERAL (
+                SELECT snap.current_bin
+                FROM futgg_market_snapshot snap
+                WHERE snap.source_card_id=gi.source_card_id
+                ORDER BY snap.bin_captured_at DESC NULLS LAST
+                LIMIT 1
+            ) m ON true
+            WHERE gi.set_id=$1 ORDER BY gi.grade,gi.position_idx
             """,
             set_id,
         )
@@ -243,7 +247,42 @@ async def get_gallery_set(pool: asyncpg.Pool, set_id: int) -> Optional[dict[str,
         )
     result = dict(row)
     result["solution_payload"] = _decode(result.get("solution_payload"))
-    result["items"] = [dict(item) for item in items]
+    parsed_items = [dict(item) for item in items]
+    raw_solution = result["solution_payload"] if isinstance(result["solution_payload"], dict) else {}
+    raw_tiers = raw_solution.get("costTiers") if isinstance(raw_solution.get("costTiers"), list) else []
+    tier_meta: dict[str, dict[str, Any]] = {}
+    for raw_tier in [*raw_tiers, raw_solution]:
+        if not isinstance(raw_tier, dict):
+            continue
+        tier_grade = str(raw_tier.get("grade") or "").upper()
+        if tier_grade:
+            tier_meta.setdefault(tier_grade, raw_tier)
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for item in parsed_items:
+        grouped.setdefault(str(item.get("grade") or "").upper(), []).append(item)
+    tiers: list[dict[str, Any]] = []
+    grades = list(dict.fromkeys([*tier_meta.keys(), *grouped.keys()]))
+    for tier_grade in grades:
+        tier_items = grouped.get(tier_grade, [])
+        meta = tier_meta.get(tier_grade, {})
+        item_cost = sum(_int(item.get("price")) or 0 for item in tier_items)
+        source_cost = _int(meta.get("cost"))
+        tiers.append({
+            "grade": tier_grade,
+            "cost": item_cost if source_cost in (None, 0) and item_cost else source_cost,
+            "tokens": _int(meta.get("tokens")),
+            "score": _int(meta.get("score") or meta.get("baseGrade")),
+            "item_count": len(tier_items),
+            "items": tier_items,
+        })
+    tiers.sort(key=lambda tier: (tier["cost"] is None, tier["cost"] or 0, tier["grade"]))
+    selected = next((tier for tier in tiers if tier["items"]), tiers[0] if tiers else None)
+    result["tiers"] = tiers
+    result["items"] = selected["items"] if selected else []
+    if selected:
+        result["total_cost_coins"] = selected["cost"]
+        result["item_count"] = selected["item_count"]
+        result["selected_grade"] = selected["grade"]
     result["tags"] = [{**dict(tag), "payload": _decode(tag["payload"])} for tag in tags]
     return result
 
@@ -262,7 +301,13 @@ async def gallery_exposure(pool: asyncpg.Pool, *, limit: int = 24) -> list[dict[
             FROM futgg_gallery_solution_items gi
             JOIN futgg_gallery_sets gs ON gs.set_id=gi.set_id
             LEFT JOIN futgg_players p ON p.source_card_id=gi.source_card_id
-            LEFT JOIN futgg_market_snapshot m ON m.source_card_id=gi.source_card_id
+            LEFT JOIN LATERAL (
+                SELECT snap.current_bin
+                FROM futgg_market_snapshot snap
+                WHERE snap.source_card_id=gi.source_card_id
+                ORDER BY snap.bin_captured_at DESC NULLS LAST
+                LIMIT 1
+            ) m ON true
             WHERE gs.game_year=27 AND gi.player_ea_id IS NOT NULL
             GROUP BY gi.player_ea_id,gi.source_card_id,p.source_card_id,m.current_bin
             ORDER BY set_count DESC,token_exposure DESC,current_bin ASC NULLS LAST
@@ -392,22 +437,31 @@ async def _resolve_card_id(
     overall: Optional[int] = None,
     club_ea_id: Optional[int] = None,
     nation_ea_id: Optional[int] = None,
+    captured_price: Optional[int] = None,
 ) -> Optional[int]:
     try:
         value = await conn.fetchval(
             """
-            SELECT source_card_id FROM futgg_players
-            WHERE game_year=$1 AND is_active AND source_player_id=$2
+            SELECT p.source_card_id FROM futgg_players p
+            LEFT JOIN LATERAL (
+              SELECT h.lowest_bin
+              FROM futgg_bin_history h
+              WHERE h.source_card_id=p.source_card_id
+              ORDER BY h.captured_at DESC
+              LIMIT 1
+            ) market ON true
+            WHERE p.game_year=$1 AND p.is_active AND p.source_player_id=$2
             ORDER BY
-              (rating=$3) DESC NULLS LAST,
-              (club_source_id=$4) DESC NULLS LAST,
-              (nation_source_id=$5) DESC NULLS LAST,
-              is_tradeable DESC NULLS LAST,
-              rating ASC NULLS LAST,
-              source_card_id
+              (p.rating=$3) DESC NULLS LAST,
+              (p.club_source_id=$4) DESC NULLS LAST,
+              (p.nation_source_id=$5) DESC NULLS LAST,
+              abs(coalesce(market.lowest_bin,$6)-$6) ASC NULLS LAST,
+              p.is_tradeable DESC NULLS LAST,
+              p.rating ASC NULLS LAST,
+              p.source_card_id
             LIMIT 1
             """,
-            game_year, player_ea_id, overall, club_ea_id, nation_ea_id,
+            game_year, player_ea_id, overall, club_ea_id, nation_ea_id, captured_price,
         )
         return int(value) if value is not None else None
     except asyncpg.exceptions.UndefinedTableError:
@@ -546,37 +600,41 @@ async def _write_gallery(
             _timestamp(gallery.get("captured_at")),
         )
         await conn.execute("DELETE FROM futgg_gallery_solution_items WHERE set_id=$1", set_id)
-        grade = str(gallery_set.get("best_grade") or "")
-        for fallback, item in enumerate(gallery_set.get("items") or []):
-            # `eaId` is EA's card-resource identifier, not FUT.GG's card ID.
-            # FUT.GG player URLs use playerEaId, so matching eaId directly can
-            # silently attach an unrelated historical special card whose FUT.GG
-            # ID happens to have the same number.
-            player_ea_id = _int(item.get("player_ea_id"))
-            source_card_id = (
-                await _resolve_card_id(
-                    conn,
-                    player_ea_id,
-                    game_year,
-                    overall=_int(item.get("overall")),
-                    club_ea_id=_int(item.get("club_ea_id")),
-                    nation_ea_id=_int(item.get("nation_ea_id")),
+        for tier in gallery_set.get("tiers") or [{
+            "grade": gallery_set.get("best_grade"), "items": gallery_set.get("items") or []
+        }]:
+            grade = str(tier.get("grade") or "")
+            for fallback, item in enumerate(tier.get("items") or []):
+                # `eaId` is EA's card-resource identifier, not FUT.GG's card ID.
+                # FUT.GG player URLs use playerEaId, so matching eaId directly can
+                # silently attach an unrelated historical special card whose FUT.GG
+                # ID happens to have the same number.
+                player_ea_id = _int(item.get("player_ea_id"))
+                source_card_id = (
+                    await _resolve_card_id(
+                        conn,
+                        player_ea_id,
+                        game_year,
+                        overall=_int(item.get("overall")),
+                        club_ea_id=_int(item.get("club_ea_id")),
+                        nation_ea_id=_int(item.get("nation_ea_id")),
+                        captured_price=_int(item.get("price")),
+                    )
+                    if player_ea_id else None
                 )
-                if player_ea_id else None
-            )
-            await conn.execute(
-                """
-                INSERT INTO futgg_gallery_solution_items (
-                    set_id,grade,position_idx,card_ea_id,player_ea_id,source_card_id,
-                    price,score,overall,club_ea_id,nation_ea_id,rarity_ea_id,captured_at
-                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,now())
-                """,
-                set_id, grade, _int(item.get("position_idx")) or fallback,
-                _int(item.get("card_ea_id")), _int(item.get("player_ea_id")), source_card_id,
-                _int(item.get("price")), _int(item.get("score")), _int(item.get("overall")),
-                _int(item.get("club_ea_id")), _int(item.get("nation_ea_id")),
-                _int(item.get("rarity_ea_id")),
-            )
+                await conn.execute(
+                    """
+                    INSERT INTO futgg_gallery_solution_items (
+                        set_id,grade,position_idx,card_ea_id,player_ea_id,source_card_id,
+                        price,score,overall,club_ea_id,nation_ea_id,rarity_ea_id,captured_at
+                    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,now())
+                    """,
+                    set_id, grade, _int(item.get("position_idx")) or fallback,
+                    _int(item.get("card_ea_id")), _int(item.get("player_ea_id")), source_card_id,
+                    _int(item.get("price")), _int(item.get("score")), _int(item.get("overall")),
+                    _int(item.get("club_ea_id")), _int(item.get("nation_ea_id")),
+                    _int(item.get("rarity_ea_id")),
+                )
     return count
 
 

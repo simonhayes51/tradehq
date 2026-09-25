@@ -405,6 +405,22 @@ def _solution_items(solution: dict[str, Any]) -> list[dict[str, Any]]:
     return result
 
 
+def _gallery_tier(raw: dict[str, Any], fallback_grade: Any = None) -> dict[str, Any]:
+    items = _solution_items(raw)
+    captured_cost = _int(raw.get("cost"))
+    item_cost = sum(
+        value for item in items
+        if (value := _int(item.get("price"))) is not None and value > 0
+    )
+    return {
+        "grade": str(raw.get("grade") or fallback_grade or "").upper(),
+        "cost": captured_cost if captured_cost is not None else item_cost,
+        "tokens": _int(raw.get("tokens")),
+        "score": _int(raw.get("score") or raw.get("baseGrade")),
+        "items": items,
+    }
+
+
 def normalise_gallery(base: dict[str, Any], solutions: dict[str, Any]) -> dict[str, Any]:
     base_data = _as_dict(base.get("data"))
     solution_data = _as_dict(solutions.get("data"))
@@ -424,30 +440,43 @@ def normalise_gallery(base: dict[str, Any], solutions: dict[str, Any]) -> dict[s
             set_id = fallback + 1
         category_name, category_slug = categories.get(set_id, (None, None))
         cost_tiers = _as_list(solution.get("costTiers"))
-        tokens = [_int(_as_dict(tier).get("tokens")) for tier in cost_tiers]
-        tokens = [value for value in tokens if value is not None]
-        items = _solution_items(solution)
-        # costTiers describes FUT.GG's progressive bonus tiers; it is not the
-        # price of the selected card list.  The only total that can be shown
-        # alongside `items` without contradicting the page is the sum of those
-        # items' own captured prices.
-        solution_cost = sum(
-            value for item in items
-            if (value := _int(item.get("price"))) is not None and value > 0
+        tiers = [
+            _gallery_tier(_as_dict(tier), solution.get("grade"))
+            for tier in cost_tiers
+        ]
+        top_tier = _gallery_tier(solution, solution.get("grade"))
+        same_grade = next(
+            (tier for tier in tiers if tier["grade"] == top_tier["grade"]), None
         )
+        if same_grade is not None:
+            if not same_grade["items"]:
+                same_grade["items"] = top_tier["items"]
+            if same_grade["tokens"] is None:
+                same_grade["tokens"] = top_tier["tokens"]
+            if same_grade["score"] is None:
+                same_grade["score"] = top_tier["score"]
+        elif top_tier["items"]:
+            tiers.append(top_tier)
+        if not tiers:
+            tiers = [top_tier]
+        tiers.sort(key=lambda tier: (tier["cost"] is None, tier["cost"] or 0, tier["grade"]))
+        cheapest = tiers[0]
+        selected_items = next((tier["items"] for tier in tiers if tier["items"]), [])
+        token_values = [tier["tokens"] for tier in tiers if tier["tokens"] is not None]
         sets.append(
             {
                 "set_id": set_id,
                 "name": solution.get("name") or f"Gallery set {set_id}",
                 "category_name": category_name,
                 "category_slug": category_slug,
-                "item_count": len(items) or _int(solution.get("poolSize")),
+                "item_count": len(selected_items) or _int(solution.get("poolSize")),
                 "best_grade": solution.get("grade"),
-                "total_cost_coins": solution_cost,
+                "total_cost_coins": cheapest["cost"],
                 "total_score": _int(solution.get("score") or solution.get("baseGrade")),
-                "max_tokens": max(tokens) if tokens else _int(solution.get("tokens")),
+                "max_tokens": max(token_values) if token_values else _int(solution.get("tokens")),
                 "status": solution.get("status"),
-                "items": items,
+                "items": cheapest["items"] or selected_items,
+                "tiers": tiers,
                 "raw": solution,
             }
         )
@@ -538,17 +567,33 @@ async def ensure_schema(conn: asyncpg.Connection) -> None:
     )
 
 
-async def _resolve_card_id(conn: asyncpg.Connection, player_ea_id: int) -> Optional[int]:
+async def _resolve_card_id(
+    conn: asyncpg.Connection,
+    player_ea_id: int,
+    *,
+    overall: Optional[int] = None,
+    club_ea_id: Optional[int] = None,
+    nation_ea_id: Optional[int] = None,
+    captured_price: Optional[int] = None,
+) -> Optional[int]:
     try:
         value = await conn.fetchval(
             """
-            SELECT source_card_id FROM futgg_players
-            WHERE game_year = $1 AND is_active
-              AND (source_card_id = $2 OR source_player_id = $2)
-            ORDER BY (source_card_id = $2) DESC, is_tradeable DESC NULLS LAST, rating ASC NULLS LAST
+            SELECT p.source_card_id FROM futgg_players p
+            LEFT JOIN LATERAL (
+              SELECT h.lowest_bin FROM futgg_bin_history h
+              WHERE h.source_card_id=p.source_card_id
+              ORDER BY h.captured_at DESC LIMIT 1
+            ) market ON true
+            WHERE p.game_year = $1 AND p.is_active AND p.source_player_id = $2
+            ORDER BY (p.rating=$3) DESC NULLS LAST,
+                     (p.club_source_id=$4) DESC NULLS LAST,
+                     (p.nation_source_id=$5) DESC NULLS LAST,
+                     abs(coalesce(market.lowest_bin,$6)-$6) ASC NULLS LAST,
+                     p.is_tradeable DESC NULLS LAST,p.rating ASC NULLS LAST,p.source_card_id
             LIMIT 1
             """,
-            GAME_YEAR, player_ea_id,
+            GAME_YEAR, player_ea_id, overall, club_ea_id, nation_ea_id, captured_price,
         )
         return int(value) if value is not None else None
     except asyncpg.exceptions.UndefinedTableError:
@@ -675,22 +720,31 @@ async def write_gallery(conn: asyncpg.Connection, gallery: dict[str, Any]) -> in
             gallery["captured_at"],
         )
         await conn.execute("DELETE FROM futgg_gallery_solution_items WHERE set_id=$1", gallery_set["set_id"])
-        grade = str(gallery_set.get("best_grade") or "")
-        for item in gallery_set["items"]:
-            lookup_id = item.get("card_ea_id") or item.get("player_ea_id")
-            source_card_id = await _resolve_card_id(conn, lookup_id) if lookup_id else None
-            await conn.execute(
+        for tier in gallery_set.get("tiers") or [{
+            "grade": gallery_set.get("best_grade"), "items": gallery_set.get("items") or []
+        }]:
+            grade = str(tier.get("grade") or "")
+            for item in tier.get("items") or []:
+                player_ea_id = _int(item.get("player_ea_id"))
+                source_card_id = await _resolve_card_id(
+                    conn, player_ea_id,
+                    overall=_int(item.get("overall")),
+                    club_ea_id=_int(item.get("club_ea_id")),
+                    nation_ea_id=_int(item.get("nation_ea_id")),
+                    captured_price=_int(item.get("price")),
+                ) if player_ea_id else None
+                await conn.execute(
                 """
                 INSERT INTO futgg_gallery_solution_items (
                     set_id,grade,position_idx,card_ea_id,player_ea_id,source_card_id,
                     price,score,overall,club_ea_id,nation_ea_id,rarity_ea_id,captured_at
                 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,now())
                 """,
-                gallery_set["set_id"], grade, item["position_idx"], item.get("card_ea_id"),
-                item.get("player_ea_id"), source_card_id, item.get("price"), item.get("score"),
-                item.get("overall"), item.get("club_ea_id"), item.get("nation_ea_id"),
-                item.get("rarity_ea_id"),
-            )
+                    gallery_set["set_id"], grade, item["position_idx"], item.get("card_ea_id"),
+                    item.get("player_ea_id"), source_card_id, item.get("price"), item.get("score"),
+                    item.get("overall"), item.get("club_ea_id"), item.get("nation_ea_id"),
+                    item.get("rarity_ea_id"),
+                )
     return len(active_ids)
 
 
