@@ -187,7 +187,9 @@ async def get_event_impact(pool: asyncpg.Pool, event_id: int) -> List[Dict[str, 
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT i.card_id, p.name, p.rating, p.version, p.image_url, i.relation,
+            SELECT i.card_id,
+                   COALESCE(p.display_name, p.card_name, 'Player ' || i.card_id::text) AS name,
+                   p.rating, p.version, p.image_url, i.relation,
                    p.card_bg_image, p.card_cutout_image, p.card_cutout_type, p.card_name,
                    i.price_before, i.price_after, i.price_change_pct,
                    i.volume_before_24h, i.volume_after_24h,

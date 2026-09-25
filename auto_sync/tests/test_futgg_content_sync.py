@@ -106,7 +106,9 @@ def test_normalises_gallery_sets_and_items():
     gallery_set = gallery["sets"][0]
     assert gallery_set["name"] == "Leeds United"
     assert gallery_set["category_slug"] == "premier-league"
-    assert gallery_set["total_cost_coins"] == 11850
+    # The displayed solution total is the sum of its displayed cards. FUT.GG's
+    # costTiers is progressive bonus metadata and must not replace that total.
+    assert gallery_set["total_cost_coins"] == 700
     assert gallery_set["items"][0]["player_ea_id"] == 246697
 
 

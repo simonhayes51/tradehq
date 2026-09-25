@@ -424,11 +424,17 @@ def normalise_gallery(base: dict[str, Any], solutions: dict[str, Any]) -> dict[s
             set_id = fallback + 1
         category_name, category_slug = categories.get(set_id, (None, None))
         cost_tiers = _as_list(solution.get("costTiers"))
-        costs = [_int(_as_dict(tier).get("cost")) for tier in cost_tiers]
-        costs = [value for value in costs if value is not None]
         tokens = [_int(_as_dict(tier).get("tokens")) for tier in cost_tiers]
         tokens = [value for value in tokens if value is not None]
         items = _solution_items(solution)
+        # costTiers describes FUT.GG's progressive bonus tiers; it is not the
+        # price of the selected card list.  The only total that can be shown
+        # alongside `items` without contradicting the page is the sum of those
+        # items' own captured prices.
+        solution_cost = sum(
+            value for item in items
+            if (value := _int(item.get("price"))) is not None and value > 0
+        )
         sets.append(
             {
                 "set_id": set_id,
@@ -437,7 +443,7 @@ def normalise_gallery(base: dict[str, Any], solutions: dict[str, Any]) -> dict[s
                 "category_slug": category_slug,
                 "item_count": len(items) or _int(solution.get("poolSize")),
                 "best_grade": solution.get("grade"),
-                "total_cost_coins": min(costs) if costs else sum(item.get("price") or 0 for item in items),
+                "total_cost_coins": solution_cost,
                 "total_score": _int(solution.get("score") or solution.get("baseGrade")),
                 "max_tokens": max(tokens) if tokens else _int(solution.get("tokens")),
                 "status": solution.get("status"),

@@ -201,10 +201,20 @@ async def get_gallery_set(pool: asyncpg.Pool, set_id: int) -> Optional[dict[str,
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
-            SELECT set_id,name,category_name,category_slug,item_count,best_grade,
-                   total_cost_coins,total_score,max_tokens,status,solution_payload,
-                   source_updated_at,updated_at
-            FROM futgg_gallery_sets WHERE set_id=$1 AND game_year=27
+            SELECT gs.set_id,gs.name,gs.category_name,gs.category_slug,
+                   coalesce(actual.item_count,gs.item_count) AS item_count,
+                   gs.best_grade,
+                   coalesce(actual.total_cost_coins,gs.total_cost_coins) AS total_cost_coins,
+                   gs.total_score,gs.max_tokens,gs.status,gs.solution_payload,
+                   gs.source_updated_at,gs.updated_at
+            FROM futgg_gallery_sets gs
+            LEFT JOIN LATERAL (
+                SELECT count(*)::int AS item_count,
+                       coalesce(sum(price),0)::bigint AS total_cost_coins
+                FROM futgg_gallery_solution_items gi
+                WHERE gi.set_id=gs.set_id
+            ) actual ON true
+            WHERE gs.set_id=$1 AND gs.game_year=27
             """,
             set_id,
         )
@@ -215,7 +225,8 @@ async def get_gallery_set(pool: asyncpg.Pool, set_id: int) -> Optional[dict[str,
             SELECT gi.position_idx,gi.grade,gi.card_ea_id,gi.player_ea_id,gi.source_card_id,
                    gi.price,gi.score,gi.overall,gi.club_ea_id,gi.nation_ea_id,gi.rarity_ea_id,
                    coalesce(p.display_name,p.name,'Player ' || coalesce(gi.player_ea_id,gi.card_ea_id)::text) AS display_name,
-                   p.rating,p.primary_position,p.rarity,p.club,p.league,p.nation,
+                   coalesce(p.rating,gi.overall) AS rating,
+                   p.primary_position,p.rarity,p.club,p.league,p.nation,
                    p.card_image_url,p.card_image_stored_url,p.player_image_url,m.current_bin
             FROM futgg_gallery_solution_items gi
             LEFT JOIN futgg_players p ON p.source_card_id=gi.source_card_id
@@ -374,18 +385,29 @@ async def ensure_write_schema(conn: asyncpg.Connection) -> None:
 
 
 async def _resolve_card_id(
-    conn: asyncpg.Connection, player_ea_id: int, game_year: int
+    conn: asyncpg.Connection,
+    player_ea_id: int,
+    game_year: int,
+    *,
+    overall: Optional[int] = None,
+    club_ea_id: Optional[int] = None,
+    nation_ea_id: Optional[int] = None,
 ) -> Optional[int]:
     try:
         value = await conn.fetchval(
             """
             SELECT source_card_id FROM futgg_players
-            WHERE game_year=$1 AND is_active
-              AND (source_card_id=$2 OR source_player_id=$2)
-            ORDER BY (source_card_id=$2) DESC,is_tradeable DESC NULLS LAST,rating ASC NULLS LAST
+            WHERE game_year=$1 AND is_active AND source_player_id=$2
+            ORDER BY
+              (rating=$3) DESC NULLS LAST,
+              (club_source_id=$4) DESC NULLS LAST,
+              (nation_source_id=$5) DESC NULLS LAST,
+              is_tradeable DESC NULLS LAST,
+              rating ASC NULLS LAST,
+              source_card_id
             LIMIT 1
             """,
-            game_year, player_ea_id,
+            game_year, player_ea_id, overall, club_ea_id, nation_ea_id,
         )
         return int(value) if value is not None else None
     except asyncpg.exceptions.UndefinedTableError:
@@ -526,8 +548,22 @@ async def _write_gallery(
         await conn.execute("DELETE FROM futgg_gallery_solution_items WHERE set_id=$1", set_id)
         grade = str(gallery_set.get("best_grade") or "")
         for fallback, item in enumerate(gallery_set.get("items") or []):
-            lookup_id = _int(item.get("card_ea_id") or item.get("player_ea_id"))
-            source_card_id = await _resolve_card_id(conn, lookup_id, game_year) if lookup_id else None
+            # `eaId` is EA's card-resource identifier, not FUT.GG's card ID.
+            # FUT.GG player URLs use playerEaId, so matching eaId directly can
+            # silently attach an unrelated historical special card whose FUT.GG
+            # ID happens to have the same number.
+            player_ea_id = _int(item.get("player_ea_id"))
+            source_card_id = (
+                await _resolve_card_id(
+                    conn,
+                    player_ea_id,
+                    game_year,
+                    overall=_int(item.get("overall")),
+                    club_ea_id=_int(item.get("club_ea_id")),
+                    nation_ea_id=_int(item.get("nation_ea_id")),
+                )
+                if player_ea_id else None
+            )
             await conn.execute(
                 """
                 INSERT INTO futgg_gallery_solution_items (
