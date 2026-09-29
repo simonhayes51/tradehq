@@ -268,12 +268,31 @@ class LeakMonitor:
                 json.dumps({"engagement": tweet.get("public_metrics") or {}, "ocr_used": bool(ocr_text)}),
             )
 
+        delivered = False
         if self.discord_webhook:
             try:
                 await self._post_discord(session, username, text, tweet_url, media_urls)
-                await conn.execute("UPDATE leak_tweets SET discord_delivered_at=now() WHERE tweet_id=$1", tweet_id)
+                delivered = True
             except Exception:
-                log.exception("Discord leak repost failed for %s", tweet_id)
+                log.exception("Discord leak webhook repost failed for %s", tweet_id)
+
+        # Fan the same qualifying leak out to every server that configured
+        # /leaks setup. This uses the EAFC.Live bot token, so server owners
+        # do not need to create or maintain Discord webhooks themselves.
+        try:
+            delivered_count = await self._post_multi_server_discord(
+                username=username,
+                text=text,
+                tweet_url=tweet_url,
+                media_urls=media_urls,
+                tweet_id=tweet_id,
+            )
+            delivered = delivered or delivered_count > 0
+        except Exception:
+            log.exception("Discord multi-server leak repost failed for %s", tweet_id)
+
+        if delivered:
+            await conn.execute("UPDATE leak_tweets SET discord_delivered_at=now() WHERE tweet_id=$1", tweet_id)
         return True
 
     @staticmethod
@@ -437,6 +456,56 @@ class LeakMonitor:
             "source_card_id": int(row["source_card_id"]) if row else None,
             "source_player_id": int(row["source_player_id"]) if row and row["source_player_id"] is not None else None,
         }
+
+    async def _post_multi_server_discord(
+        self,
+        *,
+        username: str,
+        text: str,
+        tweet_url: str,
+        media_urls: List[str],
+        tweet_id: str,
+    ) -> int:
+        from app.services.discord_integration import DiscordClient
+        from app.services.discord_leak_feed import list_enabled_destinations
+
+        destinations = await list_enabled_destinations()
+        if not destinations:
+            return 0
+
+        embed: Dict[str, Any] = {
+            "title": "EAFC.Live Leak Feed",
+            "url": tweet_url,
+            "description": (text or "New FC27 leak detected.")[:4000],
+            "color": 0x22C55E,
+            "footer": {"text": f"Source: @{username}"},
+        }
+        if media_urls:
+            embed["image"] = {"url": media_urls[0]}
+
+        client = DiscordClient()
+        delivered = 0
+        nonce = f"leak-{str(tweet_id)[-20:]}"[:25]
+        for destination in destinations:
+            channel_id = str(destination["channel_id"])
+            status, body = await client.post_embed(
+                channel_id,
+                embed,
+                nonce=nonce,
+                enforce_nonce=True,
+            )
+            if status in (200, 201):
+                delivered += 1
+                continue
+            log.warning(
+                "EAFC.Live leak fanout failed: guild=%s channel=%s status=%s body=%s",
+                destination.get("guild_id"),
+                channel_id,
+                status,
+                str(body)[:200],
+            )
+        return delivered
+
 
     async def _post_discord(
         self,
