@@ -639,6 +639,8 @@ async def discord_worker_loop(pool, poll_seconds: int = 60) -> None:
         try:
             client = DiscordClient()
             await process_role_sync_queue(pool, client)
+            from app.services.discord_leak_feed import process_pending_deliveries
+            await process_pending_deliveries(pool, client)
             await publish_opportunity_digest(pool, client)
             await publish_daily_proof_review(pool, client)
         except asyncio.CancelledError:
