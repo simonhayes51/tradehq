@@ -36,6 +36,7 @@ log = logging.getLogger("discord_commands")
 EXTENSIONS: Tuple[str, ...] = (
     "app.services.discord_commands.core",
     "app.services.discord_commands.feed",
+    "app.services.discord_commands.leaks",
 )
 
 
