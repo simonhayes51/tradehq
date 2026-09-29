@@ -44,10 +44,11 @@ poll. Server owners can manage it with:
 /leaks remove
 ```
 
-The leak-monitor worker needs the same `DISCORD_BOT_TOKEN` as the EAFC.Live
-Discord app in order to post to these saved destinations. The legacy
-`LEAK_DISCORD_WEBHOOK_URL` remains supported for the original channel during
-migration and can be removed later if desired.
+Multi-server delivery is queued in the shared database and sent by the main
+TradeHQ Discord worker. The separate leak-monitor service therefore does **not**
+need its own `DISCORD_BOT_TOKEN`. The legacy `LEAK_DISCORD_WEBHOOK_URL`
+remains supported for the original channel during migration and can be removed
+later if desired.
 
 ## Required environment variables
 
