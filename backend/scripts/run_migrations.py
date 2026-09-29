@@ -293,6 +293,62 @@ async def run(dsn: str, target: str = "core", execute_legacy: bool = False) -> i
         await conn.close()
 
 
+async def run_selected(dsn: str, target: str, filenames: list[str]) -> int:
+    """Apply a small allow-listed set of pending migrations.
+
+    This is the recovery path for independent critical product tables when an
+    older unrelated migration has failed earlier in the normal lexicographic
+    pass. The normal runner deliberately aborts on the first SQL failure; that
+    is safe for ordered schema work, but it also meant an old broken migration
+    could permanently prevent later independent tables (notably funnel_events)
+    from ever existing.
+
+    Selected files still honour target, requires-table/requires-column and the
+    schema_migrations ledger. Nothing is marked applied unless its SQL commits.
+    """
+    wanted = set(filenames)
+    conn = await asyncpg.connect(dsn)
+    try:
+        await conn.execute("SELECT pg_advisory_lock($1)", ADVISORY_LOCK_KEY)
+        try:
+            await _ensure_schema_migrations_table(conn)
+            applied = {
+                r["filename"]
+                for r in await conn.fetch(
+                    "SELECT filename FROM schema_migrations WHERE target = $1", target
+                )
+            }
+            ran = 0
+            for path in sorted(MIGRATIONS_DIR.glob("*.sql")):
+                if path.name not in wanted or path.name in applied:
+                    continue
+                sql = path.read_text()
+                if _file_target(sql) != target:
+                    continue
+                missing = await _missing_tables(conn, _file_requires_tables(sql))
+                missing += await _missing_columns(conn, _file_requires_columns(sql))
+                if missing:
+                    log.error(
+                        "recovery migration %s still waiting on prerequisite(s): %s",
+                        path.name, ", ".join(missing),
+                    )
+                    continue
+                log.warning("recovery-applying independent migration %s ...", path.name)
+                async with conn.transaction():
+                    await conn.execute(sql)
+                    await conn.execute(
+                        "INSERT INTO schema_migrations (target, filename) VALUES ($1, $2)",
+                        target, path.name,
+                    )
+                ran += 1
+                log.info("recovery-applied %s", path.name)
+            return ran
+        finally:
+            await conn.execute("SELECT pg_advisory_unlock($1)", ADVISORY_LOCK_KEY)
+    finally:
+        await conn.close()
+
+
 async def run_on_boot(core_dsn: str, player_dsn: str, watchlist_dsn: str | None = None) -> None:
     """Called from main.py's lifespan. Never raises - the app must still
     boot (and serve its degraded-but-working paths) if a migration fails.
@@ -306,6 +362,23 @@ async def run_on_boot(core_dsn: str, player_dsn: str, watchlist_dsn: str | None 
         await run(core_dsn, target="core")
     except Exception as e:
         log.error("BOOT MIGRATIONS FAILED (core): %s - app continuing", e)
+
+    # Funnel reporting is operationally independent of the older schema work
+    # before it. Production exposed the failure mode here: one earlier core
+    # migration aborted the ordered pass, so 075/077 never ran and Admin's
+    # Conversion tab stayed on funnel_unavailable indefinitely. Recover these
+    # two idempotent migrations explicitly after the normal pass. 077 declares
+    # its dependency on 075, and the selected runner honours that dependency.
+    try:
+        recovered = await run_selected(
+            core_dsn,
+            target="core",
+            filenames=["075_funnel_events.sql", "077_funnel_event_source.sql"],
+        )
+        if recovered:
+            log.warning("recovered %d funnel migration(s) after normal boot pass", recovered)
+    except Exception as e:
+        log.error("BOOT FUNNEL MIGRATION RECOVERY FAILED: %s - app continuing", e)
     try:
         await run(player_dsn, target="player")
     except Exception as e:
