@@ -485,9 +485,11 @@ class LeakMonitor:
 
         client = DiscordClient()
         delivered = 0
-        nonce = f"leak-{str(tweet_id)[-20:]}"[:25]
         for destination in destinations:
             channel_id = str(destination["channel_id"])
+            # Unique per destination while remaining stable for retries to the
+            # same channel. Discord caps nonce strings at 25 characters.
+            nonce = f"lk-{str(tweet_id)[-12:]}-{channel_id[-8:]}"[:25]
             status, body = await client.post_embed(
                 channel_id,
                 embed,
