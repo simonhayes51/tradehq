@@ -51,7 +51,19 @@ def test_loaded_set_covers_every_handled_command():
     names = {c["name"] for c in load_all_commands()}
     assert ix.ACCOUNT_COMMANDS <= names
     assert ix.CARD_COMMANDS <= names
-    assert {"help", "feed"} <= names
+    assert {"help", "feed", "leaks"} <= names
+
+
+
+
+
+def test_loaded_set_includes_leaks_group_with_self_service_controls():
+    commands = load_all_commands()
+    leaks = next(c for c in commands if c["name"] == "leaks")
+    subs = {o["name"] for o in leaks["options"]}
+    assert {"setup", "status", "channel", "pause", "resume", "remove"} <= subs
+    assert leaks["default_member_permissions"] == "32"
+    assert leaks["dm_permission"] is False
 
 
 def test_missing_feed_group_is_loud():
