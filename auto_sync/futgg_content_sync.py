@@ -154,18 +154,42 @@ class BrowserTransport:
             last_error: Optional[Exception] = None
             for attempt in range(1, MAX_RETRIES + 1):
                 try:
-                    response = await page.goto(
-                        url, wait_until="domcontentloaded", timeout=TIMEOUT_SECONDS * 1000
-                    )
-                    status = response.status if response else None
-                    if status == 200:
-                        if expect_json:
-                            body = await page.locator("body").inner_text()
+                    if expect_json:
+                        # FUT.GG's JSON routes are XHR/fetch resources. Directly
+                        # navigating Chromium to /api/... changes the browser's
+                        # request context to a top-level document navigation and
+                        # Cloudflare now rejects that shape with 403 (observed in
+                        # production on the FC27 Gallery endpoint). Request the
+                        # resource from the already-warmed fut.gg page instead,
+                        # matching how FUT.GG's own frontend calls it. This is
+                        # only two Gallery calls plus bounded SBC detail calls;
+                        # the existing retry/concurrency limits are unchanged.
+                        result = await page.evaluate(
+                            """async (url) => {
+                                const response = await fetch(url, {
+                                    method: 'GET',
+                                    credentials: 'include',
+                                    headers: {'Accept': 'application/json'}
+                                });
+                                return {status: response.status, body: await response.text()};
+                            }""",
+                            url,
+                        )
+                        status = result.get("status") if isinstance(result, dict) else None
+                        body = result.get("body", "") if isinstance(result, dict) else ""
+                        if status == 200:
                             try:
                                 return json.loads(body)
                             except json.JSONDecodeError as exc:
                                 raise RuntimeError(f"non-JSON browser response from {url}") from exc
-                        return await page.content()
+                    else:
+                        response = await page.goto(
+                            url, wait_until="domcontentloaded", timeout=TIMEOUT_SECONDS * 1000
+                        )
+                        status = response.status if response else None
+                        if status == 200:
+                            return await page.content()
+
                     if status not in {403, 429, 500, 502, 503, 504}:
                         raise RuntimeError(f"GET {url} returned HTTP {status}")
                     raise RuntimeError(f"browser GET {url} returned HTTP {status}")

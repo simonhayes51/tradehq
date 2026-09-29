@@ -152,30 +152,50 @@ def test_gallery_recommendation_removes_exact_cards_but_keeps_player_versions():
     assert [item["position_idx"] for item in gallery_set["items"]] == [0, 1]
 
 
-def test_browser_transport_reuses_page_after_json_request():
+def test_browser_transport_reuses_warmed_page_for_same_origin_json_fetch():
     import asyncio
 
-    class Response:
-        status = 200
-
-    class Locator:
-        async def inner_text(self):
-            return '{"data":{"ok":true}}'
-
     class Page:
-        async def goto(self, url, **kwargs):
+        async def evaluate(self, script, url):
+            assert "fetch(url" in script
+            assert "credentials: 'include'" in script
             assert url == "https://www.fut.gg/api/test/"
-            assert kwargs["wait_until"] == "domcontentloaded"
-            return Response()
+            return {"status": 200, "body": '{"data":{"ok":true}}'}
 
-        def locator(self, selector):
-            assert selector == "body"
-            return Locator()
+        async def goto(self, *args, **kwargs):
+            raise AssertionError("JSON APIs must not be top-level navigations")
 
     async def exercise():
         transport = sync.BrowserTransport([Page()])
         payload = await transport.request("https://www.fut.gg/api/test/", expect_json=True)
         assert payload == {"data": {"ok": True}}
+        assert transport.pages.qsize() == 1
+
+    asyncio.run(exercise())
+
+
+def test_browser_transport_still_navigates_for_html_pages():
+    import asyncio
+
+    class Response:
+        status = 200
+
+    class Page:
+        async def goto(self, url, **kwargs):
+            assert url == "https://www.fut.gg/sbc/"
+            assert kwargs["wait_until"] == "domcontentloaded"
+            return Response()
+
+        async def content(self):
+            return "<html>ok</html>"
+
+        async def evaluate(self, *args, **kwargs):
+            raise AssertionError("HTML pages should use organic navigation")
+
+    async def exercise():
+        transport = sync.BrowserTransport([Page()])
+        payload = await transport.request("https://www.fut.gg/sbc/", expect_json=False)
+        assert payload == "<html>ok</html>"
         assert transport.pages.qsize() == 1
 
     asyncio.run(exercise())
