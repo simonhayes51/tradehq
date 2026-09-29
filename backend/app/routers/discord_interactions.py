@@ -419,11 +419,78 @@ async def _build_feed_reply(interaction_payload: Dict[str, Any], options: List[D
         return {"content": str(exc)}
 
 
+async def _build_leaks_reply(interaction_payload: Dict[str, Any], options: List[Dict[str, Any]], discord_id: Optional[str]) -> Dict[str, Any]:
+    """Self-service multi-server leak-feed management."""
+    if perms.is_dm_interaction(interaction_payload):
+        return {"content": "Run this command inside the Discord server you want to configure."}
+    if not perms.has_manage_guild(interaction_payload):
+        return {"content": "You need **Manage Server** to configure the EAFC.Live leak feed."}
+
+    guild_id = str(interaction_payload["guild_id"])
+    guild_name = ((interaction_payload.get("guild") or {}).get("name")) or f"Guild {guild_id}"
+    if not options:
+        return {"content": "Usage: `/leaks <setup|status|channel|pause|resume|remove>`"}
+
+    from app.services import discord_leak_feed as leak_feed
+
+    sub = options[0]
+    sub_name = str(sub.get("name") or "")
+    sub_options = sub.get("options") or []
+
+    try:
+        if sub_name in {"setup", "channel"}:
+            channel_raw = _sub_option(sub_options, "channel")
+            if channel_raw is None:
+                return {"content": "Choose the channel where EAFC.Live leaks should be posted."}
+            row = await leak_feed.setup_destination(
+                guild_id=guild_id,
+                guild_name=guild_name,
+                channel_id=str(channel_raw),
+                configured_by_discord_id=str(discord_id or ""),
+            )
+            verb = "set up" if sub_name == "setup" else "moved"
+            return {
+                "content": (
+                    f"✅ EAFC.Live Leak Feed {verb} in <#{row['channel_id']}>. "
+                    "New qualifying FC27 leaks will be posted here automatically."
+                )
+            }
+
+        if sub_name == "status":
+            row = await leak_feed.get_destination(guild_id)
+            if not row:
+                return {"content": "This server has not set up the EAFC.Live Leak Feed yet. Run `/leaks setup`."}
+            state = "active" if row["enabled"] else "paused"
+            return {"content": f"📡 EAFC.Live Leak Feed is **{state}** in <#{row['channel_id']}>."}
+
+        if sub_name == "pause":
+            row = await leak_feed.set_enabled(guild_id, False)
+            if not row:
+                return {"content": "Run `/leaks setup` first."}
+            return {"content": "⏸️ EAFC.Live Leak Feed paused for this server."}
+
+        if sub_name == "resume":
+            row = await leak_feed.set_enabled(guild_id, True)
+            if not row:
+                return {"content": "Run `/leaks setup` first."}
+            return {"content": f"▶️ EAFC.Live Leak Feed resumed in <#{row['channel_id']}>."}
+
+        if sub_name == "remove":
+            removed = await leak_feed.remove_destination(guild_id)
+            return {"content": "🗑️ EAFC.Live Leak Feed removed from this server." if removed else "This server did not have a leak feed configured."}
+
+        return {"content": f"Unknown /leaks subcommand: {sub_name}"}
+    except ValueError as exc:
+        return {"content": str(exc)}
+
+
 async def _build_reply(name: str, options: List[Dict[str, Any]], discord_id: Optional[str], correlation_id: str, interaction_payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     app_url = _app_url()
 
     if name == "feed":
         return await _build_feed_reply(interaction_payload or {}, options, discord_id)
+    if name == "leaks":
+        return await _build_leaks_reply(interaction_payload or {}, options, discord_id)
 
     if name == "help":
         return {"embeds": [embeds.help_embed(app_url)], "components": [embeds.link_row("Open EAFC.Live", app_url)]}
@@ -537,7 +604,7 @@ async def interactions(request: Request, background_tasks: BackgroundTasks) -> J
     # only has DISCORD_BOT_TOKEN set.
     application_id = os.getenv("DISCORD_APPLICATION_ID") or command_sync.authenticated_application_id()
     interaction_token = payload.get("token")
-    ephemeral = name in ACCOUNT_COMMANDS or name == "feed"
+    ephemeral = name in ACCOUNT_COMMANDS or name in {"feed", "leaks"}
 
     if not application_id or not interaction_token:
         log.error("Cannot defer Discord interaction: missing application_id or interaction token")
