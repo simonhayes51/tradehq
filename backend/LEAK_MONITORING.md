@@ -20,6 +20,35 @@ It creates:
 - `active_leak_signals` - structured-only internal view;
 - `futgg_current_intelligence.leak_context` - structured context attached to a matched market card.
 
+
+## Multi-server Discord delivery
+
+The leak monitor can now fan the same qualifying leak out to multiple Discord
+servers without polling X again.
+
+Server owners invite the EAFC.Live Discord app and run:
+
+```text
+/leaks setup #leaks
+```
+
+The selected guild/channel is stored in `discord_leak_feed_destinations`.
+Every enabled destination receives the same filtered leak from the single X
+poll. Server owners can manage it with:
+
+```text
+/leaks status
+/leaks channel #new-channel
+/leaks pause
+/leaks resume
+/leaks remove
+```
+
+The leak-monitor worker needs the same `DISCORD_BOT_TOKEN` as the EAFC.Live
+Discord app in order to post to these saved destinations. The legacy
+`LEAK_DISCORD_WEBHOOK_URL` remains supported for the original channel during
+migration and can be removed later if desired.
+
 ## Required environment variables
 
 ```text
