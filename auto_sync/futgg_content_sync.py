@@ -169,10 +169,7 @@ class BrowserTransport:
                                 const response = await fetch(url, {
                                     method: 'GET',
                                     credentials: 'include',
-                                    headers: {
-                                        'Accept': 'application/json',
-                                        'X-Requested-With': 'XMLHttpRequest'
-                                    }
+                                    headers: {'Accept': 'application/json'}
                                 });
                                 return {status: response.status, body: await response.text()};
                             }""",
