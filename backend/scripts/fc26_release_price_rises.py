@@ -40,7 +40,7 @@ HIGH_CALIBRATION_ERR_PCT = 20.0
 # docstring for why this is hardcoded rather than env-var-only: FC26
 # already happened, so these are a historical fact, not a per-deployment
 # config value still waiting on an EA announcement.
-FC26_WEB_APP_LAUNCH_DATE = date(2025, 9, 19)
+FC26_WEB_APP_LAUNCH_DATE = date(2025, 9, 17)
 FC26_FULL_RELEASE_DATE = date(2025, 9, 26)
 
 

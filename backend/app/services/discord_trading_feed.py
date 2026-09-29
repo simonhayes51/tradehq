@@ -871,6 +871,7 @@ async def publish_live_opportunities(pool, server: ServerRecord, client: Optiona
     from app.db import get_core_pool
     from app.routers.v2.futgg_market import _segmented_candidates, _sales_for_rows, _score_and_filter
     from app.services.market_data_provider import FutggMarketDataProvider
+    from app.services.discord_historical_risk import assess_historical_feed_risk
 
     client = client or DiscordClient()
     async with pool.acquire() as conn:
@@ -982,6 +983,41 @@ async def publish_live_opportunities(pool, server: ServerRecord, client: Optiona
         if rechecked is None:
             continue
         row, ci = rechecked
+
+        # The Opportunity Engine is a current-market mispricing detector. At
+        # launch that is not enough: a broad supply-driven repricing can make
+        # yesterday's completed-sales level look like a huge "discount" while
+        # the whole market is still moving lower. Before broadcasting, compare
+        # this exact lifecycle point with EAFC.Live's clean FC26 launch history.
+        # This layer can only suppress a Discord call; it never creates one and
+        # never changes the canonical website opportunity.
+        async with core_pool.acquire() as historical_conn:
+            historical_risk = await assess_historical_feed_risk(
+                historical_conn, row, ci, now=_now()
+            )
+        if historical_risk.block:
+            log.info(
+                "Discord opportunity suppressed by FC26 lifecycle prior "
+                "server_id=%s card_id=%s reason=%s",
+                server.id,
+                row.get("source_card_id"),
+                historical_risk.reason,
+            )
+            continue
+        historical_prior_payload = None
+        if historical_risk.prior is not None:
+            prior = historical_risk.prior
+            historical_prior_payload = {
+                "anchor": prior.anchor,
+                "lifecycle_offset_days": prior.lifecycle_offset_days,
+                "baseline_date": prior.baseline_date.isoformat(),
+                "target_date": prior.target_date.isoformat(),
+                "sample_size": prior.sample_size,
+                "median_return_pct": prior.median_return_pct,
+                "negative_rate": prior.negative_rate,
+                "cohort": prior.cohort,
+            }
+
         band = None
         if band_budget is not None:
             from app.services.discord_feed_billing import classify_budget_band
@@ -1021,6 +1057,10 @@ async def publish_live_opportunities(pool, server: ServerRecord, client: Optiona
                     "price_checked_at": price_checked_at.isoformat() if isinstance(price_checked_at, datetime) else None,
                     "price_age_minutes_at_post": row.get("price_age_minutes_at_post"),
                     "entry_expires_at": entry_expires_at.isoformat(),
+                    # Persist the historical prior used at publication so the
+                    # 72-hour outcome dataset can later prove whether this gate
+                    # improves hit-rate instead of becoming an un-auditable rule.
+                    "historical_prior": historical_prior_payload,
                 },
             )
         if post_id is None:

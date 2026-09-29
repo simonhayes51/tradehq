@@ -68,7 +68,7 @@ TOP_KEY_SIGNALS = 5
 HIGH_CALIBRATION_ERR_PCT = 20.0
 
 FC26_WEB_APP_LAUNCH_DATE = date(2025, 9, 17)
-FC26_FULL_RELEASE_DATE = date(2025, 9, 24)
+FC26_FULL_RELEASE_DATE = date(2025, 9, 26)
 
 PRICE_BANDS = [
     {"key": "sub_1k", "label": "Under 1k", "min": 0, "max": 999},

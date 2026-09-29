@@ -65,6 +65,18 @@ ALL_PHASES = (
     PHASE_EARLY_ACCESS, PHASE_FULL_RELEASE, PHASE_ESTABLISHED,
 )
 
+# EA has now published the FC27 launch calendar. Environment values still
+# override these defaults, but leaving the optional vars unset must no longer
+# make the live game cycle UNKNOWN (which also silently disables FC26-prior
+# weighting in the Investment Engine).
+_KNOWN_DATES_BY_GAME_YEAR = {
+    27: {
+        "web_app_launch": date(2026, 9, 16),
+        "early_access": date(2026, 9, 18),
+        "full_release": date(2026, 9, 25),
+    },
+}
+
 # How long after Full Release we still consider the market to be in its
 # launch/repricing period rather than an ordinary established market.
 # Matches the window the FC26 research and replay actually examined
@@ -156,11 +168,13 @@ class GameCycle:
 
 
 def _load() -> GameCycle:
+    game_year = _env_int("EAFC_GAME_YEAR", 27) or 27
+    known = _KNOWN_DATES_BY_GAME_YEAR.get(game_year, {})
     return GameCycle(
-        game_year=_env_int("EAFC_GAME_YEAR", 27) or 27,
-        web_app_launch=_env_date("EAFC_WEB_APP_LAUNCH_DATE"),
-        early_access=_env_date("EAFC_EARLY_ACCESS_DATE"),
-        full_release=_env_date("EAFC_FULL_RELEASE_DATE"),
+        game_year=game_year,
+        web_app_launch=_env_date("EAFC_WEB_APP_LAUNCH_DATE") or known.get("web_app_launch"),
+        early_access=_env_date("EAFC_EARLY_ACCESS_DATE") or known.get("early_access"),
+        full_release=_env_date("EAFC_FULL_RELEASE_DATE") or known.get("full_release"),
     )
 
 
