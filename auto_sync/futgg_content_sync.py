@@ -856,6 +856,13 @@ async def crawl_once() -> bool:
             f"sbcs={result.get('sbcs', 0)} solution_items={result.get('solution_items', 0)} "
             f"gallery_sets={result.get('gallery_sets', 0)} gallery_tags={result.get('gallery_tags', 0)}"
         )
+        # In backend-ingest mode we used to return here without recording a
+        # successful heartbeat. Failures *did* record one in _main(), which
+        # made Collector Status sticky-red forever after any transient 403/500
+        # even when a later crawl succeeded. Clear that stale failure on every
+        # successful ingest, just like direct-DB mode does below.
+        if DATABASE_URL:
+            await heartbeat(DATABASE_URL, WORKER, True, detail)
         log.info("FUT.GG content sync complete via backend: %s", detail)
         return True
     if not DATABASE_URL:
