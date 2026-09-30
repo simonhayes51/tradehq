@@ -143,3 +143,105 @@ def test_guard_failure_suppresses_actionable_buy():
     assert guarded.recommended_sell_target is None
     assert guarded.expected_profit_after_tax is None
     assert "market_repricing" in guarded.blocking_codes
+
+
+def _actionable_buy(card_id=10):
+    return CardIntelligence(
+        card_id=card_id,
+        signal="buy",
+        status="active",
+        risk_level="low",
+        confidence_score=0.90,
+        fair_value=Decimal("70000"),
+        theoretical_max_buy=Decimal("62000"),
+        recommended_buy_max=Decimal("60000"),
+        current_executable_buy=Decimal("42000"),
+        break_even_price=Decimal("44211"),
+        recommended_sell_target=Decimal("68000"),
+        expected_profit_after_tax=Decimal("22600"),
+        expected_roi=Decimal("0.538"),
+        expected_profit_basis=Decimal("42000"),
+    )
+
+
+def test_persistent_live_bin_level_blocks_stale_sales_median_buy():
+    # Regression for the FC27 Undav/Harder failure: the live market has
+    # already settled around 42k, but old completed sales still centre on 70k.
+    # That is stale evidence, not 28k of upside.
+    observations = [
+        (42_000, NOW - timedelta(minutes=5 * i))
+        for i in range(24)
+    ]
+    guarded = apply_regime_guard(
+        _actionable_buy(10),
+        {
+            "source_card_id": 10,
+            "current_bin": 42_000,
+            "sales_median": 70_000,
+            "sales_count": 50,
+            "sales_window_span_minutes": 240,
+            "sales_dispersion_ratio": 0.02,
+        },
+        [],
+        observations,
+        as_of=NOW,
+    )
+    assert guarded.signal == "avoid"
+    assert guarded.risk_level == "avoid"
+    assert guarded.recommended_buy_max is None
+    assert guarded.expected_profit_after_tax is None
+    assert guarded.trend_features["regime_bin_market_state"] == "STABLE"
+    assert "market_repricing" in guarded.blocking_codes
+
+
+def test_established_bin_downmove_blocks_buy_before_sales_median_catches_up():
+    observations = []
+    # Older level around 100k, then a persistent new 80k level in the last hour.
+    for i in range(12):
+        observations.append((100_000, NOW - timedelta(minutes=180 - i * 10)))
+    for i in range(12):
+        observations.append((80_000, NOW - timedelta(minutes=55 - i * 5)))
+
+    guarded = apply_regime_guard(
+        _actionable_buy(11),
+        {
+            "source_card_id": 11,
+            "current_bin": 80_000,
+            "sales_median": 100_000,
+            "sales_count": 50,
+            "sales_window_span_minutes": 240,
+            "sales_dispersion_ratio": 0.02,
+        },
+        [],
+        observations,
+        as_of=NOW,
+    )
+    assert guarded.signal == "avoid"
+    assert guarded.trend_features["regime_bin_market_state"] == "MOVING_DOWN"
+    assert guarded.recommended_sell_target is None
+
+
+def test_single_cheap_bin_undercut_does_not_kill_a_real_snipe():
+    observations = [
+        (70_000, NOW - timedelta(minutes=5 * i))
+        for i in range(1, 20)
+    ]
+    observations.append((42_000, NOW))
+
+    ci = _actionable_buy(12)
+    guarded = apply_regime_guard(
+        ci,
+        {
+            "source_card_id": 12,
+            "current_bin": 42_000,
+            "sales_median": 70_000,
+            "sales_count": 50,
+            "sales_window_span_minutes": 240,
+            "sales_dispersion_ratio": 0.02,
+        },
+        [],
+        observations,
+        as_of=NOW,
+    )
+    assert guarded.signal == "buy"
+    assert guarded.recommended_buy_max == Decimal("60000")
