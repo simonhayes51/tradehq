@@ -24,6 +24,11 @@ from decimal import Decimal
 from statistics import median
 from typing import Any, Mapping, Optional, Sequence
 
+from app.services.bin_market_signal import (
+    MOVING_DOWN,
+    compute_bin_market_signal,
+)
+
 log = logging.getLogger("market_regime_guard")
 
 REGIME_NORMAL = "normal"
@@ -42,6 +47,14 @@ VELOCITY_MAX_SPAN_MINUTES = float(os.getenv("EAFC_REGIME_VELOCITY_MAX_SPAN_MINUT
 MEDIAN_DISCOUNT_PCT = float(os.getenv("EAFC_REGIME_MEDIAN_DISCOUNT_PCT", "0.08"))
 MIN_DISPERSION_RATIO = float(os.getenv("EAFC_REGIME_MIN_DISPERSION_RATIO", "0.06"))
 CONFIDENCE_CAP = float(os.getenv("EAFC_REGIME_CONFIDENCE_CAP", "0.35"))
+# BIN history is the fastest catalogue-wide evidence we own. A persistent
+# lowest-BIN level materially below the completed-sales median means the sales
+# anchor has not caught up with the live market; treating that gap as upside is
+# the exact stale-anchor failure this guard exists to prevent.
+BIN_SALES_DISLOCATION_PCT = float(os.getenv("EAFC_REGIME_BIN_SALES_DISLOCATION_PCT", "0.15"))
+BIN_CONFIRMATION_BAND_PCT = float(os.getenv("EAFC_REGIME_BIN_CONFIRMATION_BAND_PCT", "0.05"))
+BIN_MIN_PERSISTENCE = float(os.getenv("EAFC_REGIME_BIN_MIN_PERSISTENCE", "0.60"))
+BIN_MIN_RECENT_OBSERVATIONS = int(os.getenv("EAFC_REGIME_BIN_MIN_RECENT_OBSERVATIONS", "3"))
 
 
 @dataclass(frozen=True)
@@ -52,6 +65,9 @@ class RegimeAssessment:
     sales_span_minutes: Optional[float] = None
     sales_count: int = 0
     current_vs_median_pct: Optional[float] = None
+    bin_market_state: Optional[str] = None
+    bin_change_1h_pct: Optional[float] = None
+    bin_change_24h_pct: Optional[float] = None
 
     @property
     def blocks_buy(self) -> bool:
@@ -132,6 +148,84 @@ def _series_assessment(sales: Optional[Sequence[Any]]) -> tuple[Optional[float],
     return max(0.0, (older - newer) / older), span, len(points)
 
 
+def _evaluate_bin_regime(
+    snapshot: Mapping[str, Any],
+    bin_observations: Optional[Sequence[Any]],
+    *,
+    as_of: Optional[datetime] = None,
+) -> Optional[RegimeAssessment]:
+    """Use persistent lowest-BIN history to detect a live level that sales lag.
+
+    BINs are asking prices, never completed-sale proof, so a lone undercut must
+    not kill a genuine snipe. We only block when the cheap level is established
+    by repeated recent observations, or the BIN signal itself says MOVING_DOWN.
+    """
+    if not bin_observations:
+        return None
+    try:
+        card_id = int(snapshot.get("source_card_id") or 0)
+        signal = compute_bin_market_signal(
+            card_id,
+            bin_observations,
+            as_of=as_of or datetime.now(timezone.utc),
+        )
+    except Exception:
+        raise
+
+    current_bin = _as_float(snapshot.get("current_bin")) or _as_float(signal.current_bin)
+    sales_median = _as_float(snapshot.get("sales_median"))
+    if current_bin is None:
+        return None
+
+    if signal.market_state == MOVING_DOWN:
+        change = signal.change_24h_pct if signal.change_24h_pct is not None else signal.change_1h_pct
+        change_text = f"{abs(change) * 100:.1f}%" if change is not None else "materially"
+        return RegimeAssessment(
+            state=REGIME_REPRICING,
+            reason=(
+                f"Live BIN history has established a lower market level ({change_text} below its recent "
+                "baseline). Completed-sale fair value is being suppressed until the decline stabilises."
+            ),
+            current_vs_median_pct=((current_bin - sales_median) / sales_median) if sales_median else None,
+            bin_market_state=signal.market_state,
+            bin_change_1h_pct=signal.change_1h_pct,
+            bin_change_24h_pct=signal.change_24h_pct,
+        )
+
+    # A stable/persistent cheap level can be just as dangerous as an actively
+    # falling one: once the market has sat at 42k for an hour, a 70k completed-
+    # sales median is stale evidence, not 28k of upside. Require both recent
+    # persistence and a short-window median close to the current ask so a lone
+    # undercut remains eligible for the core snipe product.
+    if sales_median and sales_median > 0:
+        dislocation = (sales_median - current_bin) / sales_median
+        recent_level = signal.median_1h or signal.median_30m
+        recent_confirmed = (
+            recent_level is not None
+            and recent_level > 0
+            and abs(current_bin - recent_level) / recent_level <= BIN_CONFIRMATION_BAND_PCT
+        )
+        persistent = (
+            signal.observation_count_1h >= BIN_MIN_RECENT_OBSERVATIONS
+            and signal.price_persistence is not None
+            and signal.price_persistence >= BIN_MIN_PERSISTENCE
+        )
+        if dislocation >= BIN_SALES_DISLOCATION_PCT and recent_confirmed and persistent:
+            return RegimeAssessment(
+                state=REGIME_REPRICING,
+                reason=(
+                    f"Completed sales are lagging the live market: BIN has held near {current_bin:,.0f} "
+                    f"while the recent-sales median is {sales_median:,.0f} "
+                    f"({dislocation * 100:.1f}% higher). The old sales level is not being treated as upside."
+                ),
+                current_vs_median_pct=(current_bin - sales_median) / sales_median,
+                bin_market_state=signal.market_state,
+                bin_change_1h_pct=signal.change_1h_pct,
+                bin_change_24h_pct=signal.change_24h_pct,
+            )
+    return None
+
+
 def evaluate_regime(snapshot: Mapping[str, Any], sales: Optional[Sequence[Any]] = None) -> RegimeAssessment:
     current_bin = _as_float(snapshot.get("current_bin"))
     sales_median = _as_float(snapshot.get("sales_median"))
@@ -197,12 +291,25 @@ def evaluate_regime(snapshot: Mapping[str, Any], sales: Optional[Sequence[Any]] 
     )
 
 
-def apply_regime_guard(ci: Any, snapshot: Mapping[str, Any], sales: Optional[Sequence[Any]] = None):
+def apply_regime_guard(
+    ci: Any,
+    snapshot: Mapping[str, Any],
+    sales: Optional[Sequence[Any]] = None,
+    bin_observations: Optional[Sequence[Any]] = None,
+    *,
+    as_of: Optional[datetime] = None,
+):
     """Downgrade only. Never turns a non-buy into a buy and never fabricates value."""
     if getattr(ci, "signal", None) not in {"buy", "strong_buy"}:
         return ci
 
-    assessment = evaluate_regime(snapshot, sales)
+    # Fastest evidence first: BIN history updates catalogue-wide and catches a
+    # new persistent market level before the expensive per-card sales rotation
+    # necessarily does. Completed sales remain the valuation anchor, but stale
+    # completed sales are not allowed to manufacture an executable BUY.
+    assessment = _evaluate_bin_regime(snapshot, bin_observations, as_of=as_of)
+    if assessment is None:
+        assessment = evaluate_regime(snapshot, sales)
     if not assessment.blocks_buy:
         return ci
 
@@ -246,6 +353,9 @@ def apply_regime_guard(ci: Any, snapshot: Mapping[str, Any], sales: Optional[Seq
         "regime_sales_span_minutes": assessment.sales_span_minutes,
         "regime_sales_count": assessment.sales_count,
         "regime_current_vs_median_pct": assessment.current_vs_median_pct,
+        "regime_bin_market_state": assessment.bin_market_state,
+        "regime_bin_change_1h_pct": assessment.bin_change_1h_pct,
+        "regime_bin_change_24h_pct": assessment.bin_change_24h_pct,
     })
     return ci
 
@@ -312,7 +422,13 @@ def install_market_regime_guard() -> None:
             **kwargs,
         )
         try:
-            return apply_regime_guard(ci, snapshot, sales)
+            return apply_regime_guard(
+                ci,
+                snapshot,
+                sales,
+                bin_observations,
+                as_of=as_of,
+            )
         except Exception as exc:
             # A guard must never take the market engine down, but launch
             # safety also means an unguarded BUY must not survive the error.
