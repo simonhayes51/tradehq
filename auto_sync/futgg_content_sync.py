@@ -544,7 +544,9 @@ def normalise_gallery(base: dict[str, Any], solutions: dict[str, Any]) -> dict[s
 
 
 async def collect_gallery_data(session: BrowserTransport) -> dict[str, Any]:
-    base, solutions = await asyncio.gather(
+    # Keep a failed gallery request from leaving its paired request in
+    # flight while the owning browser context is being torn down.
+    base, solutions = await _gather_and_cancel_on_error(
         _get_json(session, GALLERY_URL), _get_json(session, GALLERY_SOLUTIONS_URL)
     )
     gallery = normalise_gallery(base, solutions)
