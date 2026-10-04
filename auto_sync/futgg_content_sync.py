@@ -198,9 +198,11 @@ class BrowserTransport:
                     if attempt >= MAX_RETRIES:
                         break
                     delay = min(8.0, (2 ** (attempt - 1)) + random.random())
-                    log.warning("%s; retrying in %.1fs", exc, delay)
+                    log.warning("browser request failed for %s: %s; retrying in %.1fs", url, exc, delay)
                     await asyncio.sleep(delay)
-            raise RuntimeError(str(last_error or f"request failed: {url}"))
+            raise RuntimeError(
+                f"browser request failed for {url}: {last_error or 'unknown error'}"
+            )
         finally:
             self.pages.put_nowait(page)
 
@@ -542,7 +544,9 @@ def normalise_gallery(base: dict[str, Any], solutions: dict[str, Any]) -> dict[s
 
 
 async def collect_gallery_data(session: BrowserTransport) -> dict[str, Any]:
-    base, solutions = await asyncio.gather(
+    # Keep a failed gallery request from leaving its paired request in
+    # flight while the owning browser context is being torn down.
+    base, solutions = await _gather_and_cancel_on_error(
         _get_json(session, GALLERY_URL), _get_json(session, GALLERY_SOLUTIONS_URL)
     )
     gallery = normalise_gallery(base, solutions)
@@ -800,6 +804,24 @@ async def write_gallery(conn: asyncpg.Connection, gallery: dict[str, Any]) -> in
     return len(active_ids)
 
 
+async def _gather_and_cancel_on_error(*awaitables: Any) -> list[Any]:
+    """Gather concurrent work and fully stop siblings before propagating errors.
+
+    `asyncio.gather` returns on the first exception but does not cancel its
+    other awaitables. That is unsafe when the caller owns a browser and closes
+    it in `finally`: those requests keep running against a closed context.
+    """
+    tasks = [asyncio.create_task(awaitable) for awaitable in awaitables]
+    try:
+        return list(await asyncio.gather(*tasks))
+    except BaseException:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
+
+
 async def _collect_remote_content() -> tuple[list[dict[str, Any]], dict[str, Any]]:
     from playwright.async_api import async_playwright
 
@@ -823,7 +845,12 @@ async def _collect_remote_content() -> tuple[list[dict[str, Any]], dict[str, Any
             await warmup.wait_for_timeout(1500)
             pages = [warmup] + [await context.new_page() for _ in range(CONCURRENCY + 1)]
             session = BrowserTransport(pages)
-            sbcs, gallery = await asyncio.gather(
+            # If either collection branch fails, asyncio.gather() propagates
+            # the exception but leaves its sibling running. Closing Chromium in
+            # the `finally` block then aborts those in-flight requests, creating
+            # misleading "browser/page was closed" errors and detached navigations.
+            # Cancel and drain both branches before browser.close() can run.
+            sbcs, gallery = await _gather_and_cancel_on_error(
                 collect_sbc_data(session), collect_gallery_data(session)
             )
         finally:
