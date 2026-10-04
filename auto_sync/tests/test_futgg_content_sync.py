@@ -279,3 +279,34 @@ def test_ingest_mode_collects_before_touching_database(monkeypatch):
     monkeypatch.setattr(sync, "connect_with_retry", database_must_not_be_used)
 
     assert asyncio.run(sync.crawl_once()) is True
+
+
+def test_gather_cancels_and_drains_sibling_before_propagating_error():
+    import asyncio
+
+    async def exercise():
+        sibling_cancelled = asyncio.Event()
+        let_sibling_start = asyncio.Event()
+
+        async def fail():
+            await let_sibling_start.wait()
+            raise RuntimeError("primary failure")
+
+        async def sibling():
+            let_sibling_start.set()
+            try:
+                await asyncio.Future()
+            except asyncio.CancelledError:
+                sibling_cancelled.set()
+                raise
+
+        try:
+            await sync._gather_and_cancel_on_error(fail(), sibling())
+        except RuntimeError as exc:
+            assert str(exc) == "primary failure"
+        else:
+            raise AssertionError("the first task's failure must propagate")
+
+        assert sibling_cancelled.is_set()
+
+    asyncio.run(exercise())
