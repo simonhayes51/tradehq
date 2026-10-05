@@ -89,6 +89,7 @@ import sys
 import time
 from collections import deque
 from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any
 
 import asyncpg
@@ -364,6 +365,65 @@ def failure_backoff_minutes(consecutive_failures: int) -> int:
         consecutive_failures = 1
     index = min(consecutive_failures, len(FAILURE_BACKOFF_LADDER)) - 1
     return min(FAILURE_BACKOFF_LADDER[index], FAILURE_BACKOFF_MAX_MINUTES)
+
+
+# A FUT.GG 404 is usually a persistent missing card-data resource, not a
+# short network blip. Keep it visibly failed and retryable, but avoid
+# spending a fresh request on the same missing resource every cycle.
+DATA_404_RETRY_BACKOFF_MINUTES = env_int(
+    "FUTGG_SALES_DATA_404_RETRY_BACKOFF_MINUTES", 180, minimum=1
+)
+RETRY_AFTER_MAX_SECONDS = env_int(
+    "FUTGG_SALES_RETRY_AFTER_MAX_SECONDS", 21600, minimum=1
+)
+
+
+def parse_retry_after_seconds(value: Any, *, now: datetime | None = None) -> float | None:
+    """Parse Retry-After as delta-seconds or an HTTP date.
+
+    Browsers expose the header as text. Invalid values are ignored, while
+    valid delays are bounded to six hours so a malformed upstream value
+    cannot park a long-running collector indefinitely.
+    """
+    if value is None:
+        return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+    try:
+        seconds = float(raw)
+    except ValueError:
+        try:
+            retry_at = parsedate_to_datetime(raw)
+            if retry_at.tzinfo is None:
+                retry_at = retry_at.replace(tzinfo=timezone.utc)
+            reference = now or datetime.now(timezone.utc)
+            if reference.tzinfo is None:
+                reference = reference.replace(tzinfo=timezone.utc)
+            seconds = (retry_at - reference).total_seconds()
+        except (TypeError, ValueError, OverflowError):
+            return None
+    if seconds <= 0:
+        return None
+    return min(float(RETRY_AFTER_MAX_SECONDS), seconds)
+
+
+def failure_backoff_minutes_for_error(
+    error: str, consecutive_failures: int, retry_after_seconds: float | None = None,
+) -> int:
+    """Choose a per-card retry that preserves errors without wasting slots.
+
+    404s stay errors (never empty-sales successes), but start with a
+    slower retry because the referenced data resource is absent. A 429's
+    own Retry-After is a minimum, in addition to the ordinary escalating
+    failure backoff.
+    """
+    delay = failure_backoff_minutes(consecutive_failures)
+    if error == "data_404":
+        delay = max(delay, DATA_404_RETRY_BACKOFF_MINUTES)
+    if "429" in error and retry_after_seconds is not None:
+        delay = max(delay, int((retry_after_seconds + 59) // 60))
+    return min(delay, FAILURE_BACKOFF_MAX_MINUTES)
 
 #: Circuit breaker: if a cycle's running failure ratio reaches this once at
 #: least CIRCUIT_BREAKER_MIN_SAMPLE cards have been attempted, stop
@@ -705,6 +765,7 @@ class AdaptiveThrottle:
         )
         self._clean_streak = 0
         self.consecutive_fully_throttled_batches = 0
+        self.retry_after_until = 0.0
         # Rolling (attempted, throttled) history - see
         # THROTTLE_ROLLING_WINDOW_BATCHES's own comment for why this
         # exists: a single isolated throttled batch inside an otherwise
@@ -714,7 +775,17 @@ class AdaptiveThrottle:
             maxlen=THROTTLE_ROLLING_WINDOW_BATCHES
         )
 
-    def record(self, attempted: int, throttled: int) -> None:
+    def record(
+        self, attempted: int, throttled: int, retry_after_seconds: float | None = None,
+    ) -> None:
+        if throttled > 0 and retry_after_seconds is not None and retry_after_seconds > 0:
+            self.retry_after_until = max(
+                self.retry_after_until, time.monotonic() + retry_after_seconds
+            )
+            log.warning(
+                "FUT.GG Retry-After received; pausing sales requests for at least %.0fs",
+                retry_after_seconds,
+            )
         if attempted > 0 and throttled >= attempted:
             self.consecutive_fully_throttled_batches += 1
         else:
@@ -753,8 +824,16 @@ class AdaptiveThrottle:
             self.delay = max(self.min_delay, self.delay * 0.8)
             self.batch_size = min(self.max_batch, self.batch_size + 1)
 
+    def cooldown_remaining(self) -> float:
+        return max(0.0, self.retry_after_until - time.monotonic())
+
+    def next_wait_seconds(self) -> float:
+        return max(self.delay, self.cooldown_remaining())
+
     def describe(self) -> str:
-        return f"batch={self.batch_size} delay={self.delay:.2f}s"
+        remaining = self.cooldown_remaining()
+        suffix = f" retry_after={remaining:.0f}s" if remaining > 0 else ""
+        return f"batch={self.batch_size} delay={self.delay:.2f}s{suffix}"
 
 
 #: AdaptiveThrottle only ever lives in-process. In continuous mode that's
@@ -2359,6 +2438,7 @@ async def apply_batch_results(
     bin_rows: list[tuple] = []
     updates: list[tuple] = []
     throttled = 0
+    retry_after_seconds = 0.0
     logged_failures = 0
     for result in results or []:
         card_id = int(result.get("eaId"))
@@ -2403,6 +2483,9 @@ async def apply_batch_results(
 
             if is_throttle_signal(error):
                 throttled += 1
+                server_delay = parse_retry_after_seconds(result.get("retryAfter"))
+                if server_delay is not None:
+                    retry_after_seconds = max(retry_after_seconds, server_delay)
 
             # DATA-INTEGRITY FIX (item 4): a failed fetch of ANY kind
             # (data_403, sign_502, unstructured_challenge, network errors,
@@ -2435,8 +2518,11 @@ async def apply_batch_results(
             # FAILURE_RETRY_BACKOFF_MINUTES).
             failures = prior_failures + 1
             updates.append((
-                card_id, failure_backoff_minutes(failures), f"error:{error}",
-                False, failures,
+                card_id,
+                failure_backoff_minutes_for_error(
+                    error, failures, parse_retry_after_seconds(result.get("retryAfter"))
+                ),
+                f"error:{error}", False, failures,
             ))
             continue
 
@@ -2476,7 +2562,7 @@ async def apply_batch_results(
         updates.append((card_id, sales_interval_minutes(tier), "success", True, 0))
 
     if throttle is not None:
-        throttle.record(len(rows), throttled)
+        throttle.record(len(rows), throttled, retry_after_seconds or None)
 
     if not APPLY:
         log.info(
@@ -3183,9 +3269,10 @@ async def run_forever() -> None:
                                     log.warning("staying on signed_fetch: %s", why)
                             break
 
-                        if throttle.delay:
+                        wait_seconds = throttle.next_wait_seconds()
+                        if wait_seconds:
                             shutdown, exhausted = await sleep_within_budget(
-                                throttle.delay, shutdown_event, deadline
+                                wait_seconds, shutdown_event, deadline
                             )
                             if exhausted:
                                 cycle_runtime_exhausted = True
@@ -3406,6 +3493,8 @@ async def run_forever() -> None:
                 backoff_seconds = (
                     next_backoff_seconds(consecutive_cycle_trips) if breaker_tripped else CYCLE_SLEEP
                 )
+                if breaker_tripped:
+                    backoff_seconds = max(backoff_seconds, throttle.cooldown_remaining())
                 if breaker_tripped:
                     run_totals["breaker_sleep_seconds"] += backoff_seconds
                     # An escalated backoff can now run up to
