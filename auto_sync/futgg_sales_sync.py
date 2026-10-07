@@ -434,6 +434,9 @@ def failure_backoff_minutes_for_error(
 #: seconds).
 CIRCUIT_BREAKER_THRESHOLD = env_float("FUTGG_SALES_CIRCUIT_BREAKER_THRESHOLD", 0.8, minimum=0.0)
 CIRCUIT_BREAKER_MIN_SAMPLE = env_int("FUTGG_SALES_CIRCUIT_BREAKER_MIN_SAMPLE", 20, minimum=1)
+#: A confirmed player-page HTTP 403 is sitewide transport evidence, so
+#: stop page_capture after a tiny sample instead of poisoning 20 cards' retry state.
+PAGE_CAPTURE_BLOCK_MIN_SAMPLE = env_int("FUTGG_SALES_PAGE_CAPTURE_BLOCK_MIN_SAMPLE", 2, minimum=1)
 CIRCUIT_BREAKER_BACKOFF_SECONDS = env_float(
     "FUTGG_SALES_CIRCUIT_BREAKER_BACKOFF_SECONDS", 900.0, minimum=0.0
 )
@@ -564,10 +567,10 @@ NO_PRICE_SECTION_RECHECK_MINUTES = env_int(
 #: probe batch again - deliberately long, so a still-blocked signed
 #: transport isn't re-attempted (and re-failed) every cycle. None of the
 #: real per-cycle traffic uses signed_fetch again until a probe succeeds.
-SIGNED_REPROBE_MINUTES = env_int("FUTGG_SALES_SIGNED_REPROBE_MINUTES", 60, minimum=5)
+SIGNED_REPROBE_MINUTES = env_int("FUTGG_SALES_SIGNED_REPROBE_MINUTES", 360, minimum=5)
 #: Sample size for a signed_fetch reprobe - small and cheap, not the
 #: whole due queue.
-SIGNED_REPROBE_SAMPLE = env_int("FUTGG_SALES_SIGNED_REPROBE_SAMPLE", 5, minimum=1)
+SIGNED_REPROBE_SAMPLE = env_int("FUTGG_SALES_SIGNED_REPROBE_SAMPLE", 1, minimum=1)
 
 #: Sales refresh cadence by adaptive-priority tier (card_priority.
 #: effective_tier, migration 044) - NOT by rating. Was rating-banded
@@ -920,6 +923,10 @@ def circuit_breaker_tripped(
         >= CONSECUTIVE_FULL_THROTTLE_BATCHES
     ):
         return True
+    errors = stats.get("errors") or {}
+    nav_403 = errors.get("page_capture_nav_403", 0)
+    if nav_403 >= PAGE_CAPTURE_BLOCK_MIN_SAMPLE:
+        return True
     attempted = stats["ok"] + stats["failed"]
     if attempted < CIRCUIT_BREAKER_MIN_SAMPLE:
         return False
@@ -1253,6 +1260,8 @@ def classify_page_capture_error(
         return "page_capture_nav_challenge"
     if data_cf_mitigated == "challenge":
         return "page_capture_challenge"
+    if nav_status == 403:
+        return "page_capture_nav_403"
     if data_status == 403:
         return "page_capture_403"
     if (
