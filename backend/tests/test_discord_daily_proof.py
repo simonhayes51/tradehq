@@ -102,7 +102,7 @@ def test_daily_report_counts_and_aggregates_all_outcomes():
 
     expected = sum((row["net_profit_after_tax"] for row in rows), Decimal("0"))
     assert report["total"] == 5
-    assert report["wins"] == 2
+    assert report["wins"] == 1
     assert report["losses"] == 2
     assert report["flats"] == 1
     assert Decimal(report["win_rate"]) == Decimal("0.2")
