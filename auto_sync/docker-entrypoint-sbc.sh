@@ -36,13 +36,22 @@ if [ "${FUTGG_CONTENT_RUN_ONCE:-false}" = "true" ] || [ "${FUTGG_CONTENT_DIAGNOS
 fi
 
 INTERVAL="${FUTGG_CONTENT_INTERVAL_SECONDS:-21600}"
-RETRY="${FUTGG_CONTENT_RETRY_SECONDS:-900}"
+RETRY_BASE="${FUTGG_CONTENT_RETRY_SECONDS:-900}"
+RETRY_MAX="${FUTGG_CONTENT_RETRY_MAX_SECONDS:-21600}"
+RETRY_DELAY="$RETRY_BASE"
 while true; do
   if python futgg_content_sync.py; then
     echo "FUT.GG content sync succeeded; next run in ${INTERVAL}s"
+    RETRY_DELAY="$RETRY_BASE"
     sleep "$INTERVAL"
   else
-    echo "FUT.GG content sync failed; retrying in ${RETRY}s"
-    sleep "$RETRY"
+    echo "FUT.GG content sync failed; retrying in ${RETRY_DELAY}s (max ${RETRY_MAX}s)"
+    sleep "$RETRY_DELAY"
+    if [ "$RETRY_DELAY" -lt "$RETRY_MAX" ]; then
+      RETRY_DELAY=$((RETRY_DELAY * 2))
+      if [ "$RETRY_DELAY" -gt "$RETRY_MAX" ]; then
+        RETRY_DELAY="$RETRY_MAX"
+      fi
+    fi
   fi
 done
