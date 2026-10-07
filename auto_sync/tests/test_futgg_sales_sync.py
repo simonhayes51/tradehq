@@ -297,6 +297,14 @@ class TestAdaptiveThrottle:
         assert switch
         assert "fully-throttled batches" in reason
 
+    def test_page_navigation_403_trips_after_small_sitewide_sample(self):
+        assert not circuit_breaker_tripped({
+            "ok": 0, "failed": 1, "errors": {"page_capture_nav_403": 1},
+        })
+        assert circuit_breaker_tripped({
+            "ok": 0, "failed": 2, "errors": {"page_capture_nav_403": 2},
+        })
+
     def test_fully_throttled_batch_streak_resets_when_clean(self):
         t = AdaptiveThrottle(8, 0.5)
         t.record(8, 8)
