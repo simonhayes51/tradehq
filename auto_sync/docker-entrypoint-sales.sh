@@ -151,8 +151,12 @@ elif [ -z "${FUTGG_SALES_CYCLE_SLEEP:-}" ]; then
     export FUTGG_SALES_CYCLE_SLEEP="${SALES_CYCLE_SLEEP_MIN}"
 fi
 
-: "${FUTGG_SALES_CIRCUIT_BREAKER_BACKOFF_SECONDS:=900}"
-: "${FUTGG_SALES_CIRCUIT_BREAKER_MAX_BACKOFF_SECONDS:=3600}"
+# FUT.GG is currently returning HTTP 403 across browser and signed
+# transports. Give the site's access policy time to recover instead of
+# resuming a full failed sample every hour. The worker doubles this wait
+# after consecutive breaker trips, up to six hours.
+: "${FUTGG_SALES_CIRCUIT_BREAKER_BACKOFF_SECONDS:=3600}"
+: "${FUTGG_SALES_CIRCUIT_BREAKER_MAX_BACKOFF_SECONDS:=21600}"
 export FUTGG_SALES_CIRCUIT_BREAKER_BACKOFF_SECONDS
 export FUTGG_SALES_CIRCUIT_BREAKER_MAX_BACKOFF_SECONDS
 
