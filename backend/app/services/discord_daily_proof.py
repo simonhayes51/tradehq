@@ -235,6 +235,14 @@ def build_daily_proof_report(
     losses = [row for row in eligible if row["outcome_status"] in LOSS_STATUSES]
     flats = [row for row in eligible if row["outcome_status"] == "flat"]
     results = [Decimal(str(row["net_profit_after_tax"])) for row in eligible]
+    target_exits = [row for row in eligible if row["outcome_price_type"] == "target_exit"]
+    window_marks = [row for row in eligible if row["outcome_price_type"] == "window_mark"]
+    target_exit_result = sum(
+        (Decimal(str(row["net_profit_after_tax"])) for row in target_exits), Decimal("0")
+    )
+    window_mark_result = sum(
+        (Decimal(str(row["net_profit_after_tax"])) for row in window_marks), Decimal("0")
+    )
     top_wins = sorted(
         wins,
         key=lambda row: (
@@ -268,7 +276,11 @@ def build_daily_proof_report(
         "wins": len(wins),
         "losses": len(losses),
         "flats": len(flats),
-        "win_rate": str(Decimal(len(wins)) / Decimal(total)),
+        "win_rate": str(Decimal(len(target_exits)) / Decimal(total)),
+        "target_exits": len(target_exits),
+        "window_marks": len(window_marks),
+        "target_exit_result": str(target_exit_result),
+        "window_mark_result": str(window_mark_result),
         "combined_result": str(sum(results, Decimal("0"))),
         "average_result": str(sum(results, Decimal("0")) / Decimal(total)),
         "median_result": str(median(results)),
@@ -597,19 +609,29 @@ def build_daily_proof_embed(report: dict[str, Any], app_url: str) -> dict[str, A
         {
             "name": "RESULTS",
             "value": (
-                f"{report['total']} unique card opportunities completed\n"
+                f"{report['total']} entered shadow positions (one card each)\n"
                 + (
                     f"{report['repeat_snapshots_consolidated']} repeat same-card snapshots consolidated\n"
                     if report.get("repeat_snapshots_consolidated")
                     else ""
                 )
-                + f"Wins: {report['wins']} | Losses: {report['losses']} | Flat: {report['flats']}\n"
-                f"Win rate: {win_rate:.1f}%"
+                + f"Target exits: {report['target_exits']} | 72h marks: {report['window_marks']}\n"
+                f"Target hit rate: {win_rate:.1f}%"
             ),
             "inline": False,
         },
         {
-            "name": "COMBINED AFTER-TAX OPPORTUNITY RESULT",
+            "name": "TARGET EXIT RESULT (HYPOTHETICAL)",
+            "value": f"**{_coins(report['target_exit_result'], signed=True)} coins**",
+            "inline": False,
+        },
+        {
+            "name": "72H OPEN MARK RESULT (UNREALISED)",
+            "value": f"**{_coins(report['window_mark_result'], signed=True)} coins**",
+            "inline": False,
+        },
+        {
+            "name": "TOTAL SHADOW RESULT (ONE CARD EACH)",
             "value": f"**{_coins(result, signed=True)} coins**",
             "inline": False,
         },
@@ -617,7 +639,8 @@ def build_daily_proof_embed(report: dict[str, Any], app_url: str) -> dict[str, A
             "name": "TYPICAL RESULT",
             "value": (
                 f"Average: {_coins(report['average_result'], signed=True)} coins\n"
-                f"Median: {_coins(report['median_result'], signed=True)} coins"
+                f"Median: {_coins(report['median_result'], signed=True)} coins\n"
+                "Includes both target exits and unrealised 72h marks"
             ),
             "inline": False,
         },
@@ -644,9 +667,10 @@ def build_daily_proof_embed(report: dict[str, Any], app_url: str) -> dict[str, A
         {
             "name": "ABOUT THESE RESULTS",
             "value": (
-                "Recorded 72-hour outcomes for independent EAFC.Live opportunities. "
-                "They are not an actual user portfolio and do not assume every opportunity "
-                "was purchased. Past performance does not guarantee future results."
+                "Shadow results assume one card of each entered opportunity; they are not "
+                "an actual user portfolio and omit affordability and fill constraints. "
+                "A 72h mark is unrealised and is not a sale. Only target exits are modeled "
+                "exits. Past performance does not guarantee future results."
             ),
             "inline": False,
         }
