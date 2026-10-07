@@ -105,7 +105,13 @@ def test_daily_report_counts_and_aggregates_all_outcomes():
     assert report["wins"] == 2
     assert report["losses"] == 2
     assert report["flats"] == 1
-    assert Decimal(report["win_rate"]) == Decimal("0.4")
+    assert Decimal(report["win_rate"]) == Decimal("0.2")
+    assert report["target_exits"] == 1
+    assert report["window_marks"] == 4
+    assert Decimal(report["target_exit_result"]) == rows[0]["net_profit_after_tax"]
+    assert Decimal(report["window_mark_result"]) == sum(
+        (row["net_profit_after_tax"] for row in rows[1:]), Decimal("0")
+    )
     assert Decimal(report["combined_result"]) == expected
     assert Decimal(report["average_result"]) == expected / Decimal("5")
     assert Decimal(report["median_result"]) == rows[4]["net_profit_after_tax"]
@@ -220,7 +226,9 @@ def test_daily_embed_uses_review_language_and_disclaimer():
     embed = build_daily_proof_embed(report, "https://app.eafc.live")
     all_text = " ".join(field["name"] + " " + field["value"] for field in embed["fields"])
     assert embed["title"] == "EAFC.LIVE - DAILY TRADING REVIEW"
-    assert "COMBINED AFTER-TAX OPPORTUNITY RESULT" in all_text
+    assert "TARGET EXIT RESULT (HYPOTHETICAL)" in all_text
+    assert "72H OPEN MARK RESULT (UNREALISED)" in all_text
+    assert "Target hit rate:" in all_text
     assert "not an actual user portfolio" in all_text
     assert "Total profit earned" not in all_text
 
