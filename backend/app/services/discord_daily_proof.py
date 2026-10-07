@@ -231,12 +231,12 @@ def build_daily_proof_report(
         return None
     eligible = _unique_card_version_rows(eligible_snapshots)
 
-    wins = [row for row in eligible if row["outcome_status"] in WIN_STATUSES]
-    losses = [row for row in eligible if row["outcome_status"] in LOSS_STATUSES]
-    flats = [row for row in eligible if row["outcome_status"] == "flat"]
-    results = [Decimal(str(row["net_profit_after_tax"])) for row in eligible]
     target_exits = [row for row in eligible if row["outcome_price_type"] == "target_exit"]
     window_marks = [row for row in eligible if row["outcome_price_type"] == "window_mark"]
+    wins = target_exits
+    losses = [row for row in window_marks if row["outcome_status"] in LOSS_STATUSES]
+    flats = [row for row in window_marks if row["outcome_status"] == "flat"]
+    results = [Decimal(str(row["net_profit_after_tax"])) for row in eligible]
     target_exit_result = sum(
         (Decimal(str(row["net_profit_after_tax"])) for row in target_exits), Decimal("0")
     )
@@ -276,7 +276,7 @@ def build_daily_proof_report(
         "wins": len(wins),
         "losses": len(losses),
         "flats": len(flats),
-        "win_rate": str(Decimal(len(target_exits)) / Decimal(total)),
+        "win_rate": str(Decimal(len(wins)) / Decimal(total)),
         "target_exits": len(target_exits),
         "window_marks": len(window_marks),
         "target_exit_result": str(target_exit_result),
