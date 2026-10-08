@@ -485,7 +485,7 @@ def _bin_fallback_card_intelligence(
         bin_result.reasons.add(rc.STALE_MARKET, "Recent BIN observations show a downtrend; wait for stabilization.")
     else:
         bin_result.reasons.add(
-            rc.INSUFFICIENT_SALES,
+            rc.PRICE_ONLY_EVIDENCE,
             "This estimate uses BIN price history only; completed sales and liquidity are not measured.",
         )
     return CardIntelligence(
