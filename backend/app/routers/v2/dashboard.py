@@ -241,7 +241,7 @@ def _compute_live_market_regime(scored_pairs: List[Any]) -> Dict[str, Any]:
             # number here: how many of the tracked cards had fresh enough
             # price AND sales data to actually value. Exposed so the UI can
             # state the eligibility rule rather than implying full coverage.
-            "metrics": {"liquidCards": total, "valuedCards": len(valued), "avgVolatility": 0, "avgValueGap": 0},
+            "metrics": {"liquidCards": None, "valuedCards": len(valued), "avgVolatility": 0, "avgValueGap": 0},
         }
 
     trend_known = [ci for _, ci in scored_pairs if ci.trend_state != INSUFFICIENT_TREND_DATA]
@@ -297,7 +297,7 @@ def _compute_live_market_regime(scored_pairs: List[Any]) -> Dict[str, Any]:
     evidence_term = len(valued) / total
     confidence = int(round(min(95.0, 100.0 * sample_term * evidence_term)))
     indicators = {
-        "total_cards": total, "avg_liquidity": avg_liquidity,
+        "total_cards": total, "avg_bin_volatility": avg_volatility,
         "avg_discount_pct": avg_discount, "falling_pct": falling_pct,
         "valued_cards": len(valued), "evidence_pct": evidence_pct,
     }
