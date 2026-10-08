@@ -10,7 +10,7 @@ history are required; downtrends cannot produce a BUY.
 evaluate_card() is pure and unit-testable. The sales argument remains in its
 signature for call compatibility but does not affect the price-only result.
 All tax and EA increment calculations delegate to trading_math.
-"""
+
 Fair value / recommendation logic for the FUT.GG-backed market layer.
 
 WHAT THIS ENGINE IS
