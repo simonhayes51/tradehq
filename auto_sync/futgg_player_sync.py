@@ -278,6 +278,18 @@ class ListingRatingUpdateResult:
     updated: int
 
 
+BLOCKED_LISTING_STATUSES = {403, 429}
+
+
+class ListingDiscoveryBlocked(RuntimeError):
+    def __init__(self, partition_label: str, status: int) -> None:
+        self.partition_label = partition_label
+        self.status = status
+        super().__init__(
+            f"FUT.GG listing partition={partition_label} blocked with HTTP {status}"
+        )
+
+
 def _parse_gg_rating(value: str | None) -> Decimal | None:
     text = (value or "").strip()
     if not text or not re.fullmatch(r"\d{1,3}(?:\.\d)?", text):
@@ -719,6 +731,8 @@ async def _paginate_listing(
         status = response.status if response else 0
         if status != 200:
             if page_number == 1:
+                if status in BLOCKED_LISTING_STATUSES:
+                    raise ListingDiscoveryBlocked(partition_label, status)
                 raise RuntimeError(f"FUT.GG listing partition={partition_label} returned HTTP {status}")
             if page_callback is not None:
                 raise RuntimeError(
@@ -837,10 +851,19 @@ async def collect_listing_urls(page) -> dict[str, ListingCardMetadata]:
     still iterate/len() this like a plain list - dict keys behave
     identically for that."""
     if not FULL_SCAN:
-        urls = await _paginate_listing(
-            page, f"{GAME_PREFIX}/players/new/?page={{page}}", MAX_PAGES, "daily-new",
-            target_game_year=GAME_YEAR,
-        )
+        try:
+            urls = await _paginate_listing(
+                page, f"{GAME_PREFIX}/players/new/?page={{page}}", MAX_PAGES, "daily-new",
+                target_game_year=GAME_YEAR,
+            )
+        except ListingDiscoveryBlocked as exc:
+            log.warning(
+                "Discovery mode=daily source=partition:%s blocked with HTTP %d - "
+                "skipping player discovery for this run; existing catalogue stays intact",
+                exc.partition_label,
+                exc.status,
+            )
+            return {}
         log.info("Discovery mode=daily source=partition:daily-new unique=%d", len(urls))
         if PLAYER_LIMIT:
             return dict(list(urls.items())[:PLAYER_LIMIT])
