@@ -48,6 +48,15 @@ Those checks run on live data every cycle, which a one-off manual
 approval does not. FUTGG_BULK_APPLY=false forces a read-only cycle if you
 want to inspect coverage without writing.
 
+PLAYER DISCOVERY FROM THE PRICE FEED
+------------------------------------
+When FUTGG_BULK_DISCOVER_PLAYERS_FROM_FEED=true (default), any card id
+present in the bulk feed but missing from futgg_players is inserted as a
+feed-only placeholder. That starts BIN-history collection immediately
+while listing-page discovery is blocked. The row has no rating/name and
+uses price_tier=bronze, so recommendation scans ignore it until a real
+metadata sync enriches it.
+
 SELF-HEALING REDISCOVERY
 ------------------------
 PLAYER_URL (below) is resolved ONCE at process startup from whichever
@@ -166,6 +175,7 @@ HYDRATION_WAIT_MS = env_int("FUTGG_BULK_HYDRATION_WAIT_MS", 6000, minimum=1000)
 #: collapse means the id space or the feed changed, and writing anyway
 #: would overwrite good prices with nothing.
 MIN_COVERAGE_PCT = float(os.getenv("FUTGG_BULK_MIN_COVERAGE_PCT", "50"))
+DISCOVER_PLAYERS_FROM_FEED = env_bool("FUTGG_BULK_DISCOVER_PLAYERS_FROM_FEED", True)
 
 # ---------------------------------------------------------------------
 # Write volume control
@@ -446,6 +456,63 @@ def decode_ids(index: dict[str, Any]) -> list[int]:
         running += int(delta)
         ids.append(running)
     return ids
+
+
+async def ensure_feed_player_rows(conn: asyncpg.Connection, ids: list[int]) -> int:
+    """Seed futgg_players from the bulk price feed's id list.
+
+    FUT.GG listing pages are now the fragile part of the pipeline. The
+    bulk feed is still arriving every few minutes and carries the card id
+    universe, so use it to create placeholder player rows for ids we have
+    not discovered through PlayerSync yet. These rows deliberately keep
+    rating/name empty and price_tier=bronze so recommendation candidate
+    scans ignore them until a real metadata pass later enriches the row.
+    """
+    if not ids:
+        return 0
+
+    rows = await conn.fetch(
+        """
+        WITH feed_ids AS (
+            SELECT DISTINCT unnest($1::bigint[]) AS source_card_id
+        )
+        INSERT INTO futgg_players (
+            source_card_id,
+            source_player_id,
+            source_slug,
+            source_url,
+            game_year,
+            price_tier,
+            is_active,
+            metadata_warnings
+        )
+        SELECT
+            f.source_card_id,
+            f.source_card_id,
+            'feed-only-' || f.source_card_id::text,
+            format(
+                'https://www.fut.gg/players/%s-feed-only/%s-%s/',
+                f.source_card_id,
+                $2::int,
+                f.source_card_id
+            ),
+            $2::smallint,
+            'bronze',
+            TRUE,
+            ARRAY['feed_only_placeholder']::text[]
+        FROM feed_ids f
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM futgg_players p
+            WHERE p.game_year = $2
+              AND p.source_card_id = f.source_card_id
+        )
+        RETURNING source_card_id
+        """,
+        ids,
+        GAME_YEAR,
+    )
+    return len(rows)
 
 
 async def _dismiss_consent_overlay(page) -> bool:
@@ -925,6 +992,17 @@ async def ingest_once(
     status_by_id = dict(zip(ids, statuses)) if len(statuses) == len(ids) else {}
     log.info("feed decoded: %d ids, range %d..%d", len(ids), min(ids), max(ids))
 
+    seeded_from_feed = 0
+    if DISCOVER_PLAYERS_FROM_FEED:
+        with timers.track("feed_player_seed"):
+            async with pool.acquire() as conn:
+                seeded_from_feed = await ensure_feed_player_rows(conn, ids)
+        if seeded_from_feed:
+            log.info(
+                "seeded %d new futgg_players placeholder row(s) from the bulk price feed",
+                seeded_from_feed,
+            )
+
     # ---- Coverage -----------------------------------------------------
     with timers.track("coverage"):
         async with pool.acquire() as conn:
@@ -1175,6 +1253,7 @@ async def ingest_once(
     return {
         "ok": True, "coverage_pct": coverage_pct, "applied": True,
         "written": len(records), "no_market": len(no_market_ids),
+        "seeded_from_feed": seeded_from_feed,
         # (card_id, previous_price, new_price) for every genuine price
         # change this cycle - see _last_price_changes' own comment. A
         # future triggered-detailed-sales consumer reads this key
