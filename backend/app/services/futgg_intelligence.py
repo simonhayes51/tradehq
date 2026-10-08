@@ -504,9 +504,21 @@ def _bin_fallback_card_intelligence(
         signal_reasons=bin_result.reasons.messages, reason_codes=bin_result.reasons.codes,
         reasons=bin_result.reasons.as_dicts(), blocking_codes=bin_result.reasons.blocking_codes,
         price_age_minutes=bin_result.evidence_age_minutes, sales_sample_size=0,
-        sales_window_span_minutes=None, trend_state=trend.state,
-        trend_description=trend.description, trend_features=trend.features.as_dict(),
-        engine_version=engine_config.version, trend_version=trend.version,
+        sales_window_span_minutes=None,
+        trend_state={"down": "downtrend", "up": "uptrend", "flat": "sideways"}.get(
+            bin_result.bin_trend_direction, "insufficient_trend_data"
+        ),
+        trend_description=(
+            f"BIN asking prices are {bin_result.bin_trend_direction or 'unclear'} "
+            f"over {bin_result.bin_history_span_hours or 0:.1f} hours."
+        ),
+        trend_features={
+            "observation_count": bin_result.bin_sample_count,
+            "span_hours": bin_result.bin_history_span_hours,
+            "bin_trend_direction": bin_result.bin_trend_direction,
+            "bin_volatility": bin_result.bin_volatility,
+        },
+        engine_version=engine_config.version, trend_version=bin_config.version,
         evaluated_at=as_of, evaluated_bin=int(current_bin),
         valuation_source="bin_history", evidence_quality="estimated",
         bin_sample_count=bin_result.bin_sample_count,
