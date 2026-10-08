@@ -184,12 +184,12 @@ def _regime_summary(state: str, indicators: Dict[str, Any]) -> str:
     avg_discount = indicators.get("avg_discount_pct") or 0
     avg_liquidity = indicators.get("avg_liquidity") or 0
     if state == "bullish":
-        return f"Tracked cards are selling for {avg_discount:.1f}% less than usual, and only {falling_pct:.0f}% are still dropping in price - good time to pick some up."
+        return f"Tracked BIN prices are {avg_discount:.1f}% below their recent reference on average, and {falling_pct:.0f}% of known trends are still down."
     if state == "bearish":
         return f"{falling_pct:.0f}% of tracked cards are still dropping in price right now - a cheap price might drop even more before it's worth buying."
     if state == "illiquid":
-        return f"Cards are only selling about {avg_liquidity:.2f} times an hour on average - it'll take longer than usual to buy or sell."
-    return "Prices and sales are behaving normally across tracked cards right now."
+        return f"Completed-sale liquidity is unknown; use current BIN history as an estimate only."
+    return "Tracked BIN prices show no broad directional move in this sample."
 
 
 def _compute_live_market_regime(scored_pairs: List[Any]) -> Dict[str, Any]:
@@ -232,8 +232,8 @@ def _compute_live_market_regime(scored_pairs: List[Any]) -> Dict[str, Any]:
         return {
             "label": "Unknown", "confidence": 0,
             "summary": (
-                f"Only {len(valued)} of {total} tracked cards have enough fresh price "
-                "and sales data to value right now, so there is nothing solid to say "
+                f"Only {len(valued)} of {total} tracked cards have enough fresh BIN price history "
+                "to estimate right now, so there is not enough coverage for a market read. "
                 "about the market yet."
             ),
             "dataQuality": "LIMITED",
@@ -786,20 +786,26 @@ async def get_dashboard(
             return None
         return max(candidates, key=lambda pair: pair[0])[1]
 
-    mover_pool = [r for r in candidate_rows if r.get("current_bin") and r.get("bin_captured_at")]
-    largest_mover_row = _best(mover_pool, lambda r: r.get("sales_stddev"))
-    most_traded_row = _best(mover_pool, lambda r: r.get("sales_count"))
-    highest_liquidity_row = _best(
-        mover_pool,
-        lambda r: (
-            float(r["sales_count"]) / float(r["sales_window_span_minutes"])
-            if r.get("sales_window_span_minutes") else None
-        ),
-    )
+    # Biggest movers come from the observed BIN series. These are asking
+    # price changes, not completed sales or proof of executable liquidity.
+    movement_candidates = []
+    for row in candidate_rows:
+        card_id = int(row["source_card_id"])
+        history = sorted(bin_by_card.get(card_id, []), key=lambda item: item[1])
+        if len(history) < 2 or not history[0][0]:
+            continue
+        first_price, last_price = float(history[0][0]), float(history[-1][0])
+        if first_price <= 0:
+            continue
+        move_pct = 100.0 * (last_price - first_price) / first_price
+        movement_candidates.append((move_pct, row))
+    biggest_up = _best([item for item in movement_candidates if item[0] > 0], lambda value: value)
+    biggest_down = _best([item for item in movement_candidates if item[0] < 0], lambda value: -value)
+    biggest_move = _best(movement_candidates, lambda value: abs(value))
 
     mover_cards = [
         _futgg_to_recommendation(row, None)
-        for row in (largest_mover_row, most_traded_row, highest_liquidity_row)
+        for row in (biggest_up, biggest_down, biggest_move)
         if row is not None
     ]
     # No generated-card-art polling needed here either, same reasoning as
