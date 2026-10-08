@@ -103,7 +103,7 @@ def test_price_only_signal_is_independent_of_sales_values():
     b = evaluate_card(
         _snapshot(sales_count=50, sales_median=500000, sales_trimmed_mean=500000),
         as_of=AS_OF,
-        sales=[{"price": 500000}],
+        sales=None,
         bin_observations=history,
     )
     assert (a.signal, a.recommended_buy_max, a.recommended_sell_target) == (
