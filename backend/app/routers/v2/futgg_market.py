@@ -66,6 +66,13 @@ from app.services.futgg_intelligence import (
     CardIntelligence,
     evaluate_card,
 )
+from app.services.futgg_opportunity_policy import (
+    MAX_OPPORTUNITY_EVIDENCE_AGE_MINUTES,
+    MAX_OPPORTUNITY_PRICE_AGE_MINUTES,
+    MIN_OPPORTUNITY_LIQUIDITY,
+    minimum_profit_at_max_buy,
+    roi_at_max_buy,
+)
 from app.services.futgg_snipe_filter import build_snipe_filter
 from app.services.market_data_provider import (
     MAX_CHART_DAYS,
@@ -98,18 +105,10 @@ log = logging.getLogger("futgg_market")
 
 DEFAULT_PAGE_SIZE = 25
 MAX_PAGE_SIZE = 100
-# FC26 is thin late-cycle: a strict 24h sale-age gate can blank the
-# feed even when a card has a genuinely liquid sales window from
-# yesterday. The liquidity floor below still blocks the extinct/once-a-
-# week cards, so extending this window does not bring those back.
-MAX_OPPORTUNITY_EVIDENCE_AGE_MINUTES = 48 * 60
-LIVE_OPPORTUNITY_MIN_LIQUIDITY_SCORE = 0.30
-# Launch-week actionable prices are only useful while extremely fresh.
-# This gates the zero-setup opportunity surfaces by default; Trade Finder
-# can still expose an explicit freshness control for research.
-LIVE_OPPORTUNITY_MAX_PRICE_AGE_MINUTES = int(
-    os.getenv("LIVE_OPPORTUNITY_MAX_PRICE_AGE_MINUTES", "3")
-)
+# Compatibility aliases; the shared policy module is the single source
+# used by both app and Discord opportunity delivery.
+LIVE_OPPORTUNITY_MIN_LIQUIDITY_SCORE = MIN_OPPORTUNITY_LIQUIDITY
+LIVE_OPPORTUNITY_MAX_PRICE_AGE_MINUTES = MAX_OPPORTUNITY_PRICE_AGE_MINUTES
 
 
 def _is_stale_for_tier(price_age_minutes: Optional[int], price_tier: Optional[str]) -> bool:
@@ -345,6 +344,11 @@ def _serialize_intelligence(ci: CardIntelligence) -> Dict[str, Any]:
         "recommended_sell_target": _int_or_none(ci.recommended_sell_target),
         "buy_below": _int_or_none(ci.buy_below),
         "expected_profit_after_tax": _float_or_none(ci.expected_profit_after_tax),
+        # Conservative economics at the displayed MAX BUY. Keep the live
+        # entry estimate above separate; cards must never show a profit
+        # number beside a different entry assumption.
+        "minimum_profit_at_max_buy": _float_or_none(minimum_profit_at_max_buy(ci)),
+        "roi_at_max_buy": _float_or_none(roi_at_max_buy(ci)),
         # The entry price the profit and ROI above assume - the live ask
         # on a buy, the trigger price on a watch. Callers must render the
         # profit beside THIS number, never beside recommended_buy_max: on
