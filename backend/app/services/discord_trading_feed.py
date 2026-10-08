@@ -622,6 +622,7 @@ def build_opportunity_post_embed(row: dict[str, Any], ci: Any, *, test: bool = F
             "inline": True,
         },
         {"name": "PRICE CHECKED", "value": checked_label, "inline": True},
+        {"name": "EVIDENCE", "value": "BIN price history · estimate", "inline": True},
         {"name": "ENTRY WINDOW", "value": f"{OPPORTUNITY_ENTRY_WINDOW_MINUTES} minutes", "inline": True},
         {"name": "RISK", "value": risk.title() if risk != "unknown" else "Unknown", "inline": True},
         {"name": "SELLING SPEED", "value": _liquidity_label(ci.liquidity_score), "inline": True},
@@ -629,13 +630,13 @@ def build_opportunity_post_embed(row: dict[str, Any], ci: Any, *, test: bool = F
     ]
     embed: dict[str, Any] = {
         "title": f"{'[TEST] ' if test else ''}{embeds.card_label(row)}",
-        "description": "🧪 **TEST POST — not a real trade**" if test else "🔥 **Live trading opportunity**",
+        "description": "🧪 **TEST POST — not a real trade**" if test else "🔥 **BIN-history trade estimate** · completed sales and liquidity are not measured.",
         "color": 0xF97316 if test else _RISK_COLORS.get(risk, embeds.BRAND_COLOR),
         "author": embeds.brand_author(app_url),
         "fields": fields,
         "footer": {
             "text": "EAFC.Live — this is a placeholder test post." if test
-            else "EAFC.Live — recheck in-game. Never pay above MAX BUY; this entry signal expires quickly."
+            else "EAFC.Live — estimate from BIN price history only; completed sales and liquidity are not measured. Recheck in-game and never pay above MAX BUY."
         },
         "timestamp": _now().isoformat(),
     }
