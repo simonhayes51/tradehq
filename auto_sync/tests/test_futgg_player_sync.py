@@ -151,6 +151,20 @@ async def test_collect_listing_urls_navigates_pages_in_order(monkeypatch):
     assert len(urls) == 4
 
 
+@run_async
+async def test_daily_listing_403_skips_discovery_without_crashing(monkeypatch):
+    monkeypatch.setattr(mod, "FULL_SCAN", False)
+    monkeypatch.setattr(mod, "MAX_PAGES", 3)
+    monkeypatch.setattr(mod, "PLAYER_LIMIT", 0)
+    monkeypatch.setattr(mod, "PAGE_DELAY", 0)
+    page = _FakeListingPage({}, status=403)
+
+    urls = await mod.collect_listing_urls(page)
+
+    assert urls == {}
+    assert page.goto_urls == ["https://www.fut.gg/players/new/?page=1"]
+
+
 def test_collect_listing_urls_no_scroll_calls():
     """The real per-page pagination engine (_paginate_listing, shared by
     daily and full-scan discovery) must never call window.scrollTo -
