@@ -93,8 +93,8 @@ class BinFallbackConfig:
 
     # ---- Time bucketing -------------------------------------------------
     bucket_width_minutes: int = 60
-    min_bucket_count: int = 8
-    min_span_hours: float = 24.0
+    min_bucket_count: int = 6
+    min_span_hours: float = 6.0
 
     # ---- Outlier filtering ------------------------------------------------
     outlier_mad_multiplier: float = 3.5
