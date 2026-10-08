@@ -859,7 +859,9 @@ async def publish_live_opportunities(pool, server: ServerRecord, client: Optiona
 
     # Imported lazily to avoid a router->service import cycle at module load.
     from app.db import get_core_pool
-    from app.routers.v2.futgg_market import _segmented_candidates, _sales_for_rows, _score_and_filter
+    from app.routers.v2.futgg_market import (
+        _segmented_candidates, _bin_observations_for_rows, _score_and_filter,
+    )
     from app.services.market_data_provider import FutggMarketDataProvider
 
     client = client or DiscordClient()
@@ -911,7 +913,7 @@ async def publish_live_opportunities(pool, server: ServerRecord, client: Optiona
     core_pool = await get_core_pool()
     provider = FutggMarketDataProvider(core_pool)
     candidate_rows = await _segmented_candidates(provider)
-    sales_by_card = await _sales_for_rows(provider, candidate_rows)
+    bin_by_card = await _bin_observations_for_rows(provider, candidate_rows)
     scored = await _score_and_filter(
         candidate_rows,
         signals={"buy", "strong_buy"},
@@ -921,9 +923,10 @@ async def publish_live_opportunities(pool, server: ServerRecord, client: Optiona
         min_expected_profit=float(settings["min_expected_profit"]),
         min_roi=DISCORD_FEED_MIN_ROI,
         min_liquidity=DISCORD_FEED_MIN_LIQUIDITY,
-        require_confirmed_sales=True,
+        # Price history is the shared evidence source; completed sales are
+        # neither fetched nor required for the Discord recommendation.
         max_evidence_age_minutes=DISCORD_FEED_MAX_EVIDENCE_AGE_MINUTES,
-        sales_by_card=sales_by_card,
+        bin_by_card=bin_by_card,
     )
     if not scored:
         log.info(
