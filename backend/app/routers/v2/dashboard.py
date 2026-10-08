@@ -182,13 +182,10 @@ def _drivers_to_strings(drivers: List[Dict[str, Any]]) -> List[str]:
 def _regime_summary(state: str, indicators: Dict[str, Any]) -> str:
     falling_pct = indicators.get("falling_pct") or 0
     avg_discount = indicators.get("avg_discount_pct") or 0
-    avg_liquidity = indicators.get("avg_liquidity") or 0
     if state == "bullish":
         return f"Tracked BIN prices are {avg_discount:.1f}% below their recent reference on average, and {falling_pct:.0f}% of known trends are still down."
     if state == "bearish":
         return f"{falling_pct:.0f}% of tracked cards are still dropping in price right now - a cheap price might drop even more before it's worth buying."
-    if state == "illiquid":
-        return f"Completed-sale liquidity is unknown; use current BIN history as an estimate only."
     return "Tracked BIN prices show no broad directional move in this sample."
 
 
@@ -211,7 +208,7 @@ def _compute_live_market_regime(scored_pairs: List[Any]) -> Dict[str, Any]:
             "label": "Unknown", "confidence": 0,
             "summary": "Not enough live market data has been scored yet.",
             "dataQuality": "LIMITED",
-            "metrics": {"liquidCards": 0, "valuedCards": 0, "avgVolatility": 0, "avgValueGap": 0},
+            "metrics": {"liquidCards": None, "valuedCards": 0, "avgVolatility": 0, "avgValueGap": 0},
         }
 
     # How many of those cards the engine could actually VALUE, as opposed
@@ -233,13 +230,12 @@ def _compute_live_market_regime(scored_pairs: List[Any]) -> Dict[str, Any]:
             "label": "Unknown", "confidence": 0,
             "summary": (
                 f"Only {len(valued)} of {total} tracked cards have enough fresh BIN price history "
-                "to estimate right now, so there is not enough coverage for a market read. "
-                "about the market yet."
+                "to estimate right now, so there is not enough coverage for a market read."
             ),
             "dataQuality": "LIMITED",
             # valuedCards is the honest denominator behind every other
             # number here: how many of the tracked cards had fresh enough
-            # price AND sales data to actually value. Exposed so the UI can
+            # fresh BIN price history to estimate. Exposed so the UI can
             # state the eligibility rule rather than implying full coverage.
             "metrics": {"liquidCards": None, "valuedCards": len(valued), "avgVolatility": 0, "avgValueGap": 0},
         }
@@ -261,19 +257,13 @@ def _compute_live_market_regime(scored_pairs: List[Any]) -> Dict[str, Any]:
         discounts.append(100.0 * (fair_value - float(current_bin)) / fair_value)
     avg_discount = (sum(discounts) / len(discounts)) if discounts else 0.0
 
-    liquidity_per_hour = []
-    for row, _ in scored_pairs:
-        span = row.get("sales_window_span_minutes")
-        if span:
-            liquidity_per_hour.append(60.0 * float(row.get("sales_count") or 0) / float(span))
-    avg_liquidity = (sum(liquidity_per_hour) / len(liquidity_per_hour)) if liquidity_per_hour else 0.0
+    volatilities = [float(ci.bin_volatility) for _, ci in scored_pairs if ci.bin_volatility is not None]
+    avg_volatility = sum(volatilities) / len(volatilities) if volatilities else 0.0
 
     if falling_pct >= 25:
         state = "bearish"
     elif avg_discount >= 5 and falling_pct < 10:
         state = "bullish"
-    elif avg_liquidity < 0.5:
-        state = "illiquid"
     else:
         state = "normal"
 
@@ -309,9 +299,9 @@ def _compute_live_market_regime(scored_pairs: List[Any]) -> Dict[str, Any]:
         # constant that said GOOD even when nothing could be valued.
         "dataQuality": "GOOD" if evidence_pct >= 40 else "LIMITED",
         "metrics": {
-            "liquidCards": total,
+            "liquidCards": None,
             "valuedCards": len(valued),
-            "avgVolatility": avg_liquidity,
+            "avgVolatility": avg_volatility,
             "avgValueGap": avg_discount,
         },
     }
@@ -549,8 +539,13 @@ def _futgg_to_recommendation(
         "currentBin": row.get("current_bin"),
         "fairValue": int(ci.fair_value) if (ci and ci.fair_value is not None) else None,
         "sales24h": None,
-        "sales7d": row.get("sales_count"),
-        "dataQuality": "GOOD" if row.get("sales_count") else "LIMITED",
+        "sales7d": None,
+        "valuationSource": ci.valuation_source if ci else None,
+        "evidenceQuality": ci.evidence_quality if ci else None,
+        "binSampleCount": ci.bin_sample_count if ci else None,
+        "binHistorySpanHours": ci.bin_history_span_hours if ci else None,
+        "liquidity": None,
+        "dataQuality": "ESTIMATED" if ci and ci.evidence_quality == "estimated" else "LIMITED",
         "updatedAt": evaluated_at.isoformat() if evaluated_at else None,
         "reasoning": (reasons_text + sbc_note) if has_evaluation else "",
         "marketDrivers": [],
