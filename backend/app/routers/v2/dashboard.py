@@ -798,10 +798,10 @@ async def get_dashboard(
         if first_price <= 0:
             continue
         move_pct = 100.0 * (last_price - first_price) / first_price
-        movement_candidates.append((move_pct, row))
-    biggest_up = _best([item for item in movement_candidates if item[0] > 0], lambda value: value)
-    biggest_down = _best([item for item in movement_candidates if item[0] < 0], lambda value: -value)
-    biggest_move = _best(movement_candidates, lambda value: abs(value))
+        movement_candidates.append({**row, "_bin_move_pct": move_pct})
+    biggest_up = _best([item for item in movement_candidates if item["_bin_move_pct"] > 0], lambda item: item["_bin_move_pct"])
+    biggest_down = _best([item for item in movement_candidates if item["_bin_move_pct"] < 0], lambda item: -item["_bin_move_pct"])
+    biggest_move = _best(movement_candidates, lambda item: abs(item["_bin_move_pct"]))
 
     mover_cards = [
         _futgg_to_recommendation(row, None)
