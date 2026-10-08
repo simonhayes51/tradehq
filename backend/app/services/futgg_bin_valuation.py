@@ -371,32 +371,32 @@ def evaluate_bin_fallback(
         direction="down",
     )
 
-    current_bin_dec = Decimal(str(current_bin))
-    expected_roi = tm.net_roi(recommended_sell_target, current_bin_dec)
-    expected_profit = tm.net_profit(recommended_sell_target, current_bin_dec)
+    # Validate the opportunity at the advised entry ceiling. The current
+    # ask can sit above that ceiling; in that case the caller should still
+    # have enough evidence to return WATCH with a useful buy-below trigger.
+    expected_roi = tm.net_roi(recommended_sell_target, recommended_buy_max)
+    expected_profit = tm.net_profit(recommended_sell_target, recommended_buy_max)
+    result.recommended_sell_target = recommended_sell_target
+    result.theoretical_max_buy = theoretical_max_buy
+    result.recommended_buy_max = recommended_buy_max
 
     if expected_roi is None or expected_roi < config.min_net_roi_for_buy:
         reasons.add(
             rc.BIN_INSUFFICIENT_ROI,
-            f"Expected net ROI against the BIN-derived target "
+            f"Expected net ROI at the advised entry ceiling "
             f"({float(expected_roi) * 100 if expected_roi is not None else 0:.1f}%) does not clear "
-            f"the {float(config.min_net_roi_for_buy) * 100:.0f}% floor required for a BIN-only estimate "
-            "(higher than the sales-confirmed floor, deliberately).",
+            f"the {float(config.min_net_roi_for_buy) * 100:.0f}% floor required for a BIN-only estimate.",
         )
         return result
     if expected_profit < config.min_absolute_profit_after_tax:
         reasons.add(
             rc.BIN_INSUFFICIENT_PROFIT,
-            f"Expected profit ({int(expected_profit):,} coins) is below the "
-            f"{int(config.min_absolute_profit_after_tax):,}-coin minimum required for a BIN-only "
-            "estimate - a real percentage margin on a cheap card is not enough on its own.",
+            f"Expected profit at the advised entry ceiling ({int(expected_profit):,} coins) is below "
+            f"the {int(config.min_absolute_profit_after_tax):,}-coin minimum required for a BIN-only estimate.",
         )
         return result
 
     result.qualifies = True
-    result.recommended_sell_target = recommended_sell_target
-    result.theoretical_max_buy = theoretical_max_buy
-    result.recommended_buy_max = recommended_buy_max
     reasons.add(
         rc.INFO_BIN_FALLBACK_USED,
         f"Price history supports an estimated valuation from {result.bin_sample_count} hourly "
