@@ -44,7 +44,7 @@ from typing import Any, Dict, Mapping, Optional
 # unchanged snapshot. Format is "futgg-<major>.<minor>"; the outcome
 # grader groups by this exact string, so it must be stable and unique per
 # behavioural configuration.
-ENGINE_VERSION = "futgg-2.3"
+ENGINE_VERSION = "futgg-3.0-price-history"
 
 # Bumped independently of ENGINE_VERSION - see module docstring.
 TREND_VERSION = "trend-1.0"
