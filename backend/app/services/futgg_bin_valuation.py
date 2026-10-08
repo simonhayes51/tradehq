@@ -1,7 +1,7 @@
 # app/services/futgg_bin_valuation.py
 """
-BIN-history fallback valuation - a separate, explicitly lower-confidence
-path used ONLY when completed-sales evidence is unavailable or stale.
+BIN-history valuation for price-only recommendations. Every result is an
+estimate derived from asking prices and never claims a completed sale.
 
 WHAT THIS IS NOT
 -----------------
@@ -57,10 +57,9 @@ GATING (all required - see futgg_bin_valuation requirements)
      show a clearly measurable trend (>= min_trend_magnitude fractional
      change between the window's early and late thirds) - noise in
      between (unstable but not clearly trending) is rejected.
-  6. No trustworthy completed-sales evidence - decided by the CALLER
-     (futgg_intelligence.evaluate_card), never here: this module has no
-     opinion on when it should be invoked, only on whether the BIN
-     evidence it is handed is good enough once invoked.
+  6. Price-only recommendation mode - the caller uses this as its sole
+     valuation source. This module validates whether the supplied BIN
+     evidence is strong enough to support an estimate.
 
 Every rejection is a specific, stable reason code (futgg_reasons.py) so
 futgg_scanner.py's existing blocking_reason_counts metric - already
@@ -400,7 +399,7 @@ def evaluate_bin_fallback(
     result.recommended_buy_max = recommended_buy_max
     reasons.add(
         rc.INFO_BIN_FALLBACK_USED,
-        f"No trustworthy completed-sales evidence; valuing off {result.bin_sample_count} hourly "
+        f"Price history supports an estimated valuation from {result.bin_sample_count} hourly "
         f"BIN observations spanning {result.bin_history_span_hours:.0f}h instead.",
     )
     return result
