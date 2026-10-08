@@ -80,7 +80,7 @@ from app.services import futgg_reasons as rc
 from app.services import trading_math as tm
 from app.services.futgg_reasons import ReasonList
 
-BIN_FALLBACK_VERSION = "bin-fallback-1.0"
+BIN_FALLBACK_VERSION = "price-history-1.0"
 
 
 @dataclass(frozen=True)
