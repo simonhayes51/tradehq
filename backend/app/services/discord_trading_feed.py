@@ -20,7 +20,7 @@ integration (app/services/discord_integration.py, unchanged):
 This module is READ-ONLY against the opportunity engine: it imports the
 exact same candidate scan and scoring helpers
 app/routers/v2/futgg_market.py's /opportunities and /trade-finder endpoints
-already use (_segmented_candidates, _sales_for_rows, _score_and_filter,
+already use (_segmented_candidates, _bin_observations_for_rows, _score_and_filter,
 evaluate_card) rather than computing anything new. No trade data is
 invented here.
 
@@ -555,11 +555,10 @@ async def _final_recheck_opportunity(provider, row: dict[str, Any], ci: Any):
         live_state = await provider.get_live_card_market_state(int(card_id))
         if live_state:
             latest_row = {**latest_row, **live_state}
-        sales = await provider.get_recent_sales(int(card_id))
         observations = await provider.get_bin_observations_by_ids([int(card_id)])
         latest_ci = evaluate_card(
             latest_row,
-            sales=sales,
+            sales=None,
             bin_observations=observations.get(int(card_id)),
         )
     except Exception:
@@ -623,6 +622,7 @@ def build_opportunity_post_embed(row: dict[str, Any], ci: Any, *, test: bool = F
             "inline": True,
         },
         {"name": "PRICE CHECKED", "value": checked_label, "inline": True},
+        {"name": "EVIDENCE", "value": "BIN price history · estimate", "inline": True},
         {"name": "ENTRY WINDOW", "value": f"{OPPORTUNITY_ENTRY_WINDOW_MINUTES} minutes", "inline": True},
         {"name": "RISK", "value": risk.title() if risk != "unknown" else "Unknown", "inline": True},
         {"name": "SELLING SPEED", "value": _liquidity_label(ci.liquidity_score), "inline": True},
@@ -630,13 +630,13 @@ def build_opportunity_post_embed(row: dict[str, Any], ci: Any, *, test: bool = F
     ]
     embed: dict[str, Any] = {
         "title": f"{'[TEST] ' if test else ''}{embeds.card_label(row)}",
-        "description": "🧪 **TEST POST — not a real trade**" if test else "🔥 **Live trading opportunity**",
+        "description": "🧪 **TEST POST — not a real trade**" if test else "🔥 **BIN-history trade estimate** · completed sales and liquidity are not measured.",
         "color": 0xF97316 if test else _RISK_COLORS.get(risk, embeds.BRAND_COLOR),
         "author": embeds.brand_author(app_url),
         "fields": fields,
         "footer": {
             "text": "EAFC.Live — this is a placeholder test post." if test
-            else "EAFC.Live — recheck in-game. Never pay above MAX BUY; this entry signal expires quickly."
+            else "EAFC.Live — estimate from BIN price history only; completed sales and liquidity are not measured. Recheck in-game and never pay above MAX BUY."
         },
         "timestamp": _now().isoformat(),
     }
@@ -859,7 +859,9 @@ async def publish_live_opportunities(pool, server: ServerRecord, client: Optiona
 
     # Imported lazily to avoid a router->service import cycle at module load.
     from app.db import get_core_pool
-    from app.routers.v2.futgg_market import _segmented_candidates, _sales_for_rows, _score_and_filter
+    from app.routers.v2.futgg_market import (
+        _segmented_candidates, _bin_observations_for_rows, _score_and_filter,
+    )
     from app.services.market_data_provider import FutggMarketDataProvider
 
     client = client or DiscordClient()
@@ -911,7 +913,7 @@ async def publish_live_opportunities(pool, server: ServerRecord, client: Optiona
     core_pool = await get_core_pool()
     provider = FutggMarketDataProvider(core_pool)
     candidate_rows = await _segmented_candidates(provider)
-    sales_by_card = await _sales_for_rows(provider, candidate_rows)
+    bin_by_card = await _bin_observations_for_rows(provider, candidate_rows)
     scored = await _score_and_filter(
         candidate_rows,
         signals={"buy", "strong_buy"},
@@ -921,9 +923,10 @@ async def publish_live_opportunities(pool, server: ServerRecord, client: Optiona
         min_expected_profit=float(settings["min_expected_profit"]),
         min_roi=DISCORD_FEED_MIN_ROI,
         min_liquidity=DISCORD_FEED_MIN_LIQUIDITY,
-        require_confirmed_sales=True,
+        # Price history is the shared evidence source; completed sales are
+        # neither fetched nor required for the Discord recommendation.
         max_evidence_age_minutes=DISCORD_FEED_MAX_EVIDENCE_AGE_MINUTES,
-        sales_by_card=sales_by_card,
+        bin_by_card=bin_by_card,
     )
     if not scored:
         log.info(

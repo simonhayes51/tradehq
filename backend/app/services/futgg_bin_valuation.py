@@ -1,7 +1,7 @@
 # app/services/futgg_bin_valuation.py
 """
-BIN-history fallback valuation - a separate, explicitly lower-confidence
-path used ONLY when completed-sales evidence is unavailable or stale.
+BIN-history valuation for price-only recommendations. Every result is an
+estimate derived from asking prices and never claims a completed sale.
 
 WHAT THIS IS NOT
 -----------------
@@ -57,10 +57,9 @@ GATING (all required - see futgg_bin_valuation requirements)
      show a clearly measurable trend (>= min_trend_magnitude fractional
      change between the window's early and late thirds) - noise in
      between (unstable but not clearly trending) is rejected.
-  6. No trustworthy completed-sales evidence - decided by the CALLER
-     (futgg_intelligence.evaluate_card), never here: this module has no
-     opinion on when it should be invoked, only on whether the BIN
-     evidence it is handed is good enough once invoked.
+  6. Price-only recommendation mode - the caller uses this as its sole
+     valuation source. This module validates whether the supplied BIN
+     evidence is strong enough to support an estimate.
 
 Every rejection is a specific, stable reason code (futgg_reasons.py) so
 futgg_scanner.py's existing blocking_reason_counts metric - already
@@ -80,7 +79,7 @@ from app.services import futgg_reasons as rc
 from app.services import trading_math as tm
 from app.services.futgg_reasons import ReasonList
 
-BIN_FALLBACK_VERSION = "bin-fallback-1.0"
+BIN_FALLBACK_VERSION = "price-history-1.0"
 
 
 @dataclass(frozen=True)
@@ -93,8 +92,8 @@ class BinFallbackConfig:
 
     # ---- Time bucketing -------------------------------------------------
     bucket_width_minutes: int = 60
-    min_bucket_count: int = 8
-    min_span_hours: float = 24.0
+    min_bucket_count: int = 6
+    min_span_hours: float = 6.0
 
     # ---- Outlier filtering ------------------------------------------------
     outlier_mad_multiplier: float = 3.5
@@ -372,35 +371,35 @@ def evaluate_bin_fallback(
         direction="down",
     )
 
-    current_bin_dec = Decimal(str(current_bin))
-    expected_roi = tm.net_roi(recommended_sell_target, current_bin_dec)
-    expected_profit = tm.net_profit(recommended_sell_target, current_bin_dec)
+    # Validate the opportunity at the advised entry ceiling. The current
+    # ask can sit above that ceiling; in that case the caller should still
+    # have enough evidence to return WATCH with a useful buy-below trigger.
+    expected_roi = tm.net_roi(recommended_sell_target, recommended_buy_max)
+    expected_profit = tm.net_profit(recommended_sell_target, recommended_buy_max)
+    result.recommended_sell_target = recommended_sell_target
+    result.theoretical_max_buy = theoretical_max_buy
+    result.recommended_buy_max = recommended_buy_max
 
     if expected_roi is None or expected_roi < config.min_net_roi_for_buy:
         reasons.add(
             rc.BIN_INSUFFICIENT_ROI,
-            f"Expected net ROI against the BIN-derived target "
+            f"Expected net ROI at the advised entry ceiling "
             f"({float(expected_roi) * 100 if expected_roi is not None else 0:.1f}%) does not clear "
-            f"the {float(config.min_net_roi_for_buy) * 100:.0f}% floor required for a BIN-only estimate "
-            "(higher than the sales-confirmed floor, deliberately).",
+            f"the {float(config.min_net_roi_for_buy) * 100:.0f}% floor required for a BIN-only estimate.",
         )
         return result
     if expected_profit < config.min_absolute_profit_after_tax:
         reasons.add(
             rc.BIN_INSUFFICIENT_PROFIT,
-            f"Expected profit ({int(expected_profit):,} coins) is below the "
-            f"{int(config.min_absolute_profit_after_tax):,}-coin minimum required for a BIN-only "
-            "estimate - a real percentage margin on a cheap card is not enough on its own.",
+            f"Expected profit at the advised entry ceiling ({int(expected_profit):,} coins) is below "
+            f"the {int(config.min_absolute_profit_after_tax):,}-coin minimum required for a BIN-only estimate.",
         )
         return result
 
     result.qualifies = True
-    result.recommended_sell_target = recommended_sell_target
-    result.theoretical_max_buy = theoretical_max_buy
-    result.recommended_buy_max = recommended_buy_max
     reasons.add(
         rc.INFO_BIN_FALLBACK_USED,
-        f"No trustworthy completed-sales evidence; valuing off {result.bin_sample_count} hourly "
+        f"Price history supports an estimated valuation from {result.bin_sample_count} hourly "
         f"BIN observations spanning {result.bin_history_span_hours:.0f}h instead.",
     )
     return result
