@@ -621,33 +621,8 @@ _bin_by_card_cached_at: float = 0.0
 
 
 async def _sales_for_rows(provider, rows: List[Dict[str, Any]]) -> Dict[int, List[Dict[str, Any]]]:
-    """Batch-fetch the raw sales series backing the trend layer.
-
-    Without this every list endpoint would either issue one sales query
-    per candidate (500+ round trips) or skip the trend layer entirely -
-    and skipping it is what allowed falling knives to be ranked as the
-    best opportunities in the first place. Best-effort: if the batch
-    fetch fails, evaluation continues with no trend data, which caps
-    signals rather than silently restoring the old behaviour.
-    """
-    global _sales_by_card_cache, _sales_by_card_cache_ids, _sales_by_card_cached_at
-    card_ids = frozenset(int(r["source_card_id"]) for r in rows)
-    now = time.monotonic()
-    if (
-        _sales_by_card_cache is not None
-        and (now - _sales_by_card_cached_at) < _SEGMENTED_CANDIDATES_CACHE_SECONDS
-        and card_ids <= _sales_by_card_cache_ids
-    ):
-        return _sales_by_card_cache
-    try:
-        result = await provider.get_sales_by_ids(list(card_ids))
-    except Exception:
-        log.warning("batch sales fetch failed; evaluating without trend data", exc_info=True)
-        return {}
-    _sales_by_card_cache = result
-    _sales_by_card_cache_ids = card_ids
-    _sales_by_card_cached_at = now
-    return result
+    """Compatibility shim: recommendations intentionally do not read sales."""
+    return {}
 
 
 async def _bin_observations_for_rows(provider, rows: List[Dict[str, Any]]) -> Dict[int, List[Any]]:
