@@ -137,7 +137,7 @@ CANDIDATE_SCAN_LIMIT = 500
 # profitable mid/low-rated opportunities behind a wall of high-rated but
 # possibly illiquid/rarely-traded cards, with no error or symptom other
 # than "why does this card never show up as an opportunity".
-CANDIDATE_SCAN_ORDER_BY = "sales_count DESC NULLS LAST"
+CANDIDATE_SCAN_ORDER_BY = "bin_captured_at DESC NULLS LAST"
 
 
 #: Short-lived cache for _segmented_candidates()'s raw row set (below).
@@ -791,10 +791,8 @@ async def _score_and_filter(
                 # bad row emptied the entire feed on 2026-09-05.
                 log.warning("evaluate_card failed for card_id=%s", card_id, exc_info=True)
                 continue
-            if require_confirmed_sales and (
-                ci.valuation_source != "completed_sales" or ci.evidence_quality != "confirmed"
-            ):
-                continue
+            # Sales confirmation is deliberately not a recommendation gate: the
+            # shared evaluator now requires fresh BIN price history.
             if max_evidence_age_minutes is not None and (
                 ci.evidence_age_minutes is None or ci.evidence_age_minutes > max_evidence_age_minutes
             ):
@@ -811,7 +809,11 @@ async def _score_and_filter(
                 continue
             if min_confidence is not None and (ci.confidence_score is None or ci.confidence_score < min_confidence):
                 continue
-            if min_liquidity is not None and (ci.liquidity_score is None or ci.liquidity_score < min_liquidity):
+            # Completed-sale velocity is not measured in price-only mode.
+            # Keep liquidity explicitly unknown instead of fabricating a proxy.
+            if min_liquidity is not None and ci.valuation_source != "bin_history" and (
+                ci.liquidity_score is None or ci.liquidity_score < min_liquidity
+            ):
                 continue
             out.append((row, ci))
     return out
