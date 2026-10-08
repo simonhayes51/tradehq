@@ -1,4 +1,15 @@
-# app/services/futgg_intelligence.py
+"""
+Price-history-first recommendations for the FUT.GG market layer.
+
+A recommendation uses the current BIN plus distinct hourly BIN observations.
+Asking prices are not completed sales: price-history results are stamped
+valuation_source="bin_history", evidence_quality="estimated", and expose
+liquidity as unknown. A fresh current BIN and a stable or clearly rising
+history are required; downtrends cannot produce a BUY.
+
+evaluate_card() is pure and unit-testable. The sales argument remains in its
+signature for call compatibility but does not affect the price-only result.
+All tax and EA increment calculations delegate to trading_math.
 """
 Fair value / recommendation logic for the FUT.GG-backed market layer.
 
@@ -539,22 +550,12 @@ def evaluate_card(
     """Pure function: one futgg_market_snapshot row (or an equivalent
     constructed dict) -> CardIntelligence.
 
-    `sales` is the optional raw sales series (futgg_sales_history rows)
-    used for trend assessment. When omitted the trend layer reports
-    INSUFFICIENT_TREND_DATA and buy signals are capped rather than
-    blocked - so a caller that cannot afford the extra query degrades to
-    "cannot confirm the trend" rather than to the old, dangerous
-    "trend does not exist" behaviour.
+    sales is accepted for caller compatibility and intentionally ignored.
 
-    `bin_observations` is the optional raw BIN history series
-    ([(lowest_bin, captured_at), ...], e.g.
-    bin_market_signal.load_bin_observations()'s own per-card output) used
-    ONLY when completed-sales evidence is unavailable or stale - see
-    futgg_bin_valuation.py. Omitted entirely (the default), this function's
-    behaviour is byte-for-byte identical to before the BIN-history fallback
-    existed: a card with no trustworthy sales evidence returns
-    insufficient_data exactly as it always has, never a BIN-derived guess a
-    caller did not ask for.
+    bin_observations is the supporting history for price-only valuation
+    ([(lowest_bin, captured_at), ...]). Without enough distinct, fresh
+    hourly observations, the result is insufficient_data. See
+    futgg_bin_valuation.py for the evidence gates.
 
     Never raises on missing/None fields - every optional input degrades to
     a documented insufficient-data outcome.
