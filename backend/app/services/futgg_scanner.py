@@ -188,7 +188,7 @@ async def run_scan(provider, pool, *, persist: bool = True) -> ScanMetrics:
         sm = segment_metrics[segment_name]
         try:
             ci = evaluate_card(
-                row, as_of=as_of, sales=sales_by_card.get(card_id, []),
+                row, as_of=as_of, sales=None,
                 bin_observations=bin_by_card.get(card_id),
             )
         except Exception:
