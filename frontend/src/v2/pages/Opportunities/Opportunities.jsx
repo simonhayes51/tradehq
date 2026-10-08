@@ -220,7 +220,7 @@ function OpportunityCard({ item }) {
   const cardId = item.card_id ?? item.source_card_id;
   const confidence = item.confidence_score != null ? Math.round(Number(item.confidence_score) * 100) : null;
   const liquidityPct = item.liquidity_score != null ? Math.round(Number(item.liquidity_score) * 100) : null;
-  const roi = item.expected_roi != null ? Number(item.expected_roi) * 100 : null;
+  const roi = item.roi_at_max_buy != null ? Number(item.roi_at_max_buy) * 100 : item.expected_roi != null ? Number(item.expected_roi) * 100 : null;
   // The simple layer says "Good"/"Slow" selling speed, not a raw percentage
   // - the exact number lives one click away on the player's own Advanced
   // rationale panel, matching the same split there.
@@ -231,7 +231,7 @@ function OpportunityCard({ item }) {
   // as an equally-recommended pick beside a 20,000-coin one. Absolute
   // profit, not ROI%, since a small entry can post a huge percentage on
   // a trivial coin amount.
-  const profitValue = item.expected_profit_after_tax != null ? Number(item.expected_profit_after_tax) : null;
+  const profitValue = item.minimum_profit_at_max_buy != null ? Number(item.minimum_profit_at_max_buy) : item.expected_profit_after_tax != null ? Number(item.expected_profit_after_tax) : null;
   const isLowBudget = profitValue != null && profitValue > 0 && profitValue < 500;
 
   return (
@@ -253,7 +253,7 @@ function OpportunityCard({ item }) {
       <div className="finder-signals">
         <div className="entry"><span>CURRENT BIN</span><CoinValue value={item.current_bin} /></div>
         <ArrowRight size={18} />
-        <div className="profit"><span>EXPECTED PROFIT</span><CoinValue value={item.expected_profit_after_tax} signed /><small>{roi == null ? "—" : `${roi > 0 ? "+" : ""}${roi.toFixed(1)}%`} after tax</small></div>
+        <div className="profit"><span>MIN PROFIT AT MAX BUY</span><CoinValue value={item.minimum_profit_at_max_buy ?? item.expected_profit_after_tax} signed /><small>{roi == null ? "—" : `${roi > 0 ? "+" : ""}${roi.toFixed(1)}%`} after tax</small></div>
       </div>
 
       <div className="opp-targets">

@@ -41,6 +41,14 @@ from typing import Any, Iterable, Optional
 
 from app.services import discord_embeds as embeds
 from app.services.discord_integration import DiscordClient
+from app.services.futgg_opportunity_policy import (
+    MAX_OPPORTUNITY_EVIDENCE_AGE_MINUTES,
+    MAX_OPPORTUNITY_PRICE_AGE_MINUTES,
+    MIN_OPPORTUNITY_CONFIDENCE,
+    MIN_OPPORTUNITY_LIQUIDITY,
+    MIN_OPPORTUNITY_ROI,
+    minimum_profit_at_max_buy,
+)
 from app.services.discord_daily_proof import (
     PROOF_STATUSES,
     WIN_STATUSES,
@@ -72,27 +80,13 @@ PROMO_MESSAGE = (
 # to reconstruct the live Premium feed.
 FREE_OVERVIEW_BEST_TRADES_MAX = 3
 
-# Paid/partner feeds are a showcase, not a quota-filling firehose. Server
-# preferences may make these stricter, never looser. "Up to N/day" is a
-# ceiling: if no candidate clears these quality gates, nothing is posted.
-# Keep a modest global safety floor, but do not invent a second trading
-# engine here. The per-server confidence/profit policy and the canonical
-# BUY/STRONG BUY engine remain the primary quality gates. The previous
-# 0.78 confidence + 6% ROI defaults were materially stricter than the
-# product's own opportunity definition and could starve a healthy feed.
-DISCORD_FEED_MIN_CONFIDENCE = float(os.getenv("DISCORD_FEED_MIN_CONFIDENCE", "0.60"))
-DISCORD_FEED_MIN_ROI = float(os.getenv("DISCORD_FEED_MIN_ROI", "0.00"))
-# Keep Discord aligned with the canonical Opportunities surface for market
-# evidence. SalesSync does not revisit every card every three hours, so a
-# Discord-only 180-minute evidence window can reject otherwise identical
-# opportunities for most of the day. The site deliberately uses a 48-hour
-# confirmed-sales window plus a 0.30 liquidity floor for this reason.
-# Environment overrides remain available for operators who intentionally
-# want a stricter server-feed policy.
-DISCORD_FEED_MIN_LIQUIDITY = float(os.getenv("DISCORD_FEED_MIN_LIQUIDITY", "0.30"))
-DISCORD_FEED_MAX_EVIDENCE_AGE_MINUTES = int(
-    os.getenv("DISCORD_FEED_MAX_EVIDENCE_AGE_MINUTES", str(48 * 60))
-)
+# Backwards-compatible names for tests/operations. Values come from the
+# canonical live-opportunity policy used by /api/v2/opportunities.
+DISCORD_FEED_MIN_CONFIDENCE = MIN_OPPORTUNITY_CONFIDENCE
+DISCORD_FEED_MIN_ROI = MIN_OPPORTUNITY_ROI
+DISCORD_FEED_MIN_LIQUIDITY = MIN_OPPORTUNITY_LIQUIDITY
+DISCORD_FEED_MAX_EVIDENCE_AGE_MINUTES = MAX_OPPORTUNITY_EVIDENCE_AGE_MINUTES
+OPPORTUNITY_MAX_PRICE_AGE_MINUTES = MAX_OPPORTUNITY_PRICE_AGE_MINUTES
 
 
 def feed_globally_enabled() -> bool:
@@ -605,11 +599,7 @@ def build_opportunity_post_embed(row: dict[str, Any], ci: Any, *, test: bool = F
     live_price = _opportunity_price(ci)
     buy_ceiling = Decimal(str(ci.recommended_buy_max)) if ci.recommended_buy_max is not None else live_price
     sell_target = Decimal(str(ci.recommended_sell_target)) if ci.recommended_sell_target is not None else None
-    conservative_profit = (
-        sell_target * Decimal("0.95") - buy_ceiling
-        if sell_target is not None and buy_ceiling is not None
-        else None
-    )
+    conservative_profit = minimum_profit_at_max_buy(ci)
     checked_at = row.get("price_checked_at") or _price_observed_at(row)
     age_minutes = row.get("price_age_minutes_at_post")
     if age_minutes is None:
@@ -871,7 +861,6 @@ async def publish_live_opportunities(pool, server: ServerRecord, client: Optiona
     from app.db import get_core_pool
     from app.routers.v2.futgg_market import _segmented_candidates, _sales_for_rows, _score_and_filter
     from app.services.market_data_provider import FutggMarketDataProvider
-    from app.services.discord_historical_risk import assess_historical_feed_risk
 
     client = client or DiscordClient()
     async with pool.acquire() as conn:
@@ -984,39 +973,8 @@ async def publish_live_opportunities(pool, server: ServerRecord, client: Optiona
             continue
         row, ci = rechecked
 
-        # The Opportunity Engine is a current-market mispricing detector. At
-        # launch that is not enough: a broad supply-driven repricing can make
-        # yesterday's completed-sales level look like a huge "discount" while
-        # the whole market is still moving lower. Before broadcasting, compare
-        # this exact lifecycle point with EAFC.Live's clean FC26 launch history.
-        # This layer can only suppress a Discord call; it never creates one and
-        # never changes the canonical website opportunity.
-        async with core_pool.acquire() as historical_conn:
-            historical_risk = await assess_historical_feed_risk(
-                historical_conn, row, ci, now=_now()
-            )
-        if historical_risk.block:
-            log.info(
-                "Discord opportunity suppressed by FC26 lifecycle prior "
-                "server_id=%s card_id=%s reason=%s",
-                server.id,
-                row.get("source_card_id"),
-                historical_risk.reason,
-            )
-            continue
-        historical_prior_payload = None
-        if historical_risk.prior is not None:
-            prior = historical_risk.prior
-            historical_prior_payload = {
-                "anchor": prior.anchor,
-                "lifecycle_offset_days": prior.lifecycle_offset_days,
-                "baseline_date": prior.baseline_date.isoformat(),
-                "target_date": prior.target_date.isoformat(),
-                "sample_size": prior.sample_size,
-                "median_return_pct": prior.median_return_pct,
-                "negative_rate": prior.negative_rate,
-                "cohort": prior.cohort,
-            }
+        # Final recheck uses the canonical evaluator and policy; all lifecycle,
+        # trend and market-regime gates are shared with the app surface.
 
         band = None
         if band_budget is not None:
@@ -1057,10 +1015,6 @@ async def publish_live_opportunities(pool, server: ServerRecord, client: Optiona
                     "price_checked_at": price_checked_at.isoformat() if isinstance(price_checked_at, datetime) else None,
                     "price_age_minutes_at_post": row.get("price_age_minutes_at_post"),
                     "entry_expires_at": entry_expires_at.isoformat(),
-                    # Persist the historical prior used at publication so the
-                    # 72-hour outcome dataset can later prove whether this gate
-                    # improves hit-rate instead of becoming an un-auditable rule.
-                    "historical_prior": historical_prior_payload,
                 },
             )
         if post_id is None:
