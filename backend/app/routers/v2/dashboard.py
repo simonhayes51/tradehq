@@ -31,7 +31,7 @@ from app.routers.v2.futgg_market import (
     LIVE_OPPORTUNITY_MAX_PRICE_AGE_MINUTES,
     _meaningful_profit_floor,
     _score_and_filter,
-    _sales_for_rows,
+    _bin_observations_for_rows,
     _segmented_candidates,
     free_pick_candidates,
 )
@@ -658,7 +658,7 @@ async def get_dashboard(
     # STRONG BUY. Same evaluate_card(), same gates - only a larger, fairer
     # candidate pool feeding this same Python scoring pass.
     candidate_rows = await _segmented_candidates(core_pool_provider)
-    sales_by_card = await _sales_for_rows(core_pool_provider, candidate_rows)
+    bin_by_card = await _bin_observations_for_rows(core_pool_provider, candidate_rows)
 
     # Home's actionable cards obey the same launch-safe freshness rule as
     # /opportunities. Keep the full population for market regime/recent
@@ -679,7 +679,7 @@ async def get_dashboard(
     # one), which is what made Home's Top Card look random with no
     # underlying data change - not a random pick, an unstable sort.
     buy_scored = _filter_meaningful_profit(
-        await _score_and_filter(opportunity_rows, signals={"strong_buy", "buy"}, sales_by_card=sales_by_card)
+        await _score_and_filter(opportunity_rows, signals={"strong_buy", "buy"}, bin_by_card=bin_by_card)
     )
     buy_scored.sort(
         key=lambda pair: (
@@ -786,7 +786,7 @@ async def get_dashboard(
             return None
         return max(candidates, key=lambda pair: pair[0])[1]
 
-    mover_pool = [r for r in candidate_rows if r.get("sales_count")]
+    mover_pool = [r for r in candidate_rows if r.get("current_bin") and r.get("bin_captured_at")]
     largest_mover_row = _best(mover_pool, lambda r: r.get("sales_stddev"))
     most_traded_row = _best(mover_pool, lambda r: r.get("sales_count"))
     highest_liquidity_row = _best(
