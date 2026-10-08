@@ -823,12 +823,9 @@ async def get_player_detail(
     # The detail view is the one place we can always afford the extra
     # query for raw sales, so the trend layer runs with real data here
     # rather than degrading to "trend unknown". List endpoints fetch
-    # sales in batch (see _score_and_filter's caller).
-    try:
-        sales = await provider.get_recent_sales(card_id)
-    except Exception:
-        log.warning("get_recent_sales failed for card_id=%s", card_id, exc_info=True)
-        sales = []
+    # Recommendation evaluation is price-history-only. The separate /sales
+    # endpoint remains available for users who explicitly request sale records.
+    sales = None
 
     # Same "always afford it on the detail view" reasoning as sales above -
     # only actually used by evaluate_card when sales evidence is missing or
