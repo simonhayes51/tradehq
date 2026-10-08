@@ -211,7 +211,7 @@ export default function TradeFinder() {
         {items.map((item) => {
           const cardId = item.card_id ?? item.source_card_id;
           const confidence = item.confidence_score != null ? Math.round(Number(item.confidence_score) * 100) : null;
-          const roi = item.expected_roi != null ? Number(item.expected_roi) * 100 : null;
+          const roi = item.roi_at_max_buy != null ? Number(item.roi_at_max_buy) * 100 : item.expected_roi != null ? Number(item.expected_roi) * 100 : null;
           return <Link className="finder-card" key={cardId} to={`/players/${cardId}`} state={{ from: "trade-finder" }}>
             <div className="finder-card-top">
               <img src={item.composited_image_url || item.image_url || "/img/card-placeholder.png"} alt="" />
@@ -225,11 +225,10 @@ export default function TradeFinder() {
                   engine v2 exists to prevent. No ceiling means we could
                   not value the card, and CoinValue already renders null
                   as an em dash. */}
-              {/* The number beside EXPECTED PROFIT must be the one that
-                  profit was computed against - expected_profit_basis, the
-                  live ask on a buy - not the advised ceiling. Showing the
-                  ceiling here overstated profit 3.6x on a live Xhaka.
-                  The ceiling is still shown, as a separate limit. */}
+              {/* Use the same conservative max-buy economics shown by
+                  Discord. If the live ask is below the ceiling, show the
+                  current executable estimate and the worst-case profit
+                  at the full advertised ceiling separately. */}
               <div className="entry">
                 <span>{item.expected_profit_basis != null && item.recommended_buy_max != null
                        && item.expected_profit_basis !== item.recommended_buy_max
@@ -241,7 +240,7 @@ export default function TradeFinder() {
                   : null}
               </div>
               <ArrowRight size={18}/>
-              <div className="profit"><span>EXPECTED PROFIT</span><CoinValue value={item.expected_profit_after_tax} signed/><small>{roi == null ? "—" : `${roi > 0 ? "+" : ""}${roi.toFixed(1)}%`} after tax</small></div>
+              <div className="profit"><span>MIN PROFIT AT MAX BUY</span><CoinValue value={item.minimum_profit_at_max_buy ?? item.expected_profit_after_tax} signed/><small>{roi == null ? "—" : `${roi > 0 ? "+" : ""}${roi.toFixed(1)}%`} after tax</small></div>
             </div>
             <div className="finder-card-foot">
               <span className={`risk-${String(item.risk_level || "unknown").toLowerCase()}`}>{riskLabel(item.risk_level)}</span>
