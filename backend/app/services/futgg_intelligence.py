@@ -448,16 +448,12 @@ def _bin_fallback_card_intelligence(
     Asking prices do not prove sales or liquidity; the result stays labeled
     estimated, and downtrends are watch-only."""
     current_bin_dec = Decimal(str(current_bin))
-    if current_bin_dec > bin_result.recommended_buy_max:
+    above_ceiling = current_bin_dec > bin_result.recommended_buy_max
+    if above_ceiling:
         bin_result.reasons.add(
             rc.PRICE_ABOVE_MAX_BUY,
             f"Current BIN {int(current_bin):,} is above the price-history buy ceiling "
             f"of {int(bin_result.recommended_buy_max):,}.",
-        )
-        return _insufficient(
-            card_id, bin_result.reasons, as_of=as_of, config=engine_config,
-            risk_level="high", price_age_minutes=bin_result.evidence_age_minutes,
-            trend=trend, current_bin=current_bin,
         )
     entry = bin_result.recommended_buy_max
     profit = tm.net_profit(bin_result.recommended_sell_target, entry)
@@ -478,7 +474,8 @@ def _bin_fallback_card_intelligence(
     )
     falling = bin_result.bin_trend_direction == "down"
     actionable = (
-        not falling and confidence >= engine_config.min_confidence_for_buy_signal
+        not falling and not above_ceiling
+        and confidence >= engine_config.min_confidence_for_buy_signal
         and roi is not None and roi >= bin_config.min_net_roi_for_buy
     )
     if falling:
