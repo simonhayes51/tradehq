@@ -20,7 +20,7 @@ integration (app/services/discord_integration.py, unchanged):
 This module is READ-ONLY against the opportunity engine: it imports the
 exact same candidate scan and scoring helpers
 app/routers/v2/futgg_market.py's /opportunities and /trade-finder endpoints
-already use (_segmented_candidates, _sales_for_rows, _score_and_filter,
+already use (_segmented_candidates, _bin_observations_for_rows, _score_and_filter,
 evaluate_card) rather than computing anything new. No trade data is
 invented here.
 
@@ -555,11 +555,10 @@ async def _final_recheck_opportunity(provider, row: dict[str, Any], ci: Any):
         live_state = await provider.get_live_card_market_state(int(card_id))
         if live_state:
             latest_row = {**latest_row, **live_state}
-        sales = await provider.get_recent_sales(int(card_id))
         observations = await provider.get_bin_observations_by_ids([int(card_id)])
         latest_ci = evaluate_card(
             latest_row,
-            sales=sales,
+            sales=None,
             bin_observations=observations.get(int(card_id)),
         )
     except Exception:
