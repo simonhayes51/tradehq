@@ -167,7 +167,6 @@ async def run_scan(provider, pool, *, persist: bool = True) -> ScanMetrics:
                 unique_rows[card_id] = row
 
     card_ids = list(unique_rows)
-    sales_by_card = await provider.get_sales_by_ids(card_ids)
     bin_by_card = await provider.get_bin_observations_by_ids(card_ids)
 
     as_of = datetime.now(timezone.utc)
