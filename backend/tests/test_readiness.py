@@ -340,23 +340,11 @@ class TestCredentialMintingIsBounded:
 # The collectors
 # ---------------------------------------------------------------------------
 #
-# This check exists because of a real outage, and the first version of it
-# encoded the wrong story. The heartbeat row that showed three weeks old
-# was 'futgg_price_sync' - the RETIRED per-card Playwright scraper, whose
-# row is a tombstone frozen at its final run. The collector that was
-# actually struggling, futgg_sales_sync, wrote no heartbeat at all.
-#
-# So the pipeline presented as: two fresh workers, one long-dead worker
-# under a sales-shaped name, and no row anywhere for the live sales
-# collector. Every market surface was empty and nothing anywhere said
-# why - not because a row went stale, but because the row that mattered
-# did not exist, and iterating over whatever rows happened to be present
-# could never notice an absent one.
-#
-# Hence two rules below: check collectors BY NAME so absence is a
-# failure, and treat a punctual `ok: false` as a failure too - a
-# collector rate-limited down to near-zero throughput checks in exactly
-# on schedule while the data behind it drains.
+# Market readiness now follows the live inputs: the player catalogue and
+# the bulk BIN price feed. SalesSync and the old per-card PriceSync are
+# retired; stale heartbeat rows for either must not affect readiness.
+# Required collectors are checked BY NAME so a missing heartbeat is
+# visible, and an `ok: false` heartbeat is still a failure.
 
 from datetime import datetime, timedelta, timezone  # noqa: E402
 
