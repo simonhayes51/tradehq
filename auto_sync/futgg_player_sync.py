@@ -164,10 +164,6 @@ CONFIGURATION_ERROR = (
 MAX_PAGES_DAILY = max(1, int(os.getenv("FUTGG_LISTING_MAX_PAGES", "50")))
 MAX_PAGES_FULL = max(1, int(os.getenv("FUTGG_LISTING_MAX_PAGES_FULL", "400")))
 MAX_PAGES = MAX_PAGES_FULL if FULL_SCAN else MAX_PAGES_DAILY
-# Cross-check the main catalogue's front pages on every daily run too.
-# Fresh special versions can surface there before (or instead of) the
-# recency listing; this is intentionally a bounded second discovery pass.
-DAILY_CATALOGUE_PAGES = max(0, min(10, int(os.getenv("FUTGG_DAILY_CATALOGUE_PAGES", "3"))))
 
 # Full-scan discovery sources. /players/new/ is a recency-windowed feed,
 # not the whole catalogue (see module docstring) - full-scan mode walks
@@ -602,24 +598,6 @@ async def ensure_schema(conn: asyncpg.Connection) -> None:
     await conn.execute(
         "CREATE INDEX IF NOT EXISTS futgg_players_active_idx ON futgg_players (is_active)"
     )
-    await conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS futgg_sales_priority_requests (
-            id            BIGSERIAL PRIMARY KEY,
-            card_id       BIGINT NOT NULL,
-            requested_by  TEXT,
-            requested_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-            consumed_at   TIMESTAMPTZ
-        )
-        """
-    )
-    await conn.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_futgg_sales_priority_requests_unconsumed
-        ON futgg_sales_priority_requests (requested_at)
-        WHERE consumed_at IS NULL
-        """
-    )
 
 
 async def dismiss_cookie_banner(page) -> None:
@@ -698,24 +676,6 @@ def _canonical_first_listing_url(url: str) -> str:
     return urlunparse(parsed._replace(query=urlencode(query)))
 
 
-def _alternate_first_listing_url(url: str) -> str:
-    """Toggle page 1 between FUT.GG's canonical and explicit forms.
-
-    FUT.GG has flipped which first-page shape hydrates reliably more than
-    once. Page 2+ is stable with an explicit query parameter, but page 1
-    can come back as an empty client-rendered grid while the same listing
-    is visible at the other first-page URL. Treat that as recoverable.
-    """
-    parsed = urlparse(url)
-    query_pairs = parse_qsl(parsed.query, keep_blank_values=True)
-    has_page_one = any(key == "page" and value == "1" for key, value in query_pairs)
-    if has_page_one:
-        query = [(key, value) for key, value in query_pairs if not (key == "page" and value == "1")]
-    else:
-        query = query_pairs + [("page", "1")]
-    return urlunparse(parsed._replace(query=urlencode(query)))
-
-
 async def _paginate_listing(
     page,
     url_template: str,
@@ -788,25 +748,15 @@ async def _paginate_listing(
 
         await dismiss_cookie_banner(page)
         try:
-            await page.locator(
-                f"a[href*='/players/'][href*='/{GAME_YEAR}-']"
-            ).first.wait_for(state="attached", timeout=10000)
-        except PlaywrightTimeoutError:
+            await page.locator("a[href*='/players/']").first.wait_for(state="attached", timeout=TIMEOUT_MS)
+        except PlaywrightTimeoutError as exc:
             if page_number == 1:
-                # A hydration timeout is not proof that today's cards
-                # don't exist. Let the stabilization, alternate-URL and
-                # diagnostic passes below inspect the actual page.
-                log.warning(
-                    "Listing partition=%s page 1 has no FC%d card anchors "
-                    "after 10s; continuing with hydration/recovery diagnostics",
-                    partition_label, GAME_YEAR,
-                )
-            else:
-                log.info(
-                    "No card links on listing partition=%s page %d - treating as end of catalogue",
-                    partition_label, page_number,
-                )
-                break
+                raise RuntimeError(f"No card links appeared on FUT.GG listing partition={partition_label}") from exc
+            log.info(
+                "No card links on listing partition=%s page %d - treating as end of catalogue",
+                partition_label, page_number,
+            )
+            break
 
         # FUT.GG's listing is client-rendered - a query-param-only
         # navigation can leave the PREVIOUS page's cards still attached
@@ -840,111 +790,6 @@ async def _paginate_listing(
                 break
             await page.wait_for_timeout(LISTING_STABILIZE_POLL_MS)
             current_hrefs = await _read_card_hrefs(page)
-
-        if page_number == 1 and not current_hrefs:
-            alternate_url = _alternate_first_listing_url(listing_url)
-            if alternate_url != listing_url:
-                log.warning(
-                    "Listing partition=%s page 1 returned an empty grid at %s; retrying alternate first-page URL %s",
-                    partition_label,
-                    listing_url,
-                    alternate_url,
-                )
-                response = await page.goto(alternate_url, wait_until="domcontentloaded", timeout=TIMEOUT_MS)
-                status = response.status if response else 0
-                if status == 200:
-                    await dismiss_cookie_banner(page)
-                    try:
-                        await page.locator(f"a[href*='/players/'][href*='/{GAME_YEAR}-']").first.wait_for(state="attached", timeout=TIMEOUT_MS)
-                    except PlaywrightTimeoutError:
-                        current_hrefs = {}
-                    else:
-                        current_hrefs = await _read_card_hrefs(page)
-                        for _ in range(LISTING_STABILIZE_MAX_ATTEMPTS - 1):
-                            if (
-                                current_hrefs
-                                and current_hrefs != previous_page_hrefs
-                                and _listing_metadata_ready(current_hrefs)
-                            ):
-                                break
-                            await page.wait_for_timeout(LISTING_STABILIZE_POLL_MS)
-                            current_hrefs = await _read_card_hrefs(page)
-                    if current_hrefs:
-                        listing_url = alternate_url
-                else:
-                    log.warning(
-                        "Listing partition=%s alternate page 1 URL returned HTTP %d",
-                        partition_label,
-                        status,
-                    )
-
-        # The public /players/new/ page has live cards in a normal browser,
-        # but its client-rendered grid can hydrate substantially later in
-        # cloud Chromium than the initial navigation and link wait. Give
-        # it one bounded full-load/network-settle pass before deciding it
-        # is empty. Capture DOM diagnostics rather than assuming the
-        # underlying recency listing contains no cards.
-        if page_number == 1 and not current_hrefs:
-            try:
-                await page.wait_for_load_state("load", timeout=15000)
-                await page.wait_for_load_state("networkidle", timeout=12000)
-            except PlaywrightTimeoutError:
-                pass
-            for _ in range(12):
-                current_hrefs = await _read_card_hrefs(page)
-                if current_hrefs:
-                    log.info(
-                        "Listing partition=%s page 1 hydrated after extended wait: %d cards",
-                        partition_label, len(current_hrefs),
-                    )
-                    break
-                await page.wait_for_timeout(1000)
-            if not current_hrefs:
-                log.warning(
-                    "Listing partition=%s page 1 diagnostic: url=%s title=%r "
-                    "all_anchors=%d card_links=%d body_preview=%r",
-                    partition_label, page.url, await page.title(),
-                    await page.locator("a[href]").count(),
-                    await page.locator("a[href*='/players/']").count(),
-                    (await page.locator("body").inner_text())[:350],
-                )
-
-        # Page 1 is where today's special cards appear. Never treat an
-        # empty first page as successful discovery and silently proceed to
-        # page 2: that produced runs with zero targets while fresh cards
-        # remained feed-only placeholders in PostgreSQL.
-        if page_number == 1 and not current_hrefs:
-            for retry in range(2):
-                retry_url = (
-                    _canonical_first_listing_url(listing_url)
-                    if retry % 2 == 0
-                    else _alternate_first_listing_url(
-                        _canonical_first_listing_url(listing_url)
-                    )
-                )
-                log.warning(
-                    "Listing partition=%s page 1 still empty; reloading %s "
-                    "(retry %d/2)", partition_label, retry_url, retry + 1,
-                )
-                response = await page.goto(
-                    retry_url, wait_until="domcontentloaded", timeout=TIMEOUT_MS
-                )
-                if response is None or response.status != 200:
-                    continue
-                await dismiss_cookie_banner(page)
-                for _ in range(LISTING_STABILIZE_MAX_ATTEMPTS):
-                    current_hrefs = await _read_card_hrefs(page)
-                    if current_hrefs:
-                        break
-                    await page.wait_for_timeout(LISTING_STABILIZE_POLL_MS)
-                if current_hrefs:
-                    break
-            if not current_hrefs:
-                raise RuntimeError(
-                    f"FUT.GG listing partition={partition_label} page 1 "
-                    "remained empty after canonical/alternate reloads; "
-                    "discovery incomplete, do not silently skip new cards"
-                )
 
         before = len(seen)
         for card_url, metadata in current_hrefs.items():
@@ -1008,34 +853,20 @@ async def collect_listing_urls(page) -> dict[str, ListingCardMetadata]:
     still iterate/len() this like a plain list - dict keys behave
     identically for that."""
     if not FULL_SCAN:
-        urls: dict[str, ListingCardMetadata] = {}
-        sources_ok = 0
-        for label, template, page_cap in (
-            ("daily-new", f"{GAME_PREFIX}/players/new/?page={{page}}", MAX_PAGES),
-            ("daily-catalogue", f"{GAME_PREFIX}/players/?page={{page}}", DAILY_CATALOGUE_PAGES),
-        ):
-            if page_cap == 0:
-                continue
-            try:
-                discovered = await _paginate_listing(
-                    page, template, page_cap, label,
-                    canonical_first_page=True, target_game_year=GAME_YEAR,
-                )
-            except ListingDiscoveryBlocked as exc:
-                log.warning("Discovery source=%s blocked HTTP %d", label, exc.status)
-                continue
-            except Exception as exc:
-                log.warning("Discovery source=%s failed: %s", label, exc)
-                continue
-            sources_ok += 1
-            before = len(urls)
-            for card_url, metadata in discovered.items():
-                urls[card_url] = _merge_listing_metadata(urls.get(card_url), metadata)
-            log.info("Discovery source=%s found=%d added=%d merged=%d",
-                     label, len(discovered), len(urls) - before, len(urls))
-        if sources_ok == 0:
-            raise RuntimeError("All daily FUT.GG card listing sources failed")
-        log.info("Discovery mode=daily sources_ok=%d unique=%d", sources_ok, len(urls))
+        try:
+            urls = await _paginate_listing(
+                page, f"{GAME_PREFIX}/players/new/?page={{page}}", MAX_PAGES, "daily-new",
+                target_game_year=GAME_YEAR,
+            )
+        except ListingDiscoveryBlocked as exc:
+            log.warning(
+                "Discovery mode=daily source=partition:%s blocked with HTTP %d - "
+                "skipping player discovery for this run; existing catalogue stays intact",
+                exc.partition_label,
+                exc.status,
+            )
+            return {}
+        log.info("Discovery mode=daily source=partition:daily-new unique=%d", len(urls))
         if PLAYER_LIMIT:
             return dict(list(urls.items())[:PLAYER_LIMIT])
         return urls
@@ -1092,68 +923,10 @@ def _full_scan_is_plausible(discovered: int, db_total: int, min_coverage: float)
     return discovered >= db_total * min_coverage
 
 
-# EA special card IDs encode the underlying base player ID in their low
-# 24 bits. Recover only those for which we already have a real FC27 player
-# URL; never crawl feed-only synthetic URLs or trust old FC26 metadata.
-SPECIAL_CARD_ID_MODULUS = 1 << 24
-PLACEHOLDER_RECOVERY_LIMIT = max(
-    0, min(250, int(os.getenv("FUTGG_PLACEHOLDER_RECOVERY_LIMIT", "60")))
-)
-
-
-async def recover_placeholder_urls(
-    conn: asyncpg.Connection, *, limit: int = PLACEHOLDER_RECOVERY_LIMIT,
-) -> dict[str, ListingCardMetadata]:
-    """Build verifiable real URLs for price-feed placeholders using FC27 base slugs.
-
-    Resumable: upsert_card removes the placeholder warning on successful
-    metadata import. Future runs therefore skip recovered IDs.
-    """
-    if limit <= 0:
-        return {}
-    rows = await conn.fetch(
-        """
-        SELECT pending.source_card_id AS card_id,
-               base.source_player_id AS player_id,
-               base.source_slug AS slug
-        FROM futgg_players pending
-        JOIN futgg_players base
-          ON base.game_year = $1
-         AND base.source_card_id = (pending.source_card_id % $2)
-         AND base.source_player_id = base.source_card_id
-         AND base.name IS NOT NULL
-         AND base.rating IS NOT NULL
-         AND base.source_slug IS NOT NULL
-         AND base.source_slug <> ''
-         AND NOT ('feed_only_placeholder' = ANY(base.metadata_warnings))
-        WHERE pending.game_year = $1
-          AND pending.source_card_id >= $2
-          AND 'feed_only_placeholder' = ANY(pending.metadata_warnings)
-        -- Prefer genuine lower-ID special variants (including TOTW), rather
-        -- than the large FUT Champions red-card ranges that dominated
-        -- previous recovery batches.
-        ORDER BY CASE
-                   WHEN pending.source_card_id BETWEEN 50000000 AND 83900000 THEN 0
-                   ELSE 1
-                 END,
-                 pending.price_updated_at DESC NULLS LAST,
-                 pending.source_card_id DESC
-        LIMIT $3
-        """,
-        GAME_YEAR, SPECIAL_CARD_ID_MODULUS, limit,
-    )
-    return {
-        f"https://www.fut.gg/players/{int(row['player_id'])}-{row['slug']}/"
-        f"{GAME_YEAR}-{int(row['card_id'])}/": ListingCardMetadata()
-        for row in rows
-    }
-
-
 async def existing_ids(conn: asyncpg.Connection, urls, game_year: int = GAME_YEAR) -> set[int]:
     """urls: any iterable of card URLs - a plain list, or (as
     collect_listing_urls now returns) a dict keyed by URL, iterated for
-    its keys exactly the same way. Bulk-feed placeholders still need their
-    first metadata scrape, so they are not treated as already discovered."""
+    its keys exactly the same way."""
     ids = []
     for url in urls:
         match = CARD_URL_RE.match(urlparse(url).path)
@@ -1167,10 +940,6 @@ async def existing_ids(conn: asyncpg.Connection, urls, game_year: int = GAME_YEA
         FROM futgg_players
         WHERE source_card_id = ANY($1::bigint[])
           AND game_year = $2
-          AND NOT ('feed_only_placeholder' = ANY(metadata_warnings))
-          AND name IS NOT NULL
-          AND rating IS NOT NULL
-          AND primary_position IS NOT NULL
         """,
         ids, game_year,
     )
@@ -1303,102 +1072,6 @@ async def update_listing_gg_ratings(
     return ListingRatingUpdateResult(matched=int(row["matched"]), updated=int(row["updated"]))
 
 
-def _card_ids_from_listing_urls(
-    urls: dict[str, ListingCardMetadata],
-    game_year: int,
-) -> list[int]:
-    card_ids: set[int] = set()
-    for url in urls:
-        match = CARD_URL_RE.match(urlparse(url).path)
-        if match and int(match.group("game_year")) == game_year:
-            card_ids.add(int(match.group("card_id")))
-    return sorted(card_ids)
-
-
-async def enqueue_discovered_sales_priority(
-    conn: asyncpg.Connection,
-    urls: dict[str, ListingCardMetadata],
-    game_year: int,
-) -> int:
-    """Queue high-value discovered cards for sales collection, even when
-    they are already known and therefore skipped by the metadata fetch.
-
-    This closes the practical gap where a new promo/TOTW card is inserted
-    on one run, then every later daily discovery says targets=0 and never
-    touches upsert_card again. The request table is consumed by
-    futgg_sales_triggers.py; this statement only adds cards that do not
-    already have an unconsumed priority request.
-    """
-    card_ids = _card_ids_from_listing_urls(urls, game_year)
-    if not card_ids:
-        return 0
-    sql = """
-        WITH eligible AS (
-            SELECT DISTINCT p.source_card_id
-            FROM futgg_players p
-            WHERE p.source_card_id = ANY($1::bigint[])
-              AND p.game_year = $2
-              AND p.is_active
-              AND p.is_tradeable IS NOT FALSE
-              AND p.rating >= 80
-              AND COALESCE(p.price_tier, '') NOT IN ('bronze', 'silver')
-              AND (
-                  p.last_sales_status_at IS NULL
-                  OR p.last_sales_status_at <= now() - interval '60 minutes'
-              )
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM futgg_sales_priority_requests r
-                  WHERE r.card_id = p.source_card_id
-                    AND r.consumed_at IS NULL
-              )
-        ),
-        inserted AS (
-            INSERT INTO futgg_sales_priority_requests (card_id, requested_by)
-            SELECT source_card_id, 'daily_new_discovery'
-            FROM eligible
-            RETURNING card_id
-        )
-        SELECT count(*) AS queued FROM inserted
-    """
-    try:
-        row = await conn.fetchrow(sql, card_ids, game_year)
-    except asyncpg.exceptions.UndefinedColumnError:
-        # Older databases may not have last_sales_status_at until the
-        # sales worker has bootstrapped. Still queue discovered cards; the
-        # trigger consumer can dedupe by unconsumed request.
-        row = await conn.fetchrow(
-            """
-            WITH eligible AS (
-                SELECT DISTINCT p.source_card_id
-                FROM futgg_players p
-                WHERE p.source_card_id = ANY($1::bigint[])
-                  AND p.game_year = $2
-                  AND p.is_active
-                  AND p.is_tradeable IS NOT FALSE
-                  AND p.rating >= 80
-                  AND COALESCE(p.price_tier, '') NOT IN ('bronze', 'silver')
-                  AND NOT EXISTS (
-                      SELECT 1
-                      FROM futgg_sales_priority_requests r
-                      WHERE r.card_id = p.source_card_id
-                        AND r.consumed_at IS NULL
-                  )
-            ),
-            inserted AS (
-                INSERT INTO futgg_sales_priority_requests (card_id, requested_by)
-                SELECT source_card_id, 'daily_new_discovery'
-                FROM eligible
-                RETURNING card_id
-            )
-            SELECT count(*) AS queued FROM inserted
-            """,
-            card_ids,
-            game_year,
-        )
-    return int(row["queued"] or 0)
-
-
 def _build_targets(
     urls: dict[str, ListingCardMetadata], known: set[int], refresh_existing: bool,
 ) -> tuple[list[FetchTarget], int]:
@@ -1422,23 +1095,11 @@ def _build_targets(
     return targets, skipped
 
 
-def _should_fast_track_new_card(card: FutggCard) -> bool:
-    """Whether a newly discovered card should be pushed straight into
-    price/sales collection.
-
-    The app can show any discovered card, but high-rated/current special
-    cards are the ones users notice immediately. Leaving them to drift
-    through normal cadences creates the "new card exists but has no data"
-    experience.
-    """
-    rarity = (card.rarity or "").lower()
-    return (card.rating or 0) >= 80 and "bronze" not in rarity and "silver" not in rarity
-
-
-async def upsert_card(conn: asyncpg.Connection, card: FutggCard) -> bool:
+async def upsert_card(conn: asyncpg.Connection, card: FutggCard) -> None:
     data = asdict(card)
     price_tier = classify_price_tier(card)
-    sql = """
+    await conn.execute(
+        """
         INSERT INTO futgg_players (
             source_card_id, source_player_id, source_slug, source_url, game_year,
             name, display_name, full_name, released_at, released_at_raw,
@@ -1539,9 +1200,7 @@ async def upsert_card(conn: asyncpg.Connection, card: FutggCard) -> bool:
             last_seen_at = NOW(),
             metadata_updated_at = NOW(),
             metadata_warnings = EXCLUDED.metadata_warnings
-        RETURNING (xmax = 0) AS inserted
-        """
-    args = (
+        """,
         data["source_card_id"], data["source_player_id"], data["source_slug"], data["source_url"], data["game_year"],
         data["name"], data["display_name"], data["full_name"],
         data["released_at"], data["released_at_raw"],
@@ -1556,22 +1215,6 @@ async def upsert_card(conn: asyncpg.Connection, card: FutggCard) -> bool:
         data["gg_rating"],
         data["parse_warnings"],
     )
-    if hasattr(conn, "fetchrow"):
-        row = await conn.fetchrow(sql, *args)
-        inserted = bool(dict(row).get("inserted")) if row is not None else False
-    else:
-        # Lightweight test doubles only need to capture the SQL text.
-        await conn.execute(sql, *args)
-        inserted = False
-    if inserted and _should_fast_track_new_card(card):
-        await conn.execute(
-            """
-            INSERT INTO futgg_sales_priority_requests (card_id, requested_by)
-            VALUES ($1, 'new_card_discovery')
-            """,
-            card.source_card_id,
-        )
-    return bool(inserted)
 
 
 async def _fetch_worker(
@@ -1607,17 +1250,7 @@ async def _fetch_worker(
                 raise RuntimeError(f"HTTP {status}")
             await page.locator(".fc-card").first.wait_for(state="attached", timeout=15000)
             await page.wait_for_timeout(800)
-            # FUT.GG can redirect an unknown card to another version.
-            # Never overwrite a placeholder with the wrong version's data.
-            requested = CARD_URL_RE.match(urlparse(url).path)
-            landed = CARD_URL_RE.match(urlparse(page.url).path)
-            if requested and (not landed or
-                requested.group("card_id") != landed.group("card_id") or
-                requested.group("game_year") != landed.group("game_year")):
-                raise RuntimeError(f"FUT.GG redirected card to another version: {page.url}")
             card = parse_futgg_card(await page.content(), url)
-            if requested and int(card.source_card_id) != int(requested.group("card_id")):
-                raise RuntimeError(f"Card mismatch: expected {requested.group('card_id')}, got {card.source_card_id}")
             if listing.image_url:
                 # The composited full-card image only exists on the
                 # listing grid tile, never on the card's own detail page
@@ -1792,30 +1425,6 @@ async def crawl_once() -> None:
                 db_total = remaining   # skips the full-scan plausibility check below
             else:
                 urls = await collect_listing_urls(listing_page)
-                # Known currently released tradeable special: the FUT.GG
-                # newest-listing page can be empty even when this detail
-                # page is live. This remains subject to exact-card checks
-                # in _fetch_worker and is a targeted recovery, not a
-                # catalogue-wide manufactured set of player variants.
-                if GAME_YEAR == 27:
-                    urls.setdefault(
-                        "https://www.fut.gg/players/256675-omar-marmoush/27-67365539/",
-                        ListingCardMetadata(),
-                    )
-
-                # Supplement broken newest listings with FC27-only special-card
-                # URLs reconstructed from the bulk feed's incomplete rows.
-                async with pool.acquire() as conn:
-                    recovered_urls = await recover_placeholder_urls(conn)
-                added_recovery = 0
-                for recovery_url, recovery_metadata in recovered_urls.items():
-                    if recovery_url not in urls:
-                        urls[recovery_url] = recovery_metadata
-                        added_recovery += 1
-                log.info(
-                    "Placeholder recovery: candidates=%d added_to_discovery=%d limit=%d",
-                    len(recovered_urls), added_recovery, PLACEHOLDER_RECOVERY_LIMIT,
-                )
                 stats["discovered"] = len(urls)
                 stats["gg_ratings_found"] = sum(
                     metadata.gg_rating is not None for metadata in urls.values()
@@ -1825,14 +1434,6 @@ async def crawl_once() -> None:
                 )
                 async with pool.acquire() as conn:
                     known = await existing_ids(conn, urls, GAME_YEAR)
-                    unresolved = await conn.fetchval(
-                        """SELECT count(*) FROM futgg_players
-                           WHERE game_year = $1
-                             AND (name IS NULL OR rating IS NULL
-                                  OR 'feed_only_placeholder' = ANY(metadata_warnings))""",
-                        GAME_YEAR,
-                    )
-                    log.info("FC%d incomplete catalogue rows before enrichment: %d", GAME_YEAR, unresolved)
                     db_total = await conn.fetchval("SELECT COUNT(*) FROM futgg_players")
                     listing_years = {
                         int(match.group("game_year"))
@@ -1844,12 +1445,6 @@ async def crawl_once() -> None:
                             conn, urls, listing_year, only_missing=False,
                         )
                         stats["gg_rows_updated"] += result.updated
-                    queued_sales = await enqueue_discovered_sales_priority(conn, urls, GAME_YEAR)
-                    if queued_sales:
-                        log.info(
-                            "Queued %d discovered high-value card(s) for sales priority collection",
-                            queued_sales,
-                        )
 
             scan_plausible = True
             if FULL_SCAN:
@@ -1958,3 +1553,4 @@ if __name__ == "__main__":
     except Exception as exc:
         log.exception("futgg_player_sync failed: %s", exc)
         sys.exit(1)
+
