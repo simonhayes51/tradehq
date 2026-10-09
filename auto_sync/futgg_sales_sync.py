@@ -247,8 +247,7 @@ MAX_CYCLES = env_int("FUTGG_SALES_MAX_CYCLES", 0, minimum=0)
 #: process lifetime"). SignedPageHandle.recreate() already replaces a
 #: single crashed/closed PAGE, but nothing before this ever recycled the
 #: browser/context itself - a slow accumulation inside one long-lived
-#: renderer (unclosed listeners, retained fetch() closures, general GC
-#: pressure from thousands of evaluate() calls) has no other way to be
+#: renderer (unclosed listeners, retained fetch() closures, general GC#: pressure from thousands of evaluate() calls) has no other way to be
 #: released short of a full relaunch. A scheduled recycle between cycles
 #: (never mid-batch) bounds how long any one browser instance runs,
 #: turning an unbounded slow leak into a periodic, cheap, and observable
@@ -497,8 +496,7 @@ LOCK_ACQUIRE_POLL_SECONDS = env_float(
 # page_capture does instead), succeeds - matching PriceSync's already-
 # working passive-capture approach.
 _VALID_TRANSPORTS = ("signed_fetch", "page_capture", "auto")
-TRANSPORT_MODE = (os.getenv("FUTGG_SALES_TRANSPORT") or "auto").strip().lower()
-if TRANSPORT_MODE not in _VALID_TRANSPORTS:
+TRANSPORT_MODE = (os.getenv("FUTGG_SALES_TRANSPORT") or "auto").strip().lower()if TRANSPORT_MODE not in _VALID_TRANSPORTS:
     log.warning(
         "Unknown FUTGG_SALES_TRANSPORT=%r (expected one of %s) - defaulting to auto",
         TRANSPORT_MODE, _VALID_TRANSPORTS,
@@ -747,8 +745,7 @@ class AdaptiveThrottle:
             # resets the recovery streak below.
             severity = throttled / max(attempted, 1)
             self.delay = min(self.max_delay, max(self.delay, 0.25) * (1.0 + 2.0 * severity))
-            if severity > 0.25:
-                self.batch_size = max(self.min_batch, self.batch_size - 1)
+            if severity > 0.25:                self.batch_size = max(self.min_batch, self.batch_size - 1)
 
             window_attempted = sum(a for a, _ in self._recent_batches)
             window_throttled = sum(t for _, t in self._recent_batches)
@@ -997,8 +994,7 @@ def sales_interval_minutes(tier: str | None) -> int:
 #                                (the one-card diagnostic mode) - a short
 #                                response-body prefix, further redacted by
 #                                redact_value() on the Python side before
-#                                it's ever logged.
-_FETCH_SCRIPT = build_batch_script()
+#                                it's ever logged._FETCH_SCRIPT = build_batch_script()
 
 
 def _parse_sold_at(value: Any, now: datetime) -> datetime | None:
@@ -1247,8 +1243,7 @@ async def fetch_via_page_capture(
             if response.status == 200:
                 try:
                     captured["payload"] = json.loads(body)
-                except Exception:
-                    captured["parse_error"] = True
+                except Exception:                    captured["parse_error"] = True
             elif diagnostic:
                 try:
                     captured["body_preview"] = body[:500].decode("utf-8", errors="replace")
@@ -1284,11 +1279,7 @@ async def fetch_via_page_capture(
 
 
 def runtime_deadline(started_at: float) -> float | None:
-    """Monotonic deadline for a bounded run, or None if unbounded
-    (MAX_RUNTIME_MINUTES == 0). Computed once, from run_forever's own
-    `run_started_at`, so every later check compares against a fixed
-    point in time rather than re-deriving "how much is left" from a
-    moving now()."""
+    # Compute the monotonic deadline once from run_forever's start time.
     if not MAX_RUNTIME_MINUTES:
         return None
     return started_at + MAX_RUNTIME_MINUTES * 60
@@ -1497,8 +1488,7 @@ async def run_forever() -> None:
     # Immediately after the intervals are printed, so the warning sits
     # next to the numbers it is about. A band scraped less often than the
     # engine accepts sales for can never produce a recommendation, and
-    # nothing else in the system is positioned to notice.
-    log_cadence_gate_conflicts()
+    # nothing else in the system is positioned to notice.    log_cadence_gate_conflicts()
 
     shutdown_event = asyncio.Event()
     _install_shutdown_handlers(shutdown_event)
@@ -1747,8 +1737,7 @@ async def run_forever() -> None:
                 else:
                     # page_capture - chunked the same way, so the circuit
                     # breaker can still stop mid-cycle instead of
-                    # grinding through the whole due list (item 6:
-                    # "prevent repeated 200-card failed cycles" applies
+                    # grinding through the whole due list (item 6:                    # "prevent repeated 200-card failed cycles" applies
                     # here too, not only to signed_fetch).
                     chunk_size = max(PAGE_CONCURRENCY, min(CIRCUIT_BREAKER_MIN_SAMPLE, len(due)))
                     offset = 0
@@ -1997,8 +1986,7 @@ async def run_forever() -> None:
                 run_totals["failed"], run_totals["sales_seen"],
                 run_totals["throttle_errors"], 100.0 * run_throttle_rate,
                 run_totals["breaker_trips"], run_totals["breaker_sleep_seconds"],
-                run_start_throttle_desc, throttle.describe(), run_ended_by_runtime_budget,
-            )
+                run_start_throttle_desc, throttle.describe(), run_ended_by_runtime_budget,            )
         finally:
             log.info("shutting down: closing browser and database pool")
             await browser.close()
@@ -2247,8 +2235,7 @@ async def _run_diagnostic_signed_fetch(pool: asyncpg.Pool, row, card_id: int, an
 async def _run_diagnostic_page_capture(pool: asyncpg.Pool, row, card_id: int) -> tuple[bool, list]:
     """page_capture diagnostic path (item 7): navigate to the card's OWN
     source_url and passively capture its organic player-prices response -
-    no sign call, no injected fetch(). Reports status, auction count,
-    elapsed time, and whether Cloudflare challenged it, exactly as
+    no sign call, no injected fetch(). Reports status, auction count,    elapsed time, and whether Cloudflare challenged it, exactly as
     required."""
     from playwright.async_api import async_playwright
 
@@ -2454,5 +2441,4 @@ if __name__ == "__main__":
     if result is None:
         sys.exit(0)
     sys.exit(0 if result else 1)
-
 
