@@ -1072,6 +1072,56 @@ async def update_listing_gg_ratings(
     return ListingRatingUpdateResult(matched=int(row["matched"]), updated=int(row["updated"]))
 
 
+async def backfill_listing_card_images(
+    conn: asyncpg.Connection,
+    urls: dict[str, ListingCardMetadata],
+    game_year: int,
+) -> int:
+    """Persist FUT.GG's complete card images for already-imported players.
+
+    This is the same image source used for gold cards: a player-item-card
+    URL on the catalogue tile. It fills ONLY missing original images and
+    leaves metadata, prices, and previously mirrored artwork untouched.
+    The backend's existing R2 mirror loop picks up these new source URLs.
+    """
+    image_ids: list[int] = []
+    image_urls: list[str] = []
+    for url, metadata in urls.items():
+        match = CARD_URL_RE.match(urlparse(url).path)
+        if (
+            match
+            and int(match.group("game_year")) == game_year
+            and metadata.image_url
+            and "player-item-card/" in metadata.image_url
+        ):
+            image_ids.append(int(match.group("card_id")))
+            image_urls.append(metadata.image_url)
+    if not image_ids:
+        return 0
+    result = await conn.fetchval(
+        """
+        WITH art AS (
+            SELECT DISTINCT ON (card_id) card_id, image_url
+            FROM unnest($2::bigint[], $3::text[]) AS src(card_id, image_url)
+            ORDER BY card_id
+        ), updated AS (
+            UPDATE futgg_players p
+            SET card_image_url = art.image_url,
+                card_image_stored_status = NULL,
+                card_image_stored_error = NULL
+            FROM art
+            WHERE p.game_year = $1
+              AND p.source_card_id = art.card_id
+              AND p.card_image_url IS NULL
+            RETURNING 1
+        )
+        SELECT count(*) FROM updated
+        """,
+        game_year, image_ids, image_urls,
+    )
+    return int(result or 0)
+
+
 def _build_targets(
     urls: dict[str, ListingCardMetadata], known: set[int], refresh_existing: bool,
 ) -> tuple[list[FetchTarget], int]:
@@ -1430,6 +1480,11 @@ async def crawl_once() -> None:
                 )
                 async with pool.acquire() as conn:
                     known = await existing_ids(conn, urls, GAME_YEAR)
+                    image_backfilled = await backfill_listing_card_images(conn, urls, GAME_YEAR)
+                    log.info(
+                        "FUT.GG full-card artwork: listing_cards=%d backfilled_existing=%d",
+                        len(urls), image_backfilled,
+                    )
                     db_total = await conn.fetchval("SELECT COUNT(*) FROM futgg_players")
                     listing_years = {
                         int(match.group("game_year"))
