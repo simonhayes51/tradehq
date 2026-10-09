@@ -1356,17 +1356,6 @@ async def run_forever() -> None:
                     device_scale_factor=1,
                     is_mobile=False,
                     has_touch=False,
-                    extra_http_headers={
-                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-                        'Accept-Language': 'en-GB,en;q=0.9',
-                        'Sec-Ch-Ua': '"Chromium";v="128", "Google Chrome";v="128", "Not;A=Brand";v="99"',
-                        'Sec-Ch-Ua-Mobile': '?0',
-                        'Sec-Ch-Ua-Platform': '"Windows"',
-                        'Sec-Fetch-Dest': 'document',
-                        'Sec-Fetch-Mode': 'navigate',
-                        'Sec-Fetch-Site': 'none',
-                        'Upgrade-Insecure-Requests': '1',
-                    },
                     locale='en-GB',
                 )
                 return context, await context.new_page()
