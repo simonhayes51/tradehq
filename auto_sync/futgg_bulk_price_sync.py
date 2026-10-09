@@ -297,7 +297,7 @@ def _is_expected_price_feed_url(url: str, marker: str, game_year: int | None = N
         parsed.scheme == "https"
         and parsed.hostname == "r2.fut.gg"
         and parsed.path.startswith(f"/{game_year}/")
-        and parsed.path.count("/") == 3
+        and parsed.path.count("/") == 2
         and filename.startswith(f"{marker}.v1.")
         and filename.endswith(".json")
         and len(filename) > len(f"{marker}.v1.json")
