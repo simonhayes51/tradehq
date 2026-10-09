@@ -530,6 +530,10 @@ def _apply_common_filters(
     where.append(f"game_year = ${len(args)}")
     if f.tradeable_only:
         where.append("is_tradeable IS NOT FALSE")
+        # FUT Champions red rewards are untradeable, but many imported
+        # cards still carry NULL tradeability and previously appeared in
+        # market search with an unknown price. Do not show them as buys.
+        where.append("rarity IS DISTINCT FROM 'FUT Champions'")
     if f.rating_min is not None:
         args.append(f.rating_min)
         where.append(f"rating >= ${len(args)}")
