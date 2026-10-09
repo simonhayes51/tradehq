@@ -1170,11 +1170,7 @@ async def upsert_card(conn: asyncpg.Connection, card: FutggCard) -> None:
             positioning = COALESCE(EXCLUDED.positioning, futgg_players.positioning),
             player_image_url = COALESCE(EXCLUDED.player_image_url, futgg_players.player_image_url),
             card_design_image_url = COALESCE(EXCLUDED.card_design_image_url, futgg_players.card_design_image_url),
-            card_image_url = CASE
-                WHEN EXCLUDED.card_image_url IS DISTINCT FROM futgg_players.card_image_url
-                THEN EXCLUDED.card_image_url
-                ELSE futgg_players.card_image_url
-            END,
+            card_image_url = COALESCE(EXCLUDED.card_image_url, futgg_players.card_image_url),
             -- A changed source image (new art, FUT.GG re-hashed the asset)
             -- must invalidate any previously-mirrored R2 copy so backend's
             -- mirror pass re-fetches it - otherwise a stale image would
