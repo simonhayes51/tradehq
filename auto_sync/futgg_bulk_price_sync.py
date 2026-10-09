@@ -321,34 +321,32 @@ _ANY_PLATFORM_DYN_RE = re.compile(r"player-prices-([a-z0-9]+)-dyn")
 
 
 async def seed_last_written(pool) -> int:
-    """One-off: load the most recent observation per card.
+    """Seed change-only state with indexed latest-price probes, not a global sort.
 
-    Deliberately once per process, at startup. This is the same
-    DISTINCT ON shape futgg_market_snapshot uses and it is not cheap on a
-    large table - running it every cycle to decide what to skip would
-    cost more than the writes it saves.
-
-    Filtered to this process's own PLATFORM and GAME_YEAR: one process
-    handles exactly one of each (see PLATFORM/DYN_MARKER/GAME_YEAR
-    above), so _last_written stays correctly keyed by card_id alone -
-    but the SEED must not pick up a DIFFERENT platform's or game year's
-    latest row for the same numeric card id (a real, confirmed
-    collision - see migration 095's own comment, an ordinary card
-    reusing a source_card_id across FC26/FC27), or the very first
-    comparison after startup would be against the wrong price entirely
-    and could wrongly skip (or wrongly force) a write.
+    futgg_bin_history has >10M rows in production. DISTINCT ON across two
+    days spills a large sort to pgsql_tmp and can crash the worker when the
+    PostgreSQL volume is nearly full. A LATERAL LIMIT 1 lookup uses the
+    existing (source_card_id, captured_at DESC) index for each FC27 card.
     """
     global _last_written_seeded
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT DISTINCT ON (source_card_id)
-                   source_card_id, lowest_bin, captured_at
-            FROM futgg_bin_history
-            WHERE captured_at >= now() - make_interval(days => 2)
-              AND platform = $1
-              AND game_year = $2
-            ORDER BY source_card_id, captured_at DESC
+            SELECT p.source_card_id, latest.lowest_bin, latest.captured_at
+            FROM futgg_players p
+            JOIN LATERAL (
+                SELECT h.lowest_bin, h.captured_at
+                FROM futgg_bin_history h
+                WHERE h.source_card_id = p.source_card_id
+                  AND h.platform = $1
+                  AND h.game_year = $2
+                  AND h.captured_at >= now() - interval '2 days'
+                ORDER BY h.captured_at DESC
+                LIMIT 1
+            ) latest ON TRUE
+            WHERE p.game_year = $2
+              AND p.is_active
+              AND p.is_tradeable IS DISTINCT FROM FALSE
             """,
             PLATFORM, GAME_YEAR,
         )
@@ -1366,7 +1364,16 @@ async def run_forever() -> None:
     _install_shutdown_handlers(shutdown_event)
 
     if CHANGE_ONLY_WRITES:
-        seeded = await seed_last_written(pool)
+        try:
+            seeded = await seed_last_written(pool)
+        except asyncpg.PostgresError:
+            # Do not crash/restart forever on a low-disk database. The first
+            # cycle safely records one baseline observation per feed card.
+            log.exception(
+                "Cannot seed previous prices; continuing with an empty "
+                "change-only cache (first successful cycle writes baselines)"
+            )
+            seeded = 0
         log.info(
             "change-only writes ON: seeded last-known price for %d card(s); "
             "heartbeat every %d min (a card with an unchanged price is written "
