@@ -1051,6 +1051,60 @@ def _full_scan_is_plausible(discovered: int, db_total: int, min_coverage: float)
     return discovered >= db_total * min_coverage
 
 
+# EA special card IDs encode the underlying base player ID in their low
+# 24 bits. Recover only those for which we already have a real FC27 player
+# URL; never crawl feed-only synthetic URLs or trust old FC26 metadata.
+SPECIAL_CARD_ID_MODULUS = 1 << 24
+PLACEHOLDER_RECOVERY_LIMIT = max(
+    0, min(250, int(os.getenv("FUTGG_PLACEHOLDER_RECOVERY_LIMIT", "60")))
+)
+
+
+async def recover_placeholder_urls(
+    conn: asyncpg.Connection, *, limit: int = PLACEHOLDER_RECOVERY_LIMIT,
+) -> dict[str, ListingCardMetadata]:
+    """Build verifiable real URLs for price-feed placeholders using FC27 base slugs.
+
+    Resumable: upsert_card removes the placeholder warning on successful
+    metadata import. Future runs therefore skip recovered IDs.
+    """
+    if limit <= 0:
+        return {}
+    rows = await conn.fetch(
+        """
+        SELECT pending.source_card_id AS card_id,
+               base.source_player_id AS player_id,
+               base.source_slug AS slug
+        FROM futgg_players pending
+        JOIN LATERAL (
+            SELECT b.source_player_id, b.source_slug
+            FROM futgg_players b
+            WHERE b.game_year = $1
+              AND b.source_player_id = (pending.source_card_id % $2)
+              AND b.source_card_id = b.source_player_id
+              AND b.name IS NOT NULL
+              AND b.rating IS NOT NULL
+              AND b.source_slug IS NOT NULL
+              AND b.source_slug <> ''
+              AND NOT ('feed_only_placeholder' = ANY(b.metadata_warnings))
+            LIMIT 1
+        ) base ON TRUE
+        WHERE pending.game_year = $1
+          AND pending.source_card_id >= $2
+          AND 'feed_only_placeholder' = ANY(pending.metadata_warnings)
+        ORDER BY pending.price_updated_at DESC NULLS LAST,
+                 pending.source_card_id DESC
+        LIMIT $3
+        """,
+        GAME_YEAR, SPECIAL_CARD_ID_MODULUS, limit,
+    )
+    return {
+        f"https://www.fut.gg/players/{int(row['player_id'])}-{row['slug']}/"
+        f"{GAME_YEAR}-{int(row['card_id'])}/": ListingCardMetadata()
+        for row in rows
+    }
+
+
 async def existing_ids(conn: asyncpg.Connection, urls, game_year: int = GAME_YEAR) -> set[int]:
     """urls: any iterable of card URLs - a plain list, or (as
     collect_listing_urls now returns) a dict keyed by URL, iterated for
@@ -1509,7 +1563,17 @@ async def _fetch_worker(
                 raise RuntimeError(f"HTTP {status}")
             await page.locator(".fc-card").first.wait_for(state="attached", timeout=15000)
             await page.wait_for_timeout(800)
+            # FUT.GG can redirect an unknown card to another version.
+            # Never overwrite a placeholder with the wrong version's data.
+            requested = CARD_URL_RE.match(urlparse(url).path)
+            landed = CARD_URL_RE.match(urlparse(page.url).path)
+            if requested and (not landed or
+                requested.group("card_id") != landed.group("card_id") or
+                requested.group("game_year") != landed.group("game_year")):
+                raise RuntimeError(f"FUT.GG redirected card to another version: {page.url}")
             card = parse_futgg_card(await page.content(), url)
+            if requested and int(card.source_card_id) != int(requested.group("card_id")):
+                raise RuntimeError(f"Card mismatch: expected {requested.group('card_id')}, got {card.source_card_id}")
             if listing.image_url:
                 # The composited full-card image only exists on the
                 # listing grid tile, never on the card's own detail page
@@ -1684,6 +1748,19 @@ async def crawl_once() -> None:
                 db_total = remaining   # skips the full-scan plausibility check below
             else:
                 urls = await collect_listing_urls(listing_page)
+                # Supplement broken newest listings with FC27-only special-card
+                # URLs reconstructed from the bulk feed's incomplete rows.
+                async with pool.acquire() as conn:
+                    recovered_urls = await recover_placeholder_urls(conn)
+                added_recovery = 0
+                for recovery_url, recovery_metadata in recovered_urls.items():
+                    if recovery_url not in urls:
+                        urls[recovery_url] = recovery_metadata
+                        added_recovery += 1
+                log.info(
+                    "Placeholder recovery: candidates=%d added_to_discovery=%d limit=%d",
+                    len(recovered_urls), added_recovery, PLACEHOLDER_RECOVERY_LIMIT,
+                )
                 stats["discovered"] = len(urls)
                 stats["gg_ratings_found"] = sum(
                     metadata.gg_rating is not None for metadata in urls.values()
