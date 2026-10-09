@@ -1211,38 +1211,46 @@ class FutggMarketDataProvider(MarketDataProvider):
         args.append(limit)
         args.append(offset)
         async with self._pool.acquire() as conn:
-            sql = f"""
-                SELECT {await resolve_snapshot_columns(conn)}
-                FROM futgg_market_snapshot
-                {where_clause}
-                ORDER BY {order_clause}
-                LIMIT ${len(args) - 1} OFFSET ${len(args)}
-            """
-            rows = await conn.fetch(sql, *args)
-            results = [dict(r) for r in rows]
+            columns = await resolve_snapshot_columns(conn)
             if _supports_base_player_fallback(filters):
-                fallback_rows = await conn.fetch(
+                # Treat freshly-discovered futgg_players-only rows as part
+                # of the same searchable set, then rank and paginate once.
+                # Appending fallback rows after a LIMITed snapshot query
+                # lets old base cards mask newly released special cards
+                # with the same name until the materialized view catches up.
+                rows = await conn.fetch(
                     f"""
-                    SELECT {_BASE_PLAYER_FALLBACK_COLUMNS}
-                    FROM futgg_players p
-                    {where_clause}
-                      AND NOT EXISTS (
-                          SELECT 1
-                          FROM futgg_market_snapshot s
-                          WHERE s.source_card_id = p.source_card_id
-                            AND s.game_year = p.game_year
-                      )
+                    SELECT *
+                    FROM (
+                        SELECT {columns}
+                        FROM futgg_market_snapshot
+                        {where_clause}
+                        UNION ALL
+                        SELECT {_BASE_PLAYER_FALLBACK_COLUMNS}
+                        FROM futgg_players p
+                        {where_clause}
+                          AND NOT EXISTS (
+                              SELECT 1
+                              FROM futgg_market_snapshot s
+                              WHERE s.source_card_id = p.source_card_id
+                                AND s.game_year = p.game_year
+                          )
+                    ) search_rows
                     ORDER BY {order_clause}
                     LIMIT ${len(args) - 1} OFFSET ${len(args)}
                     """,
                     *args,
                 )
-                seen = {int(r["source_card_id"]) for r in results}
-                for row in fallback_rows:
-                    item = dict(row)
-                    if int(item["source_card_id"]) not in seen:
-                        results.append(item)
-                        seen.add(int(item["source_card_id"]))
+            else:
+                sql = f"""
+                    SELECT {columns}
+                    FROM futgg_market_snapshot
+                    {where_clause}
+                    ORDER BY {order_clause}
+                    LIMIT ${len(args) - 1} OFFSET ${len(args)}
+                """
+                rows = await conn.fetch(sql, *args)
+            results = [dict(r) for r in rows]
             await _attach_sbc_reward_watch(conn, results)
 
         if filters.search:
