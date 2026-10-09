@@ -205,6 +205,12 @@ class TestIntervals:
             < sales_interval_minutes("DORMANT")
         )
 
+    def test_default_sales_refresh_targets_are_no_slower_than_daily(self):
+        assert [
+            sales_interval_minutes(tier)
+            for tier in ("CRITICAL", "HIGH", "NORMAL", "LOW", "DORMANT")
+        ] == [120, 240, 480, 720, 1440]
+
     def test_an_unscored_card_defaults_to_normal(self):
         assert sales_interval_minutes(None) == sales_interval_minutes("NORMAL")
 
@@ -420,3 +426,4 @@ class TestAdaptiveThrottleResume:
         t = AdaptiveThrottle(8, 0.5, resume_batch_size=99, resume_delay=0.01)
         assert t.batch_size == 8   # clamped down to max_batch
         assert t.delay == 0.5      # clamped up to min_delay
+
