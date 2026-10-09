@@ -868,6 +868,37 @@ async def _paginate_listing(
                         status,
                     )
 
+        # The public /players/new/ page has live cards in a normal browser,
+        # but its client-rendered grid can hydrate substantially later in
+        # cloud Chromium than the initial navigation and link wait. Give
+        # it one bounded full-load/network-settle pass before deciding it
+        # is empty. Capture DOM diagnostics rather than assuming the
+        # underlying recency listing contains no cards.
+        if page_number == 1 and not current_hrefs:
+            try:
+                await page.wait_for_load_state("load", timeout=15000)
+                await page.wait_for_load_state("networkidle", timeout=12000)
+            except PlaywrightTimeoutError:
+                pass
+            for _ in range(12):
+                current_hrefs = await _read_card_hrefs(page)
+                if current_hrefs:
+                    log.info(
+                        "Listing partition=%s page 1 hydrated after extended wait: %d cards",
+                        partition_label, len(current_hrefs),
+                    )
+                    break
+                await page.wait_for_timeout(1000)
+            if not current_hrefs:
+                log.warning(
+                    "Listing partition=%s page 1 diagnostic: url=%s title=%r "
+                    "all_anchors=%d card_links=%d body_preview=%r",
+                    partition_label, page.url, await page.title(),
+                    await page.locator("a[href]").count(),
+                    await page.locator("a[href*='/players/']").count(),
+                    (await page.locator("body").inner_text())[:350],
+                )
+
         # Page 1 is where today's special cards appear. Never treat an
         # empty first page as successful discovery and silently proceed to
         # page 2: that produced runs with zero targets while fresh cards
