@@ -156,6 +156,8 @@ def test_browser_transport_reuses_warmed_page_for_same_origin_json_fetch():
     import asyncio
 
     class Page:
+        url = "https://www.fut.gg/"
+
         async def evaluate(self, script, url):
             assert "fetch(url" in script
             assert "credentials: 'include'" in script
@@ -170,6 +172,33 @@ def test_browser_transport_reuses_warmed_page_for_same_origin_json_fetch():
         payload = await transport.request("https://www.fut.gg/api/test/", expect_json=True)
         assert payload == {"data": {"ok": True}}
         assert transport.pages.qsize() == 1
+
+    asyncio.run(exercise())
+
+
+def test_browser_transport_warms_blank_page_before_json_fetch():
+    import asyncio
+
+    class Response:
+        status = 200
+
+    class Page:
+        url = "about:blank"
+
+        async def goto(self, url, **kwargs):
+            assert url == "https://www.fut.gg"
+            self.url = url
+            return Response()
+
+        async def evaluate(self, script, url):
+            assert self.url == "https://www.fut.gg"
+            return {"status": 200, "body": '{"data":{"ok":true}}'}
+
+    async def exercise():
+        payload = await sync.BrowserTransport([Page()]).request(
+            "https://www.fut.gg/api/test/", expect_json=True
+        )
+        assert payload == {"data": {"ok": True}}
 
     asyncio.run(exercise())
 
@@ -310,3 +339,4 @@ def test_gather_cancels_and_drains_sibling_before_propagating_error():
         assert sibling_cancelled.is_set()
 
     asyncio.run(exercise())
+

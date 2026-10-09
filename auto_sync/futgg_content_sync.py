@@ -157,6 +157,23 @@ class BrowserTransport:
             for attempt in range(1, MAX_RETRIES + 1):
                 try:
                     if expect_json:
+                        # Newly-created pages start at about:blank. A fetch from
+                        # that opaque origin is blocked by the browser's CORS
+                        # checks before FUT.GG can return a response. Keep each
+                        # pooled page on the warmed first-party origin before
+                        # making the same-origin API request.
+                        page_url = str(getattr(page, "url", SITE_ROOT))
+                        if page_url != SITE_ROOT and not page_url.startswith(SITE_ROOT + "/"):
+                            warm_response = await page.goto(
+                                SITE_ROOT,
+                                wait_until="domcontentloaded",
+                                timeout=TIMEOUT_SECONDS * 1000,
+                            )
+                            if not warm_response or warm_response.status != 200:
+                                warm_status = warm_response.status if warm_response else "none"
+                                raise RuntimeError(
+                                    f"FUT.GG API page warm-up returned HTTP {warm_status}"
+                                )
                         # FUT.GG's JSON routes are XHR/fetch resources. Directly
                         # navigating Chromium to /api/... changes the browser's
                         # request context to a top-level document navigation and
@@ -986,4 +1003,5 @@ async def _main() -> int:
 
 if __name__ == "__main__":
     sys.exit(asyncio.run(_main()))
+
 
