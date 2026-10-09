@@ -3529,11 +3529,30 @@ async def run_forever() -> None:
                     )
                     browser_started_at = time.monotonic()
 
+                # A signed_fetch block has already switched auto mode to
+                # page_capture. Do not impose signed_fetch's one-hour breaker
+                # penalty on the *different* transport before it gets a try.
+                # Keep any adaptive cooldown, and let page_capture's own
+                # breaker enforce a longer pause if that also gets blocked.
+                switched_to_capture = (
+                    breaker_tripped
+                    and transport == "signed_fetch"
+                    and TRANSPORT_MODE == "auto"
+                    and current_transport() == "page_capture"
+                )
                 backoff_seconds = (
-                    next_backoff_seconds(consecutive_cycle_trips) if breaker_tripped else CYCLE_SLEEP
+                    CYCLE_SLEEP if switched_to_capture
+                    else next_backoff_seconds(consecutive_cycle_trips) if breaker_tripped
+                    else CYCLE_SLEEP
                 )
                 if breaker_tripped:
                     backoff_seconds = max(backoff_seconds, throttle.cooldown_remaining())
+                if switched_to_capture:
+                    log.info(
+                        "signed_fetch blocked; trying page_capture after %.0fs "
+                        "instead of applying the signed_fetch breaker backoff",
+                        backoff_seconds,
+                    )
                 if breaker_tripped:
                     run_totals["breaker_sleep_seconds"] += backoff_seconds
                     # An escalated backoff can now run up to
