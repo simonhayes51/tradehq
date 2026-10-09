@@ -598,6 +598,24 @@ async def ensure_schema(conn: asyncpg.Connection) -> None:
     await conn.execute(
         "CREATE INDEX IF NOT EXISTS futgg_players_active_idx ON futgg_players (is_active)"
     )
+    await conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS futgg_sales_priority_requests (
+            id            BIGSERIAL PRIMARY KEY,
+            card_id       BIGINT NOT NULL,
+            requested_by  TEXT,
+            requested_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+            consumed_at   TIMESTAMPTZ
+        )
+        """
+    )
+    await conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_futgg_sales_priority_requests_unconsumed
+        ON futgg_sales_priority_requests (requested_at)
+        WHERE consumed_at IS NULL
+        """
+    )
 
 
 async def dismiss_cookie_banner(page) -> None:
@@ -1077,6 +1095,102 @@ async def update_listing_gg_ratings(
     return ListingRatingUpdateResult(matched=int(row["matched"]), updated=int(row["updated"]))
 
 
+def _card_ids_from_listing_urls(
+    urls: dict[str, ListingCardMetadata],
+    game_year: int,
+) -> list[int]:
+    card_ids: set[int] = set()
+    for url in urls:
+        match = CARD_URL_RE.match(urlparse(url).path)
+        if match and int(match.group("game_year")) == game_year:
+            card_ids.add(int(match.group("card_id")))
+    return sorted(card_ids)
+
+
+async def enqueue_discovered_sales_priority(
+    conn: asyncpg.Connection,
+    urls: dict[str, ListingCardMetadata],
+    game_year: int,
+) -> int:
+    """Queue high-value discovered cards for sales collection, even when
+    they are already known and therefore skipped by the metadata fetch.
+
+    This closes the practical gap where a new promo/TOTW card is inserted
+    on one run, then every later daily discovery says targets=0 and never
+    touches upsert_card again. The request table is consumed by
+    futgg_sales_triggers.py; this statement only adds cards that do not
+    already have an unconsumed priority request.
+    """
+    card_ids = _card_ids_from_listing_urls(urls, game_year)
+    if not card_ids:
+        return 0
+    sql = """
+        WITH eligible AS (
+            SELECT DISTINCT p.source_card_id
+            FROM futgg_players p
+            WHERE p.source_card_id = ANY($1::bigint[])
+              AND p.game_year = $2
+              AND p.is_active
+              AND p.is_tradeable IS NOT FALSE
+              AND p.rating >= 80
+              AND COALESCE(p.price_tier, '') NOT IN ('bronze', 'silver')
+              AND (
+                  p.last_sales_status_at IS NULL
+                  OR p.last_sales_status_at <= now() - interval '60 minutes'
+              )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM futgg_sales_priority_requests r
+                  WHERE r.card_id = p.source_card_id
+                    AND r.consumed_at IS NULL
+              )
+        ),
+        inserted AS (
+            INSERT INTO futgg_sales_priority_requests (card_id, requested_by)
+            SELECT source_card_id, 'daily_new_discovery'
+            FROM eligible
+            RETURNING card_id
+        )
+        SELECT count(*) AS queued FROM inserted
+    """
+    try:
+        row = await conn.fetchrow(sql, card_ids, game_year)
+    except asyncpg.exceptions.UndefinedColumnError:
+        # Older databases may not have last_sales_status_at until the
+        # sales worker has bootstrapped. Still queue discovered cards; the
+        # trigger consumer can dedupe by unconsumed request.
+        row = await conn.fetchrow(
+            """
+            WITH eligible AS (
+                SELECT DISTINCT p.source_card_id
+                FROM futgg_players p
+                WHERE p.source_card_id = ANY($1::bigint[])
+                  AND p.game_year = $2
+                  AND p.is_active
+                  AND p.is_tradeable IS NOT FALSE
+                  AND p.rating >= 80
+                  AND COALESCE(p.price_tier, '') NOT IN ('bronze', 'silver')
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM futgg_sales_priority_requests r
+                      WHERE r.card_id = p.source_card_id
+                        AND r.consumed_at IS NULL
+                  )
+            ),
+            inserted AS (
+                INSERT INTO futgg_sales_priority_requests (card_id, requested_by)
+                SELECT source_card_id, 'daily_new_discovery'
+                FROM eligible
+                RETURNING card_id
+            )
+            SELECT count(*) AS queued FROM inserted
+            """,
+            card_ids,
+            game_year,
+        )
+    return int(row["queued"] or 0)
+
+
 def _build_targets(
     urls: dict[str, ListingCardMetadata], known: set[int], refresh_existing: bool,
 ) -> tuple[list[FetchTarget], int]:
@@ -1100,11 +1214,23 @@ def _build_targets(
     return targets, skipped
 
 
-async def upsert_card(conn: asyncpg.Connection, card: FutggCard) -> None:
+def _should_fast_track_new_card(card: FutggCard) -> bool:
+    """Whether a newly discovered card should be pushed straight into
+    price/sales collection.
+
+    The app can show any discovered card, but high-rated/current special
+    cards are the ones users notice immediately. Leaving them to drift
+    through normal cadences creates the "new card exists but has no data"
+    experience.
+    """
+    rarity = (card.rarity or "").lower()
+    return (card.rating or 0) >= 80 and "bronze" not in rarity and "silver" not in rarity
+
+
+async def upsert_card(conn: asyncpg.Connection, card: FutggCard) -> bool:
     data = asdict(card)
     price_tier = classify_price_tier(card)
-    await conn.execute(
-        """
+    sql = """
         INSERT INTO futgg_players (
             source_card_id, source_player_id, source_slug, source_url, game_year,
             name, display_name, full_name, released_at, released_at_raw,
@@ -1205,7 +1331,9 @@ async def upsert_card(conn: asyncpg.Connection, card: FutggCard) -> None:
             last_seen_at = NOW(),
             metadata_updated_at = NOW(),
             metadata_warnings = EXCLUDED.metadata_warnings
-        """,
+        RETURNING (xmax = 0) AS inserted
+        """
+    args = (
         data["source_card_id"], data["source_player_id"], data["source_slug"], data["source_url"], data["game_year"],
         data["name"], data["display_name"], data["full_name"],
         data["released_at"], data["released_at_raw"],
@@ -1220,6 +1348,22 @@ async def upsert_card(conn: asyncpg.Connection, card: FutggCard) -> None:
         data["gg_rating"],
         data["parse_warnings"],
     )
+    if hasattr(conn, "fetchrow"):
+        row = await conn.fetchrow(sql, *args)
+        inserted = bool(dict(row).get("inserted")) if row is not None else False
+    else:
+        # Lightweight test doubles only need to capture the SQL text.
+        await conn.execute(sql, *args)
+        inserted = False
+    if inserted and _should_fast_track_new_card(card):
+        await conn.execute(
+            """
+            INSERT INTO futgg_sales_priority_requests (card_id, requested_by)
+            VALUES ($1, 'new_card_discovery')
+            """,
+            card.source_card_id,
+        )
+    return bool(inserted)
 
 
 async def _fetch_worker(
@@ -1450,6 +1594,12 @@ async def crawl_once() -> None:
                             conn, urls, listing_year, only_missing=False,
                         )
                         stats["gg_rows_updated"] += result.updated
+                    queued_sales = await enqueue_discovered_sales_priority(conn, urls, GAME_YEAR)
+                    if queued_sales:
+                        log.info(
+                            "Queued %d discovered high-value card(s) for sales priority collection",
+                            queued_sales,
+                        )
 
             scan_plausible = True
             if FULL_SCAN:
