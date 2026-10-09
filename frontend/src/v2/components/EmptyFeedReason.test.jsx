@@ -121,7 +121,7 @@ describe("when our data is the problem", () => {
   it("reports stale required metadata sync while ignoring optional sales sync", () => {
     // Price freshness gates this price-based surface. The daily player
     // catalogue sync is still required for card metadata, but a stopped
-    // SalesSync must not make healthy BIN prices look unavailable.
+    // retired SalesSync must not make healthy BIN prices look unavailable.
     freshness.value = {
       data: healthy({
         heartbeats: [
@@ -141,8 +141,7 @@ describe("when our data is the problem", () => {
 
   it("keeps the price feed available when SalesSync is stale", () => {
     // This matches the live incident: current bulk price sync, an 11h-old
-    // SalesSync heartbeat, and recent prices. Sales history is optional
-    // enrichment and must not produce the market-data outage state.
+    // SalesSync heartbeat, and recent prices. SalesSync is no longer used and must not produce the market-data outage state.
     freshness.value = {
       data: healthy({
         heartbeats: [
