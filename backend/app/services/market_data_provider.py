@@ -269,6 +269,48 @@ _SNAPSHOT_COLUMNS = """
     sales_window_span_minutes, sales_dispersion_ratio,
     sales_interdecile_ratio, snapshot_computed_at
 """
+
+
+_BASE_PLAYER_FALLBACK_COLUMNS = """
+    p.source_card_id, p.source_player_id, p.source_slug, p.source_url, p.game_year,
+    p.name, p.display_name, p.full_name, p.rating, p.primary_position, p.alternate_positions, p.rarity, p.squad,
+    p.price_tier, p.club, p.league, p.nation, p.club_source_id, p.league_source_id,
+    p.nation_source_id, p.player_image_url, p.card_design_image_url,
+    p.card_image_url, p.card_image_stored_url, p.card_image_stored_status,
+    p.club_image_url, p.league_image_url, p.nation_image_url,
+    p.pace, p.shooting, p.passing, p.dribbling, p.defending, p.physicality, p.is_active,
+    p.is_tradeable, p.last_price_status, p.metadata_warnings, p.price_updated_at,
+    p.next_price_due_at, NULL::integer AS current_bin, NULL::integer AS price_range_low,
+    NULL::integer AS price_range_high, NULL::text AS bin_source_age_text,
+    NULL::timestamptz AS bin_captured_at, NULL::timestamptz AS bin_checked_at,
+    0::bigint AS sales_count, NULL::numeric AS sales_median,
+    NULL::numeric AS sales_trimmed_mean, NULL::integer AS sales_low,
+    NULL::integer AS sales_high, NULL::numeric AS sales_stddev,
+    NULL::numeric AS sales_p10, NULL::numeric AS sales_p90,
+    NULL::integer AS latest_sale_price, NULL::timestamptz AS latest_sale_at,
+    NULL::timestamptz AS sales_window_earliest_at,
+    NULL::timestamptz AS sales_window_latest_at,
+    NULL::numeric AS sales_window_span_minutes,
+    NULL::numeric AS sales_dispersion_ratio,
+    NULL::numeric AS sales_interdecile_ratio,
+    now() AS snapshot_computed_at
+"""
+
+
+def _supports_base_player_fallback(filters: "PlayerFilters") -> bool:
+    """Whether a direct futgg_players fallback can honestly answer this query.
+
+    Freshly-discovered cards can exist in futgg_players before the materialized
+    snapshot has refreshed. For identity/search pages that is fine: showing the
+    card with no market data is better than pretending it does not exist. For
+    price-age/price-bound filters it would be misleading, because the fallback
+    row has no current BIN yet.
+    """
+    return (
+        filters.max_price is None
+        and filters.min_price is None
+        and filters.max_price_age_minutes is None
+    )
 # Every key futgg_intelligence.evaluate_card() reads off a snapshot row
 # must appear above, or the engine silently sees None and skips whatever
 # that column drives - no error, no log, just a gate that quietly stops
@@ -579,6 +621,17 @@ class FutggMarketDataProvider(MarketDataProvider):
                 card_id, active_game_year(),
             )
             if row is None:
+                row = await conn.fetchrow(
+                    f"""
+                    SELECT {_BASE_PLAYER_FALLBACK_COLUMNS}
+                    FROM futgg_players p
+                    WHERE p.source_card_id = $1
+                      AND p.game_year = $2
+                      AND p.is_active
+                    """,
+                    card_id, active_game_year(),
+                )
+            if row is None:
                 return None
             result = dict(row)
             await _attach_sbc_reward_watch(conn, [result])
@@ -598,6 +651,19 @@ class FutggMarketDataProvider(MarketDataProvider):
                 list(card_ids), active_game_year(),
             )
             results = [dict(row) for row in rows]
+            missing = sorted({int(card_id) for card_id in card_ids} - {int(r["source_card_id"]) for r in results})
+            if missing:
+                fallback_rows = await conn.fetch(
+                    f"""
+                    SELECT {_BASE_PLAYER_FALLBACK_COLUMNS}
+                    FROM futgg_players p
+                    WHERE p.source_card_id = ANY($1::bigint[])
+                      AND p.game_year = $2
+                      AND p.is_active
+                    """,
+                    missing, active_game_year(),
+                )
+                results.extend(dict(row) for row in fallback_rows)
             await _attach_sbc_reward_watch(conn, results)
         return {int(r["source_card_id"]): r for r in results}
 
@@ -1154,6 +1220,29 @@ class FutggMarketDataProvider(MarketDataProvider):
             """
             rows = await conn.fetch(sql, *args)
             results = [dict(r) for r in rows]
+            if _supports_base_player_fallback(filters):
+                fallback_rows = await conn.fetch(
+                    f"""
+                    SELECT {_BASE_PLAYER_FALLBACK_COLUMNS}
+                    FROM futgg_players p
+                    {where_clause}
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM futgg_market_snapshot s
+                          WHERE s.source_card_id = p.source_card_id
+                            AND s.game_year = p.game_year
+                      )
+                    ORDER BY {order_clause}
+                    LIMIT ${len(args) - 1} OFFSET ${len(args)}
+                    """,
+                    *args,
+                )
+                seen = {int(r["source_card_id"]) for r in results}
+                for row in fallback_rows:
+                    item = dict(row)
+                    if int(item["source_card_id"]) not in seen:
+                        results.append(item)
+                        seen.add(int(item["source_card_id"]))
             await _attach_sbc_reward_watch(conn, results)
 
         if filters.search:
@@ -1174,7 +1263,23 @@ class FutggMarketDataProvider(MarketDataProvider):
         where_clause = f"WHERE {' AND '.join(where)}" if where else ""
         sql = f"SELECT count(*) FROM futgg_market_snapshot {where_clause}"
         async with self._pool.acquire() as conn:
-            return int(await conn.fetchval(sql, *args))
+            total = int(await conn.fetchval(sql, *args))
+            if _supports_base_player_fallback(filters):
+                total += int(await conn.fetchval(
+                    f"""
+                    SELECT count(*)
+                    FROM futgg_players p
+                    {where_clause}
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM futgg_market_snapshot s
+                          WHERE s.source_card_id = p.source_card_id
+                            AND s.game_year = p.game_year
+                      )
+                    """,
+                    *args,
+                ))
+            return total
 
     # -------------------------------------------------------------------
     # Freshness / heartbeat surface
