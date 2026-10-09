@@ -226,12 +226,17 @@ if SELECT_LIMIT > SELECT_LIMIT_HARD_CAP:
 #: no matter how achievable the interval was. DORMANT and LOW now get
 #: just enough floor to avoid the original starvation failure mode,
 #: not the largest share in the file.
+# Backlog recovery: HIGH held 8,641 overdue cards while a 90-card
+# cycle guaranteed only 22 HIGH reads. Increase the floor for actionable
+# tiers without raising signing concurrency or the per-cycle hard cap.
+# Remaining capacity goes to due-first overflow; LOW/DORMANT still have
+# a small nonzero guarantee, and never-read rows still lead within tiers.
 _TIER_MIN_SHARE: dict[str, float] = {
     "CRITICAL": 0.25,
-    "HIGH": 0.25,
+    "HIGH": 0.55,
     "NORMAL": 0.10,
-    "LOW": 0.05,
-    "DORMANT": 0.10,
+    "LOW": 0.025,
+    "DORMANT": 0.025,
 }
 
 #: SQL condition per tier, matching select_due()'s own CASE expression.
