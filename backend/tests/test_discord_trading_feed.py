@@ -192,17 +192,56 @@ def test_opportunity_post_embed_includes_required_fields():
         "LIVE PRICE", "MAX BUY — DO NOT CHASE", "SELL TARGET",
         "MIN PROFIT AT MAX BUY (after EA tax)", "PRICE CHECKED",
         "ENTRY WINDOW", "RISK", "SELLING SPEED", "CONFIDENCE",
+        "SALES EVIDENCE", "MARKET READ",
     ):
         assert expected in names
     # Branded and links back to the card in the app.
     assert embed["author"]["name"] == "EAFC.Live"
-    assert components and components[0]["components"][0]["url"]
+    assert components and components[0]["components"][1]["url"]
     # ?src=discord_feed - PlayerPage.jsx's signed-out preview reads this
     # to acknowledge the visitor already saw this trade's numbers here,
     # rather than presenting a generic "sign up to see what it's worth"
     # wall for numbers that were just given away for free.
-    link_url = components[0]["components"][0]["url"]
+    link_url = components[0]["components"][1]["url"]
     assert link_url.endswith("/#/players/12345?src=discord_feed")
+
+
+def test_opportunity_embed_explains_recent_sales_and_market_trend():
+    row = {"source_card_id": 12345, "name": "Test Player"}
+
+    class CI:
+        recommended_sell_target = 10_000
+        expected_profit_after_tax = 1_000
+        risk_level = "low"
+        liquidity_score = 0.8
+        confidence_score = 0.8
+        recommended_buy_max = 8_000
+        current_executable_buy = 8_000
+        sales_sample_size = 14
+        evidence_quality = "completed_sales"
+        evidence_age_minutes = 12
+        trend_description = "Recent sales are stable with no confirmed downtrend."
+
+    embed, _ = build_opportunity_post_embed(row, CI())
+    fields = {field["name"]: field["value"] for field in embed["fields"]}
+    assert fields["SALES EVIDENCE"] == "14 recent · Completed Sales · 12m old"
+    assert fields["MARKET READ"] == CI.trend_description
+    assert "target and profit are estimates" in embed["description"]
+
+
+@pytest.mark.parametrize(
+    ("status", "body", "expected"),
+    [
+        (401, {"message": "401: Unauthorized"}, "discord_401_invalid_bot_token"),
+        (403, {"message": "Missing Access", "code": 50001}, "discord_403_missing_access_check_channel_and_bot_permissions"),
+        (403, {"message": "Missing Permissions", "code": 50013}, "discord_403_missing_permissions_check_send_messages_and_embed_links"),
+        (404, {"message": "Unknown Channel", "code": 10003}, "discord_404_channel_not_found_check_channel_id_and_bot_membership"),
+    ],
+)
+def test_discord_delivery_errors_are_actionable_and_do_not_expose_response_body(status, body, expected):
+    from app.services.discord_trading_feed import _discord_delivery_error
+
+    assert _discord_delivery_error(status, body) == expected
 
 
 def test_opportunity_post_prefers_familiar_display_name():
