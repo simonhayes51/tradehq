@@ -340,23 +340,11 @@ class TestCredentialMintingIsBounded:
 # The collectors
 # ---------------------------------------------------------------------------
 #
-# This check exists because of a real outage, and the first version of it
-# encoded the wrong story. The heartbeat row that showed three weeks old
-# was 'futgg_price_sync' - the RETIRED per-card Playwright scraper, whose
-# row is a tombstone frozen at its final run. The collector that was
-# actually struggling, futgg_sales_sync, wrote no heartbeat at all.
-#
-# So the pipeline presented as: two fresh workers, one long-dead worker
-# under a sales-shaped name, and no row anywhere for the live sales
-# collector. Every market surface was empty and nothing anywhere said
-# why - not because a row went stale, but because the row that mattered
-# did not exist, and iterating over whatever rows happened to be present
-# could never notice an absent one.
-#
-# Hence two rules below: check collectors BY NAME so absence is a
-# failure, and treat a punctual `ok: false` as a failure too - a
-# collector rate-limited down to near-zero throughput checks in exactly
-# on schedule while the data behind it drains.
+# Market readiness now follows the live inputs: the player catalogue and
+# the bulk BIN price feed. SalesSync and the old per-card PriceSync are
+# retired; stale heartbeat rows for either must not affect readiness.
+# Required collectors are checked BY NAME so a missing heartbeat is
+# visible, and an `ok: false` heartbeat is still a failure.
 
 from datetime import datetime, timedelta, timezone  # noqa: E402
 
@@ -405,20 +393,13 @@ class TestTheCollectorCheck:
         _install_freshness(monkeypatch, _freshness(_all_healthy()))
         assert run(rd._check_market_data(FakePool()))["status"] == rd.OK
 
-    def test_a_collector_that_never_reported_is_the_outage(self, monkeypatch):
-        # The actual production shape: the live sales collector wrote no
-        # heartbeat row at all, so there was nothing to find stale. An
-        # absent collector is the same outage as a stopped one.
+    def test_retired_sales_sync_is_not_required(self, monkeypatch):
         _install_freshness(monkeypatch, _freshness(
-            _all_healthy(futgg_sales_sync=None),
-            stale_sales={"CRITICAL": 1718, "HIGH": 3924, "NORMAL": 1884, "LOW": 44, "DORMANT": 2950},
+            _all_healthy(),
+            stale_sales={"CRITICAL": 9000, "HIGH": 9000},
         ))
         result = run(rd._check_market_data(FakePool()))
-        assert result["status"] == rd.DEGRADED
-        assert result["reason"] == "collector_silent"
-        silent = " ".join(result["detail"]["silent_collectors"])
-        assert "futgg_sales_sync" in silent
-        assert "never reported" in silent
+        assert result["status"] == rd.OK
 
     def test_a_retired_workers_tombstone_row_is_not_a_collector(self, monkeypatch):
         # futgg_price_sync is decommissioned. Its frozen row must not be
@@ -429,98 +410,67 @@ class TestTheCollectorCheck:
         ))
         assert run(rd._check_market_data(FakePool()))["status"] == rd.OK
 
-    def test_a_stopped_collector_is_named_with_its_age(self, monkeypatch):
+    def test_retired_sales_sync_staleness_is_ignored(self, monkeypatch):
         _install_freshness(monkeypatch, _freshness(
             _all_healthy(futgg_sales_sync=_beat("futgg_sales_sync", 21 * 24))
         ))
         result = run(rd._check_market_data(FakePool()))
-        assert result["reason"] == "collector_silent"
-        silent = " ".join(result["detail"]["silent_collectors"])
-        # The two healthy workers must not hide the dead one.
-        assert "futgg_sales_sync" in silent
-        assert "504h" in silent
+        assert result["status"] == rd.OK
+        assert "futgg_sales_sync" not in " ".join(result["detail"].get("silent_collectors", []))
 
-    def test_ok_true_does_not_rescue_a_dead_worker(self, monkeypatch):
+    def test_stale_sales_heartbeat_does_not_degrade_price_readiness(self, monkeypatch):
         _install_freshness(monkeypatch, _freshness(
             _all_healthy(futgg_sales_sync=_beat("futgg_sales_sync", 21 * 24, ok=True))
         ))
-        assert run(rd._check_market_data(FakePool()))["status"] == rd.DEGRADED
+        assert run(rd._check_market_data(FakePool()))["status"] == rd.OK
 
-    def test_a_worker_that_has_never_run_counts_as_silent(self, monkeypatch):
+    def test_sales_sync_without_a_heartbeat_is_ignored(self, monkeypatch):
         _install_freshness(monkeypatch, _freshness(_all_healthy(
             futgg_sales_sync={"worker": "futgg_sales_sync", "last_run_at": None, "ok": True},
         )))
-        result = run(rd._check_market_data(FakePool()))
-        assert result["status"] == rd.DEGRADED
-        assert "futgg_sales_sync" in " ".join(result["detail"]["silent_collectors"])
+        assert run(rd._check_market_data(FakePool()))["status"] == rd.OK
 
-    def test_a_punctual_collector_that_is_not_keeping_up_is_caught(self, monkeypatch):
-        # The live failure: the sales worker runs every two hours exactly
-        # as scheduled, but FUT.GG rate-limits its fast transport, the
-        # circuit breaker falls back to page capture, and it manages
-        # single-digit cards per cycle. Nothing is silent. Nothing has
-        # crashed. The feed drains anyway.
-        _install_freshness(monkeypatch, _freshness(
-            _all_healthy(futgg_sales_sync=_beat("futgg_sales_sync", 1, ok=False))
-        ))
-        result = run(rd._check_market_data(FakePool()))
-        assert result["status"] == rd.DEGRADED
-        assert result["reason"] == "collector_failing"
-        assert "futgg_sales_sync" in result["detail"]["failing_collectors"]
-
-    def test_a_silent_collector_outranks_a_failing_one(self, monkeypatch):
-        # Stopped is worse than slow, and is the first thing to say.
+    def test_failed_sales_sync_heartbeat_does_not_degrade_price_readiness(self, monkeypatch):
         _install_freshness(monkeypatch, _freshness(_all_healthy(
-            futgg_sales_sync=_beat("futgg_sales_sync", 1, ok=False),
+            futgg_sales_sync=_beat("futgg_sales_sync", 1, ok=False)
+        )))
+        assert run(rd._check_market_data(FakePool()))["status"] == rd.OK
+
+    def test_silent_required_collector_is_reported(self, monkeypatch):
+        _install_freshness(monkeypatch, _freshness(_all_healthy(
+            futgg_bulk_price_sync=_beat("futgg_bulk_price_sync", 1, ok=False),
             futgg_player_sync=_beat("futgg_player_sync", 500),
         )))
-        assert run(rd._check_market_data(FakePool()))["reason"] == "collector_silent"
+        result = run(rd._check_market_data(FakePool()))
+        assert result["reason"] == "collector_silent"
+        assert "futgg_player_sync" in " ".join(result["detail"]["silent_collectors"])
 
-    def test_stale_sales_are_reported_even_with_live_collectors(self, monkeypatch):
-        # A collector can be running, reporting ok, and still be behind.
+    def test_stale_sales_are_irrelevant_with_live_price_collectors(self, monkeypatch):
         _install_freshness(monkeypatch, _freshness(
             _all_healthy(), priced=1000,
             stale_sales={"CRITICAL": 900},
         ))
-        result = run(rd._check_market_data(FakePool()))
-        assert result["status"] == rd.DEGRADED
-        assert result["reason"] == "sales_data_stale"
+        assert run(rd._check_market_data(FakePool()))["status"] == rd.OK
 
-    def test_stale_prices_and_stale_sales_are_told_apart(self, monkeypatch):
-        # They are separate workers and fail independently. Reporting the
-        # wrong one sends someone to the wrong service.
+    def test_stale_prices_still_degrade_market_readiness(self, monkeypatch):
         _install_freshness(monkeypatch, _freshness(_all_healthy(), priced=1000, stale=900))
         assert run(rd._check_market_data(FakePool()))["reason"] == "price_data_stale"
 
-    def test_dormants_own_by_design_backlog_does_not_report_sales_as_stale(self, monkeypatch):
-        # Exact live production payload: DORMANT is allowed to run ~67h
-        # behind by design (priority_config.py's own
-        # tier_sales_interval_minutes) and the opportunity candidate scan
-        # (ordered by sales_count DESC) would never surface a DORMANT-tier
-        # card regardless of its sales freshness. Summed across every
-        # tier this crossed the 50%-of-priced gate by only 245 rows
-        # (7,718 vs a 7,473 threshold on 14,946 priced cards) - entirely
-        # accounted for by DORMANT's own 1,566. CRITICAL+HIGH+NORMAL+LOW
-        # alone (6,152) are well under half of 14,946.
+    def test_sales_backlog_does_not_affect_price_readiness(self, monkeypatch):
         _install_freshness(monkeypatch, _freshness(
             _all_healthy(), priced=14946, stale=2070,
             stale_sales={"CRITICAL": 1096, "HIGH": 4264, "NORMAL": 792, "LOW": 0, "DORMANT": 1566},
         ))
         result = run(rd._check_market_data(FakePool()))
         assert result["status"] == rd.OK
-        assert result["detail"]["cards_with_stale_sales"] == 6152
+        assert "cards_with_stale_sales" not in result["detail"]
 
-    def test_a_genuine_outage_in_the_candidate_relevant_tiers_still_reports_stale(self, monkeypatch):
-        # The DORMANT exclusion must not defeat the check entirely - a
-        # real outage in the tiers that actually matter for candidates
-        # still has to fire, DORMANT or no DORMANT.
+    def test_stale_sales_in_any_tier_do_not_degrade_price_readiness(self, monkeypatch):
         _install_freshness(monkeypatch, _freshness(
             _all_healthy(), priced=14950, stale=100,
             stale_sales={"CRITICAL": 1718, "HIGH": 3924, "NORMAL": 1884, "LOW": 44, "DORMANT": 2950},
         ))
-        result = run(rd._check_market_data(FakePool()))
-        assert result["status"] == rd.DEGRADED
-        assert result["reason"] == "sales_data_stale"
+        assert run(rd._check_market_data(FakePool()))["status"] == rd.OK
 
     def test_no_priced_cards_is_unavailable_not_degraded(self, monkeypatch):
         _install_freshness(monkeypatch, _freshness(_all_healthy(), priced=0))
@@ -568,11 +518,8 @@ class TestTheCollectorCheck:
             "as a live collector"
         )
 
-    def test_the_sales_collector_is_one_of_the_expected_ones(self):
-        # The whole point. Sales are 70% of fair value and the gate on
-        # every signal the engine emits; the collector that supplies them
-        # was the one nothing watched.
-        assert "futgg_sales_sync" in rd.EXPECTED_COLLECTORS
+    def test_sales_sync_is_not_a_required_market_collector(self):
+        assert "futgg_sales_sync" not in rd.EXPECTED_COLLECTORS
 
     def test_it_is_part_of_the_readiness_report(self):
         # The gap this fills: the single most important worker in the
@@ -582,8 +529,8 @@ class TestTheCollectorCheck:
 
 class TestPerCollectorSilenceThresholds:
     """futgg_player_sync is a one-shot DAILY discovery job (Procfile:
-    "Run daily as a Cron Job"), not a continuous service like the other
-    two. A single flat COLLECTOR_SILENT_HOURS applied to all three
+    "Run daily as a Cron Job"), not a continuous service like PriceSync.
+    A single flat COLLECTOR_SILENT_HOURS applied to both workers
     reported it collector_silent for roughly 18 of every 24 hours -
     confirmed live in production (age_hours=14.5, detail all zeros - an
     entirely ordinary mid-day reading, not a stuck run). Each collector
@@ -615,9 +562,8 @@ class TestPerCollectorSilenceThresholds:
         assert "futgg_player_sync" in " ".join(result["detail"]["silent_collectors"])
 
     def test_the_two_continuous_collectors_keep_the_tight_threshold(self, monkeypatch):
-        # bulk_price_sync and sales_sync cycle every few minutes - the
-        # original 6h "has it died" threshold is still right for them,
-        # and must not have been loosened along with player_sync's.
+        # The live BIN price collector cycles every few minutes and keeps
+        # the original 6h "has it died" threshold.
         _install_freshness(monkeypatch, _freshness(_all_healthy(
             futgg_bulk_price_sync=_beat("futgg_bulk_price_sync", 14.5),
         )))
@@ -631,5 +577,5 @@ class TestPerCollectorSilenceThresholds:
     def test_player_syncs_threshold_is_meaningfully_looser(self):
         assert (
             rd.COLLECTOR_SILENT_HOURS_BY_WORKER["futgg_player_sync"]
-            > rd.COLLECTOR_SILENT_HOURS_BY_WORKER["futgg_sales_sync"]
+            > rd.COLLECTOR_SILENT_HOURS_BY_WORKER["futgg_bulk_price_sync"]
         )
