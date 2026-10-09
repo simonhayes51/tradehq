@@ -705,6 +705,9 @@ async def test_existing_ids_are_scoped_to_selected_game_year():
             self.args = args
             assert "AND game_year = $2" in query
             assert "AND NOT ('feed_only_placeholder' = ANY(metadata_warnings))" in query
+            assert "AND name IS NOT NULL" in query
+            assert "AND rating IS NOT NULL" in query
+            assert "AND primary_position IS NOT NULL" in query
             return [{"source_card_id": 1002}]
 
     conn = FakeConn()

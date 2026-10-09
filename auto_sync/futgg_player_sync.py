@@ -942,6 +942,9 @@ async def existing_ids(conn: asyncpg.Connection, urls, game_year: int = GAME_YEA
         WHERE source_card_id = ANY($1::bigint[])
           AND game_year = $2
           AND NOT ('feed_only_placeholder' = ANY(metadata_warnings))
+          AND name IS NOT NULL
+          AND rating IS NOT NULL
+          AND primary_position IS NOT NULL
         """,
         ids, game_year,
     )
@@ -1555,4 +1558,3 @@ if __name__ == "__main__":
     except Exception as exc:
         log.exception("futgg_player_sync failed: %s", exc)
         sys.exit(1)
-
