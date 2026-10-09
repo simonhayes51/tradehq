@@ -788,7 +788,7 @@ async def _paginate_listing(
 
         await dismiss_cookie_banner(page)
         try:
-            await page.locator("a[href*='/players/']").first.wait_for(state="attached", timeout=TIMEOUT_MS)
+            await page.locator(f"a[href*='/players/'][href*='/{GAME_YEAR}-']").first.wait_for(state="attached", timeout=TIMEOUT_MS)
         except PlaywrightTimeoutError as exc:
             if page_number == 1:
                 raise RuntimeError(f"No card links appeared on FUT.GG listing partition={partition_label}") from exc
@@ -845,7 +845,7 @@ async def _paginate_listing(
                 if status == 200:
                     await dismiss_cookie_banner(page)
                     try:
-                        await page.locator("a[href*='/players/']").first.wait_for(state="attached", timeout=TIMEOUT_MS)
+                        await page.locator(f"a[href*='/players/'][href*='/{GAME_YEAR}-']").first.wait_for(state="attached", timeout=TIMEOUT_MS)
                     except PlaywrightTimeoutError:
                         current_hrefs = {}
                     else:
