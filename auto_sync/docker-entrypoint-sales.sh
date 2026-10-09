@@ -69,7 +69,7 @@ echo "Starting Xvfb on display ${DISPLAY:-:99}..."
 # Chromium and explicitly non-fatal. Keep real Xvfb failures visible while
 # dropping those known-warning lines so Railway logs stay readable.
 Xvfb "${DISPLAY:-:99}" -screen 0 1920x1080x24 -nolisten tcp \
-    2> >(grep -Ev '^(The XKEYBOARD keymap compiler \\(xkbcomp\\) reports:|> Warning:[[:space:]]+Could not resolve keysym XF86|Errors from xkbcomp are not fatal to the X server)$' >&2) &
+    2> >(grep -Ev '(^The XKEYBOARD keymap compiler|^> Warning:.*Could not resolve keysym XF86|^Errors from xkbcomp are not fatal)' >&2) &
 XVFB_PID=$!
 
 ready=0
