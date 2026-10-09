@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
-import { RECENT_SALES_ROWS, saleAgeLabel, saleTitle } from "./FutggMarketSection";
+import { buildSalesPulse, RECENT_SALES_ROWS, saleAgeLabel, saleTitle } from "./FutggMarketSection";
 
 // 2026-08-11 22:11 UTC - the moment the production screenshots were taken.
 const NOW = new Date("2026-08-11T22:11:00Z").getTime();
@@ -72,3 +72,31 @@ describe("RECENT_SALES_ROWS", () => {
     expect(RECENT_SALES_ROWS).toBeLessThanOrEqual(50);
   });
 });
+
+describe("buildSalesPulse", () => {
+  it("summarises captured sales and keeps the sales-check age separate", () => {
+    const now = Date.parse("2026-08-11T22:11:00Z");
+    const sales = [
+      { sold_price: 100_000, approximate_sold_at: new Date(now - 2 * 3600_000).toISOString() },
+      { sold_price: 200_000, approximate_sold_at: new Date(now - 5 * 3600_000).toISOString() },
+      { sold_price: 300_000, approximate_sold_at: new Date(now - 8 * 24 * 3600_000).toISOString() },
+    ];
+    const pulse = buildSalesPulse(sales, { sales_checked_at: new Date(now - 3 * 3600_000).toISOString() }, now);
+    expect(pulse).toMatchObject({ captured24h: 2, median7d: 150_000, sample7d: 2, lastSaleAge: "2 hours ago", checkedAge: "3 hours ago", checkState: "recent" });
+  });
+
+  it("marks an old sales check stale instead of presenting the sample as live", () => {
+    const now = Date.parse("2026-08-11T22:11:00Z");
+    const pulse = buildSalesPulse([], { sales_checked_at: new Date(now - 5 * 24 * 3600_000).toISOString() }, now);
+    expect(pulse).toMatchObject({ captured24h: 0, median7d: null, sample7d: 0, checkState: "stale", checkedAge: "5 days ago" });
+  });
+
+  it("distinguishes never-checked cards from a checked card with no captured sales", () => {
+    const never = buildSalesPulse([], { sales_never_checked: true });
+    const checked = buildSalesPulse([], { sales_checked_at: new Date().toISOString() });
+    expect(never.checkState).toBe("never");
+    expect(checked.checkState).toBe("recent");
+    expect(checked.captured24h).toBe(0);
+  });
+});
+
