@@ -240,9 +240,8 @@ async def _check_funnel_events(pool) -> Dict[str, Any]:
 # reporting ok:true forever - which is how a sales outage emptied every
 # market surface with nothing anywhere saying why.
 #
-# This is the default for the two CONTINUOUS collectors
-# (futgg_bulk_price_sync, futgg_sales_sync - both run_forever() loops
-# that cycle every few minutes). futgg_player_sync is a different shape
+# This is the default for the continuous bulk price collector.
+# futgg_player_sync is a different shape
 # entirely - see COLLECTOR_SILENT_HOURS_BY_WORKER below - and must not
 # use this default.
 COLLECTOR_SILENT_HOURS = float(os.getenv("READINESS_COLLECTOR_SILENT_HOURS", "6"))
@@ -272,25 +271,14 @@ PLAYER_SYNC_SILENT_HOURS = float(os.getenv("READINESS_PLAYER_SYNC_SILENT_HOURS",
 COLLECTOR_SILENT_HOURS_BY_WORKER: Dict[str, float] = {
     "futgg_player_sync": PLAYER_SYNC_SILENT_HOURS,
     "futgg_bulk_price_sync": COLLECTOR_SILENT_HOURS,
-    "futgg_sales_sync": COLLECTOR_SILENT_HOURS,
 }
 EXPECTED_COLLECTORS = tuple(COLLECTOR_SILENT_HOURS_BY_WORKER)
 
-# Sales older than this are rejected by the engine outright
-# (futgg_config.reject_sales_older_than_minutes, 72h). A collector silent
-# for longer than this has already emptied the feed, whatever its
-# heartbeat says.
-SALES_FRESHNESS_HOURS = float(os.getenv("READINESS_SALES_FRESHNESS_HOURS", "72"))
-
-
 async def _check_market_data(pool) -> Dict[str, Any]:
-    """Are the collectors that feed every market surface still running?
+    """Are the player catalogue and live BIN price feed available?
 
-    This is the check whose absence let a three-week sales outage look
-    like a quiet market. Confidence in the engine is a geometric blend, so
-    a single dead input - no sales, or sales past the freshness limit -
-    zeroes every card's score and empties Home, Opportunities and Trade
-    Finder at once, with no error anywhere.
+    Recommendations are based on current BIN prices and BIN history.
+    SalesSync is retired and is not a market input or readiness requirement.
     """
     if pool is None:
         return _check("market_data", UNAVAILABLE, reason="pool_missing")
@@ -330,28 +318,9 @@ async def _check_market_data(pool) -> Dict[str, Any]:
 
     priced = int(summary.get("cards_priced") or 0)
     stale = int(summary.get("cards_stale") or 0)
-    # DORMANT is excluded: its ~67h (4000-minute) sales-refresh interval
-    # is an intentional design choice (see priority_config.py's
-    # tier_sales_interval_minutes), not a fault - it is the low-liquidity,
-    # no-recent-sales, no-interest tail this catalogue deliberately stops
-    # chasing so real throughput goes to CRITICAL/HIGH instead, and the
-    # opportunity candidate scan (ordered by sales_count DESC) would never
-    # surface a DORMANT-tier card regardless of how fresh its sales are.
-    # Summing it in here made this check - and the customer-facing
-    # EmptyFeedReason.jsx message it mirrors - report "sales data behind"
-    # on DORMANT's own, by-design backlog: confirmed live, a healthy
-    # CRITICAL/HIGH/NORMAL/LOW picture (6,152 stale rows on a 14,946-card
-    # catalogue, well under the 50% gate) crossed that gate by only 245
-    # rows once DORMANT's 1,566 was added on top.
-    stale_sales = sum(
-        n for tier, n in (summary.get("stale_sales_by_priority_tier") or {}).items()
-        if tier != "DORMANT"
-    )
-
     detail: Dict[str, Any] = {
         "cards_priced": priced,
         "cards_stale": stale,
-        "cards_with_stale_sales": stale_sales,
     }
     if silent:
         detail["silent_collectors"] = silent
@@ -367,8 +336,6 @@ async def _check_market_data(pool) -> Dict[str, Any]:
         return _check("market_data", DEGRADED, reason="collector_silent", detail=detail)
     if failing:
         return _check("market_data", DEGRADED, reason="collector_failing", detail=detail)
-    if stale_sales > priced * 0.5:
-        return _check("market_data", DEGRADED, reason="sales_data_stale", detail=detail)
     if stale > priced * 0.5:
         return _check("market_data", DEGRADED, reason="price_data_stale", detail=detail)
     return _check("market_data", OK, detail=detail)
