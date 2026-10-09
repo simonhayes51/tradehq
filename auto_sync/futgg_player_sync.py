@@ -929,7 +929,7 @@ async def collect_listing_urls(page) -> dict[str, ListingCardMetadata]:
         try:
             urls = await _paginate_listing(
                 page, f"{GAME_PREFIX}/players/new/?page={{page}}", MAX_PAGES, "daily-new",
-                target_game_year=GAME_YEAR,
+                canonical_first_page=True, target_game_year=GAME_YEAR,
             )
         except ListingDiscoveryBlocked as exc:
             log.warning(
