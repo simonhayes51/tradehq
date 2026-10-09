@@ -868,6 +868,43 @@ async def _paginate_listing(
                         status,
                     )
 
+        # Page 1 is where today's special cards appear. Never treat an
+        # empty first page as successful discovery and silently proceed to
+        # page 2: that produced runs with zero targets while fresh cards
+        # remained feed-only placeholders in PostgreSQL.
+        if page_number == 1 and not current_hrefs:
+            for retry in range(2):
+                retry_url = (
+                    _canonical_first_listing_url(listing_url)
+                    if retry % 2 == 0
+                    else _alternate_first_listing_url(
+                        _canonical_first_listing_url(listing_url)
+                    )
+                )
+                log.warning(
+                    "Listing partition=%s page 1 still empty; reloading %s "
+                    "(retry %d/2)", partition_label, retry_url, retry + 1,
+                )
+                response = await page.goto(
+                    retry_url, wait_until="domcontentloaded", timeout=TIMEOUT_MS
+                )
+                if response is None or response.status != 200:
+                    continue
+                await dismiss_cookie_banner(page)
+                for _ in range(LISTING_STABILIZE_MAX_ATTEMPTS):
+                    current_hrefs = await _read_card_hrefs(page)
+                    if current_hrefs:
+                        break
+                    await page.wait_for_timeout(LISTING_STABILIZE_POLL_MS)
+                if current_hrefs:
+                    break
+            if not current_hrefs:
+                raise RuntimeError(
+                    f"FUT.GG listing partition={partition_label} page 1 "
+                    "remained empty after canonical/alternate reloads; "
+                    "discovery incomplete, do not silently skip new cards"
+                )
+
         before = len(seen)
         for card_url, metadata in current_hrefs.items():
             seen[card_url] = _merge_listing_metadata(seen.get(card_url), metadata)
