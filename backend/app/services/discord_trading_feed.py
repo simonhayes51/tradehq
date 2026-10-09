@@ -466,7 +466,7 @@ async def publish_daily_overview(pool, server: ServerRecord, client: Optional[Di
     async with pool.acquire() as conn:
         await _finish_post(
             conn, post_id, ok=ok, message_id=message_id,
-            error=None if ok else f"discord_http_{status or 'network'}",
+            error=None if ok else _discord_delivery_error(status, body),
         )
     return ok
 
@@ -529,6 +529,25 @@ def _price_age_minutes(row: dict[str, Any], *, now: Optional[datetime] = None) -
 def _opportunity_price(ci: Any) -> Optional[Decimal]:
     value = getattr(ci, "current_executable_buy", None) or getattr(ci, "recommended_buy_max", None)
     return Decimal(str(value)) if value is not None else None
+
+
+def _discord_delivery_error(status: int, body: Any) -> str:
+    """Return a compact, actionable Discord error without storing response bodies."""
+    code = body.get("code") if isinstance(body, dict) else None
+    message = str(body.get("message") or "").strip().lower() if isinstance(body, dict) else ""
+    if status == 401:
+        return "discord_401_invalid_bot_token"
+    if status == 404:
+        return "discord_404_channel_not_found_check_channel_id_and_bot_membership"
+    if code == 50013 or "missing permissions" in message:
+        return "discord_403_missing_permissions_check_send_messages_and_embed_links"
+    if status == 403 or code == 50001 or "missing access" in message:
+        return "discord_403_missing_access_check_channel_and_bot_permissions"
+    if status == 429:
+        return "discord_429_rate_limited"
+    if status == 400:
+        return "discord_400_invalid_message_payload"
+    return f"discord_http_{status or 'network'}"
 
 
 async def _final_recheck_opportunity(provider, row: dict[str, Any], ci: Any):
@@ -609,6 +628,18 @@ def build_opportunity_post_embed(row: dict[str, Any], ci: Any, *, test: bool = F
         if isinstance(checked_at, datetime) and age_minutes is not None
         else "Fixture price" if test else "Just rechecked"
     )
+    sales_count = max(0, int(getattr(ci, "sales_sample_size", 0) or 0))
+    evidence_quality = str(getattr(ci, "evidence_quality", "") or "").replace("_", " ").title()
+    evidence_age = getattr(ci, "evidence_age_minutes", None)
+    evidence_age_label = f"{max(0, int(evidence_age))}m old" if evidence_age is not None else "age unknown"
+    evidence_source = evidence_quality or "Completed sales"
+    market_read = str(getattr(ci, "trend_description", "") or "").strip()
+    if not market_read:
+        market_read = str(getattr(ci, "trend_state", "") or "").replace("_", " ").title()
+    if not market_read:
+        market_read = "Trend evidence unavailable"
+    if len(market_read) > 240:
+        market_read = market_read[:237].rstrip() + "..."
     fields = [
         {
             "name": "LIVE PRICE",
@@ -627,10 +658,12 @@ def build_opportunity_post_embed(row: dict[str, Any], ci: Any, *, test: bool = F
         {"name": "RISK", "value": risk.title() if risk != "unknown" else "Unknown", "inline": True},
         {"name": "SELLING SPEED", "value": _liquidity_label(ci.liquidity_score), "inline": True},
         {"name": "CONFIDENCE", "value": f"{(ci.confidence_score or 0):.0%}", "inline": True},
+        {"name": "SALES EVIDENCE", "value": f"{sales_count} recent · {evidence_source} · {evidence_age_label}", "inline": False},
+        {"name": "MARKET READ", "value": market_read, "inline": False},
     ]
     embed: dict[str, Any] = {
         "title": f"{'[TEST] ' if test else ''}{embeds.card_label(row)}",
-        "description": "🧪 **TEST POST — not a real trade**" if test else "🔥 **Live trading opportunity**",
+        "description": "🧪 **TEST POST — not a real trade**" if test else "⚡ **Trade setup** · Enter only at or below MAX BUY; target and profit are estimates, not guarantees.",
         "color": 0xF97316 if test else _RISK_COLORS.get(risk, embeds.BRAND_COLOR),
         "author": embeds.brand_author(app_url),
         "fields": fields,
@@ -739,9 +772,9 @@ async def send_test_post(pool, server: ServerRecord, client: Optional[DiscordCli
         async with pool.acquire() as conn:
             await _finish_post(
                 conn, post_id, ok=ok, message_id=message_id,
-                error=None if ok else f"discord_http_{status or 'network'}",
+                error=None if ok else _discord_delivery_error(status, body),
             )
-    return ok, None if ok else f"discord_http_{status or 'network'}"
+    return ok, None if ok else _discord_delivery_error(status, body)
 
 
 _TEST_OVERVIEW_STATS: dict[str, Any] = {
@@ -783,7 +816,7 @@ async def send_test_free_overview(
         async with pool.acquire() as conn:
             await _finish_post(
                 conn, post_id, ok=ok, message_id=message_id,
-                error=None if ok else f"discord_http_{status or 'network'}",
+                error=None if ok else _discord_delivery_error(status, body),
             )
     return ok, None if ok else f"discord_http_{status or 'network'}"
 
@@ -812,9 +845,9 @@ async def send_test_opportunity_update(
         async with pool.acquire() as conn:
             await _finish_post(
                 conn, post_id, ok=ok, message_id=message_id,
-                error=None if ok else f"discord_http_{result_status or 'network'}",
+                error=None if ok else _discord_delivery_error(result_status, body),
             )
-    return ok, None if ok else f"discord_http_{result_status or 'network'}"
+    return ok, None if ok else _discord_delivery_error(result_status, body)
 
 
 def _within_posting_window(
@@ -1028,7 +1061,7 @@ async def publish_live_opportunities(pool, server: ServerRecord, client: Optiona
         async with pool.acquire() as conn:
             await _finish_post(
                 conn, post_id, ok=ok, message_id=message_id,
-                error=None if ok else f"discord_http_{status or 'network'}",
+                error=None if ok else _discord_delivery_error(status, body),
             )
         if ok:
             posted += 1
@@ -1171,7 +1204,7 @@ async def publish_opportunity_updates(pool, server: ServerRecord, client: Option
                             message_id = body.get("id") if ok and isinstance(body, dict) else None
                             await _finish_post(
                                 conn, update_post_id, ok=ok, message_id=message_id,
-                                error=None if ok else f"discord_http_{status or 'network'}",
+                                error=None if ok else _discord_delivery_error(status, body),
                             )
                             if ok:
                                 updated += 1
@@ -1216,7 +1249,7 @@ async def publish_opportunity_updates(pool, server: ServerRecord, client: Option
                         message_id = body.get("id") if ok and isinstance(body, dict) else None
                         await _finish_post(
                             conn, update_post_id, ok=ok, message_id=message_id,
-                            error=None if ok else f"discord_http_{status or 'network'}",
+                            error=None if ok else _discord_delivery_error(status, body),
                         )
                         if ok:
                             updated += 1
@@ -1258,7 +1291,7 @@ async def publish_opportunity_updates(pool, server: ServerRecord, client: Option
             message_id = body.get("id") if ok and isinstance(body, dict) else None
             await _finish_post(
                 conn, update_post_id, ok=ok, message_id=message_id,
-                error=None if ok else f"discord_http_{status or 'network'}",
+                error=None if ok else _discord_delivery_error(status, body),
             )
             if ok:
                 updated += 1
