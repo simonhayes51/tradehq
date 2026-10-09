@@ -1574,16 +1574,18 @@ async def select_due(conn: asyncpg.Connection) -> list[asyncpg.Record]:
           AND (next_sales_due_at IS NULL OR next_sales_due_at <= NOW())
           AND NOT (source_card_id = ANY($1::bigint[]))
         ORDER BY
-            -- never-SUCCESSFULLY-read cards first (backfill), most
-            -- urgent tier within that. A failed attempt does not
-            -- forfeit this.
-            (sales_first_read_at IS NOT NULL),
+            -- For the overflow slots prefer urgent cards with the oldest
+            -- successful sales checks. Their long-overdue observations
+            -- are the most likely to fail the engine's sales-freshness
+            -- gate. Keep never-read as the next preference so new cards
+            -- still get their first chance at usable sales.
             CASE COALESCE(cp.effective_tier, 'NORMAL')
                  WHEN 'CRITICAL' THEN 0
                  WHEN 'HIGH' THEN 1
                  WHEN 'NORMAL' THEN 2
                  WHEN 'LOW' THEN 3
                  ELSE 4 END,
+            (sales_first_read_at IS NOT NULL),
             next_sales_due_at ASC NULLS FIRST,
             rating DESC NULLS LAST
         LIMIT $2
@@ -1631,8 +1633,11 @@ async def report_coverage(conn: asyncpg.Connection) -> dict[str, int] | None:
             WHERE h.source_card_id = p.source_card_id
               AND h.approximate_sold_at >= now() - interval '14 days'
         ) s ON TRUE
-        WHERE p.is_active AND p.is_tradeable IS DISTINCT FROM FALSE
-        """
+        WHERE p.is_active
+          AND p.is_tradeable IS DISTINCT FROM FALSE
+          AND p.game_year = $1
+        """,
+        int(GAME_YEAR),
     )
     total = int(row["total"] or 0)
     if not total:
