@@ -237,8 +237,7 @@ async def _check_funnel_events(pool) -> Dict[str, Any]:
 # Deliberately generous: this is a "has it died" check, not a latency
 # target. `ok` records the outcome of the LAST run and says nothing about
 # whether another one ever happened, so a worker that stopped keeps
-# reporting ok:true forever - which is how a sales outage emptied every
-# market surface with nothing anywhere saying why.
+# reporting ok:true forever, so heartbeat age must be checked separately.
 #
 # This is the default for the continuous bulk price collector.
 # futgg_player_sync is a different shape
