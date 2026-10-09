@@ -125,6 +125,7 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from urllib.parse import urlparse
 
 import asyncpg
 
@@ -286,6 +287,21 @@ USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/150.0.0.0 Safari/537.36"
 )
+
+def _is_expected_price_feed_url(url: str, marker: str, game_year: int = GAME_YEAR) -> bool:
+    """Accept only configured-year R2 JSON assets for the requested feed kind."""
+    parsed = urlparse(url)
+    filename = parsed.path.rsplit("/", 1)[-1]
+    return (
+        parsed.scheme == "https"
+        and parsed.hostname == "r2.fut.gg"
+        and parsed.path.startswith(f"/{game_year}/")
+        and parsed.path.count("/") == 3
+        and filename.startswith(f"{marker}.v1.")
+        and filename.endswith(".json")
+        and len(filename) > len(f"{marker}.v1.json")
+    )
+
 
 INDEX_MARKER = "player-prices-index"
 DYN_MARKER = f"player-prices-{PLATFORM}-dyn"
@@ -672,6 +688,12 @@ async def harvest_feed(page, url: str) -> dict[str, Any]:
             # republish, so an exact URL match would silently stop
             # working within the hour.
             if marker in response.url:
+                if not _is_expected_price_feed_url(response.url, marker):
+                    log.error(
+                        "REJECTED cross-year or unexpected bulk price asset for FC%d: %s",
+                        GAME_YEAR, response.url,
+                    )
+                    return
                 pending.append(asyncio.ensure_future(read(response, marker)))
                 return
         # Diagnostic only (see _ANY_PLATFORM_DYN_RE's comment): catches a
@@ -970,6 +992,22 @@ async def ingest_once(
             "interval."
         )
 
+    # Defense in depth: never seed players or write prices from wrong-year
+    # feeds, including captures recovered through the rediscovery path.
+    index_url = captured.get(f"{INDEX_MARKER}__url", "")
+    dyn_url = captured.get(f"{DYN_MARKER}__url", "")
+    if not (
+        _is_expected_price_feed_url(index_url, INDEX_MARKER)
+        and _is_expected_price_feed_url(dyn_url, DYN_MARKER)
+    ):
+        log.error(
+            "REFUSING bulk price import: expected FC%d feeds, got index=%s dyn=%s",
+            GAME_YEAR, index_url or "<missing>", dyn_url or "<missing>",
+        )
+        return {"ok": False, "reason": "feed_game_year_mismatch"}
+
+    log.info("Validated FC%d bulk feed source URLs: index=%s dyn=%s",
+             GAME_YEAR, index_url, dyn_url)
     log.info(
         "captured index=%s (%d B) dyn=%s (%d B)",
         captured.get(f"{INDEX_MARKER}__url", "?").rsplit("/", 1)[-1],
