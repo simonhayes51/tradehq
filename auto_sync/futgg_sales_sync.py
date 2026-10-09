@@ -3708,8 +3708,21 @@ def _attach_network_diagnostics(page, label: str = "NETDIAG") -> list[asyncio.Ta
             )
         pending.append(asyncio.ensure_future(_log()))
 
+    def on_request_failed(request) -> None:
+        # A fetch() TypeError such as "Failed to fetch" does not tell us
+        # whether Chromium rejected the request locally, the connection
+        # failed, or the remote closed it before a response. Playwright's
+        # request.failure is the missing browser-level evidence. URLs still
+        # pass through redaction.
+        log.warning(
+            "%s REQUEST_FAILED method=%s url=%s resourceType=%s failure=%r",
+            label, request.method, redact_url(request.url),
+            request.resource_type, request.failure,
+        )
+
     page.on("request", on_request)
     page.on("response", on_response)
+    page.on("requestfailed", on_request_failed)
     return pending
 
 
@@ -3752,6 +3765,12 @@ async def _run_diagnostic_signed_fetch(pool: asyncpg.Pool, row, card_id: int, an
             log.info("DIAGNOSTIC: browser/context state: %s", context_diag)
 
             pending_network_logs = _attach_network_diagnostics(page)
+            target_path = f"/api/fut/player-prices/{GAME_YEAR}/{card_id}/?platform={PLATFORM}"
+            log.info(
+                "DIAGNOSTIC: signed_fetch target card=%d game_year=%s platform=%s "
+                "target_path=%s",
+                card_id, GAME_YEAR, PLATFORM, target_path,
+            )
             results = await page.evaluate(
                 _FETCH_SCRIPT,
                 {
