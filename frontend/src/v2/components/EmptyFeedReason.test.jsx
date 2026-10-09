@@ -118,13 +118,10 @@ describe("when our data is the problem", () => {
     expect(screen.getByText(/doesn't see a trade worth making yet/i)).toBeInTheDocument();
   });
 
-  it("notices the WORST collector, not the newest", () => {
-    // The production payload that prompted this: three collectors, one
-    // dead for three weeks, two healthy. Taking the newest heartbeat
-    // made the whole pipeline look fine. futgg_player_sync is also
-    // genuinely stale here (40h, past its own 30h daily-cadence
-    // threshold) - the worst (504h) must still win over the
-    // lesser-but-real staleness, not just over the healthy ones.
+  it("reports stale required metadata sync while ignoring optional sales sync", () => {
+    // Price freshness gates this price-based surface. The daily player
+    // catalogue sync is still required for card metadata, but a stopped
+    // SalesSync must not make healthy BIN prices look unavailable.
     freshness.value = {
       data: healthy({
         heartbeats: [
@@ -138,21 +135,26 @@ describe("when our data is the problem", () => {
     render(<EmptyFeedReason noun="opportunities" filtersActive={false} />);
     expect(screen.getByText(/hasn't reported in/i)).toBeInTheDocument();
     // A pipeline is as fresh as its stalest stage.
-    expect(screen.getByText(/504h/)).toBeInTheDocument();
+    expect(screen.getByText(/40h/)).toBeInTheDocument();
+    expect(document.body.textContent).not.toMatch(/504h/);
   });
 
-  it("is not fooled by ok:true on a dead worker", () => {
-    // `ok` is the outcome of the LAST run. A worker that stopped three
-    // weeks ago reports ok:true forever - staleness has to come from
-    // the backend's own `stale` judgement, not from `ok`.
+  it("keeps the price feed available when SalesSync is stale", () => {
+    // This matches the live incident: current bulk price sync, an 11h-old
+    // SalesSync heartbeat, and recent prices. Sales history is optional
+    // enrichment and must not produce the market-data outage state.
     freshness.value = {
       data: healthy({
-        heartbeats: [heartbeat("futgg_sales_sync", 21 * 24, { stale: true, ok: true })],
+        heartbeats: [
+          heartbeat("futgg_bulk_price_sync", 0.1, { stale: false }),
+          heartbeat("futgg_sales_sync", 11.1, { stale: true, ok: false }),
+        ],
       }),
       refetch: vi.fn(),
     };
     render(<EmptyFeedReason noun="opportunities" filtersActive={false} />);
-    expect(screen.getByText(/on our side/i)).toBeInTheDocument();
+    expect(screen.getByText(/doesn't see a trade worth making yet/i)).toBeInTheDocument();
+    expect(document.body.textContent).not.toMatch(/hasn't reported in|on our side|behind/i);
   });
 
   it("does not flag a daily job for running on its own normal cadence", () => {
