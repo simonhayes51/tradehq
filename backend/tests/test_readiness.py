@@ -541,8 +541,8 @@ class TestTheCollectorCheck:
 
 class TestPerCollectorSilenceThresholds:
     """futgg_player_sync is a one-shot DAILY discovery job (Procfile:
-    "Run daily as a Cron Job"), not a continuous service like the other
-    two. A single flat COLLECTOR_SILENT_HOURS applied to all three
+    "Run daily as a Cron Job"), not a continuous service like PriceSync.
+    A single flat COLLECTOR_SILENT_HOURS applied to both workers
     reported it collector_silent for roughly 18 of every 24 hours -
     confirmed live in production (age_hours=14.5, detail all zeros - an
     entirely ordinary mid-day reading, not a stuck run). Each collector
@@ -574,9 +574,8 @@ class TestPerCollectorSilenceThresholds:
         assert "futgg_player_sync" in " ".join(result["detail"]["silent_collectors"])
 
     def test_the_two_continuous_collectors_keep_the_tight_threshold(self, monkeypatch):
-        # bulk_price_sync and sales_sync cycle every few minutes - the
-        # original 6h "has it died" threshold is still right for them,
-        # and must not have been loosened along with player_sync's.
+        # The live BIN price collector cycles every few minutes and keeps
+        # the original 6h "has it died" threshold.
         _install_freshness(monkeypatch, _freshness(_all_healthy(
             futgg_bulk_price_sync=_beat("futgg_bulk_price_sync", 14.5),
         )))
@@ -590,5 +589,5 @@ class TestPerCollectorSilenceThresholds:
     def test_player_syncs_threshold_is_meaningfully_looser(self):
         assert (
             rd.COLLECTOR_SILENT_HOURS_BY_WORKER["futgg_player_sync"]
-            > rd.COLLECTOR_SILENT_HOURS_BY_WORKER["futgg_sales_sync"]
+            > rd.COLLECTOR_SILENT_HOURS_BY_WORKER["futgg_bulk_price_sync"]
         )
