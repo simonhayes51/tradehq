@@ -1076,19 +1076,15 @@ async def recover_placeholder_urls(
                base.source_player_id AS player_id,
                base.source_slug AS slug
         FROM futgg_players pending
-        JOIN LATERAL (
-            SELECT b.source_player_id, b.source_slug
-            FROM futgg_players b
-            WHERE b.game_year = $1
-              AND b.source_player_id = (pending.source_card_id % $2)
-              AND b.source_card_id = b.source_player_id
-              AND b.name IS NOT NULL
-              AND b.rating IS NOT NULL
-              AND b.source_slug IS NOT NULL
-              AND b.source_slug <> ''
-              AND NOT ('feed_only_placeholder' = ANY(b.metadata_warnings))
-            LIMIT 1
-        ) base ON TRUE
+        JOIN futgg_players base
+          ON base.game_year = $1
+         AND base.source_card_id = (pending.source_card_id % $2)
+         AND base.source_player_id = base.source_card_id
+         AND base.name IS NOT NULL
+         AND base.rating IS NOT NULL
+         AND base.source_slug IS NOT NULL
+         AND base.source_slug <> ''
+         AND NOT ('feed_only_placeholder' = ANY(base.metadata_warnings))
         WHERE pending.game_year = $1
           AND pending.source_card_id >= $2
           AND 'feed_only_placeholder' = ANY(pending.metadata_warnings)
