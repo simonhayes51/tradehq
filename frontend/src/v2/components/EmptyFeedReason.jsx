@@ -70,6 +70,10 @@ function staleSalesForCandidateTiers(byTier) {
 // own judgement call again.
 function silentCollectorHours(heartbeats) {
   const staleAges = (heartbeats || [])
+    // Opportunities are scored from the live BIN price feed. SalesSync is
+    // optional enrichment now, so its outage must not make current prices
+    // look unavailable to this surface.
+    .filter((h) => h.worker !== "futgg_sales_sync")
     .filter((h) => h.stale && Number.isFinite(h.age_hours))
     .map((h) => h.age_hours);
   if (!staleAges.length) return null;
