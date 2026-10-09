@@ -134,8 +134,21 @@ def env_float(name: str, default: float, minimum: float | None = None) -> float:
 
 GAME_YEAR = os.getenv("FUTGG_GAME_YEAR", "27")
 PLATFORM = os.getenv("FUTGG_SALES_PLATFORM", "ps5")
+MIN_SALES_RATING = env_int("FUTGG_SALES_MIN_RATING", 80, minimum=0)
 HEADLESS = env_bool("PLAYWRIGHT_HEADLESS", True)
 TIMEOUT_MS = env_int("PLAYWRIGHT_TIMEOUT_MS", 45000, minimum=5000)
+
+
+def sales_catalogue_filter(alias: str = "p") -> str:
+    """Return the shared SQL scope for cards eligible for sales history."""
+    alias = alias.strip() or "p"
+    return (
+        f"COALESCE({alias}.is_active, TRUE) = TRUE "
+        f"AND COALESCE({alias}.is_tradeable, TRUE) = TRUE "
+        f"AND {alias}.game_year = {int(GAME_YEAR)} "
+        f"AND {alias}.rating >= {int(MIN_SALES_RATING)} "
+        f"AND ({alias}.rarity IS NULL OR {alias}.rarity IN ('Gold Rare', 'Icon'))"
+    )
 
 #: Cards per browser round trip. Each runs sign+fetch concurrently inside
 #: the page. Kept modest because the signing endpoint is exactly what
