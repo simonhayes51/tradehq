@@ -694,6 +694,24 @@ def _canonical_first_listing_url(url: str) -> str:
     return urlunparse(parsed._replace(query=urlencode(query)))
 
 
+def _alternate_first_listing_url(url: str) -> str:
+    """Toggle page 1 between FUT.GG's canonical and explicit forms.
+
+    FUT.GG has flipped which first-page shape hydrates reliably more than
+    once. Page 2+ is stable with an explicit query parameter, but page 1
+    can come back as an empty client-rendered grid while the same listing
+    is visible at the other first-page URL. Treat that as recoverable.
+    """
+    parsed = urlparse(url)
+    query_pairs = parse_qsl(parsed.query, keep_blank_values=True)
+    has_page_one = any(key == "page" and value == "1" for key, value in query_pairs)
+    if has_page_one:
+        query = [(key, value) for key, value in query_pairs if not (key == "page" and value == "1")]
+    else:
+        query = query_pairs + [("page", "1")]
+    return urlunparse(parsed._replace(query=urlencode(query)))
+
+
 async def _paginate_listing(
     page,
     url_template: str,
@@ -808,6 +826,43 @@ async def _paginate_listing(
                 break
             await page.wait_for_timeout(LISTING_STABILIZE_POLL_MS)
             current_hrefs = await _read_card_hrefs(page)
+
+        if page_number == 1 and not current_hrefs:
+            alternate_url = _alternate_first_listing_url(listing_url)
+            if alternate_url != listing_url:
+                log.warning(
+                    "Listing partition=%s page 1 returned an empty grid at %s; retrying alternate first-page URL %s",
+                    partition_label,
+                    listing_url,
+                    alternate_url,
+                )
+                response = await page.goto(alternate_url, wait_until="domcontentloaded", timeout=TIMEOUT_MS)
+                status = response.status if response else 0
+                if status == 200:
+                    await dismiss_cookie_banner(page)
+                    try:
+                        await page.locator("a[href*='/players/']").first.wait_for(state="attached", timeout=TIMEOUT_MS)
+                    except PlaywrightTimeoutError:
+                        current_hrefs = {}
+                    else:
+                        current_hrefs = await _read_card_hrefs(page)
+                        for _ in range(LISTING_STABILIZE_MAX_ATTEMPTS - 1):
+                            if (
+                                current_hrefs
+                                and current_hrefs != previous_page_hrefs
+                                and _listing_metadata_ready(current_hrefs)
+                            ):
+                                break
+                            await page.wait_for_timeout(LISTING_STABILIZE_POLL_MS)
+                            current_hrefs = await _read_card_hrefs(page)
+                    if current_hrefs:
+                        listing_url = alternate_url
+                else:
+                    log.warning(
+                        "Listing partition=%s alternate page 1 URL returned HTTP %d",
+                        partition_label,
+                        status,
+                    )
 
         before = len(seen)
         for card_url, metadata in current_hrefs.items():
