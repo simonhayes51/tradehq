@@ -598,6 +598,24 @@ async def ensure_schema(conn: asyncpg.Connection) -> None:
     await conn.execute(
         "CREATE INDEX IF NOT EXISTS futgg_players_active_idx ON futgg_players (is_active)"
     )
+    await conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS futgg_sales_priority_requests (
+            id            BIGSERIAL PRIMARY KEY,
+            card_id       BIGINT NOT NULL,
+            requested_by  TEXT,
+            requested_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+            consumed_at   TIMESTAMPTZ
+        )
+        """
+    )
+    await conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_futgg_sales_priority_requests_unconsumed
+        ON futgg_sales_priority_requests (requested_at)
+        WHERE consumed_at IS NULL
+        """
+    )
 
 
 async def dismiss_cookie_banner(page) -> None:
@@ -1100,11 +1118,23 @@ def _build_targets(
     return targets, skipped
 
 
-async def upsert_card(conn: asyncpg.Connection, card: FutggCard) -> None:
+def _should_fast_track_new_card(card: FutggCard) -> bool:
+    """Whether a newly discovered card should be pushed straight into
+    price/sales collection.
+
+    The app can show any discovered card, but high-rated/current special
+    cards are the ones users notice immediately. Leaving them to drift
+    through normal cadences creates the "new card exists but has no data"
+    experience.
+    """
+    rarity = (card.rarity or "").lower()
+    return (card.rating or 0) >= 80 and "bronze" not in rarity and "silver" not in rarity
+
+
+async def upsert_card(conn: asyncpg.Connection, card: FutggCard) -> bool:
     data = asdict(card)
     price_tier = classify_price_tier(card)
-    await conn.execute(
-        """
+    sql = """
         INSERT INTO futgg_players (
             source_card_id, source_player_id, source_slug, source_url, game_year,
             name, display_name, full_name, released_at, released_at_raw,
@@ -1205,7 +1235,9 @@ async def upsert_card(conn: asyncpg.Connection, card: FutggCard) -> None:
             last_seen_at = NOW(),
             metadata_updated_at = NOW(),
             metadata_warnings = EXCLUDED.metadata_warnings
-        """,
+        RETURNING (xmax = 0) AS inserted
+        """
+    args = (
         data["source_card_id"], data["source_player_id"], data["source_slug"], data["source_url"], data["game_year"],
         data["name"], data["display_name"], data["full_name"],
         data["released_at"], data["released_at_raw"],
@@ -1220,6 +1252,22 @@ async def upsert_card(conn: asyncpg.Connection, card: FutggCard) -> None:
         data["gg_rating"],
         data["parse_warnings"],
     )
+    if hasattr(conn, "fetchrow"):
+        row = await conn.fetchrow(sql, *args)
+        inserted = bool(dict(row).get("inserted")) if row is not None else False
+    else:
+        # Lightweight test doubles only need to capture the SQL text.
+        await conn.execute(sql, *args)
+        inserted = False
+    if inserted and _should_fast_track_new_card(card):
+        await conn.execute(
+            """
+            INSERT INTO futgg_sales_priority_requests (card_id, requested_by)
+            VALUES ($1, 'new_card_discovery')
+            """,
+            card.source_card_id,
+        )
+    return bool(inserted)
 
 
 async def _fetch_worker(
