@@ -11,8 +11,8 @@ Two guardrails matter here:
 
 * Never-read backfill rows and explicit failure retries are protected. The
   rebalancer only displaces ordinary successful-maintenance rows.
-* No extra FUT.GG requests are added. At a full 60-card production cycle the
-  default 15% reserve is 9 cards, taken from the baseline cycle rather than
+* No extra FUT.GG requests are added. At a full 120-card production cycle the
+  default 20% reserve is 24 cards, taken from the baseline cycle rather than
   appended to it.
 
 A third guardrail prevents a trigger from becoming a request loop: a card checked
@@ -53,10 +53,10 @@ LIVE_REBALANCE_ENABLED = sales.env_bool(
     "FUTGG_SALES_INFORMATION_REBALANCE_ENABLED", True
 )
 LIVE_REBALANCE_SHARE = sales.env_float(
-    "FUTGG_SALES_INFORMATION_REBALANCE_SHARE", 0.15, minimum=0.0
+    "FUTGG_SALES_INFORMATION_REBALANCE_SHARE", 0.20, minimum=0.0
 )
 LIVE_REBALANCE_MAX_SLOTS = sales.env_int(
-    "FUTGG_SALES_INFORMATION_REBALANCE_MAX_SLOTS", 12, minimum=0
+    "FUTGG_SALES_INFORMATION_REBALANCE_MAX_SLOTS", 24, minimum=0
 )
 # Prevent the same still-visible trigger from spending a reserve slot again on
 # the next five-minute cycle after a successful read. Explicit request queues are
@@ -64,7 +64,7 @@ LIVE_REBALANCE_MAX_SLOTS = sales.env_int(
 LIVE_REBALANCE_MIN_CHECK_AGE_MINUTES = sales.env_int(
     "FUTGG_SALES_INFORMATION_REBALANCE_MIN_CHECK_AGE_MIN", 60, minimum=1
 )
-LIVE_SELECTOR_VERSION = "information-live-rebalance-1.2"
+LIVE_SELECTOR_VERSION = "information-live-rebalance-1.3"
 
 
 def _row_value(row: Any, key: str, default=None):
@@ -173,7 +173,7 @@ async def _hydrate_rebalance_candidates(
 
     card_ids = [int(card.card_id) for card in selection.cards]
     rows = await conn.fetch(
-        """
+        f"""
         SELECT p.source_card_id, p.rating, p.next_sales_due_at, p.source_url,
                p.sales_first_read_at, p.sales_consecutive_failures,
                p.last_sales_status_at,
@@ -183,8 +183,7 @@ async def _hydrate_rebalance_candidates(
         LEFT JOIN card_priority cp ON cp.card_id = p.source_card_id
         LEFT JOIN futgg_market_snapshot m ON m.source_card_id = p.source_card_id
         WHERE p.source_card_id = ANY($1::bigint[])
-          AND p.is_active
-          AND p.is_tradeable IS DISTINCT FROM FALSE
+          AND {sales.sales_catalogue_filter('p')}
           AND COALESCE(p.sales_consecutive_failures, 0) = 0
           AND p.source_url IS NOT NULL
           AND p.source_url <> ''

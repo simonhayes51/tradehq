@@ -82,22 +82,9 @@ RUN chmod +x /app/docker-entrypoint-sales.sh
 ENV PLAYWRIGHT_HEADLESS=false
 ENV FUTGG_GAME_YEAR=27
 ENV FUTGG_RUN_BULK_WITH_SALES=true
-# Reverted to 60/300 (2026-09-07) - back to Friday 2026-09-04's values.
-# 22b1b60 raised these to 120/90 that same evening to close a
-# ~709-720 vs ~1,327 cards/hour shortfall against demand (see that
-# commit's own message for the math) - a real fix for sales data
-# falling behind, but it also raised SalesSync's sustained write rate
-# into futgg_sales_history by ~1.85x. Every day after that deploy added
-# proportionally more rows to whatever window futgg_market_snapshot's
-# refresh scans, and production evidence (2026-09-07) traced Postgres
-# CPU pegging at 86-172% - on a Coolify server shared with the backend
-# app itself - directly to that refresh plus other periodic jobs
-# converging under the higher load. The host's CPU allocation was
-# adequate for the pre-2026-09-04 ingestion rate and is not adequate
-# for the post-2026-09-04 one; reverting the rate is the same-day fix
-# until the server itself is resized (or Postgres is moved off the
-# shared host) to actually support the higher target.
-ENV FUTGG_SALES_SELECT_LIMIT_MAX=60
+# Broader 80+ sales coverage, with adaptive request pacing and the
+# existing five-minute pause between cycles.
+ENV FUTGG_SALES_SELECT_LIMIT_MAX=120
 ENV FUTGG_SALES_CYCLE_SLEEP_MIN=300
 ENV FUTGG_SALES_CYCLE_SLEEP_FORCE=true
 

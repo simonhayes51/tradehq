@@ -19,7 +19,7 @@ NOW = datetime(2026, 8, 3, 23, 0, tzinfo=timezone.utc)
 
 class TestSelectionLimit:
     def test_default_selection_is_hard_capped_for_signed_endpoint(self):
-        assert SELECT_LIMIT == SELECT_LIMIT_HARD_CAP == 90
+        assert SELECT_LIMIT == SELECT_LIMIT_HARD_CAP == 120
 
 
 class TestPageCaptureClassification:

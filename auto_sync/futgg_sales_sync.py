@@ -149,13 +149,9 @@ IDLE_SLEEP = env_float("FUTGG_SALES_IDLE_SLEEP", 30.0, minimum=5.0)
 #: How many cards to pull per selection pass.
 SELECT_LIMIT = env_int("FUTGG_SALES_SELECT_LIMIT", 200, minimum=1)
 
-# Defence in depth for Railway env drift: the entrypoint caps the old
-# production FUTGG_SALES_SELECT_LIMIT=400 down before starting this
-# worker, but logs from 2026-09-06 still showed cycles selecting 117/120.
-# If the entrypoint is bypassed, an old image is half-rolled, or
-# FUTGG_SALES_SELECT_LIMIT_MAX is overridden, keep the signed endpoint
-# from running above the safe per-cycle cap in the worker itself.
-SELECT_LIMIT_HARD_CAP = env_int("FUTGG_SALES_SELECT_LIMIT_HARD_CAP", 90, minimum=1)
+# Bound each cycle while the adaptive throttle controls request pacing.
+# Keep this aligned with Dockerfile.sales and the entrypoint's default cap.
+SELECT_LIMIT_HARD_CAP = env_int("FUTGG_SALES_SELECT_LIMIT_HARD_CAP", 120, minimum=1)
 if SELECT_LIMIT > SELECT_LIMIT_HARD_CAP:
     log.warning(
         "Capping FUTGG_SALES_SELECT_LIMIT from %d to hard cap %d inside worker",
@@ -163,62 +159,31 @@ if SELECT_LIMIT > SELECT_LIMIT_HARD_CAP:
     )
     SELECT_LIMIT = SELECT_LIMIT_HARD_CAP
 
-#: Minimum share of SELECT_LIMIT reserved for each adaptive-priority
-#: tier every cycle, so a fast tier cannot starve a slow one
-#: indefinitely.
-#:
-#: select_due() used to band cards by RATING (95+/85+/80-84/75-79/
-#: everything else), which starved the ratings-based tail for exactly
-#: the reason this floor mechanism was first built to fix (see this
-#: file's git history for that incident). But rating was never the
-#: right axis: card_priority (migration 044's adaptive-priority engine,
-#: see backend/app/services/priority_recompute.py, refreshed every 15
-#: minutes) already tiers every active card as CRITICAL/HIGH/NORMAL/
-#: LOW/DORMANT by liquidity/volatility/opportunity - and the customer-
-#: facing "sales data is behind" signal (market_data_provider.py's
-#: stale_sales_by_priority_tier) is judged against THAT tiering, not
-#: rating. A rating-band scheduler could run perfectly and still leave
-#: most of CRITICAL/HIGH permanently "stale" by the metric actually
-#: shown to users, simply because nothing ever tried to hit their
-#: interval - confirmed live: CRITICAL/HIGH accounted for most of a
-#: stale-sum that stayed over 50% of priced cards through a 6-hour
-#: stretch where coverage was otherwise climbing steadily. Banding by
-#: effective_tier instead means "due" and "reported stale" finally
-#: agree on every card, not just the ones a rating cutoff happened to
-#: also prioritise.
-#:
-#: Shares, not fixed counts, so this scales if SELECT_LIMIT is tuned.
-#: They sum to 0.75 of SELECT_LIMIT, leaving the remaining 25% as
-#: genuine overflow capacity in select_due() that still follows the
-#: original priority order - a quiet cycle for a fast tier lets that
-#: overflow reach further into whichever tier actually has the
-#: backlog, rather than being rigidly fixed to a per-tier count.
-#:
-#: CORRECTED after live evidence: the first version of these shares
-#: (CRITICAL 0.05 .. DORMANT 0.25) ported the OLD rating-band
-#: allocation directly - biggest floor for the slowest/largest tier,
-#: on the theory that it needed protecting from starvation. That
-#: reasoning made sense for rating bands, where the slow tail also had
-#: the loosest interval AND got crowded out by faster bands. It does
-#: NOT hold for priority tiers: DORMANT's interval (SALES_INTERVALS,
-#: 4000min) is now so loose that a small floor keeps it satisfied on
-#: its own, while CRITICAL/HIGH's much tighter intervals (180/720min)
-#: for populations in the thousands genuinely need real guaranteed
-#: throughput to have any chance of being met. Confirmed live: with the
-#: old shares, DORMANT's stale count fell every reading (3783->2984)
-#: while CRITICAL/HIGH/NORMAL's kept RISING (1777->1857, 4639->4976,
-#: 1439->1708) despite already-loosened, achievable interval targets -
-#: a 20-card CRITICAL floor and a 40-card HIGH floor per cycle were
-#: simply never going to keep pace with populations in the thousands,
-#: no matter how achievable the interval was. DORMANT and LOW now get
-#: just enough floor to avoid the original starvation failure mode,
-#: not the largest share in the file.
+# Focus detailed sales on the current tradeable 80+ catalogue. Metadata
+# and bulk-price collectors still retain the rest of the catalogue.
+MIN_SALES_RATING = env_int("FUTGG_SALES_MIN_RATING", 80, minimum=80)
+
+
+def sales_catalogue_filter(alias: str = "futgg_players") -> str:
+    """Shared SQL eligibility for baseline, live triggers and coverage."""
+    return (
+        f"{alias}.is_active AND {alias}.is_tradeable IS DISTINCT FROM FALSE "
+        f"AND {alias}.game_year = {int(GAME_YEAR)} "
+        f"AND COALESCE({alias}.rating, 0) >= {MIN_SALES_RATING} "
+        f"AND lower(COALESCE({alias}.rarity, '')) NOT LIKE '%bronze%' "
+        f"AND lower(COALESCE({alias}.rarity, '')) NOT LIKE '%silver%'"
+    )
+
+
+# Guaranteed floors total 80%; remaining capacity follows overdue/backfill
+# priority. Active tiers get 75%, with small floors keeping the quiet tail
+# covered. Unused floors flow back into the shared overflow.
 _TIER_MIN_SHARE: dict[str, float] = {
-    "CRITICAL": 0.25,
-    "HIGH": 0.25,
-    "NORMAL": 0.10,
-    "LOW": 0.05,
-    "DORMANT": 0.10,
+    "CRITICAL": 0.30,
+    "HIGH": 0.30,
+    "NORMAL": 0.15,
+    "LOW": 0.03,
+    "DORMANT": 0.02,
 }
 
 #: SQL condition per tier, matching select_due()'s own CASE expression.
@@ -1523,9 +1488,7 @@ async def select_due(conn: asyncpg.Connection) -> list[asyncpg.Record]:
                    COALESCE(cp.effective_tier, 'NORMAL') AS effective_tier
             FROM futgg_players
             LEFT JOIN card_priority cp ON cp.card_id = futgg_players.source_card_id
-            WHERE is_active
-              AND is_tradeable IS DISTINCT FROM FALSE
-              AND game_year = $2
+            WHERE {sales_catalogue_filter()}
               AND (next_sales_due_at IS NULL OR next_sales_due_at <= NOW())
               AND {_TIER_WHERE[tier]}
             ORDER BY
@@ -1534,7 +1497,7 @@ async def select_due(conn: asyncpg.Connection) -> list[asyncpg.Record]:
                 rating DESC NULLS LAST
             LIMIT $1
             """,
-            floor, int(GAME_YEAR),
+            floor,
         )
         guaranteed.extend(rows)
         guaranteed_ids.extend(int(r["source_card_id"]) for r in rows)
@@ -1544,15 +1507,13 @@ async def select_due(conn: asyncpg.Connection) -> list[asyncpg.Record]:
         return guaranteed
 
     overflow = await conn.fetch(
-        """
+        f"""
         SELECT source_card_id, rating, next_sales_due_at, source_url,
                sales_first_read_at, sales_consecutive_failures,
                COALESCE(cp.effective_tier, 'NORMAL') AS effective_tier
         FROM futgg_players
         LEFT JOIN card_priority cp ON cp.card_id = futgg_players.source_card_id
-        WHERE is_active
-          AND is_tradeable IS DISTINCT FROM FALSE
-          AND game_year = $3
+        WHERE {sales_catalogue_filter()}
           AND (next_sales_due_at IS NULL OR next_sales_due_at <= NOW())
           AND NOT (source_card_id = ANY($1::bigint[]))
         ORDER BY
@@ -1572,7 +1533,6 @@ async def select_due(conn: asyncpg.Connection) -> list[asyncpg.Record]:
         """,
         guaranteed_ids,
         remaining,
-        int(GAME_YEAR),
     )
     return guaranteed + list(overflow)
 
@@ -1592,7 +1552,7 @@ async def report_coverage(conn: asyncpg.Connection) -> dict[str, int] | None:
     empty and there is nothing to measure.
     """
     row = await conn.fetchrow(
-        """
+        f"""
         SELECT
             count(*) AS total,
             count(*) FILTER (WHERE s.n > 0) AS any_sales,
@@ -1613,14 +1573,14 @@ async def report_coverage(conn: asyncpg.Connection) -> dict[str, int] | None:
             WHERE h.source_card_id = p.source_card_id
               AND h.approximate_sold_at >= now() - interval '14 days'
         ) s ON TRUE
-        WHERE p.is_active AND p.is_tradeable IS DISTINCT FROM FALSE
+        WHERE {sales_catalogue_filter('p')}
         """
     )
     total = int(row["total"] or 0)
     if not total:
         return None
     log.info(
-        "sales coverage: %d/%d have any sales (%.1f%%) | %d/%d have >=5 and can "
+        "sales coverage (current game, tradeable 80+, excluding bronze/silver): %d/%d have any sales (%.1f%%) | %d/%d have >=5 and can "
         "produce a signal (%.1f%%) | %d never read",
         row["any_sales"], total, 100.0 * row["any_sales"] / total,
         row["enough_sales"], total, 100.0 * row["enough_sales"] / total,

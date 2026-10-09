@@ -99,26 +99,10 @@ if [ "${RUN_BULK_WITH_SALES,,}" != "false" ] && [ "${RUN_BULK_WITH_SALES}" != "0
     BULK_PID=$!
 fi
 
-# Old Railway deployments carried FUTGG_SALES_SELECT_LIMIT=400, which is
-# above the live signed-endpoint ceiling and repeatedly trips FUT.GG's
-# 429 limit. Keep an escape hatch, but cap the signed path by default now
-# that bulk prices are supplied separately.
-#
-# Reverted to 60 (2026-09-07) - back to Friday 2026-09-04's value. This
-# briefly went 60 -> 120 (2026-09-04 evening, commit 22b1b60) -> 90
-# (2026-09-06 Railway trace, this file's git history) chasing FUT.GG's
-# 429 limit and sales-cadence demand - real problems, but nobody
-# connected the sustained INGESTION-RATE increase to its effect
-# downstream: more rows landing in futgg_sales_history every hour means
-# more rows in whatever window futgg_market_snapshot's refresh scans,
-# and production evidence (2026-09-07) traced Postgres CPU pegging at
-# 86-172% - on a Coolify server shared with the backend app - directly
-# to that refresh converging with other periodic jobs under the higher
-# load. The Dockerfile's own ENV FUTGG_SALES_SELECT_LIMIT_MAX always
-# overrode whatever default lived here anyway (Docker ENV beats an
-# unset-var fallback), so this value and the Dockerfile's must be kept
-# in sync by hand - both reverted together.
-SALES_SELECT_LIMIT_MAX="${FUTGG_SALES_SELECT_LIMIT_MAX:-60}"
+# 120 cards per cycle targets broader 80+ coverage. Adaptive pacing and
+# the existing 300-second cycle pause remain in place. Explicit deployment
+# overrides can lower the cap; keep this default aligned with Dockerfile.sales.
+SALES_SELECT_LIMIT_MAX="${FUTGG_SALES_SELECT_LIMIT_MAX:-120}"
 if [ -n "${FUTGG_SALES_SELECT_LIMIT:-}" ]; then
     if [ "${FUTGG_SALES_SELECT_LIMIT}" -gt "${SALES_SELECT_LIMIT_MAX}" ] 2>/dev/null; then
         echo "Capping FUTGG_SALES_SELECT_LIMIT from ${FUTGG_SALES_SELECT_LIMIT} to ${SALES_SELECT_LIMIT_MAX}"
@@ -132,14 +116,7 @@ fi
 # completed-sales history. Force a real pause between signed batches so
 # a clean cycle does not immediately drain FUT.GG's rate window again.
 #
-# Reverted to 300 (2026-09-07) - back to Friday 2026-09-04's value, for
-# the same reason as SALES_SELECT_LIMIT_MAX above: the ~1.85x sustained
-# ingestion-rate increase this and that constant produced is what grew
-# futgg_sales_history fast enough to make futgg_market_snapshot's
-# refresh a genuine Postgres CPU problem on a server shared with the
-# backend app. Revisit raising these again only alongside giving that
-# server more CPU headroom (or moving Postgres off it) - see this
-# session's own notes on 2026-09-07's investigation.
+# Retain the recovery pause while raising useful-card coverage per cycle.
 SALES_CYCLE_SLEEP_MIN="${FUTGG_SALES_CYCLE_SLEEP_MIN:-300}"
 SALES_CYCLE_SLEEP_FORCE="${FUTGG_SALES_CYCLE_SLEEP_FORCE:-true}"
 if [ "${SALES_CYCLE_SLEEP_FORCE,,}" != "false" ] && [ "$SALES_CYCLE_SLEEP_FORCE" != "0" ]; then
