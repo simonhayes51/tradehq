@@ -1095,6 +1095,102 @@ async def update_listing_gg_ratings(
     return ListingRatingUpdateResult(matched=int(row["matched"]), updated=int(row["updated"]))
 
 
+def _card_ids_from_listing_urls(
+    urls: dict[str, ListingCardMetadata],
+    game_year: int,
+) -> list[int]:
+    card_ids: set[int] = set()
+    for url in urls:
+        match = CARD_URL_RE.match(urlparse(url).path)
+        if match and int(match.group("game_year")) == game_year:
+            card_ids.add(int(match.group("card_id")))
+    return sorted(card_ids)
+
+
+async def enqueue_discovered_sales_priority(
+    conn: asyncpg.Connection,
+    urls: dict[str, ListingCardMetadata],
+    game_year: int,
+) -> int:
+    """Queue high-value discovered cards for sales collection, even when
+    they are already known and therefore skipped by the metadata fetch.
+
+    This closes the practical gap where a new promo/TOTW card is inserted
+    on one run, then every later daily discovery says targets=0 and never
+    touches upsert_card again. The request table is consumed by
+    futgg_sales_triggers.py; this statement only adds cards that do not
+    already have an unconsumed priority request.
+    """
+    card_ids = _card_ids_from_listing_urls(urls, game_year)
+    if not card_ids:
+        return 0
+    sql = """
+        WITH eligible AS (
+            SELECT DISTINCT p.source_card_id
+            FROM futgg_players p
+            WHERE p.source_card_id = ANY($1::bigint[])
+              AND p.game_year = $2
+              AND p.is_active
+              AND p.is_tradeable IS NOT FALSE
+              AND p.rating >= 80
+              AND COALESCE(p.price_tier, '') NOT IN ('bronze', 'silver')
+              AND (
+                  p.last_sales_status_at IS NULL
+                  OR p.last_sales_status_at <= now() - interval '60 minutes'
+              )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM futgg_sales_priority_requests r
+                  WHERE r.card_id = p.source_card_id
+                    AND r.consumed_at IS NULL
+              )
+        ),
+        inserted AS (
+            INSERT INTO futgg_sales_priority_requests (card_id, requested_by)
+            SELECT source_card_id, 'daily_new_discovery'
+            FROM eligible
+            RETURNING card_id
+        )
+        SELECT count(*) AS queued FROM inserted
+    """
+    try:
+        row = await conn.fetchrow(sql, card_ids, game_year)
+    except asyncpg.exceptions.UndefinedColumnError:
+        # Older databases may not have last_sales_status_at until the
+        # sales worker has bootstrapped. Still queue discovered cards; the
+        # trigger consumer can dedupe by unconsumed request.
+        row = await conn.fetchrow(
+            """
+            WITH eligible AS (
+                SELECT DISTINCT p.source_card_id
+                FROM futgg_players p
+                WHERE p.source_card_id = ANY($1::bigint[])
+                  AND p.game_year = $2
+                  AND p.is_active
+                  AND p.is_tradeable IS NOT FALSE
+                  AND p.rating >= 80
+                  AND COALESCE(p.price_tier, '') NOT IN ('bronze', 'silver')
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM futgg_sales_priority_requests r
+                      WHERE r.card_id = p.source_card_id
+                        AND r.consumed_at IS NULL
+                  )
+            ),
+            inserted AS (
+                INSERT INTO futgg_sales_priority_requests (card_id, requested_by)
+                SELECT source_card_id, 'daily_new_discovery'
+                FROM eligible
+                RETURNING card_id
+            )
+            SELECT count(*) AS queued FROM inserted
+            """,
+            card_ids,
+            game_year,
+        )
+    return int(row["queued"] or 0)
+
+
 def _build_targets(
     urls: dict[str, ListingCardMetadata], known: set[int], refresh_existing: bool,
 ) -> tuple[list[FetchTarget], int]:
@@ -1498,6 +1594,12 @@ async def crawl_once() -> None:
                             conn, urls, listing_year, only_missing=False,
                         )
                         stats["gg_rows_updated"] += result.updated
+                    queued_sales = await enqueue_discovered_sales_priority(conn, urls, GAME_YEAR)
+                    if queued_sales:
+                        log.info(
+                            "Queued %d discovered high-value card(s) for sales priority collection",
+                            queued_sales,
+                        )
 
             scan_plausible = True
             if FULL_SCAN:
