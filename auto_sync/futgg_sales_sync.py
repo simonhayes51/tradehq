@@ -2183,10 +2183,14 @@ async def ensure_schema(conn: asyncpg.Connection) -> None:
 #: page_capture would fare any better against the same challenge, and
 #: that file's own history documents the cost of switching transport on
 #: a signal that only meant "slow down".
-_THROTTLE_ERROR_MARKERS = ("429", "403", "sign_5", "data_5", "challenge", "pow_")
+_THROTTLE_ERROR_MARKERS = (
+    "429", "403", "sign_5", "data_5", "challenge", "pow_",
+    "failed to fetch", "network",
+)
 
 
 def is_throttle_signal(error: str) -> bool:
+    error = str(error).lower()
     return any(marker in error for marker in _THROTTLE_ERROR_MARKERS)
 
 
@@ -2214,11 +2218,12 @@ def is_throttle_signal(error: str) -> bool:
 #: unchanged). Only an outright refusal of this transport - a 403 wall or
 #: a bot challenge - is evidence that a DIFFERENT transport is needed. 5xx
 #: is excluded too: an upstream hiccup says nothing about transport.
-_BLOCKING_ERROR_MARKERS = ("403", "challenge")
+_BLOCKING_ERROR_MARKERS = ("403", "challenge", "failed to fetch", "network")
 
 
 def is_blocking_signal(error: str) -> bool:
     """True only for errors meaning this transport is being refused."""
+    error = str(error).lower()
     return any(marker in error for marker in _BLOCKING_ERROR_MARKERS)
 
 
