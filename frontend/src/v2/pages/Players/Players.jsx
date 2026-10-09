@@ -85,7 +85,7 @@ export default function Players() {
                       composited_image_url: player.composited_image_url,
                     }}
                     compact
-                    showStats={false}
+                    showStats
                     widthClass="w-full"
                   />
                 </div>
