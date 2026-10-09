@@ -288,8 +288,9 @@ USER_AGENT = (
     "Chrome/150.0.0.0 Safari/537.36"
 )
 
-def _is_expected_price_feed_url(url: str, marker: str, game_year: int = GAME_YEAR) -> bool:
+def _is_expected_price_feed_url(url: str, marker: str, game_year: int | None = None) -> bool:
     """Accept only configured-year R2 JSON assets for the requested feed kind."""
+    game_year = GAME_YEAR if game_year is None else game_year
     parsed = urlparse(url)
     filename = parsed.path.rsplit("/", 1)[-1]
     return (
