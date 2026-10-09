@@ -164,6 +164,10 @@ CONFIGURATION_ERROR = (
 MAX_PAGES_DAILY = max(1, int(os.getenv("FUTGG_LISTING_MAX_PAGES", "50")))
 MAX_PAGES_FULL = max(1, int(os.getenv("FUTGG_LISTING_MAX_PAGES_FULL", "400")))
 MAX_PAGES = MAX_PAGES_FULL if FULL_SCAN else MAX_PAGES_DAILY
+# Cross-check the main catalogue's front pages on every daily run too.
+# Fresh special versions can surface there before (or instead of) the
+# recency listing; this is intentionally a bounded second discovery pass.
+DAILY_CATALOGUE_PAGES = max(0, min(10, int(os.getenv("FUTGG_DAILY_CATALOGUE_PAGES", "3"))))
 
 # Full-scan discovery sources. /players/new/ is a recency-windowed feed,
 # not the whole catalogue (see module docstring) - full-scan mode walks
@@ -926,20 +930,34 @@ async def collect_listing_urls(page) -> dict[str, ListingCardMetadata]:
     still iterate/len() this like a plain list - dict keys behave
     identically for that."""
     if not FULL_SCAN:
-        try:
-            urls = await _paginate_listing(
-                page, f"{GAME_PREFIX}/players/new/?page={{page}}", MAX_PAGES, "daily-new",
-                canonical_first_page=True, target_game_year=GAME_YEAR,
-            )
-        except ListingDiscoveryBlocked as exc:
-            log.warning(
-                "Discovery mode=daily source=partition:%s blocked with HTTP %d - "
-                "skipping player discovery for this run; existing catalogue stays intact",
-                exc.partition_label,
-                exc.status,
-            )
-            return {}
-        log.info("Discovery mode=daily source=partition:daily-new unique=%d", len(urls))
+        urls: dict[str, ListingCardMetadata] = {}
+        sources_ok = 0
+        for label, template, page_cap in (
+            ("daily-new", f"{GAME_PREFIX}/players/new/?page={{page}}", MAX_PAGES),
+            ("daily-catalogue", f"{GAME_PREFIX}/players/?page={{page}}", DAILY_CATALOGUE_PAGES),
+        ):
+            if page_cap == 0:
+                continue
+            try:
+                discovered = await _paginate_listing(
+                    page, template, page_cap, label,
+                    canonical_first_page=True, target_game_year=GAME_YEAR,
+                )
+            except ListingDiscoveryBlocked as exc:
+                log.warning("Discovery source=%s blocked HTTP %d", label, exc.status)
+                continue
+            except Exception as exc:
+                log.warning("Discovery source=%s failed: %s", label, exc)
+                continue
+            sources_ok += 1
+            before = len(urls)
+            for card_url, metadata in discovered.items():
+                urls[card_url] = _merge_listing_metadata(urls.get(card_url), metadata)
+            log.info("Discovery source=%s found=%d added=%d merged=%d",
+                     label, len(discovered), len(urls) - before, len(urls))
+        if sources_ok == 0:
+            raise RuntimeError("All daily FUT.GG card listing sources failed")
+        log.info("Discovery mode=daily sources_ok=%d unique=%d", sources_ok, len(urls))
         if PLAYER_LIMIT:
             return dict(list(urls.items())[:PLAYER_LIMIT])
         return urls
@@ -1638,6 +1656,14 @@ async def crawl_once() -> None:
                 )
                 async with pool.acquire() as conn:
                     known = await existing_ids(conn, urls, GAME_YEAR)
+                    unresolved = await conn.fetchval(
+                        """SELECT count(*) FROM futgg_players
+                           WHERE game_year = $1
+                             AND (name IS NULL OR rating IS NULL
+                                  OR 'feed_only_placeholder' = ANY(metadata_warnings))""",
+                        GAME_YEAR,
+                    )
+                    log.info("FC%d incomplete catalogue rows before enrichment: %d", GAME_YEAR, unresolved)
                     db_total = await conn.fetchval("SELECT COUNT(*) FROM futgg_players")
                     listing_years = {
                         int(match.group("game_year"))
