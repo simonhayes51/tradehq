@@ -24,3 +24,10 @@ def test_feed_only_placeholders_are_not_skipped_as_known():
 def test_alternate_first_page_remains_available_on_empty_grid():
     source = SOURCE.read_text()
     assert "_alternate_first_listing_url(listing_url)" in source
+
+
+def test_empty_first_page_is_not_silently_skipped():
+    source = SOURCE.read_text()
+    assert "page 1 still empty; reloading" in source
+    assert "discovery incomplete, do not silently skip new cards" in source
+    assert "if page_number == 1 and not current_hrefs:" in source
