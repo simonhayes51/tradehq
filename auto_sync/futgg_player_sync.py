@@ -1088,7 +1088,14 @@ async def recover_placeholder_urls(
         WHERE pending.game_year = $1
           AND pending.source_card_id >= $2
           AND 'feed_only_placeholder' = ANY(pending.metadata_warnings)
-        ORDER BY pending.price_updated_at DESC NULLS LAST,
+        -- Prefer genuine lower-ID special variants (including TOTW), rather
+        -- than the large FUT Champions red-card ranges that dominated
+        -- previous recovery batches.
+        ORDER BY CASE
+                   WHEN pending.source_card_id BETWEEN 50000000 AND 83900000 THEN 0
+                   ELSE 1
+                 END,
+                 pending.price_updated_at DESC NULLS LAST,
                  pending.source_card_id DESC
         LIMIT $3
         """,
@@ -1744,6 +1751,17 @@ async def crawl_once() -> None:
                 db_total = remaining   # skips the full-scan plausibility check below
             else:
                 urls = await collect_listing_urls(listing_page)
+                # Known currently released tradeable special: the FUT.GG
+                # newest-listing page can be empty even when this detail
+                # page is live. This remains subject to exact-card checks
+                # in _fetch_worker and is a targeted recovery, not a
+                # catalogue-wide manufactured set of player variants.
+                if GAME_YEAR == 27:
+                    urls.setdefault(
+                        "https://www.fut.gg/players/256675-omar-marmoush/27-67365539/",
+                        ListingCardMetadata(),
+                    )
+
                 # Supplement broken newest listings with FC27-only special-card
                 # URLs reconstructed from the bulk feed's incomplete rows.
                 async with pool.acquire() as conn:
