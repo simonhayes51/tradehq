@@ -17,6 +17,8 @@ collectors.
 """
 from __future__ import annotations
 
+from playwright_stealth import Stealth
+
 import asyncio
 import html as html_lib
 import json
@@ -825,14 +827,30 @@ async def _gather_and_cancel_on_error(*awaitables: Any) -> list[Any]:
 async def _collect_remote_content() -> tuple[list[dict[str, Any]], dict[str, Any]]:
     from playwright.async_api import async_playwright
 
-    async with async_playwright() as playwright:
+    async with Stealth().use_async(async_playwright()) as patched_playwright:
+        playwright = patched_playwright
         browser = await playwright.chromium.launch(
-            headless=HEADLESS, args=["--no-sandbox", "--disable-dev-shm-usage"]
+            headless=HEADLESS, args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled']
         )
         try:
             context = await browser.new_context(
-                user_agent=HEADERS["User-Agent"], locale="en-GB",
-                viewport={"width": 1440, "height": 1000},
+                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+                viewport={'width': 1920, 'height': 1080},
+                device_scale_factor=1,
+                is_mobile=False,
+                has_touch=False,
+                extra_http_headers={
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+                    'Accept-Language': 'en-GB,en;q=0.9',
+                    'Sec-Ch-Ua': '"Chromium";v="128", "Google Chrome";v="128", "Not;A=Brand";v="99"',
+                    'Sec-Ch-Ua-Mobile': '?0',
+                    'Sec-Ch-Ua-Platform': '"Windows"',
+                    'Sec-Fetch-Dest': 'document',
+                    'Sec-Fetch-Mode': 'navigate',
+                    'Sec-Fetch-Site': 'none',
+                    'Upgrade-Insecure-Requests': '1',
+                },
+                locale='en-GB',
             )
             warmup = await context.new_page()
             response = await warmup.goto(
@@ -979,3 +997,4 @@ async def _main() -> int:
 
 if __name__ == "__main__":
     sys.exit(asyncio.run(_main()))
+

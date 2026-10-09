@@ -63,6 +63,9 @@ computation gets through.
 """
 from __future__ import annotations
 
+from contextlib import asynccontextmanager, nullcontext
+from playwright_stealth import Stealth
+
 import logging
 import os
 from dataclasses import dataclass
@@ -689,19 +692,39 @@ def _raise_for_error(ea_id: int, result: dict) -> None:
     raise PriceAccessError(f"ea_id={ea_id}: unrecognised failure ({error!r}).")
 
 
+@asynccontextmanager
 async def _open_diagnostic_page(anchor_url: str, *, headless: bool, user_agent: str, timeout_ms: int):
     """Launches a one-shot browser + context + page for a standalone
-    call (no page supplied). Caller is responsible for closing what is
-    returned - see fetch_player_price_detail()'s own cleanup."""
+    call (no page supplied). Resources remain alive until the caller leaves this async context."""
     from playwright.async_api import async_playwright
 
-    playwright = await async_playwright().start()
-    browser = await playwright.chromium.launch(headless=headless, args=["--no-sandbox", "--disable-dev-shm-usage"])
-    context = await browser.new_context(user_agent=user_agent, locale="en-GB")
-    page = await context.new_page()
-    await page.goto(anchor_url, wait_until="domcontentloaded", timeout=timeout_ms)
-    return playwright, browser, page
-
+    async with Stealth().use_async(async_playwright()) as patched_playwright:
+        browser = await patched_playwright.chromium.launch(headless=headless, args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled'])
+        context = await browser.new_context(
+            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+            viewport={'width': 1920, 'height': 1080},
+            device_scale_factor=1,
+            is_mobile=False,
+            has_touch=False,
+            extra_http_headers={
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-GB,en;q=0.9',
+                'Sec-Ch-Ua': '"Chromium";v="128", "Google Chrome";v="128", "Not;A=Brand";v="99"',
+                'Sec-Ch-Ua-Mobile': '?0',
+                'Sec-Ch-Ua-Platform': '"Windows"',
+                'Sec-Fetch-Dest': 'document',
+                'Sec-Fetch-Mode': 'navigate',
+                'Sec-Fetch-Site': 'none',
+                'Upgrade-Insecure-Requests': '1',
+            },
+            locale='en-GB',
+        )
+        page = await context.new_page()
+        await page.goto(anchor_url, wait_until="domcontentloaded", timeout=timeout_ms)
+        try:
+            yield page
+        finally:
+            await browser.close()
 
 # A real, stable fut.gg player page - only used as a same-origin anchor
 # when the caller doesn't supply their own open page. Matches
@@ -742,27 +765,17 @@ async def fetch_player_price_detail(
     if not isinstance(ea_id, int) or isinstance(ea_id, bool) or ea_id <= 0:
         raise InvalidEaIdError(f"ea_id must be a positive integer, got {ea_id!r}")
 
-    owns_page = page is None
-    playwright_handle = browser_handle = None
-    if owns_page:
-        playwright_handle, browser_handle, page = await _open_diagnostic_page(
-            anchor_url,
-            headless=headless,
-            user_agent=user_agent or DEFAULT_USER_AGENT,
-            timeout_ms=timeout_ms,
-        )
-
-    try:
+    page_scope = nullcontext(page) if page is not None else _open_diagnostic_page(
+        anchor_url,
+        headless=headless,
+        user_agent=user_agent or DEFAULT_USER_AGENT,
+        timeout_ms=timeout_ms,
+    )
+    async with page_scope as page:
         result = await page.evaluate(
             DETAIL_FETCH_SCRIPT,
             {"eaId": ea_id, "gameYear": game_year, "platform": platform, "diagnostic": diagnostic},
         )
-    finally:
-        if owns_page:
-            try:
-                await browser_handle.close()
-            finally:
-                await playwright_handle.stop()
 
     if result.get("error"):
         log.warning(
@@ -812,27 +825,17 @@ async def sign_player_price_url(
     if not isinstance(ea_id, int) or isinstance(ea_id, bool) or ea_id <= 0:
         raise InvalidEaIdError(f"ea_id must be a positive integer, got {ea_id!r}")
 
-    owns_page = page is None
-    playwright_handle = browser_handle = None
-    if owns_page:
-        playwright_handle, browser_handle, page = await _open_diagnostic_page(
-            anchor_url,
-            headless=headless,
-            user_agent=user_agent or DEFAULT_USER_AGENT,
-            timeout_ms=timeout_ms,
-        )
-
-    try:
+    page_scope = nullcontext(page) if page is not None else _open_diagnostic_page(
+        anchor_url,
+        headless=headless,
+        user_agent=user_agent or DEFAULT_USER_AGENT,
+        timeout_ms=timeout_ms,
+    )
+    async with page_scope as page:
         result = await page.evaluate(
             REVEAL_SIGNED_URL_SCRIPT,
             {"eaId": ea_id, "gameYear": game_year, "platform": platform, "diagnostic": False},
         )
-    finally:
-        if owns_page:
-            try:
-                await browser_handle.close()
-            finally:
-                await playwright_handle.stop()
 
     if result.get("error"):
         log.warning(
@@ -852,3 +855,4 @@ DEFAULT_USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/150.0.0.0 Safari/537.36"
 )
+

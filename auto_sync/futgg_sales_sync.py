@@ -77,6 +77,8 @@ one-card diagnostic command for each transport.
 
 from __future__ import annotations
 
+from playwright_stealth import Stealth
+
 import asyncio
 import hashlib
 import json
@@ -2955,9 +2957,27 @@ async def _launch_browser_resources(
     paths build these resources identically.
     """
     browser = await playwright.chromium.launch(
-        headless=HEADLESS, args=["--no-sandbox", "--disable-dev-shm-usage"]
+        headless=HEADLESS, args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled']
     )
-    context = await browser.new_context(user_agent=USER_AGENT, locale="en-GB")
+    context = await browser.new_context(
+        user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+        viewport={'width': 1920, 'height': 1080},
+        device_scale_factor=1,
+        is_mobile=False,
+        has_touch=False,
+        extra_http_headers={
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-GB,en;q=0.9',
+            'Sec-Ch-Ua': '"Chromium";v="128", "Google Chrome";v="128", "Not;A=Brand";v="99"',
+            'Sec-Ch-Ua-Mobile': '?0',
+            'Sec-Ch-Ua-Platform': '"Windows"',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Upgrade-Insecure-Requests': '1',
+        },
+        locale='en-GB',
+    )
 
     signed_page_handle = None
     if need_signed:
@@ -3051,7 +3071,8 @@ async def run_forever() -> None:
     need_signed = TRANSPORT_MODE in ("signed_fetch", "auto")
     need_page_capture = TRANSPORT_MODE in ("page_capture", "auto")
 
-    async with async_playwright() as playwright:
+    async with Stealth().use_async(async_playwright()) as patched_playwright:
+        playwright = patched_playwright
         browser, context, signed_page_handle, capture_pages = await _launch_browser_resources(
             playwright, need_signed=need_signed, need_page_capture=need_page_capture, anchor=anchor,
         )
@@ -3698,12 +3719,31 @@ async def _run_diagnostic_signed_fetch(pool: asyncpg.Pool, row, card_id: int, an
     diagnostics attached."""
     from playwright.async_api import async_playwright
 
-    async with async_playwright() as playwright:
+    async with Stealth().use_async(async_playwright()) as patched_playwright:
+        playwright = patched_playwright
         browser = await playwright.chromium.launch(
-            headless=HEADLESS, args=["--no-sandbox", "--disable-dev-shm-usage"]
+            headless=HEADLESS, args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled']
         )
         try:
-            context = await browser.new_context(user_agent=USER_AGENT, locale="en-GB")
+            context = await browser.new_context(
+                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+                viewport={'width': 1920, 'height': 1080},
+                device_scale_factor=1,
+                is_mobile=False,
+                has_touch=False,
+                extra_http_headers={
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+                    'Accept-Language': 'en-GB,en;q=0.9',
+                    'Sec-Ch-Ua': '"Chromium";v="128", "Google Chrome";v="128", "Not;A=Brand";v="99"',
+                    'Sec-Ch-Ua-Mobile': '?0',
+                    'Sec-Ch-Ua-Platform': '"Windows"',
+                    'Sec-Fetch-Dest': 'document',
+                    'Sec-Fetch-Mode': 'navigate',
+                    'Sec-Fetch-Site': 'none',
+                    'Upgrade-Insecure-Requests': '1',
+                },
+                locale='en-GB',
+            )
             page = await context.new_page()
             await page.goto(anchor, wait_until="domcontentloaded", timeout=TIMEOUT_MS)
             log.info("DIAGNOSTIC: anchor page loaded: %s", anchor)
@@ -3781,12 +3821,31 @@ async def _run_diagnostic_page_capture(pool: asyncpg.Pool, row, card_id: int) ->
     log.info("DIAGNOSTIC: navigating to card's own source_url: %s", url)
     started = time.perf_counter()
 
-    async with async_playwright() as playwright:
+    async with Stealth().use_async(async_playwright()) as patched_playwright:
+        playwright = patched_playwright
         browser = await playwright.chromium.launch(
-            headless=HEADLESS, args=["--no-sandbox", "--disable-dev-shm-usage"]
+            headless=HEADLESS, args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled']
         )
         try:
-            context = await browser.new_context(user_agent=USER_AGENT, locale="en-GB")
+            context = await browser.new_context(
+                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+                viewport={'width': 1920, 'height': 1080},
+                device_scale_factor=1,
+                is_mobile=False,
+                has_touch=False,
+                extra_http_headers={
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+                    'Accept-Language': 'en-GB,en;q=0.9',
+                    'Sec-Ch-Ua': '"Chromium";v="128", "Google Chrome";v="128", "Not;A=Brand";v="99"',
+                    'Sec-Ch-Ua-Mobile': '?0',
+                    'Sec-Ch-Ua-Platform': '"Windows"',
+                    'Sec-Fetch-Dest': 'document',
+                    'Sec-Fetch-Mode': 'navigate',
+                    'Sec-Fetch-Site': 'none',
+                    'Upgrade-Insecure-Requests': '1',
+                },
+                locale='en-GB',
+            )
             page = await context.new_page()
             context_diag = await capture_context_diagnostics(context, page)
             log.info("DIAGNOSTIC: browser/context state: %s", context_diag)
@@ -3963,3 +4022,4 @@ if __name__ == "__main__":
     if result is None:
         sys.exit(0)
     sys.exit(0 if result else 1)
+

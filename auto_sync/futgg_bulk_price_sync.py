@@ -113,6 +113,8 @@ genuinely changed, for the triggered-detailed-sales queue to consume.
 
 from __future__ import annotations
 
+from playwright_stealth import Stealth
+
 import asyncio
 import json
 import logging
@@ -1341,13 +1343,32 @@ async def run_forever() -> None:
 
     cycle_number = 0
 
-    async with async_playwright() as playwright:
+    async with Stealth().use_async(async_playwright()) as patched_playwright:
+        playwright = patched_playwright
         browser = await playwright.chromium.launch(
-            headless=HEADLESS, args=["--no-sandbox", "--disable-dev-shm-usage"]
+            headless=HEADLESS, args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled']
         )
         try:
             async def fresh_page():
-                context = await browser.new_context(user_agent=USER_AGENT, locale="en-GB")
+                context = await browser.new_context(
+                    user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+                    viewport={'width': 1920, 'height': 1080},
+                    device_scale_factor=1,
+                    is_mobile=False,
+                    has_touch=False,
+                    extra_http_headers={
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+                        'Accept-Language': 'en-GB,en;q=0.9',
+                        'Sec-Ch-Ua': '"Chromium";v="128", "Google Chrome";v="128", "Not;A=Brand";v="99"',
+                        'Sec-Ch-Ua-Mobile': '?0',
+                        'Sec-Ch-Ua-Platform': '"Windows"',
+                        'Sec-Fetch-Dest': 'document',
+                        'Sec-Fetch-Mode': 'navigate',
+                        'Sec-Fetch-Site': 'none',
+                        'Upgrade-Insecure-Requests': '1',
+                    },
+                    locale='en-GB',
+                )
                 return context, await context.new_page()
 
             context, page = await fresh_page()
@@ -1439,3 +1460,4 @@ if __name__ == "__main__":
         log.exception("futgg_bulk_price_sync failed")
     # Always exit 0 - a non-zero exit on Railway is a restart loop.
     sys.exit(0)
+

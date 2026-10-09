@@ -93,6 +93,8 @@ Important environment variables:
 
 from __future__ import annotations
 
+from playwright_stealth import Stealth
+
 import asyncio
 import logging
 import os
@@ -1346,152 +1348,167 @@ async def crawl_once() -> None:
         async with pool.acquire() as conn:
             await ensure_schema(conn)
 
-        playwright = await async_playwright().start()
-        browser = await playwright.chromium.launch(
-            headless=HEADLESS,
-            args=["--no-sandbox", "--disable-dev-shm-usage"],
-        )
-        # timezone_id is pinned deliberately. FUT.GG's "Added On" value
-        # (parsed into FutggCard.released_at) carries no timezone in the
-        # markup, so if that timestamp is rendered client-side in the
-        # viewer's local zone - the common pattern - the string we scrape
-        # would silently shift with whatever timezone the container host
-        # happened to have. Pinning makes the parse deterministic and
-        # makes futgg_common.ADDED_ON_ASSUMED_TIMEZONE correct by
-        # construction rather than by assumption. If FUT.GG turns out to
-        # render server-side in a fixed zone instead, this changes
-        # nothing and costs nothing.
-        context = await browser.new_context(
-            user_agent=USER_AGENT,
-            locale="en-GB",
-            timezone_id=BROWSER_TIMEZONE,
-            viewport={"width": 1440, "height": 1000},
-        )
-        # Listing/pagination stays on its own dedicated page - sequential
-        # by nature (stateful stabilize-retry against the previous page,
-        # capped at a few hundred pages regardless), not the bottleneck.
-        listing_page = await context.new_page()
+        async with Stealth().use_async(async_playwright()) as patched_playwright:
+            playwright = patched_playwright
+            browser = await playwright.chromium.launch(
+                headless=HEADLESS,
+                args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled'],
+            )
+            # timezone_id is pinned deliberately. FUT.GG's "Added On" value
+            # (parsed into FutggCard.released_at) carries no timezone in the
+            # markup, so if that timestamp is rendered client-side in the
+            # viewer's local zone - the common pattern - the string we scrape
+            # would silently shift with whatever timezone the container host
+            # happened to have. Pinning makes the parse deterministic and
+            # makes futgg_common.ADDED_ON_ASSUMED_TIMEZONE correct by
+            # construction rather than by assumption. If FUT.GG turns out to
+            # render server-side in a fixed zone instead, this changes
+            # nothing and costs nothing.
+            context = await browser.new_context(
+                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+                viewport={'width': 1920, 'height': 1080},
+                device_scale_factor=1,
+                is_mobile=False,
+                has_touch=False,
+                extra_http_headers={
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+                    'Accept-Language': 'en-GB,en;q=0.9',
+                    'Sec-Ch-Ua': '"Chromium";v="128", "Google Chrome";v="128", "Not;A=Brand";v="99"',
+                    'Sec-Ch-Ua-Mobile': '?0',
+                    'Sec-Ch-Ua-Platform': '"Windows"',
+                    'Sec-Fetch-Dest': 'document',
+                    'Sec-Fetch-Mode': 'navigate',
+                    'Sec-Fetch-Site': 'none',
+                    'Upgrade-Insecure-Requests': '1',
+                },
+                locale='en-GB',
+                timezone_id=BROWSER_TIMEZONE,
+            )
+            # Listing/pagination stays on its own dedicated page - sequential
+            # by nature (stateful stabilize-retry against the previous page,
+            # capped at a few hundred pages regardless), not the bottleneck.
+            listing_page = await context.new_page()
 
-        if BACKFILL_RELEASE_METADATA:
-            # Backfill mode reuses EVERYTHING below this point - the same
-            # fetch workers, the same parser, the same upsert, the same
-            # circuit breaker and per-request delay. The only difference
-            # is where the target list comes from: existing rows missing
-            # the new metadata, rather than the listing crawl. No parallel
-            # scraper, no duplicated fetch logic.
-            async with pool.acquire() as conn:
-                remaining = await count_cards_needing_release_metadata(
-                    conn, game_year=BACKFILL_GAME_YEAR or None,
-                )
-                backfill_rows = await cards_needing_release_metadata(
-                    conn, limit=BACKFILL_LIMIT, game_year=BACKFILL_GAME_YEAR or None,
-                )
-            # ~0.7s per card measured against production (20 cards in
-            # 14s at concurrency=3). An estimate based on REQUEST_DELAY
-            # alone was ~6x optimistic because it ignored page fetch and
-            # render time, which dominate.
-            est_seconds = (len(backfill_rows) * 0.7) / max(PLAYER_CONCURRENCY, 1) * 3
-            log.info(
-                "BACKFILL MODE: %d card(s) still need release metadata%s; "
-                "processing up to %d this run (~%.1f min at concurrency=%d delay=%.2fs). "
-                "Re-run to continue - the query is resumable and idempotent.",
-                remaining,
-                f" (game_year={BACKFILL_GAME_YEAR})" if BACKFILL_GAME_YEAR else "",
-                len(backfill_rows), est_seconds / 60.0, PLAYER_CONCURRENCY, REQUEST_DELAY,
-            )
-            urls = {
-                url: ListingCardMetadata(image_url=image)
-                for url, image in backfill_rows
-            }
-            stats["discovered"] = len(urls)
-            known = set()          # force every backfill row to be fetched
-            db_total = remaining   # skips the full-scan plausibility check below
-        else:
-            urls = await collect_listing_urls(listing_page)
-            stats["discovered"] = len(urls)
-            stats["gg_ratings_found"] = sum(
-                metadata.gg_rating is not None for metadata in urls.values()
-            )
-            stats["gg_ratings_invalid"] = sum(
-                metadata.gg_rating_invalid for metadata in urls.values()
-            )
-            async with pool.acquire() as conn:
-                known = await existing_ids(conn, urls, GAME_YEAR)
-                db_total = await conn.fetchval("SELECT COUNT(*) FROM futgg_players")
-                listing_years = {
-                    int(match.group("game_year"))
-                    for url in urls
-                    if (match := CARD_URL_RE.match(urlparse(url).path))
-                }
-                for listing_year in listing_years:
-                    result = await update_listing_gg_ratings(
-                        conn, urls, listing_year, only_missing=False,
+            if BACKFILL_RELEASE_METADATA:
+                # Backfill mode reuses EVERYTHING below this point - the same
+                # fetch workers, the same parser, the same upsert, the same
+                # circuit breaker and per-request delay. The only difference
+                # is where the target list comes from: existing rows missing
+                # the new metadata, rather than the listing crawl. No parallel
+                # scraper, no duplicated fetch logic.
+                async with pool.acquire() as conn:
+                    remaining = await count_cards_needing_release_metadata(
+                        conn, game_year=BACKFILL_GAME_YEAR or None,
                     )
-                    stats["gg_rows_updated"] += result.updated
+                    backfill_rows = await cards_needing_release_metadata(
+                        conn, limit=BACKFILL_LIMIT, game_year=BACKFILL_GAME_YEAR or None,
+                    )
+                # ~0.7s per card measured against production (20 cards in
+                # 14s at concurrency=3). An estimate based on REQUEST_DELAY
+                # alone was ~6x optimistic because it ignored page fetch and
+                # render time, which dominate.
+                est_seconds = (len(backfill_rows) * 0.7) / max(PLAYER_CONCURRENCY, 1) * 3
+                log.info(
+                    "BACKFILL MODE: %d card(s) still need release metadata%s; "
+                    "processing up to %d this run (~%.1f min at concurrency=%d delay=%.2fs). "
+                    "Re-run to continue - the query is resumable and idempotent.",
+                    remaining,
+                    f" (game_year={BACKFILL_GAME_YEAR})" if BACKFILL_GAME_YEAR else "",
+                    len(backfill_rows), est_seconds / 60.0, PLAYER_CONCURRENCY, REQUEST_DELAY,
+                )
+                urls = {
+                    url: ListingCardMetadata(image_url=image)
+                    for url, image in backfill_rows
+                }
+                stats["discovered"] = len(urls)
+                known = set()          # force every backfill row to be fetched
+                db_total = remaining   # skips the full-scan plausibility check below
+            else:
+                urls = await collect_listing_urls(listing_page)
+                stats["discovered"] = len(urls)
+                stats["gg_ratings_found"] = sum(
+                    metadata.gg_rating is not None for metadata in urls.values()
+                )
+                stats["gg_ratings_invalid"] = sum(
+                    metadata.gg_rating_invalid for metadata in urls.values()
+                )
+                async with pool.acquire() as conn:
+                    known = await existing_ids(conn, urls, GAME_YEAR)
+                    db_total = await conn.fetchval("SELECT COUNT(*) FROM futgg_players")
+                    listing_years = {
+                        int(match.group("game_year"))
+                        for url in urls
+                        if (match := CARD_URL_RE.match(urlparse(url).path))
+                    }
+                    for listing_year in listing_years:
+                        result = await update_listing_gg_ratings(
+                            conn, urls, listing_year, only_missing=False,
+                        )
+                        stats["gg_rows_updated"] += result.updated
 
-        scan_plausible = True
-        if FULL_SCAN:
-            scan_plausible = _full_scan_is_plausible(len(urls), db_total, FULL_SCAN_MIN_COVERAGE)
+            scan_plausible = True
+            if FULL_SCAN:
+                scan_plausible = _full_scan_is_plausible(len(urls), db_total, FULL_SCAN_MIN_COVERAGE)
+                log.info(
+                    "Full-scan plausibility check: discovered=%d db_total=%d min_coverage=%.2f plausible=%s",
+                    len(urls), db_total, FULL_SCAN_MIN_COVERAGE, scan_plausible,
+                )
+                if not scan_plausible:
+                    log.error(
+                        "Full-scan discovered only %d cards but futgg_players already has %d rows "
+                        "(below %.0f%% coverage) - discovery source(s) look incomplete; this run's "
+                        "any legitimate upserts still apply, but it will NOT be reported as a "
+                        "successful complete reconciliation",
+                        len(urls), db_total, FULL_SCAN_MIN_COVERAGE * 100,
+                    )
+
+            targets, skipped_existing = _build_targets(urls, known, REFRESH_EXISTING)
+            stats["skipped_existing"] = skipped_existing
+
             log.info(
-                "Full-scan plausibility check: discovered=%d db_total=%d min_coverage=%.2f plausible=%s",
-                len(urls), db_total, FULL_SCAN_MIN_COVERAGE, scan_plausible,
+                "Discovery mode=%s discovered=%d known=%d targets=%d refresh_existing=%s concurrency=%d",
+                "full" if FULL_SCAN else "daily", len(urls), len(known), len(targets), REFRESH_EXISTING, PLAYER_CONCURRENCY,
             )
+
+            queue: "asyncio.Queue[tuple[int, FetchTarget]]" = asyncio.Queue()
+            for index, target in enumerate(targets, start=1):
+                queue.put_nowait((index, target))
+
+            fetch_pages = [await context.new_page() for _ in range(PLAYER_CONCURRENCY)]
+            try:
+                await asyncio.gather(
+                    *(
+                        _fetch_worker(worker_id + 1, fetch_page, pool, queue, len(targets), stats, breaker)
+                        for worker_id, fetch_page in enumerate(fetch_pages)
+                    )
+                )
+            finally:
+                for fetch_page in fetch_pages:
+                    await fetch_page.close()
+
+            if breaker.tripped:
+                log.warning("Circuit breaker tripped: %s - stopped fetching remaining cards this run", breaker.trip_reason)
+
+            ok = (
+                (stats["failed"] == 0 or (stats["new"] + stats["updated"]) > 0)
+                and not breaker.tripped
+                and scan_plausible
+            )
+            async with pool.acquire() as conn:
+                await heartbeat(
+                    conn,
+                    "futgg_player_sync",
+                    ok=ok,
+                    detail=" ".join(f"{key}={value}" for key, value in stats.items()),
+                )
             if not scan_plausible:
-                log.error(
-                    "Full-scan discovered only %d cards but futgg_players already has %d rows "
-                    "(below %.0f%% coverage) - discovery source(s) look incomplete; this run's "
-                    "any legitimate upserts still apply, but it will NOT be reported as a "
-                    "successful complete reconciliation",
-                    len(urls), db_total, FULL_SCAN_MIN_COVERAGE * 100,
+                await alert(
+                    f"futgg_player_sync full-scan looked incomplete: discovered={len(urls)} "
+                    f"db_total={db_total} min_coverage={FULL_SCAN_MIN_COVERAGE}"
                 )
-
-        targets, skipped_existing = _build_targets(urls, known, REFRESH_EXISTING)
-        stats["skipped_existing"] = skipped_existing
-
-        log.info(
-            "Discovery mode=%s discovered=%d known=%d targets=%d refresh_existing=%s concurrency=%d",
-            "full" if FULL_SCAN else "daily", len(urls), len(known), len(targets), REFRESH_EXISTING, PLAYER_CONCURRENCY,
-        )
-
-        queue: "asyncio.Queue[tuple[int, FetchTarget]]" = asyncio.Queue()
-        for index, target in enumerate(targets, start=1):
-            queue.put_nowait((index, target))
-
-        fetch_pages = [await context.new_page() for _ in range(PLAYER_CONCURRENCY)]
-        try:
-            await asyncio.gather(
-                *(
-                    _fetch_worker(worker_id + 1, fetch_page, pool, queue, len(targets), stats, breaker)
-                    for worker_id, fetch_page in enumerate(fetch_pages)
-                )
-            )
-        finally:
-            for fetch_page in fetch_pages:
-                await fetch_page.close()
-
-        if breaker.tripped:
-            log.warning("Circuit breaker tripped: %s - stopped fetching remaining cards this run", breaker.trip_reason)
-
-        ok = (
-            (stats["failed"] == 0 or (stats["new"] + stats["updated"]) > 0)
-            and not breaker.tripped
-            and scan_plausible
-        )
-        async with pool.acquire() as conn:
-            await heartbeat(
-                conn,
-                "futgg_player_sync",
-                ok=ok,
-                detail=" ".join(f"{key}={value}" for key, value in stats.items()),
-            )
-        if not scan_plausible:
-            await alert(
-                f"futgg_player_sync full-scan looked incomplete: discovered={len(urls)} "
-                f"db_total={db_total} min_coverage={FULL_SCAN_MIN_COVERAGE}"
-            )
-        elif not ok:
-            await alert(f"futgg_player_sync failed: {stats}")
-        log.info("Run complete: mode=%s scan_plausible=%s %s", "full" if FULL_SCAN else "daily", scan_plausible, stats)
+            elif not ok:
+                await alert(f"futgg_player_sync failed: {stats}")
+            log.info("Run complete: mode=%s scan_plausible=%s %s", "full" if FULL_SCAN else "daily", scan_plausible, stats)
 
     finally:
         # Every cleanup step is independently fault-tolerant. Before this,
@@ -1504,9 +1521,6 @@ async def crawl_once() -> None:
         # because the long-idle lock connection had been recycled by the
         # pooler. The stats line said success; the exit code said failure.
         for label, close in (
-            ("playwright context", context.close if context else None),
-            ("browser", browser.close if browser else None),
-            ("playwright", playwright.stop if playwright else None),
             ("pool", pool.close),
         ):
             if close is None:
@@ -1539,3 +1553,4 @@ if __name__ == "__main__":
     except Exception as exc:
         log.exception("futgg_player_sync failed: %s", exc)
         sys.exit(1)
+

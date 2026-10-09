@@ -16,6 +16,8 @@ and # comments are ignored. Duplicate URLs are de-duplicated.
 
 from __future__ import annotations
 
+from playwright_stealth import Stealth
+
 import asyncio
 import logging
 import os
@@ -124,50 +126,62 @@ async def run_once() -> None:
             PLAYER_CONCURRENCY,
         )
 
-        playwright = await async_playwright().start()
-        browser = await playwright.chromium.launch(
-            headless=HEADLESS,
-            args=["--no-sandbox", "--disable-dev-shm-usage"],
-        )
-        context = await browser.new_context(
-            user_agent=USER_AGENT,
-            locale="en-GB",
-            timezone_id=BROWSER_TIMEZONE,
-            viewport={"width": 1440, "height": 1000},
-        )
+        async with Stealth().use_async(async_playwright()) as patched_playwright:
+            playwright = patched_playwright
+            browser = await playwright.chromium.launch(
+                headless=HEADLESS,
+                args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled'],
+            )
+            context = await browser.new_context(
+                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+                viewport={'width': 1920, 'height': 1080},
+                device_scale_factor=1,
+                is_mobile=False,
+                has_touch=False,
+                extra_http_headers={
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+                    'Accept-Language': 'en-GB,en;q=0.9',
+                    'Sec-Ch-Ua': '"Chromium";v="128", "Google Chrome";v="128", "Not;A=Brand";v="99"',
+                    'Sec-Ch-Ua-Mobile': '?0',
+                    'Sec-Ch-Ua-Platform': '"Windows"',
+                    'Sec-Fetch-Dest': 'document',
+                    'Sec-Fetch-Mode': 'navigate',
+                    'Sec-Fetch-Site': 'none',
+                    'Upgrade-Insecure-Requests': '1',
+                },
+                locale='en-GB',
+                timezone_id=BROWSER_TIMEZONE,
+            )
 
-        queue: "asyncio.Queue[tuple[int, FetchTarget]]" = asyncio.Queue()
-        for index, target in enumerate(targets, start=1):
-            queue.put_nowait((index, target))
+            queue: "asyncio.Queue[tuple[int, FetchTarget]]" = asyncio.Queue()
+            for index, target in enumerate(targets, start=1):
+                queue.put_nowait((index, target))
 
-        pages = [await context.new_page() for _ in range(PLAYER_CONCURRENCY)]
-        try:
-            await asyncio.gather(
-                *(
-                    _fetch_worker(worker_id + 1, page, pool, queue, len(targets), stats, breaker)
-                    for worker_id, page in enumerate(pages)
+            pages = [await context.new_page() for _ in range(PLAYER_CONCURRENCY)]
+            try:
+                await asyncio.gather(
+                    *(
+                        _fetch_worker(worker_id + 1, page, pool, queue, len(targets), stats, breaker)
+                        for worker_id, page in enumerate(pages)
+                    )
                 )
-            )
-        finally:
-            for page in pages:
-                await page.close()
+            finally:
+                for page in pages:
+                    await page.close()
 
-        ok = (stats["failed"] == 0 or (stats["new"] + stats["updated"]) > 0) and not breaker.tripped
-        async with pool.acquire() as conn:
-            await heartbeat(
-                conn,
-                "futgg_player_url_list_sync",
-                ok=ok,
-                detail=" ".join(f"{key}={value}" for key, value in stats.items()),
-            )
-        if not ok:
-            await alert(f"futgg_player_url_list_sync failed: {stats}")
-        log.info("Run complete: %s", stats)
+            ok = (stats["failed"] == 0 or (stats["new"] + stats["updated"]) > 0) and not breaker.tripped
+            async with pool.acquire() as conn:
+                await heartbeat(
+                    conn,
+                    "futgg_player_url_list_sync",
+                    ok=ok,
+                    detail=" ".join(f"{key}={value}" for key, value in stats.items()),
+                )
+            if not ok:
+                await alert(f"futgg_player_url_list_sync failed: {stats}")
+            log.info("Run complete: %s", stats)
     finally:
         for close in (
-            context.close if context else None,
-            browser.close if browser else None,
-            playwright.stop if playwright else None,
             pool.close,
         ):
             if close is None:
@@ -192,3 +206,4 @@ if __name__ == "__main__":
     except Exception as exc:
         log.exception("futgg_player_url_list_sync failed: %s", exc)
         sys.exit(1)
+

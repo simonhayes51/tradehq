@@ -52,6 +52,8 @@ Recommended Railway variables:
 
 from __future__ import annotations
 
+from playwright_stealth import Stealth
+
 import asyncio
 import logging
 import os
@@ -1578,22 +1580,27 @@ async def create_browser(
 ]:
     browser = await playwright.chromium.launch(
         headless=HEADLESS,
-        args=[
-            "--no-sandbox",
-            "--disable-dev-shm-usage",
-            "--disable-background-networking",
-            "--disable-background-timer-throttling",
-            "--disable-renderer-backgrounding",
-        ],
+        args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled'],
     )
 
     context = await browser.new_context(
-        user_agent=USER_AGENT,
-        locale="en-GB",
-        viewport={
-            "width": 1440,
-            "height": 1000,
+        user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+        viewport={'width': 1920, 'height': 1080},
+        device_scale_factor=1,
+        is_mobile=False,
+        has_touch=False,
+        extra_http_headers={
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-GB,en;q=0.9',
+            'Sec-Ch-Ua': '"Chromium";v="128", "Google Chrome";v="128", "Not;A=Brand";v="99"',
+            'Sec-Ch-Ua-Mobile': '?0',
+            'Sec-Ch-Ua-Platform': '"Windows"',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Upgrade-Insecure-Requests': '1',
         },
+        locale='en-GB',
     )
 
     await context.route(
@@ -2195,49 +2202,104 @@ async def run_forever() -> None:
         async with pool.acquire() as conn:
             await ensure_schema(conn)
 
-        playwright = await async_playwright().start()
+        async with Stealth().use_async(async_playwright()) as patched_playwright:
+            playwright = patched_playwright
 
-        (
-            browser,
-            context,
-            pages,
-        ) = await create_browser(
-            playwright
-        )
-
-        await warm_browser(pool, pages)
-
-        log.info(
             (
-                "Continuous FUT.GG price worker started: "
-                "version=%s concurrency=%d batch_size=%d "
-                "request_delay=%.2f max_attempts=%d "
-                "intervals=%s"
-            ),
-            SCRIPT_VERSION,
-            CONCURRENCY,
-            BATCH_SIZE,
-            REQUEST_DELAY,
-            MAX_ATTEMPTS,
-            RATING_INTERVALS,
-        )
+                browser,
+                context,
+                pages,
+            ) = await create_browser(
+                playwright
+            )
 
-        while True:
-            try:
-                stats, breaker = await process_due_batch(
-                    pool,
-                    pages,
-                )
+            await warm_browser(pool, pages)
 
-                if breaker.tripped:
-                    log.warning(
-                        (
-                            "Circuit breaker tripped: %s. "
-                            "Backing off for %.0f seconds."
-                        ),
-                        breaker.trip_reason,
-                        BLOCK_BACKOFF_SECONDS,
+            log.info(
+                (
+                    "Continuous FUT.GG price worker started: "
+                    "version=%s concurrency=%d batch_size=%d "
+                    "request_delay=%.2f max_attempts=%d "
+                    "intervals=%s"
+                ),
+                SCRIPT_VERSION,
+                CONCURRENCY,
+                BATCH_SIZE,
+                REQUEST_DELAY,
+                MAX_ATTEMPTS,
+                RATING_INTERVALS,
+            )
+
+            while True:
+                try:
+                    stats, breaker = await process_due_batch(
+                        pool,
+                        pages,
                     )
+
+                    if breaker.tripped:
+                        log.warning(
+                            (
+                                "Circuit breaker tripped: %s. "
+                                "Backing off for %.0f seconds."
+                            ),
+                            breaker.trip_reason,
+                            BLOCK_BACKOFF_SECONDS,
+                        )
+
+                        await close_browser_resources(
+                            browser,
+                            context,
+                            pages,
+                        )
+
+                        browser = None
+                        context = None
+                        pages = []
+
+                        await asyncio.sleep(
+                            BLOCK_BACKOFF_SECONDS
+                        )
+
+                        (
+                            browser,
+                            context,
+                            pages,
+                        ) = await create_browser(
+                            playwright
+                        )
+
+                        # Rebuilt context = empty cache again.
+                        await warm_browser(pool, pages)
+
+                        continue
+
+                    if stats["selected"] == 0:
+                        await asyncio.sleep(
+                            IDLE_SLEEP_SECONDS
+                        )
+                    else:
+                        await asyncio.sleep(
+                            BATCH_SLEEP_SECONDS
+                        )
+
+                except asyncio.CancelledError:
+                    raise
+
+                except Exception as exc:
+                    log.exception(
+                        "Price batch failed: %s",
+                        exc,
+                    )
+
+                    try:
+                        await alert(
+                            f"futgg_price_sync batch crashed: {exc}"
+                        )
+                    except Exception:
+                        log.exception(
+                            "Unable to send price-sync alert"
+                        )
 
                     await close_browser_resources(
                         browser,
@@ -2249,9 +2311,7 @@ async def run_forever() -> None:
                     context = None
                     pages = []
 
-                    await asyncio.sleep(
-                        BLOCK_BACKOFF_SECONDS
-                    )
+                    await asyncio.sleep(30)
 
                     (
                         browser,
@@ -2261,73 +2321,9 @@ async def run_forever() -> None:
                         playwright
                     )
 
-                    # Rebuilt context = empty cache again.
                     await warm_browser(pool, pages)
 
-                    continue
-
-                if stats["selected"] == 0:
-                    await asyncio.sleep(
-                        IDLE_SLEEP_SECONDS
-                    )
-                else:
-                    await asyncio.sleep(
-                        BATCH_SLEEP_SECONDS
-                    )
-
-            except asyncio.CancelledError:
-                raise
-
-            except Exception as exc:
-                log.exception(
-                    "Price batch failed: %s",
-                    exc,
-                )
-
-                try:
-                    await alert(
-                        f"futgg_price_sync batch crashed: {exc}"
-                    )
-                except Exception:
-                    log.exception(
-                        "Unable to send price-sync alert"
-                    )
-
-                await close_browser_resources(
-                    browser,
-                    context,
-                    pages,
-                )
-
-                browser = None
-                context = None
-                pages = []
-
-                await asyncio.sleep(30)
-
-                (
-                    browser,
-                    context,
-                    pages,
-                ) = await create_browser(
-                    playwright
-                )
-
-                await warm_browser(pool, pages)
-
     finally:
-        await close_browser_resources(
-            browser,
-            context,
-            pages,
-        )
-
-        if playwright is not None:
-            try:
-                await playwright.stop()
-            except Exception:
-                pass
-
         if pool is not None:
             await pool.close()
 
@@ -2358,3 +2354,4 @@ if __name__ == "__main__":
             exc,
         )
         sys.exit(1)
+
