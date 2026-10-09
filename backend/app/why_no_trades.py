@@ -53,7 +53,7 @@ from app.services.market_data_provider import (  # noqa: E402
 # CANDIDATE_SCAN_LIMIT / CANDIDATE_SCAN_ORDER_BY. Same 500 cards, same
 # ordering, so "16 of 500" here means the same thing it means on screen.
 DASHBOARD_LIMIT = 500
-DASHBOARD_ORDER_BY = "sales_count DESC NULLS LAST"
+DASHBOARD_ORDER_BY = "latest_sale_at DESC NULLS LAST, sales_count DESC NULLS LAST"
 
 BAR = "=" * 72
 
