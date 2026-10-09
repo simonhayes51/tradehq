@@ -32,6 +32,7 @@
 // actually said) but never as the displayed age.
 import { useMemo } from "react";
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip } from "recharts";
+import { Activity, Clock3, RadioTower } from "lucide-react";
 import SectionCard from "../../../components/SectionCard";
 import CoinValue from "../../../components/CoinValue";
 import { formatAge } from "../../../components/MarketFreshness";
@@ -67,6 +68,43 @@ export function saleTitle(sale) {
   }
   if (sale.age_text) parts.push(`Recorded as "${sale.age_text}" at the time of capture`);
   return parts.length ? parts.join(" · ") : undefined;
+}
+
+// This is a readout of the sales rows we captured, not a claim about every
+// transaction on EA's market. FUT.GG gives us approximate sale times, and its
+// fetch/check timestamp is separate from the BIN price timestamp.
+export function buildSalesPulse(sales, coverage = {}, now = Date.now()) {
+  const rows = (Array.isArray(sales) ? sales : [])
+    .map((sale) => ({
+      price: Number(sale?.sold_price),
+      time: Date.parse(sale?.approximate_sold_at || ""),
+    }))
+    .filter((sale) => Number.isFinite(sale.time) && Number.isFinite(sale.price) && sale.price > 0);
+  const inWindow = (hours) => rows.filter((sale) => {
+    const age = now - sale.time;
+    return age >= 0 && age <= hours * 3600_000;
+  });
+  const lastSale = rows.reduce((latest, sale) => !latest || sale.time > latest.time ? sale : latest, null);
+  const week = inWindow(24 * 7);
+  const prices = week.map((sale) => sale.price).sort((a, b) => a - b);
+  const middle = Math.floor(prices.length / 2);
+  const median = prices.length
+    ? prices.length % 2 ? prices[middle] : Math.round((prices[middle - 1] + prices[middle]) / 2)
+    : null;
+  const checkedAt = coverage.sales_checked_at ? Date.parse(coverage.sales_checked_at) : NaN;
+  const checkedAgeSeconds = Number.isFinite(checkedAt) ? Math.max(0, (now - checkedAt) / 1000) : null;
+  const checkState = coverage.sales_never_checked === true
+    ? "never"
+    : checkedAgeSeconds == null ? "unknown"
+      : checkedAgeSeconds <= 24 * 3600 ? "recent" : "stale";
+  return {
+    captured24h: inWindow(24).length,
+    median7d: median,
+    sample7d: prices.length,
+    lastSaleAge: lastSale ? formatAge((now - lastSale.time) / 1000) : null,
+    checkedAge: checkedAgeSeconds == null ? null : formatAge(checkedAgeSeconds),
+    checkState,
+  };
 }
 
 export default function FutggMarketSection({ cardId }) {
@@ -108,7 +146,14 @@ export default function FutggMarketSection({ cardId }) {
   // with day labels prints the same string five times.
   const formatPriceTick = tickFormatterForSpan(priceSpanMs);
 
-  const allSales = Array.isArray(salesQuery.data) ? salesQuery.data : salesQuery.data?.items || [];
+  const allSales = useMemo(
+    () => Array.isArray(salesQuery.data) ? salesQuery.data : salesQuery.data?.items || [],
+    [salesQuery.data],
+  );
+  const salesPulse = useMemo(
+    () => buildSalesPulse(allSales, salesQuery.data || {}),
+    [allSales, salesQuery.data],
+  );
   // The endpoint serves up to MAX_CHART_SALES (500) rows because the chart
   // needs them. A table does not: past a couple of dozen rows it is an
   // unreadable wall that pushes the rest of the page off-screen, and every
@@ -140,6 +185,32 @@ export default function FutggMarketSection({ cardId }) {
 
   return (
     <div className="grid grid-cols-1 gap-4">
+      <SectionCard
+        title={<span className="inline-flex items-center gap-2"><Activity size={16} className="text-[var(--v2-accent)]" /> MARKET PULSE</span>}
+        subtitle="Completed sales captured by EAFC.Live · sale times are approximate"
+        className="border-l-2 border-l-[var(--v2-accent)] bg-[linear-gradient(110deg,rgba(25,45,34,.55),var(--v2-card)_48%)]"
+      >
+        <div className="grid grid-cols-3 gap-2 sm:gap-3">
+          <PulseStat label="CAPTURED · 24H" value={salesQuery.isLoading ? "…" : salesPulse.captured24h} detail="completed sales" />
+          <PulseStat label="MEDIAN · 7D" value={salesQuery.isLoading ? "…" : salesPulse.median7d == null ? "—" : <CoinValue value={salesPulse.median7d} />} detail={salesPulse.sample7d ? `${salesPulse.sample7d} sale${salesPulse.sample7d === 1 ? "" : "s"} in sample` : "no sales in sample"} />
+          <PulseStat label="LAST SALE" value={salesQuery.isLoading ? "…" : salesPulse.lastSaleAge || "—"} detail="approximate time" />
+        </div>
+        <div className={`mt-3 flex items-start gap-2 rounded-lg border px-3 py-2 text-xs ${salesPulse.checkState === "recent" ? "border-emerald-400/20 bg-emerald-400/5 text-emerald-200" : "border-amber-300/25 bg-amber-300/5 text-amber-100"}`}>
+          {salesPulse.checkState === "recent" ? <RadioTower size={14} className="mt-0.5 shrink-0" /> : <Clock3 size={14} className="mt-0.5 shrink-0" />}
+          <span>
+            {salesQuery.isLoading ? "Checking sales coverage…" : salesPulse.checkState === "recent"
+              ? <>Sales last checked <strong>{salesPulse.checkedAge} ago</strong>. Counts reflect sales captured by our latest checks.</>
+              : salesPulse.checkState === "never"
+                ? "We haven’t checked this card’s completed sales yet. No sales figure is available."
+                : salesPulse.checkState === "stale"
+                  ? <>Sales last checked <strong>{salesPulse.checkedAge} ago</strong>. Treat the sales figures as historical until the next check.</>
+                  : salesQuery.isError
+                    ? "Sales coverage could not be checked just now."
+                    : "Sales-check time is unavailable, so we can’t confirm how current this sales sample is."}
+          </span>
+        </div>
+      </SectionCard>
+
       {/* The "Live market" card that used to sit here is gone. Every
           part of it was a second copy of something the analysis panel
           directly above renders from the same fields: the price
@@ -270,3 +341,12 @@ export default function FutggMarketSection({ cardId }) {
     </div>
   );
 }
+
+function PulseStat({ label, value, detail }) {
+  return <div className="min-w-0 rounded-lg border border-[var(--v2-border)] bg-black/20 px-2.5 py-3 sm:px-3">
+    <div className="truncate text-[9px] font-bold tracking-[.12em] text-[var(--v2-muted)] sm:text-[10px]">{label}</div>
+    <div className="mt-1 truncate text-base font-extrabold leading-tight text-[var(--v2-text)] sm:text-lg">{value}</div>
+    <div className="mt-1 truncate text-[10px] text-[var(--v2-muted)] sm:text-[11px]">{detail}</div>
+  </div>;
+}
+
