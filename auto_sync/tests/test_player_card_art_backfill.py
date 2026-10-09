@@ -19,4 +19,4 @@ def test_player_sync_backfills_only_missing_original_composites():
 
 def test_backfill_runs_even_for_existing_players():
     assert "await backfill_listing_card_images(conn, urls, GAME_YEAR)" in SOURCE
-    assert SOURCE.index("await backfill_listing_card_images(conn, urls, GAME_YEAR)") < SOURCE.index("targets, skipped = _build_targets(")
+    assert SOURCE.index("await backfill_listing_card_images(conn, urls, GAME_YEAR)") < SOURCE.index("targets, skipped_existing = _build_targets(")
