@@ -137,7 +137,7 @@ CANDIDATE_SCAN_LIMIT = 500
 # profitable mid/low-rated opportunities behind a wall of high-rated but
 # possibly illiquid/rarely-traded cards, with no error or symptom other
 # than "why does this card never show up as an opportunity".
-CANDIDATE_SCAN_ORDER_BY = "sales_count DESC NULLS LAST"
+CANDIDATE_SCAN_ORDER_BY = "latest_sale_at DESC NULLS LAST, sales_count DESC NULLS LAST"
 
 
 #: Short-lived cache for _segmented_candidates()'s raw row set (below).
