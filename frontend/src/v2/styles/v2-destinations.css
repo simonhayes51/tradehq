@@ -109,6 +109,20 @@
   height: 86px;
   object-fit: contain;
 }
+.v2-player-card-art {
+  width: 68px;
+  min-width: 0;
+  align-self: center;
+}
+.v2-player-card-art .player-card-art {
+  width: 100%;
+}
+.v2-player-card-art > img {
+  width: 68px;
+  height: 86px;
+  object-fit: contain;
+}
+
 .v2-player-result div span,
 .v2-player-result div small {
   display: block;
