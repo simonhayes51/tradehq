@@ -128,6 +128,28 @@ class _FakeListingPage:
         return _FakeLocator()
 
 
+class _FakeFirstPageAlternateListingPage(_FakeListingPage):
+    """Simulates FUT.GG serving an empty explicit page 1 but a populated
+    canonical page 1."""
+
+    async def goto(self, url, wait_until=None, timeout=None):
+        self.goto_urls.append(url)
+        if url.endswith("/players/new/"):
+            self._current_page = "canonical-1"
+        else:
+            match = re.search(r"page=(\d+)", url)
+            self._current_page = int(match.group(1)) if match else 1
+        return _FakeResponse(self._status)
+
+    def locator(self, selector):
+        if selector == "a[href*='/players/']":
+            return _FakeLocator(should_timeout=False)
+        if selector == "a[href]":
+            hrefs = self._pages_hrefs.get(self._current_page, [])
+            return _FakeLocator(hrefs=hrefs)
+        return _FakeLocator()
+
+
 @run_async
 async def test_collect_listing_urls_navigates_pages_in_order(monkeypatch):
     monkeypatch.setattr(mod, "MAX_PAGES", 3)
@@ -411,6 +433,33 @@ async def test_collect_listing_urls_retries_page_one_when_grid_not_yet_rendered(
     assert len(urls) == 3
     assert page.goto_urls == [
         "https://www.fut.gg/players/new/?page=1",
+        "https://www.fut.gg/players/new/?page=2",
+    ]
+
+
+@run_async
+async def test_collect_listing_urls_falls_back_when_explicit_page_one_is_empty(monkeypatch):
+    """FUT.GG can expose page 1 at the canonical URL while ?page=1
+    hydrates to an empty grid. Do not silently miss the top cards."""
+    monkeypatch.setattr(mod, "MAX_PAGES", 2)
+    monkeypatch.setattr(mod, "PLAYER_LIMIT", 0)
+    monkeypatch.setattr(mod, "IDLE_ROUNDS", 10)
+    monkeypatch.setattr(mod, "PAGE_DELAY", 0)
+    monkeypatch.setattr(mod, "LISTING_STABILIZE_MAX_ATTEMPTS", 2)
+    monkeypatch.setattr(mod, "LISTING_STABILIZE_POLL_MS", 0)
+    pages_hrefs = {
+        1: [],
+        "canonical-1": [_card_href(1), _card_href(2)],
+        2: [_card_href(3)],
+    }
+    page = _FakeFirstPageAlternateListingPage(pages_hrefs)
+
+    urls = await mod.collect_listing_urls(page)
+
+    assert len(urls) == 3
+    assert page.goto_urls == [
+        "https://www.fut.gg/players/new/?page=1",
+        "https://www.fut.gg/players/new/",
         "https://www.fut.gg/players/new/?page=2",
     ]
 
