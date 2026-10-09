@@ -788,15 +788,25 @@ async def _paginate_listing(
 
         await dismiss_cookie_banner(page)
         try:
-            await page.locator(f"a[href*='/players/'][href*='/{GAME_YEAR}-']").first.wait_for(state="attached", timeout=TIMEOUT_MS)
-        except PlaywrightTimeoutError as exc:
+            await page.locator(
+                f"a[href*='/players/'][href*='/{GAME_YEAR}-']"
+            ).first.wait_for(state="attached", timeout=10000)
+        except PlaywrightTimeoutError:
             if page_number == 1:
-                raise RuntimeError(f"No card links appeared on FUT.GG listing partition={partition_label}") from exc
-            log.info(
-                "No card links on listing partition=%s page %d - treating as end of catalogue",
-                partition_label, page_number,
-            )
-            break
+                # A hydration timeout is not proof that today's cards
+                # don't exist. Let the stabilization, alternate-URL and
+                # diagnostic passes below inspect the actual page.
+                log.warning(
+                    "Listing partition=%s page 1 has no FC%d card anchors "
+                    "after 10s; continuing with hydration/recovery diagnostics",
+                    partition_label, GAME_YEAR,
+                )
+            else:
+                log.info(
+                    "No card links on listing partition=%s page %d - treating as end of catalogue",
+                    partition_label, page_number,
+                )
+                break
 
         # FUT.GG's listing is client-rendered - a query-param-only
         # navigation can leave the PREVIOUS page's cards still attached
