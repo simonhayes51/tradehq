@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { ArrowRight, Lock, Search, Sparkles } from "lucide-react";
 import CoinValue from "../../components/CoinValue";
+import PlayerCardImage from "../../../components/PlayerCardImage";
 import EmptyState from "../../components/EmptyState";
 import MarketFreshness from "../../components/MarketFreshness";
 import { useFutggPlayers } from "../../hooks/useFutggMarket";
@@ -70,7 +71,24 @@ export default function Players() {
             const cardId = player.card_id ?? player.source_card_id;
             return (
               <Link className="v2-player-result" key={cardId} to={`/players/${cardId}`} state={{ from: "players", player }}>
-                <img src={player.composited_image_url || player.image_url || "/img/card-placeholder.png"} alt="" />
+                <div className="v2-player-card-art">
+                  <PlayerCardImage
+                    player={{
+                      ...player,
+                      card_id: cardId,
+                      // A FUT.GG detail-only import has the official card
+                      // design and cutout, but no composited listing image.
+                      // Render those layers instead of a bare player face.
+                      card_bg_image: player.card_design_image_url,
+                      card_cutout_image: player.player_image_url || player.image_url,
+                      card_cutout_type: player.price_tier === "special" ? "special" : "base",
+                      composited_image_url: player.composited_image_url,
+                    }}
+                    compact
+                    showStats={false}
+                    widthClass="w-full"
+                  />
+                </div>
                 <div className="v2-player-result-copy"><strong>{player.name}</strong><div className="v2-meta-pills"><span>{player.rating ?? "—"} OVR</span><span>{player.primary_position || player.position || "—"}</span><span>{versionLabel(player.rarity)}</span></div><MarketFreshness priceAgeSeconds={player.price_age_seconds} checkedAt={player.current_bin_checked_at || player.bin_checked_at || player.current_bin_captured_at} compact /></div>
                 {needsAccount
                   ? <div className="v2-result-price approx"><small>AROUND</small><CoinValue value={player.current_bin_approx} /></div>
