@@ -31,7 +31,7 @@ from app.routers.v2.futgg_market import (
     LIVE_OPPORTUNITY_MAX_PRICE_AGE_MINUTES,
     _meaningful_profit_floor,
     _score_and_filter,
-    _bin_observations_for_rows,
+    _sales_for_rows,
     _segmented_candidates,
     free_pick_candidates,
 )
@@ -182,11 +182,14 @@ def _drivers_to_strings(drivers: List[Dict[str, Any]]) -> List[str]:
 def _regime_summary(state: str, indicators: Dict[str, Any]) -> str:
     falling_pct = indicators.get("falling_pct") or 0
     avg_discount = indicators.get("avg_discount_pct") or 0
+    avg_liquidity = indicators.get("avg_liquidity") or 0
     if state == "bullish":
-        return f"Tracked BIN prices are {avg_discount:.1f}% below their recent reference on average, and {falling_pct:.0f}% of known trends are still down."
+        return f"Tracked cards are selling for {avg_discount:.1f}% less than usual, and only {falling_pct:.0f}% are still dropping in price - good time to pick some up."
     if state == "bearish":
         return f"{falling_pct:.0f}% of tracked cards are still dropping in price right now - a cheap price might drop even more before it's worth buying."
-    return "Tracked BIN prices show no broad directional move in this sample."
+    if state == "illiquid":
+        return f"Cards are only selling about {avg_liquidity:.2f} times an hour on average - it'll take longer than usual to buy or sell."
+    return "Prices and sales are behaving normally across tracked cards right now."
 
 
 def _compute_live_market_regime(scored_pairs: List[Any]) -> Dict[str, Any]:
@@ -208,7 +211,7 @@ def _compute_live_market_regime(scored_pairs: List[Any]) -> Dict[str, Any]:
             "label": "Unknown", "confidence": 0,
             "summary": "Not enough live market data has been scored yet.",
             "dataQuality": "LIMITED",
-            "metrics": {"liquidCards": None, "valuedCards": 0, "avgVolatility": 0, "avgValueGap": 0},
+            "metrics": {"liquidCards": 0, "valuedCards": 0, "avgVolatility": 0, "avgValueGap": 0},
         }
 
     # How many of those cards the engine could actually VALUE, as opposed
@@ -229,15 +232,16 @@ def _compute_live_market_regime(scored_pairs: List[Any]) -> Dict[str, Any]:
         return {
             "label": "Unknown", "confidence": 0,
             "summary": (
-                f"Only {len(valued)} of {total} tracked cards have enough fresh BIN price history "
-                "to estimate right now, so there is not enough coverage for a market read."
+                f"Only {len(valued)} of {total} tracked cards have enough fresh price "
+                "and sales data to value right now, so there is nothing solid to say "
+                "about the market yet."
             ),
             "dataQuality": "LIMITED",
             # valuedCards is the honest denominator behind every other
             # number here: how many of the tracked cards had fresh enough
-            # fresh BIN price history to estimate. Exposed so the UI can
+            # price AND sales data to actually value. Exposed so the UI can
             # state the eligibility rule rather than implying full coverage.
-            "metrics": {"liquidCards": None, "valuedCards": len(valued), "avgVolatility": 0, "avgValueGap": 0},
+            "metrics": {"liquidCards": total, "valuedCards": len(valued), "avgVolatility": 0, "avgValueGap": 0},
         }
 
     trend_known = [ci for _, ci in scored_pairs if ci.trend_state != INSUFFICIENT_TREND_DATA]
@@ -257,13 +261,19 @@ def _compute_live_market_regime(scored_pairs: List[Any]) -> Dict[str, Any]:
         discounts.append(100.0 * (fair_value - float(current_bin)) / fair_value)
     avg_discount = (sum(discounts) / len(discounts)) if discounts else 0.0
 
-    volatilities = [float(ci.bin_volatility) for _, ci in scored_pairs if ci.bin_volatility is not None]
-    avg_volatility = sum(volatilities) / len(volatilities) if volatilities else 0.0
+    liquidity_per_hour = []
+    for row, _ in scored_pairs:
+        span = row.get("sales_window_span_minutes")
+        if span:
+            liquidity_per_hour.append(60.0 * float(row.get("sales_count") or 0) / float(span))
+    avg_liquidity = (sum(liquidity_per_hour) / len(liquidity_per_hour)) if liquidity_per_hour else 0.0
 
     if falling_pct >= 25:
         state = "bearish"
     elif avg_discount >= 5 and falling_pct < 10:
         state = "bullish"
+    elif avg_liquidity < 0.5:
+        state = "illiquid"
     else:
         state = "normal"
 
@@ -287,7 +297,7 @@ def _compute_live_market_regime(scored_pairs: List[Any]) -> Dict[str, Any]:
     evidence_term = len(valued) / total
     confidence = int(round(min(95.0, 100.0 * sample_term * evidence_term)))
     indicators = {
-        "total_cards": total, "avg_bin_volatility": avg_volatility,
+        "total_cards": total, "avg_liquidity": avg_liquidity,
         "avg_discount_pct": avg_discount, "falling_pct": falling_pct,
         "valued_cards": len(valued), "evidence_pct": evidence_pct,
     }
@@ -299,9 +309,9 @@ def _compute_live_market_regime(scored_pairs: List[Any]) -> Dict[str, Any]:
         # constant that said GOOD even when nothing could be valued.
         "dataQuality": "GOOD" if evidence_pct >= 40 else "LIMITED",
         "metrics": {
-            "liquidCards": None,
+            "liquidCards": total,
             "valuedCards": len(valued),
-            "avgVolatility": avg_volatility,
+            "avgVolatility": avg_liquidity,
             "avgValueGap": avg_discount,
         },
     }
@@ -539,13 +549,8 @@ def _futgg_to_recommendation(
         "currentBin": row.get("current_bin"),
         "fairValue": int(ci.fair_value) if (ci and ci.fair_value is not None) else None,
         "sales24h": None,
-        "sales7d": None,
-        "valuationSource": ci.valuation_source if ci else None,
-        "evidenceQuality": ci.evidence_quality if ci else None,
-        "binSampleCount": ci.bin_sample_count if ci else None,
-        "binHistorySpanHours": ci.bin_history_span_hours if ci else None,
-        "liquidity": None,
-        "dataQuality": "ESTIMATED" if ci and ci.evidence_quality == "estimated" else "LIMITED",
+        "sales7d": row.get("sales_count"),
+        "dataQuality": "GOOD" if row.get("sales_count") else "LIMITED",
         "updatedAt": evaluated_at.isoformat() if evaluated_at else None,
         "reasoning": (reasons_text + sbc_note) if has_evaluation else "",
         "marketDrivers": [],
@@ -653,7 +658,7 @@ async def get_dashboard(
     # STRONG BUY. Same evaluate_card(), same gates - only a larger, fairer
     # candidate pool feeding this same Python scoring pass.
     candidate_rows = await _segmented_candidates(core_pool_provider)
-    bin_by_card = await _bin_observations_for_rows(core_pool_provider, candidate_rows)
+    sales_by_card = await _sales_for_rows(core_pool_provider, candidate_rows)
 
     # Home's actionable cards obey the same launch-safe freshness rule as
     # /opportunities. Keep the full population for market regime/recent
@@ -674,7 +679,7 @@ async def get_dashboard(
     # one), which is what made Home's Top Card look random with no
     # underlying data change - not a random pick, an unstable sort.
     buy_scored = _filter_meaningful_profit(
-        await _score_and_filter(opportunity_rows, signals={"strong_buy", "buy"}, bin_by_card=bin_by_card)
+        await _score_and_filter(opportunity_rows, signals={"strong_buy", "buy"}, sales_by_card=sales_by_card)
     )
     buy_scored.sort(
         key=lambda pair: (
@@ -781,26 +786,20 @@ async def get_dashboard(
             return None
         return max(candidates, key=lambda pair: pair[0])[1]
 
-    # Biggest movers come from the observed BIN series. These are asking
-    # price changes, not completed sales or proof of executable liquidity.
-    movement_candidates = []
-    for row in candidate_rows:
-        card_id = int(row["source_card_id"])
-        history = sorted(bin_by_card.get(card_id, []), key=lambda item: item[1])
-        if len(history) < 2 or not history[0][0]:
-            continue
-        first_price, last_price = float(history[0][0]), float(history[-1][0])
-        if first_price <= 0:
-            continue
-        move_pct = 100.0 * (last_price - first_price) / first_price
-        movement_candidates.append({**row, "_bin_move_pct": move_pct})
-    biggest_up = _best([item for item in movement_candidates if item["_bin_move_pct"] > 0], lambda item: item["_bin_move_pct"])
-    biggest_down = _best([item for item in movement_candidates if item["_bin_move_pct"] < 0], lambda item: -item["_bin_move_pct"])
-    biggest_move = _best(movement_candidates, lambda item: abs(item["_bin_move_pct"]))
+    mover_pool = [r for r in candidate_rows if r.get("sales_count")]
+    largest_mover_row = _best(mover_pool, lambda r: r.get("sales_stddev"))
+    most_traded_row = _best(mover_pool, lambda r: r.get("sales_count"))
+    highest_liquidity_row = _best(
+        mover_pool,
+        lambda r: (
+            float(r["sales_count"]) / float(r["sales_window_span_minutes"])
+            if r.get("sales_window_span_minutes") else None
+        ),
+    )
 
     mover_cards = [
         _futgg_to_recommendation(row, None)
-        for row in (biggest_up, biggest_down, biggest_move)
+        for row in (largest_mover_row, most_traded_row, highest_liquidity_row)
         if row is not None
     ]
     # No generated-card-art polling needed here either, same reasoning as

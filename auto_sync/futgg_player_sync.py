@@ -926,7 +926,8 @@ def _full_scan_is_plausible(discovered: int, db_total: int, min_coverage: float)
 async def existing_ids(conn: asyncpg.Connection, urls, game_year: int = GAME_YEAR) -> set[int]:
     """urls: any iterable of card URLs - a plain list, or (as
     collect_listing_urls now returns) a dict keyed by URL, iterated for
-    its keys exactly the same way."""
+    its keys exactly the same way. Bulk-feed placeholders still need their
+    first metadata scrape, so they are not treated as already discovered."""
     ids = []
     for url in urls:
         match = CARD_URL_RE.match(urlparse(url).path)
@@ -940,6 +941,7 @@ async def existing_ids(conn: asyncpg.Connection, urls, game_year: int = GAME_YEA
         FROM futgg_players
         WHERE source_card_id = ANY($1::bigint[])
           AND game_year = $2
+          AND NOT ('feed_only_placeholder' = ANY(metadata_warnings))
         """,
         ids, game_year,
     )

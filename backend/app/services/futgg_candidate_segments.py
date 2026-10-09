@@ -93,37 +93,117 @@ MOVED_MIN_SALES = _env_int("FUTGG_SEG_MOVED_MIN_SALES", 5)
 
 SEGMENTS: List[Segment] = [
     Segment(
-        name="special_price",
-        where="price_tier = 'special' AND current_bin IS NOT NULL AND bin_captured_at IS NOT NULL",
-        order_by="bin_captured_at DESC NULLS LAST",
-        limit=_env_int("FUTGG_SEG_SPECIAL_LIMIT", 300),
-        refresh_minutes=_env_int("FUTGG_SEG_SPECIAL_REFRESH_MIN", 10),
-        description="Fresh BIN history for special cards.",
+        name="liquid",
+        where=f"sales_count >= {LIQUID_MIN_SALES}",
+        order_by="sales_count DESC NULLS LAST",
+        # 200 (the original default) is what let Donnarumma/Courtois-style
+        # cards rank outside every segment - fixed by raising this to 400
+        # and, separately, by the sample-size-weighted ordering on
+        # "recently_moved" below, which is what actually protects those
+        # cards now (see that segment's own comment). Raising the limit
+        # was only ever a stand-in for that ranking fix, and it came at a
+        # real cost: evaluating ~1700 candidates per pass took 15-20s+ in
+        # production - and got measurably WORSE after the BIN-history
+        # fallback (see futgg_intelligence.py) started giving every one
+        # of those evaluations extra per-card work, on top of the same
+        # candidate volume that used to be fast before it existed. 250
+        # was a compromise while that was being diagnosed; now that the
+        # ranking fix is confirmed to hold on its own, back to 200 - the
+        # actual original - rather than paying for headroom the ranking
+        # fix no longer needs.
+        limit=_env_int("FUTGG_SEG_LIQUID_LIMIT", 200),
+        refresh_minutes=_env_int("FUTGG_SEG_LIQUID_REFRESH_MIN", 15),
+        description="Highly liquid cards - fast, efficient markets.",
     ),
     Segment(
-        name="gold_rare_price",
-        where="price_tier = 'gold_rare' AND current_bin IS NOT NULL AND bin_captured_at IS NOT NULL",
-        order_by="bin_captured_at DESC NULLS LAST",
-        limit=_env_int("FUTGG_SEG_GOLD_RARE_LIMIT", 500),
-        refresh_minutes=_env_int("FUTGG_SEG_GOLD_RARE_REFRESH_MIN", 15),
-        description="Fresh BIN history for gold rare cards.",
+        name="medium_liquidity",
+        where=f"sales_count >= {MEDIUM_MIN_SALES} AND sales_count < {LIQUID_MIN_SALES}",
+        order_by="sales_count DESC NULLS LAST",
+        limit=_env_int("FUTGG_SEG_MEDIUM_LIMIT", 250),
+        refresh_minutes=_env_int("FUTGG_SEG_MEDIUM_REFRESH_MIN", 45),
+        description="Mid-liquidity cards.",
     ),
     Segment(
-        name="other_price",
-        where="price_tier IS DISTINCT FROM 'special' AND price_tier IS DISTINCT FROM 'gold_rare' "
-              "AND current_bin IS NOT NULL AND bin_captured_at IS NOT NULL",
-        order_by="bin_captured_at DESC NULLS LAST",
-        limit=_env_int("FUTGG_SEG_OTHER_PRICE_LIMIT", 500),
-        refresh_minutes=_env_int("FUTGG_SEG_OTHER_PRICE_REFRESH_MIN", 45),
-        description="Fresh BIN history for all other tradeable cards.",
+        name="low_liquidity",
+        where=f"sales_count > 0 AND sales_count < {MEDIUM_MIN_SALES}",
+        # Ordered by recency of the last sale rather than by count: within
+        # the tail, "traded recently" is far more informative than
+        # "traded slightly more often".
+        order_by="latest_sale_at DESC NULLS LAST",
+        limit=_env_int("FUTGG_SEG_LOW_LIMIT", 250),
+        refresh_minutes=_env_int("FUTGG_SEG_LOW_REFRESH_MIN", 180),
+        description="Long-tail cards - thin markets where mispricing persists.",
     ),
     Segment(
-        name="price_history_rotation",
-        where="current_bin IS NOT NULL AND bin_captured_at IS NOT NULL",
+        name="recently_active",
+        where="latest_sale_at IS NOT NULL AND latest_sale_at >= now() - interval '2 hours'",
+        order_by="latest_sale_at DESC NULLS LAST",
+        limit=_env_int("FUTGG_SEG_ACTIVE_LIMIT", 200),
+        refresh_minutes=_env_int("FUTGG_SEG_ACTIVE_REFRESH_MIN", 20),
+        description="Cards that have traded in the last two hours.",
+    ),
+    Segment(
+        name="recently_moved",
+        # A BIN materially away from the recent-sales median is either an
+        # opportunity or a trend - both are worth an evaluation. The
+        # sales_count floor keeps single-sale noise from crowding out
+        # well-sampled moves in the ranking (see MOVED_MIN_SALES above).
+        where=(
+            f"current_bin IS NOT NULL AND sales_median IS NOT NULL AND sales_median > 0 "
+            f"AND sales_count >= {MOVED_MIN_SALES} "
+            f"AND abs(current_bin - sales_median) / sales_median >= 0.08"
+        ),
+        # Raw deviation % alone still crowds out well-evidenced moves: a
+        # thin card with 6 sales and a wild, noisy 60% swing outranks a
+        # card with 50 real sales and a genuine 19% swing, even after the
+        # sales_count floor above (that floor removes single-sale noise,
+        # it does not stop a 6-24-sale card from producing a larger, less
+        # reliable ratio than a 50-sale one). Confirmed in production
+        # twice - card_ids 50562269 (50 sales, 22.8% gap) and 192119 (50
+        # sales, 18.9% gap) both evaluated to a live buy/strong_buy signal
+        # on their own /players/{id} lookup and both still failed to rank
+        # into this segment's top LIMIT rows after the sales_count floor
+        # alone. Weighting the ratio by sample size (capped at 50 - the
+        # same order of magnitude as LIQUID_MIN_SALES's idea of "enough
+        # evidence to trust") ranks well-sampled real moves above thin,
+        # noisy ones without touching evaluate_card()'s own gates at all.
+        order_by=(
+            "(abs(current_bin - sales_median) / NULLIF(sales_median, 0)) "
+            "* least(sales_count, 50) DESC"
+        ),
+        # See "liquid" segment's own limit comment above - same trade-off,
+        # same reasoning: the ordering fix above is what actually protects
+        # Donnarumma/Courtois-style cards now, not a large limit. Back to
+        # the original 200.
+        limit=_env_int("FUTGG_SEG_MOVED_LIMIT", 200),
+        refresh_minutes=_env_int("FUTGG_SEG_MOVED_REFRESH_MIN", 20),
+        description="Cards whose live price has moved away from recent sales.",
+    ),
+    Segment(
+        name="near_threshold",
+        # Sitting just above where a buy would trigger. These are the
+        # cards where a small move creates an opportunity, so they deserve
+        # frequent re-checking even though they are not actionable yet.
+        where=(
+            "current_bin IS NOT NULL AND sales_median IS NOT NULL AND sales_median > 0 "
+            "AND current_bin > sales_median * 0.88 AND current_bin <= sales_median * 1.02"
+        ),
+        order_by="current_bin / NULLIF(sales_median, 0) ASC",
+        limit=_env_int("FUTGG_SEG_NEAR_LIMIT", 150),
+        refresh_minutes=_env_int("FUTGG_SEG_NEAR_REFRESH_MIN", 25),
+        description="Cards close to becoming a buy - a small move makes them actionable.",
+    ),
+    Segment(
+        name="never_evaluated",
+        where="TRUE",
+        # The scanner supplies last-evaluated times; ordering by price
+        # staleness here approximates "least recently looked at" without
+        # needing a join against the snapshot table in the candidate
+        # query itself.
         order_by="price_updated_at ASC NULLS FIRST",
-        limit=_env_int("FUTGG_SEG_PRICE_ROTATION_LIMIT", 200),
-        refresh_minutes=_env_int("FUTGG_SEG_PRICE_ROTATION_REFRESH_MIN", 360),
-        description="Rotation pass across cards with price observations.",
+        limit=_env_int("FUTGG_SEG_NEVER_LIMIT", 150),
+        refresh_minutes=_env_int("FUTGG_SEG_NEVER_REFRESH_MIN", 360),
+        description="Cards with no recent evaluation on record.",
     ),
 ]
 

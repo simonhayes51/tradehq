@@ -137,7 +137,7 @@ CANDIDATE_SCAN_LIMIT = 500
 # profitable mid/low-rated opportunities behind a wall of high-rated but
 # possibly illiquid/rarely-traded cards, with no error or symptom other
 # than "why does this card never show up as an opportunity".
-CANDIDATE_SCAN_ORDER_BY = "bin_captured_at DESC NULLS LAST"
+CANDIDATE_SCAN_ORDER_BY = "sales_count DESC NULLS LAST"
 
 
 #: Short-lived cache for _segmented_candidates()'s raw row set (below).
@@ -621,8 +621,33 @@ _bin_by_card_cached_at: float = 0.0
 
 
 async def _sales_for_rows(provider, rows: List[Dict[str, Any]]) -> Dict[int, List[Dict[str, Any]]]:
-    """Compatibility shim: recommendations intentionally do not read sales."""
-    return {}
+    """Batch-fetch the raw sales series backing the trend layer.
+
+    Without this every list endpoint would either issue one sales query
+    per candidate (500+ round trips) or skip the trend layer entirely -
+    and skipping it is what allowed falling knives to be ranked as the
+    best opportunities in the first place. Best-effort: if the batch
+    fetch fails, evaluation continues with no trend data, which caps
+    signals rather than silently restoring the old behaviour.
+    """
+    global _sales_by_card_cache, _sales_by_card_cache_ids, _sales_by_card_cached_at
+    card_ids = frozenset(int(r["source_card_id"]) for r in rows)
+    now = time.monotonic()
+    if (
+        _sales_by_card_cache is not None
+        and (now - _sales_by_card_cached_at) < _SEGMENTED_CANDIDATES_CACHE_SECONDS
+        and card_ids <= _sales_by_card_cache_ids
+    ):
+        return _sales_by_card_cache
+    try:
+        result = await provider.get_sales_by_ids(list(card_ids))
+    except Exception:
+        log.warning("batch sales fetch failed; evaluating without trend data", exc_info=True)
+        return {}
+    _sales_by_card_cache = result
+    _sales_by_card_cache_ids = card_ids
+    _sales_by_card_cached_at = now
+    return result
 
 
 async def _bin_observations_for_rows(provider, rows: List[Dict[str, Any]]) -> Dict[int, List[Any]]:
@@ -766,8 +791,10 @@ async def _score_and_filter(
                 # bad row emptied the entire feed on 2026-09-05.
                 log.warning("evaluate_card failed for card_id=%s", card_id, exc_info=True)
                 continue
-            # Sales confirmation is deliberately not a recommendation gate: the
-            # shared evaluator now requires fresh BIN price history.
+            if require_confirmed_sales and (
+                ci.valuation_source != "completed_sales" or ci.evidence_quality != "confirmed"
+            ):
+                continue
             if max_evidence_age_minutes is not None and (
                 ci.evidence_age_minutes is None or ci.evidence_age_minutes > max_evidence_age_minutes
             ):
@@ -784,11 +811,7 @@ async def _score_and_filter(
                 continue
             if min_confidence is not None and (ci.confidence_score is None or ci.confidence_score < min_confidence):
                 continue
-            # Completed-sale velocity is not measured in price-only mode.
-            # Keep liquidity explicitly unknown instead of fabricating a proxy.
-            if min_liquidity is not None and ci.valuation_source != "bin_history" and (
-                ci.liquidity_score is None or ci.liquidity_score < min_liquidity
-            ):
+            if min_liquidity is not None and (ci.liquidity_score is None or ci.liquidity_score < min_liquidity):
                 continue
             out.append((row, ci))
     return out
@@ -823,9 +846,12 @@ async def get_player_detail(
     # The detail view is the one place we can always afford the extra
     # query for raw sales, so the trend layer runs with real data here
     # rather than degrading to "trend unknown". List endpoints fetch
-    # Recommendation evaluation is price-history-only. The separate /sales
-    # endpoint remains available for users who explicitly request sale records.
-    sales = None
+    # sales in batch (see _score_and_filter's caller).
+    try:
+        sales = await provider.get_recent_sales(card_id)
+    except Exception:
+        log.warning("get_recent_sales failed for card_id=%s", card_id, exc_info=True)
+        sales = []
 
     # Same "always afford it on the detail view" reasoning as sales above -
     # only actually used by evaluate_card when sales evidence is missing or

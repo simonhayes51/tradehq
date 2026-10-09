@@ -618,7 +618,7 @@ async def test_default_full_scan_partitions_target_current_game_year(monkeypatch
     monkeypatch.setattr(
         mod,
         "FULL_SCAN_PARTITIONS",
-        mod.parse_partitions(mod.DEFAULT_FULL_SCAN_PARTITIONS),
+        mod._parse_full_scan_partitions(mod.DEFAULT_FULL_SCAN_PARTITIONS),
     )
     hrefs_by_path = {
         "/players/new/": [_card_href(1)],
@@ -648,7 +648,7 @@ async def test_historical_game_year_adds_listing_prefix(monkeypatch):
     monkeypatch.setattr(
         historical,
         "FULL_SCAN_PARTITIONS",
-        historical.parse_partitions(historical.DEFAULT_FULL_SCAN_PARTITIONS),
+        historical._parse_full_scan_partitions(historical.DEFAULT_FULL_SCAN_PARTITIONS),
     )
     hrefs_by_path = {
         "/26/players/new/": [_card_href(1)],
@@ -704,6 +704,7 @@ async def test_existing_ids_are_scoped_to_selected_game_year():
         async def fetch(self, query, *args):
             self.args = args
             assert "AND game_year = $2" in query
+            assert "AND NOT ('feed_only_placeholder' = ANY(metadata_warnings))" in query
             return [{"source_card_id": 1002}]
 
     conn = FakeConn()

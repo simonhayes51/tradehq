@@ -1,16 +1,5 @@
+# app/services/futgg_intelligence.py
 """
-Price-history-first recommendations for the FUT.GG market layer.
-
-A recommendation uses the current BIN plus distinct hourly BIN observations.
-Asking prices are not completed sales: price-history results are stamped
-valuation_source="bin_history", evidence_quality="estimated", and expose
-liquidity as unknown. A fresh current BIN and a stable or clearly rising
-history are required; downtrends cannot produce a BUY.
-
-evaluate_card() is pure and unit-testable. The sales argument remains in its
-signature for call compatibility but does not affect the price-only result.
-All tax and EA increment calculations delegate to trading_math.
-
 Fair value / recommendation logic for the FUT.GG-backed market layer.
 
 WHAT THIS ENGINE IS
@@ -455,80 +444,95 @@ def _bin_fallback_card_intelligence(
     trend: TrendAssessment, engine_config: EngineConfig,
     bin_config: BinFallbackConfig,
 ) -> CardIntelligence:
-    """Build a price-history recommendation from BIN observations only.
-    Asking prices do not prove sales or liquidity; the result stays labeled
-    estimated, and downtrends are watch-only."""
+    """Builds a CardIntelligence from a QUALIFYING BinValuationResult.
+
+    A qualifying BIN-history result is supporting evidence, not a completed sale.
+    It can explain why a card may be worth watching while sales are unavailable
+    or stale, but it must never become an executable opportunity by itself.
+    """
     current_bin_dec = Decimal(str(current_bin))
-    above_ceiling = current_bin_dec > bin_result.recommended_buy_max
-    if above_ceiling:
+    is_executable = current_bin_dec <= bin_result.recommended_buy_max
+    if not is_executable:
         bin_result.reasons.add(
             rc.PRICE_ABOVE_MAX_BUY,
-            f"Current BIN {int(current_bin):,} is above the price-history buy ceiling "
-            f"of {int(bin_result.recommended_buy_max):,}.",
+            f"Currently {int(current_bin):,} - above the {int(bin_result.recommended_buy_max):,} "
+            "BIN-derived maximum that leaves a worthwhile margin.",
         )
-    entry = bin_result.recommended_buy_max
-    profit = tm.net_profit(bin_result.recommended_sell_target, entry)
-    roi = tm.net_roi(bin_result.recommended_sell_target, entry)
-    break_even = tm.break_even_sale_price(entry)
-    sample = min(bin_result.bin_sample_count or 0, 20) / 20.0
-    freshness = 1.0 - _clamp(
-        (bin_result.evidence_age_minutes or 0) / max(engine_config.default_max_price_age_minutes, 1), 0.0, 1.0,
+        return _insufficient(
+            card_id, bin_result.reasons, as_of=as_of, config=engine_config,
+            risk_level="high", price_age_minutes=bin_result.evidence_age_minutes,
+            trend=trend, current_bin=current_bin,
+        )
+
+    entry_for_expectation = bin_result.recommended_buy_max
+    expected_profit = tm.net_profit(bin_result.recommended_sell_target, entry_for_expectation)
+    expected_roi = tm.net_roi(bin_result.recommended_sell_target, entry_for_expectation)
+    break_even_price = tm.break_even_sale_price(entry_for_expectation)
+
+    # Same geometric-blend philosophy as the sales path's _compute_confidence
+    # (one bad component tanks the whole score), with BIN-specific inputs:
+    # bucket count instead of sales count, bin_volatility instead of sales
+    # dispersion, span-adequacy instead of a second sales-freshness term.
+    sample_component = min(bin_result.bin_sample_count or 0, 20) / 20.0
+    freshness_component = 1.0 - _clamp(
+        (bin_result.evidence_age_minutes or 0) / max(engine_config.default_max_price_age_minutes, 1),
+        0.0, 1.0,
     )
     volatility = bin_result.bin_volatility if bin_result.bin_volatility is not None else bin_config.max_bin_volatility_for_valuation
-    dispersion = 1.0 - _clamp(volatility / max(bin_config.max_bin_volatility_for_valuation, 1e-9), 0.0, 1.0)
-    span = _clamp(
-        (bin_result.bin_history_span_hours or 0.0) / max(bin_config.min_span_hours * 2.0, 1.0), 0.0, 1.0,
+    dispersion_component = 1.0 - _clamp(volatility / bin_config.max_bin_volatility_for_valuation, 0.0, 1.0)
+    span_component = _clamp(
+        (bin_result.bin_history_span_hours or 0.0) / (bin_config.min_span_hours * 2.0), 0.0, 1.0,
     )
-    parts = ((sample, 0.30), (freshness, 0.28), (dispersion, 0.20), (span, 0.22))
-    confidence = 0.0 if any(v <= 0 for v, _ in parts) else _clamp(
-        math.exp(sum(w * math.log(v) for v, w in parts)), 0.0, bin_config.confidence_cap,
+    components = (
+        (max(sample_component, 0.0), 0.30),
+        (max(freshness_component, 0.0), 0.28),
+        (max(dispersion_component, 0.0), 0.20),
+        (max(span_component, 0.0), 0.22),
     )
-    falling = bin_result.bin_trend_direction == "down"
-    actionable = (
-        not falling and not above_ceiling
-        and confidence >= engine_config.min_confidence_for_buy_signal
-        and roi is not None and roi >= bin_config.min_net_roi_for_buy
-    )
-    if falling:
-        bin_result.reasons.add(rc.STALE_MARKET, "Recent BIN observations show a downtrend; wait for stabilization.")
+    if any(base == 0.0 for base, _ in components):
+        raw_confidence = 0.0
     else:
-        bin_result.reasons.add(
-            rc.PRICE_ONLY_EVIDENCE,
-            "This estimate uses BIN price history only; completed sales and liquidity are not measured.",
-        )
+        raw_confidence = _clamp(math.exp(sum(w * math.log(b) for b, w in components)), 0.0, 1.0)
+    # The hard cap - independent of how clean the inputs are, a BIN-only
+    # call can never equal or exceed a sales-confirmed one.
+    confidence = min(raw_confidence, bin_config.confidence_cap)
+
     return CardIntelligence(
-        card_id=card_id, fair_value=bin_result.bin_reference_price,
+        card_id=card_id,
+        fair_value=bin_result.bin_reference_price,
         theoretical_max_buy=bin_result.theoretical_max_buy,
         recommended_buy_max=bin_result.recommended_buy_max,
-        current_executable_buy=int(current_bin) if actionable else None,
-        break_even_price=break_even, recommended_sell_target=bin_result.recommended_sell_target,
-        buy_below=None if actionable else bin_result.recommended_buy_max,
-        expected_profit_after_tax=profit if actionable else None,
-        expected_profit_basis=entry if actionable else None,
-        expected_roi=roi if actionable else None, liquidity_score=None,
-        confidence_score=confidence, risk_level="medium" if actionable else "high",
-        signal="buy" if actionable else "watch",
-        status=STATUS_ACTIVE if actionable else STATUS_WATCH,
-        signal_reasons=bin_result.reasons.messages, reason_codes=bin_result.reasons.codes,
-        reasons=bin_result.reasons.as_dicts(), blocking_codes=bin_result.reasons.blocking_codes,
-        price_age_minutes=bin_result.evidence_age_minutes, sales_sample_size=0,
+        current_executable_buy=None,
+        break_even_price=break_even_price,
+        recommended_sell_target=bin_result.recommended_sell_target,
+        buy_below=bin_result.recommended_buy_max,
+        expected_profit_after_tax=expected_profit,
+        expected_profit_basis=entry_for_expectation,
+        expected_roi=expected_roi,
+        liquidity_score=None,
+        confidence_score=confidence,
+        # Floored at medium, never low - a BIN-derived call is never the
+        # engine's lowest risk tier regardless of how clean its own
+        # numbers look (explicit requirement).
+        risk_level="medium",
+        signal="watch",
+        status=STATUS_WATCH,
+        signal_reasons=bin_result.reasons.messages,
+        reason_codes=bin_result.reasons.codes,
+        reasons=bin_result.reasons.as_dicts(),
+        blocking_codes=bin_result.reasons.blocking_codes,
+        price_age_minutes=bin_result.evidence_age_minutes,
+        sales_sample_size=0,
         sales_window_span_minutes=None,
-        trend_state={"down": "downtrend", "up": "uptrend", "flat": "sideways"}.get(
-            bin_result.bin_trend_direction, "insufficient_trend_data"
-        ),
-        trend_description=(
-            f"BIN asking prices are {bin_result.bin_trend_direction or 'unclear'} "
-            f"over {bin_result.bin_history_span_hours or 0:.1f} hours."
-        ),
-        trend_features={
-            "observation_count": bin_result.bin_sample_count,
-            "span_hours": bin_result.bin_history_span_hours,
-            "bin_trend_direction": bin_result.bin_trend_direction,
-            "bin_volatility": bin_result.bin_volatility,
-        },
-        engine_version=engine_config.version, trend_version=bin_config.version,
-        evaluated_at=as_of, evaluated_bin=int(current_bin),
-        valuation_source="bin_history", evidence_quality="estimated",
+        trend_state=trend.state,
+        trend_description=trend.description,
+        trend_features=trend.features.as_dict(),
+        engine_version=engine_config.version,
+        trend_version=trend.version,
+        evaluated_at=as_of,
+        evaluated_bin=int(current_bin),
+        valuation_source="bin_history",
+        evidence_quality="estimated",
         bin_sample_count=bin_result.bin_sample_count,
         bin_history_span_hours=bin_result.bin_history_span_hours,
         bin_reference_price=bin_result.bin_reference_price,
@@ -536,7 +540,6 @@ def _bin_fallback_card_intelligence(
         bin_volatility=bin_result.bin_volatility,
         evidence_age_minutes=bin_result.evidence_age_minutes,
     )
-
 
 
 def evaluate_card(
@@ -550,12 +553,22 @@ def evaluate_card(
     """Pure function: one futgg_market_snapshot row (or an equivalent
     constructed dict) -> CardIntelligence.
 
-    sales is accepted for caller compatibility and intentionally ignored.
+    `sales` is the optional raw sales series (futgg_sales_history rows)
+    used for trend assessment. When omitted the trend layer reports
+    INSUFFICIENT_TREND_DATA and buy signals are capped rather than
+    blocked - so a caller that cannot afford the extra query degrades to
+    "cannot confirm the trend" rather than to the old, dangerous
+    "trend does not exist" behaviour.
 
-    bin_observations is the supporting history for price-only valuation
-    ([(lowest_bin, captured_at), ...]). Without enough distinct, fresh
-    hourly observations, the result is insufficient_data. See
-    futgg_bin_valuation.py for the evidence gates.
+    `bin_observations` is the optional raw BIN history series
+    ([(lowest_bin, captured_at), ...], e.g.
+    bin_market_signal.load_bin_observations()'s own per-card output) used
+    ONLY when completed-sales evidence is unavailable or stale - see
+    futgg_bin_valuation.py. Omitted entirely (the default), this function's
+    behaviour is byte-for-byte identical to before the BIN-history fallback
+    existed: a card with no trustworthy sales evidence returns
+    insufficient_data exactly as it always has, never a BIN-derived guess a
+    caller did not ask for.
 
     Never raises on missing/None fields - every optional input degrades to
     a documented insufficient-data outcome.
@@ -605,35 +618,6 @@ def evaluate_card(
     max_age = cfg.max_price_age_for_tier(price_tier)
 
     trend = evaluate_trend(sales or [], as_of=as_of, config=TREND_CONFIG)
-
-    # Price-feed history is the sole recommendation evidence; sales are not
-    # consulted for value, trend, confidence, or gating.
-    price_trend = evaluate_trend([], as_of=as_of, config=TREND_CONFIG)
-    if current_bin is None or price_age_minutes is None or price_age_minutes > max_age:
-        reasons.add(rc.NO_LIVE_PRICE if current_bin is None else rc.STALE_MARKET,
-                    "A fresh live BIN is required for a price-history recommendation.")
-        return _insufficient(card_id, reasons, as_of=as_of, config=cfg,
-                             price_age_minutes=price_age_minutes, current_bin=current_bin)
-    try:
-        price_result = evaluate_bin_fallback(
-            card_id, bin_observations or [], current_bin=current_bin,
-            price_age_minutes=price_age_minutes,
-            max_acceptable_price_age_minutes=max_age, as_of=as_of, config=bin_cfg,
-        )
-        if price_result.qualifies:
-            return _bin_fallback_card_intelligence(
-                card_id, price_result, as_of=as_of, current_bin=current_bin,
-                trend=price_trend, engine_config=cfg, bin_config=bin_cfg,
-            )
-        return _insufficient(card_id, price_result.reasons, as_of=as_of,
-                             config=cfg, price_age_minutes=price_age_minutes,
-                             current_bin=current_bin, trend=price_trend)
-    except Exception:
-        log.warning("price-history evaluation failed card_id=%s", card_id, exc_info=True)
-        reasons.add(rc.NO_REALISTIC_EXIT_EVIDENCE, "Price-history evaluation failed safely.")
-        return _insufficient(card_id, reasons, as_of=as_of, config=cfg,
-                             price_age_minutes=price_age_minutes, current_bin=current_bin,
-                             trend=price_trend)
 
     confidence = _compute_confidence(
         sales_count=sales_count, price_age_minutes=price_age_minutes,

@@ -84,7 +84,6 @@ THIN_SALES_WINDOW = "thin_sales_window"
 ELEVATED_EVENT_RISK = "elevated_event_risk"
 
 # ---- Informational ----------------------------------------------------------
-PRICE_ONLY_EVIDENCE = "price_only_evidence"
 INFO_BIN_VS_MEDIAN = "bin_vs_median"
 INFO_SALES_WINDOW = "sales_window"
 INFO_PRICE_AGE = "price_age"

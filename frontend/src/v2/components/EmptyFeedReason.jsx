@@ -21,13 +21,55 @@ import { AlertTriangle, RotateCcw, TrendingUp } from "lucide-react";
 import EmptyState from "./EmptyState";
 import { useFutggMarketFreshness } from "../hooks/useFutggMarket";
 
-// Only required catalogue and BIN-price collectors determine whether
-// this price-based opportunity feed has current market data.
+// DORMANT is intentionally allowed to run far behind its own ~67-hour
+// (4000-minute) sales-refresh interval - see priority_config.py's
+// tier_sales_interval_minutes and the "CRITICAL now matches..." comment
+// there: DORMANT is the low-liquidity, no-recent-sales, no-interest tail
+// this catalogue deliberately stops chasing so real throughput can go to
+// CRITICAL/HIGH instead. The candidate scan behind /opportunities also
+// orders by sales_count DESC (see futgg_market.py's CANDIDATE_SCAN_ORDER_BY),
+// so a DORMANT-tier card was never going to surface as a trade candidate
+// regardless of how fresh its sales data is.
+//
+// Summing DORMANT's own, by-design backlog into "is our sales data
+// behind" made the gate trip on a population that was never relevant to
+// whether the engine has anything to recommend - confirmed live: a
+// 14,946-card catalogue with a healthy CRITICAL/HIGH/NORMAL/LOW picture
+// crossed the 50% threshold by only 245 stale rows out of 7,718 summed
+// across all tiers, and DORMANT alone accounted for 1,566 of them
+// (production `stale_sales_by_priority_tier`: CRITICAL 1096, HIGH 4264,
+// NORMAL 792, LOW 0, DORMANT 1566) - a false "our sales data is behind"
+// on a feed that had real, sufficiently-fresh candidates to show.
+function staleSalesForCandidateTiers(byTier) {
+  if (!byTier || typeof byTier !== "object") return null;
+  return Object.entries(byTier)
+    .filter(([tier]) => tier !== "DORMANT")
+    .reduce((total, [, n]) => total + (Number(n) || 0), 0);
+}
+
+// The age of the WORST silent collector, not the newest - and "silent"
+// per the BACKEND's own `stale` flag on each heartbeat, not a single
+// flat threshold recomputed here.
+//
+// Taking the newest heartbeat hid the outage this was written during:
+// three collectors, one of them dead for three weeks, and the healthy
+// ones reporting minutes ago made the whole pipeline look fine. A
+// pipeline is as fresh as its stalest stage - but "stalest" has to be
+// judged against each collector's own expected cadence, not one number
+// for all of them. futgg_player_sync is a one-shot DAILY discovery job;
+// a same-day gap since it last ran is normal, not an outage. Comparing
+// its age against the same flat threshold used for the two continuous
+// collectors (which cycle every few minutes) reported it silent for
+// roughly 18 of every 24 hours - confirmed live in production - which is
+// exactly the false "our sales data is behind" this component exists to
+// avoid saying. The backend's own `stale` field (see
+// app/services/readiness.py's COLLECTOR_SILENT_HOURS_BY_WORKER) is
+// already computed per-worker; trusting it here instead of re-deriving
+// a second, flat-threshold answer is what actually fixes that, and
+// keeps this file from silently drifting out of sync with the backend's
+// own judgement call again.
 function silentCollectorHours(heartbeats) {
   const staleAges = (heartbeats || [])
-    // SalesSync is retired. Its heartbeat must not make current BIN prices
-    // look unavailable to this surface.
-    .filter((h) => h.worker !== "futgg_sales_sync")
     .filter((h) => h.stale && Number.isFinite(h.age_hours))
     .map((h) => h.age_hours);
   if (!staleAges.length) return null;
