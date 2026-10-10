@@ -157,6 +157,15 @@ def sales_catalogue_filter(alias: str = "p") -> str:
 BATCH_SIZE = env_int("FUTGG_SALES_BATCH_SIZE", 8, minimum=1)
 #: Pause between batches, to stay under the signing throttle.
 BATCH_DELAY = env_float("FUTGG_SALES_BATCH_DELAY", 0.5, minimum=0.0)
+# Guardrails derived from repeated 10 Oct 429 failures: the rolling
+# controller kept accelerating 6/20s -> 8/8s across clean batches,
+# then hit a hard rate-limit wall early in the next cycle. These are
+# conservative effective bounds, irrespective of older Railway envs.
+# Tune only after observing several consecutive clean cycles.
+SUSTAINABLE_MAX_BATCH = env_int("FUTGG_SALES_SUSTAINABLE_MAX_BATCH", 6, minimum=1)
+SUSTAINABLE_MIN_DELAY = env_float("FUTGG_SALES_SUSTAINABLE_MIN_DELAY", 20.0, minimum=0.5)
+THROTTLE_AUTO_RECOVERY = env_bool("FUTGG_SALES_THROTTLE_AUTO_RECOVERY", False)
+
 CYCLE_SLEEP = env_float("FUTGG_SALES_CYCLE_SLEEP", 5.0, minimum=0.0)
 # Overnight 10 Oct: every clean 90-card cycle was followed immediately
 # by a 429 circuit-breaker cycle, then a 3600s lockout. A per-batch
@@ -164,7 +173,7 @@ CYCLE_SLEEP = env_float("FUTGG_SALES_CYCLE_SLEEP", 5.0, minimum=0.0)
 # Deliberately pace completed cycles to avoid spending the remaining
 # quota in a doomed immediate follow-up. Configurable for measured tuning.
 CLEAN_CYCLE_COOLDOWN_SECONDS = env_float(
-    "FUTGG_SALES_CLEAN_CYCLE_COOLDOWN_SECONDS", 300.0, minimum=0.0
+    "FUTGG_SALES_CLEAN_CYCLE_COOLDOWN_SECONDS", 900.0, minimum=0.0
 )
 IDLE_SLEEP = env_float("FUTGG_SALES_IDLE_SLEEP", 30.0, minimum=5.0)
 #: How many cards to pull per selection pass.
@@ -775,21 +784,21 @@ class AdaptiveThrottle:
         # throttle had backed off to, e.g. batch=2, and the ceiling could
         # then never recover back toward BATCH_SIZE even after FUT.GG
         # stopped rate-limiting entirely.
-        self.max_batch = batch_size
+        self.max_batch = max(1, min(batch_size, SUSTAINABLE_MAX_BATCH))
         self.min_batch = 1
-        self.min_delay = delay
-        self.max_delay = max(delay * 40, 10.0)
+        self.min_delay = max(delay, SUSTAINABLE_MIN_DELAY)
+        self.max_delay = max(self.min_delay * 4, 30.0)
         # Resume values are clamped into the bounds above - persisted
         # state from a run under a DIFFERENT BATCH_SIZE/BATCH_DELAY
         # config (an env var changed between runs) must not start outside
         # what this run's own bounds allow.
         self.batch_size = (
             max(self.min_batch, min(self.max_batch, resume_batch_size))
-            if resume_batch_size is not None else batch_size
+            if resume_batch_size is not None else self.max_batch
         )
         self.delay = (
             max(self.min_delay, min(self.max_delay, resume_delay))
-            if resume_delay is not None else delay
+            if resume_delay is not None else self.min_delay
         )
         self._clean_streak = 0
         self.consecutive_fully_throttled_batches = 0
@@ -841,6 +850,13 @@ class AdaptiveThrottle:
             )
             if not forgivable:
                 self._clean_streak = 0
+            return
+
+        if not THROTTLE_AUTO_RECOVERY:
+            # A clean batch does not prove the upstream quota has reset:
+            # its rolling window also includes prior completed cycles.
+            # Keep the current sustainable rate until an operator opts in
+            # to measured recovery. Genuine 429s still slow us down.
             return
 
         self._clean_streak += 1
