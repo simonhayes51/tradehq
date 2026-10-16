@@ -1378,9 +1378,10 @@ async def run_forever() -> None:
     if CHANGE_ONLY_WRITES:
         try:
             seeded = await seed_last_written(pool)
-        except asyncpg.PostgresError:
-            # Do not crash/restart forever on a low-disk database. The first
-            # cycle safely records one baseline observation per feed card.
+        except (asyncpg.PostgresError, TimeoutError):
+            # Startup seeding is only an optimization. A timeout on a large
+            # history table must not prevent the price worker from running;
+            # the first cycle writes a baseline and fills the in-memory cache.
             log.exception(
                 "Cannot seed previous prices; continuing with an empty "
                 "change-only cache (first successful cycle writes baselines)"
