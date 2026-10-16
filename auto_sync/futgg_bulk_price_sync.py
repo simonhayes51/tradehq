@@ -168,8 +168,14 @@ def env_int(name: str, default: int, minimum: int | None = None) -> int:
 # cycle, whereas a manual flag just delays the first useful write by a
 # deploy. Set FUTGG_BULK_APPLY=false to force a read-only cycle.
 APPLY = env_bool("FUTGG_BULK_APPLY", True)
-PLATFORM = os.getenv("FUTGG_BULK_PLATFORM", "ps5")
+PLATFORM = os.getenv("FUTGG_BULK_PLATFORM", "ps5").strip().lower()
+if PLATFORM not in {"ps5", "pc"}:
+    raise RuntimeError("FUTGG_BULK_PLATFORM must be 'ps5' or 'pc'.")
 GAME_YEAR = int(os.getenv("FUTGG_GAME_YEAR", "27"))
+# Keep PC observations separate: existing TradeHQ consumers interpret
+# futgg_bin_history as the console market.
+PRICE_HISTORY_TABLE = "futbot_pc_bin_history" if PLATFORM == "pc" else "futgg_bin_history"
+HEARTBEAT_WORKER = "futgg_bulk_price_sync" if PLATFORM == "ps5" else "futgg_bulk_price_sync_pc"
 INTERVAL_SECONDS = env_int("FUTGG_BULK_INTERVAL_SECONDS", 300, minimum=60)
 HEADLESS = env_bool("PLAYWRIGHT_HEADLESS", True)
 TIMEOUT_MS = env_int("PLAYWRIGHT_TIMEOUT_MS", 45000, minimum=5000)
@@ -336,7 +342,7 @@ async def seed_last_written(pool) -> int:
             FROM futgg_players p
             JOIN LATERAL (
                 SELECT h.lowest_bin, h.captured_at
-                FROM futgg_bin_history h
+                FROM {PRICE_HISTORY_TABLE} h
                 WHERE h.source_card_id = p.source_card_id
                   AND h.platform = $1
                   AND h.game_year = $2
@@ -347,7 +353,7 @@ async def seed_last_written(pool) -> int:
             WHERE p.game_year = $2
               AND p.is_active
               AND p.is_tradeable IS DISTINCT FROM FALSE
-            """,
+            """.format(PRICE_HISTORY_TABLE),
             PLATFORM, GAME_YEAR,
         )
     for row in rows:
@@ -438,13 +444,13 @@ async def prune_bin_history(pool) -> int:
         for _ in range(max_chunks):
             status = await conn.execute(
                 """
-                DELETE FROM futgg_bin_history
+                DELETE FROM {PRICE_HISTORY_TABLE}
                 WHERE id IN (
-                    SELECT id FROM futgg_bin_history
+                    SELECT id FROM {PRICE_HISTORY_TABLE}
                     WHERE captured_at < now() - make_interval(days => $1)
                     LIMIT $2
                 )
-                """,
+                """.format(PRICE_HISTORY_TABLE),
                 BIN_HISTORY_RETENTION_DAYS, PRUNE_BATCH_ROWS,
             )
             # asyncpg returns the command tag, e.g. "DELETE 50000".
@@ -1179,7 +1185,7 @@ async def ingest_once(
                 # once; writing it row-by-row would reintroduce exactly
                 # the round-trip cost the per-card path suffered from.
                 await conn.copy_records_to_table(
-                    "futgg_bin_history",
+                    PRICE_HISTORY_TABLE,
                     records=[(cid, price, captured, PLATFORM, GAME_YEAR) for cid, price, captured in records],
                     columns=["source_card_id", "lowest_bin", "captured_at", "platform", "game_year"],
                 )
@@ -1200,30 +1206,23 @@ async def ingest_once(
                 # how we obtained the price we hold, and skipping a write
                 # obtained nothing new to describe.
                 #
-                # KNOWN CAVEAT running a second PLATFORM instance (e.g.
-                # pc alongside this one's ps5): futgg_players itself has
-                # no per-platform columns, so whichever platform's
-                # worker last ran wins price_updated_at/price_checked_at/
-                # last_price_status here, even though futgg_bin_history
-                # (and the view's current_bin, pinned to platform='ps5'
-                # by migration 094) stays correct per platform. In
-                # practice this only blurs the *freshness metadata* by
-                # up to one cycle, never the price value itself - not
-                # worth splitting these columns per-platform unless that
-                # freshness precision turns out to matter.
-                await conn.execute(
-                    """
-                    UPDATE futgg_players p
-                    SET price_updated_at = $2,
-                        price_checked_at = $2,
-                        last_price_status = 'bulk_feed'
-                    WHERE p.source_card_id = ANY($1::bigint[])
-                      AND p.game_year = $3
-                    """,
-                    [r[0] for r in records], now, GAME_YEAR,
-                )
+                # The shared freshness/status columns on futgg_players
+                # describe the console feed only. PC observations stay in
+                # their own history table and do not overwrite console state.
+                if PLATFORM == "ps5":
+                    await conn.execute(
+                        """
+                        UPDATE futgg_players p
+                        SET price_updated_at = $2,
+                            price_checked_at = $2,
+                            last_price_status = 'bulk_feed'
+                        WHERE p.source_card_id = ANY($1::bigint[])
+                          AND p.game_year = $3
+                        """,
+                        [r[0] for r in records], now, GAME_YEAR,
+                    )
                 skipped_ids = [cid for cid, _ in candidates if cid not in written_ids]
-                if skipped_ids:
+                if skipped_ids and PLATFORM == "ps5":
                     await conn.execute(
                         """
                         UPDATE futgg_players p
@@ -1233,7 +1232,7 @@ async def ingest_once(
                         """,
                         skipped_ids, now, GAME_YEAR,
                     )
-                if no_market_ids:
+                if no_market_ids and PLATFORM == "ps5":
                     # Deliberately NOT writing a bin_history row here.
                     # lowest_bin is INTEGER NOT NULL, and inventing a 0
                     # would be worse than saying nothing - it would read
@@ -1263,7 +1262,7 @@ async def ingest_once(
                         """,
                         no_market_ids, now, GAME_YEAR,
                     )
-                if _last_price_changes:
+                if _last_price_changes and PLATFORM == "ps5":
                     # Handoff to the triggered-detailed-sales queue
                     # (auto_sync/futgg_sales_triggers.py, Part 5): this
                     # worker and futgg_sales_sync.py are separate
@@ -1343,6 +1342,19 @@ async def run_forever() -> None:
     pool = await create_pool_with_retry(
         DATABASE_URL, min_size=1, max_size=4, command_timeout=120
     )
+    lock_conn = await pool.acquire()
+    lock_acquired = await lock_conn.fetchval(
+        "SELECT pg_try_advisory_lock(483920, hashtext($1))",
+        f"{GAME_YEAR}:{PLATFORM}",
+    )
+    if not lock_acquired:
+        log.warning(
+            "another %s price worker already owns the FC%s lock; exiting",
+            PLATFORM.upper(), GAME_YEAR,
+        )
+        await pool.release(lock_conn)
+        await pool.close()
+        return
     PLAYER_URL = await resolve_player_url(pool)
     log.info(
         "%s starting: game_year=%s platform=%s interval=%ss apply=%s url=%s "
@@ -1443,7 +1455,7 @@ async def run_forever() -> None:
                 # no extra try/except needed here, same as every other
                 # caller of it.
                 await heartbeat(
-                    pool, "futgg_bulk_price_sync", ok=bool(result.get("ok")),
+                    pool, HEARTBEAT_WORKER, ok=bool(result.get("ok")),
                     detail=(
                         f"cycle={cycle_number} coverage_pct={result.get('coverage_pct')} "
                         f"written={result.get('written')} no_market={result.get('no_market')} "
@@ -1480,8 +1492,13 @@ async def run_forever() -> None:
                 )
                 await sleep_or_shutdown(next_sleep, shutdown_event)
         finally:
-            log.info("shutting down: closing browser and database pool")
+            log.info("shutting down: releasing %s / FC%s lock", PLATFORM.upper(), GAME_YEAR)
             await browser.close()
+            await lock_conn.fetchval(
+                "SELECT pg_advisory_unlock(483920, hashtext($1))",
+                f"{GAME_YEAR}:{PLATFORM}",
+            )
+            await pool.release(lock_conn)
             await pool.close()
     log.info("shutdown complete")
 
