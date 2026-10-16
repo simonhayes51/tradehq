@@ -353,7 +353,7 @@ async def seed_last_written(pool) -> int:
             WHERE p.game_year = $2
               AND p.is_active
               AND p.is_tradeable IS DISTINCT FROM FALSE
-            """.format(PRICE_HISTORY_TABLE),
+            """.format(PRICE_HISTORY_TABLE=PRICE_HISTORY_TABLE),
             PLATFORM, GAME_YEAR,
         )
     for row in rows:
@@ -450,7 +450,7 @@ async def prune_bin_history(pool) -> int:
                     WHERE captured_at < now() - make_interval(days => $1)
                     LIMIT $2
                 )
-                """.format(PRICE_HISTORY_TABLE),
+                """.format(PRICE_HISTORY_TABLE=PRICE_HISTORY_TABLE),
                 BIN_HISTORY_RETENTION_DAYS, PRUNE_BATCH_ROWS,
             )
             # asyncpg returns the command tag, e.g. "DELETE 50000".
