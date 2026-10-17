@@ -178,9 +178,10 @@ async def ingest_misc_price_feed(
         return {"ok": False, "reason": "feed_not_captured", "written": 0}
     items = parse_misc_price_feed(payload, game_year=game_year, platform=platform)
     now = datetime.now(timezone.utc)
-    # Dry-run does not warm the in-memory cache: the next real run must still
-    # write its baseline observations.
-    state = _last_written if apply else {}
+    # Work against a temporary state. Commit that cache only after the
+    # database write succeeds, otherwise a transient DB failure could cause
+    # the next cycle to think an unwritten price was already persisted.
+    state = dict(_last_written) if apply else {}
     records, changed, heartbeats = select_misc_rows_to_write(
         items, now=now, game_year=game_year, platform=platform, state=state,
     )
@@ -200,6 +201,8 @@ async def ingest_misc_price_feed(
                     "status", "price_updated_at", "last_checked_at", "captured_at",
                 ],
             )
+    _last_written.clear()
+    _last_written.update(state)
     _cycles += 1
     pruned = 0
     if _cycles % PRUNE_EVERY_CYCLES == 0:
