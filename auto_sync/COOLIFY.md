@@ -165,12 +165,15 @@ Changed prices/statuses are written immediately, with a staggered
 heartbeat for unchanged items. Null prices stay null and retain FUT.GG's
 status (for example, `no_listings`) rather than being treated as zero.
 
-Before deploying the updated PriceSync workers, apply backend migration
-`103_futgg_misc_price_history.sql` to the same core PostgreSQL database
-used by PriceSync. No new Coolify service or environment variable is
-needed: the existing PC and PS5 workers collect their respective feeds
-every five minutes. Check the worker logs for `misc prices ps5` or
-`misc prices pc` and item counts after redeploy.
+Apply backend migration `103_futgg_misc_price_history.sql` to the
+same core PostgreSQL database used by PriceSync before relying on this
+feed. If the backend has `RUN_MIGRATIONS_ON_BOOT=1`, its normal deploy
+will apply the migration; otherwise apply it through the repository's
+normal core-migration procedure before redeploying PriceSync. No new
+Coolify service or price-worker environment variable is needed: the
+existing PC and PS5 workers collect their respective feeds every five
+minutes. Check their logs for `misc prices ps5` or `misc prices pc`
+and item counts after redeploy.
 
 Example latest-price query:
 
