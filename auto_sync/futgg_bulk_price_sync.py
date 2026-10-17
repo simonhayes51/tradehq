@@ -133,11 +133,12 @@ from db_connect import connect_with_retry, create_pool_with_retry
 
 from futgg_instrumentation import StageTimers
 from monitoring import heartbeat
+from futgg_misc_prices import ingest_misc_price_feed
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("futgg_bulk_price_sync")
 
-SCRIPT_VERSION = "futgg-bulk-price-sync-v1"
+SCRIPT_VERSION = "futgg-bulk-price-sync-v2-misc"
 
 DATABASE_URL = (os.getenv("DATABASE_URL") or "").strip()
 if not DATABASE_URL:
@@ -312,6 +313,7 @@ def _is_expected_price_feed_url(url: str, marker: str, game_year: int | None = N
 
 INDEX_MARKER = "player-prices-index"
 DYN_MARKER = f"player-prices-{PLATFORM}-dyn"
+MISC_MARKER = f"misc-prices-{PLATFORM}"
 
 #: Detects a dyn feed for ANY platform, not just the configured PLATFORM.
 #: Purely diagnostic for now (see harvest_feed's on_response) - added
@@ -688,7 +690,7 @@ async def harvest_feed(page, url: str) -> dict[str, Any]:
         if response.url.endswith("manifest.json") and "manifest" not in manifest_holder:
             manifest_holder["manifest"] = True
             pending.append(asyncio.ensure_future(read_manifest(response)))
-        for marker in (INDEX_MARKER, DYN_MARKER):
+        for marker in (INDEX_MARKER, DYN_MARKER, MISC_MARKER):
             # Substring match: the content hash changes on every
             # republish, so an exact URL match would silently stop
             # working within the hour.
@@ -771,6 +773,7 @@ async def harvest_feed(page, url: str) -> dict[str, Any]:
             for key, logical_name in (
                 (INDEX_MARKER, "player-prices-index"),
                 (DYN_MARKER, f"player-prices-{PLATFORM}-dyn"),
+                (MISC_MARKER, MISC_MARKER),
             ):
                 if captured.get(key) is not None:
                     continue
@@ -936,6 +939,27 @@ async def resolve_player_url(pool: asyncpg.Pool) -> str:
     return url or f"https://www.fut.gg{fallback_prefix}/players/"
 
 
+async def _ingest_misc_capture(pool: asyncpg.Pool, captured: dict[str, Any]) -> None:
+    payload = captured.get(MISC_MARKER)
+    if payload is None:
+        log.info("misc prices not captured for %s this cycle", PLATFORM)
+        return
+    try:
+        result = await ingest_misc_price_feed(
+            pool, payload, game_year=GAME_YEAR, platform=PLATFORM, apply=APPLY,
+        )
+        log.info(
+            "misc prices %s: %d/%d items written (%d changed, %d heartbeat%s)",
+            PLATFORM, result.get("written", 0), result.get("items", 0),
+            result.get("changed", 0), result.get("heartbeats", 0),
+            f", {result.get('pruned')} pruned" if result.get("pruned") else "",
+        )
+    except Exception:
+        # Misc feeds are additive: a missing or malformed misc payload must
+        # never prevent the existing player-price cycle from running.
+        log.exception("misc price import failed for %s; continuing player prices", PLATFORM)
+
+
 async def ingest_once(
     pool: asyncpg.Pool,
     page,
@@ -944,6 +968,11 @@ async def ingest_once(
 ) -> dict[str, Any]:
     with timers.track("harvest"):
         captured = await harvest_feed(page, PLAYER_URL)
+
+    # Managers, manager leagues, and chemistry styles share this page-load
+    # feed but live in a separate history table. Their ingestion remains
+    # independent of player-feed coverage checks.
+    await _ingest_misc_capture(pool, captured)
 
     index = captured.get(INDEX_MARKER)
     dyn = captured.get(DYN_MARKER)
@@ -978,6 +1007,7 @@ async def ingest_once(
                     )
                 if recovered is not None:
                     captured = recovered
+                    await _ingest_misc_capture(pool, captured)
                     index = captured.get(INDEX_MARKER)
                     dyn = captured.get(DYN_MARKER)
                     break
