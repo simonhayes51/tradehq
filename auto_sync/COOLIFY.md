@@ -155,6 +155,42 @@ crawling concurrently.
 `PLAYWRIGHT_HEADLESS` (default `true`). See
 `futgg_bulk_price_sync.py`'s module docstring for the full mechanism.
 
+### Manager and consumable prices
+
+The same worker also captures FUT.GG's `misc-prices-ps5` or
+`misc-prices-pc` feed on each page load. It stores price history for
+manager cards, manager leagues, and chemistry styles in
+`futgg_misc_price_history`; player BIN history remains unchanged.
+Changed prices/statuses are written immediately, with a staggered
+heartbeat for unchanged items. Null prices stay null and retain FUT.GG's
+status (for example, `no_listings`) rather than being treated as zero.
+
+Apply backend migration `103_futgg_misc_price_history.sql` to the
+same core PostgreSQL database used by PriceSync before relying on this
+feed. If the backend has `RUN_MIGRATIONS_ON_BOOT=1`, its normal deploy
+will apply the migration; otherwise apply it through the repository's
+normal core-migration procedure before redeploying PriceSync. No new
+Coolify service or price-worker environment variable is needed: the
+existing PC and PS5 workers collect their respective feeds every five
+minutes. Check their logs for `misc prices ps5` or `misc prices pc`
+and item counts after redeploy.
+
+Example latest-price query:
+
+```sql
+SELECT DISTINCT ON (item_type, item_id)
+       item_type, item_id, price, status, platform, captured_at
+FROM futgg_misc_price_history
+WHERE game_year = 27 AND platform = 'ps5'
+ORDER BY item_type, item_id, captured_at DESC;
+```
+
+The history table keeps 30 days by default. Optional settings:
+`FUTGG_MISC_PRICE_HEARTBEAT_MINUTES` (default `15`),
+`FUTGG_MISC_PRICE_RETENTION_DAYS` (default `30`),
+`FUTGG_MISC_PRICE_PRUNE_EVERY_CYCLES` (default `12`), and
+`FUTGG_MISC_PRICE_PRUNE_BATCH_ROWS` (default `10000`).
+
 ### Self-healing rediscovery
 
 PriceSync picks one player page at startup (`resolve_player_url()`,
