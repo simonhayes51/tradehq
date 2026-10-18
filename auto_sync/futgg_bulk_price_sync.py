@@ -1473,24 +1473,28 @@ async def run_forever() -> None:
                 )
                 return context, await context.new_page()
 
-            context, page = await fresh_page()
             while not shutdown_event.is_set():
                 timers = StageTimers()
                 started = time.perf_counter()
                 cycle_number += 1
                 result: dict[str, Any] = {}
+                context = None
                 try:
+                    # FUT.GG's page renderer has been observed crashing on
+                    # the second navigation when a page is reused across
+                    # five-minute cycles. Use a clean context for each cycle
+                    # so every feed capture starts from a fresh renderer.
+                    context, page = await fresh_page()
                     result = await ingest_once(pool, page, timers, shutdown_event=shutdown_event)
                 except Exception:
                     log.exception("ingest failed")
                     result = {"ok": False, "reason": "page_crashed"}
-                    try:
-                        await context.close()
-                    except Exception:
-                        log.warning("failed to close crashed browser context", exc_info=True)
-                    if shutdown_event.is_set():
-                        break
-                    context, page = await fresh_page()
+                finally:
+                    if context is not None:
+                        try:
+                            await context.close()
+                        except Exception:
+                            log.warning("failed to close price-cycle browser context", exc_info=True)
 
                 # Best-effort, per cycle: GET /api/v2/market/freshness
                 # (backend/app/services/market_data_provider.py) reads
