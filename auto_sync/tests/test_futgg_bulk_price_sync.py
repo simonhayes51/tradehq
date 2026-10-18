@@ -192,6 +192,57 @@ async def test_normal_capture_succeeds_without_discovery(monkeypatch):
     assert any("p.game_year = $3" in query and args[-1] == mod.GAME_YEAR for query, args in pool.conn.executed)
 
 
+@run_async
+async def test_both_platforms_are_captured_and_written_in_one_cycle(monkeypatch):
+    _set_discovery_env(monkeypatch)
+    monkeypatch.setattr(mod, "PLATFORMS", ("ps5", "pc"))
+    monkeypatch.setattr(mod, "DYN_MARKER", mod.DYN_MARKERS["ps5"])
+    monkeypatch.setattr(mod, "_last_written_by_platform", {"ps5": {}, "pc": {}})
+    monkeypatch.setattr(mod, "_last_price_changes_by_platform", {})
+    ids = [100, 101]
+    index, ps5 = _feed_payloads(ids, [1000, 1200])
+    _, pc = _feed_payloads(ids, [2000, 2200])
+    responses = {
+        f"https://r2.fut.gg/27/{mod.INDEX_MARKER}.v1.index.json": index,
+        f"https://r2.fut.gg/27/{mod.DYN_MARKERS['ps5']}.v1.ps5.json": ps5,
+        f"https://r2.fut.gg/27/{mod.DYN_MARKERS['pc']}.v1.pc.json": pc,
+    }
+    page = _FakePage({PLAYER_URL: responses})
+    pool = _FakePool(ours_rows=[{"source_card_id": 100, "rating": 90}])
+
+    result = await mod.ingest_once(pool, page, mod.StageTimers())
+
+    assert result["ok"] is True
+    assert result["platform_results"]["ps5"]["written"] == 1
+    assert result["platform_results"]["pc"]["written"] == 1
+    assert [table for table, _, _ in pool.conn.copied] == [
+        "futgg_bin_history", "futbot_pc_bin_history",
+    ]
+    assert all(len(rows) == 1 for _, rows, _ in pool.conn.copied)
+
+
+@run_async
+async def test_both_platforms_refuse_partial_write_when_one_feed_is_misaligned(monkeypatch):
+    _set_discovery_env(monkeypatch)
+    monkeypatch.setattr(mod, "PLATFORMS", ("ps5", "pc"))
+    monkeypatch.setattr(mod, "DYN_MARKER", mod.DYN_MARKERS["ps5"])
+    ids = [100, 101]
+    index, ps5 = _feed_payloads(ids, [1000, 1200])
+    _, pc = _feed_payloads(ids, [2000])
+    responses = {
+        f"https://r2.fut.gg/27/{mod.INDEX_MARKER}.v1.index.json": index,
+        f"https://r2.fut.gg/27/{mod.DYN_MARKERS['ps5']}.v1.ps5.json": ps5,
+        f"https://r2.fut.gg/27/{mod.DYN_MARKERS['pc']}.v1.pc.json": pc,
+    }
+    page = _FakePage({PLAYER_URL: responses})
+    pool = _FakePool(ours_rows=[{"source_card_id": 100, "rating": 90}])
+
+    result = await mod.ingest_once(pool, page, mod.StageTimers())
+
+    assert result["reason"] == "feed_misaligned"
+    assert not pool.conn.copied
+
+
 # ---------------------------------------------------------------------
 # Capture fails, discovery succeeds, immediate retry succeeds
 # ---------------------------------------------------------------------

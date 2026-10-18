@@ -170,13 +170,14 @@ def env_int(name: str, default: int, minimum: int | None = None) -> int:
 # deploy. Set FUTGG_BULK_APPLY=false to force a read-only cycle.
 APPLY = env_bool("FUTGG_BULK_APPLY", True)
 PLATFORM = os.getenv("FUTGG_BULK_PLATFORM", "ps5").strip().lower()
-if PLATFORM not in {"ps5", "pc"}:
-    raise RuntimeError("FUTGG_BULK_PLATFORM must be 'ps5' or 'pc'.")
+if PLATFORM not in {"ps5", "pc", "both"}:
+    raise RuntimeError("FUTGG_BULK_PLATFORM must be 'ps5', 'pc', or 'both'.")
 GAME_YEAR = int(os.getenv("FUTGG_GAME_YEAR", "27"))
 # Keep PC observations separate: existing TradeHQ consumers interpret
 # futgg_bin_history as the console market.
-PRICE_HISTORY_TABLE = "futbot_pc_bin_history" if PLATFORM == "pc" else "futgg_bin_history"
-HEARTBEAT_WORKER = "futgg_bulk_price_sync" if PLATFORM == "ps5" else "futgg_bulk_price_sync_pc"
+PLATFORMS = ("ps5", "pc") if PLATFORM == "both" else (PLATFORM,)
+PRICE_HISTORY_TABLES = {"ps5": "futgg_bin_history", "pc": "futbot_pc_bin_history"}
+HEARTBEAT_WORKERS = {"ps5": "futgg_bulk_price_sync", "pc": "futgg_bulk_price_sync_pc"}
 INTERVAL_SECONDS = env_int("FUTGG_BULK_INTERVAL_SECONDS", 300, minimum=60)
 HEADLESS = env_bool("PLAYWRIGHT_HEADLESS", True)
 TIMEOUT_MS = env_int("PLAYWRIGHT_TIMEOUT_MS", 45000, minimum=5000)
@@ -243,7 +244,8 @@ PRUNE_EVERY_N_CYCLES = env_int("FUTGG_BIN_HISTORY_PRUNE_EVERY_N_CYCLES", 12, min
 #: from the database, then maintained in memory: consulting the database
 #: for "what did we last write" on every cycle would reintroduce the
 #: expensive whole-table scan this is trying to avoid.
-_last_written: dict[int, tuple[int, datetime]] = {}
+_last_written_by_platform: dict[str, dict[int, tuple[int, datetime]]] = {"ps5": {}, "pc": {}}
+_last_written = _last_written_by_platform[PLATFORMS[0]]
 _last_written_seeded = False
 
 #: Part 5 (triggered detailed-sales queue) needs to know WHICH cards had
@@ -262,6 +264,7 @@ _last_written_seeded = False
 #: a "change" in the sense that mattered enough to write, but not one
 #: with a real prior value to compare against.
 _last_price_changes: list[tuple[int, "int | None", int]] = []
+_last_price_changes_by_platform: dict[str, list[tuple[int, int, int]]] = {}
 
 #: A stable, operator-maintained "known good" FUT.GG player URL to fall
 #: back to when the normal PLAYER_URL stops yielding the feed. Use a
@@ -312,8 +315,10 @@ def _is_expected_price_feed_url(url: str, marker: str, game_year: int | None = N
 
 
 INDEX_MARKER = "player-prices-index"
-DYN_MARKER = f"player-prices-{PLATFORM}-dyn"
-MISC_MARKER = f"misc-prices-{PLATFORM}"
+DYN_MARKERS = {platform: f"player-prices-{platform}-dyn" for platform in ("ps5", "pc")}
+MISC_MARKERS = {platform: f"misc-prices-{platform}" for platform in ("ps5", "pc")}
+DYN_MARKER = DYN_MARKERS[PLATFORMS[0]]
+MISC_MARKER = MISC_MARKERS[PLATFORMS[0]]
 
 #: Detects a dyn feed for ANY platform, not just the configured PLATFORM.
 #: Purely diagnostic for now (see harvest_feed's on_response) - added
@@ -337,37 +342,40 @@ async def seed_last_written(pool) -> int:
     existing (source_card_id, captured_at DESC) index for each FC27 card.
     """
     global _last_written_seeded
+    total = 0
     async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            """
-            SELECT p.source_card_id, latest.lowest_bin, latest.captured_at
-            FROM futgg_players p
-            JOIN LATERAL (
-                SELECT h.lowest_bin, h.captured_at
-                FROM {PRICE_HISTORY_TABLE} h
-                WHERE h.source_card_id = p.source_card_id
-                  AND h.platform = $1
-                  AND h.game_year = $2
-                  AND h.captured_at >= now() - interval '2 days'
-                ORDER BY h.captured_at DESC
-                LIMIT 1
-            ) latest ON TRUE
-            WHERE p.game_year = $2
-              AND p.is_active
-              AND p.is_tradeable IS DISTINCT FROM FALSE
-            """.format(PRICE_HISTORY_TABLE=PRICE_HISTORY_TABLE),
-            PLATFORM, GAME_YEAR,
-        )
-    for row in rows:
-        _last_written[int(row["source_card_id"])] = (
-            int(row["lowest_bin"]), row["captured_at"],
-        )
+        for platform in PLATFORMS:
+            rows = await conn.fetch(
+                """
+                SELECT p.source_card_id, latest.lowest_bin, latest.captured_at
+                FROM futgg_players p
+                JOIN LATERAL (
+                    SELECT h.lowest_bin, h.captured_at
+                    FROM {table} h
+                    WHERE h.source_card_id = p.source_card_id
+                      AND h.platform = $1
+                      AND h.game_year = $2
+                      AND h.captured_at >= now() - interval '2 days'
+                    ORDER BY h.captured_at DESC
+                    LIMIT 1
+                ) latest ON TRUE
+                WHERE p.game_year = $2
+                  AND p.is_active
+                  AND p.is_tradeable IS DISTINCT FROM FALSE
+                """.format(table=PRICE_HISTORY_TABLES[platform]),
+                platform, GAME_YEAR,
+            )
+            state = _last_written_by_platform[platform]
+            for row in rows:
+                state[int(row["source_card_id"])] = (int(row["lowest_bin"]), row["captured_at"])
+            total += len(rows)
     _last_written_seeded = True
-    return len(rows)
+    return total
 
 
 def select_rows_to_write(
     candidates: list[tuple[int, int]], now: datetime,
+    *, platform: str | None = None, commit_state: bool = True,
 ) -> tuple[list[tuple[int, int, datetime]], int, int]:
     """Filter (card_id, price) pairs down to what actually needs writing.
 
@@ -386,29 +394,43 @@ def select_rows_to_write(
     widening this function's long-established return signature.
     """
     global _last_price_changes
-    _last_price_changes = []
+    platform = platform or PLATFORMS[0]
+    state = _last_written_by_platform[platform]
+    changes: list[tuple[int, int, int]] = []
+    if platform == "ps5":
+        _last_price_changes = []
 
     if not CHANGE_ONLY_WRITES:
+        _last_price_changes_by_platform[platform] = []
         return [(cid, price, now) for cid, price in candidates], len(candidates), 0
 
     records: list[tuple[int, int, datetime]] = []
     changed = heartbeat = 0
     for card_id, price in candidates:
-        previous = _last_written.get(card_id)
+        previous = state.get(card_id)
         if previous is None:
             records.append((card_id, price, now))
             changed += 1
         elif previous[0] != price:
             records.append((card_id, price, now))
             changed += 1
-            _last_price_changes.append((card_id, previous[0], price))
+            changes.append((card_id, previous[0], price))
         elif previous[1] <= now - timedelta(minutes=_heartbeat_minutes_for(card_id)):
             records.append((card_id, price, now))
             heartbeat += 1
         else:
             continue
-        _last_written[card_id] = (price, now)
+        if commit_state:
+            state[card_id] = (price, now)
+    _last_price_changes_by_platform[platform] = changes
+    if platform == "ps5":
+        _last_price_changes = changes
     return records, changed, heartbeat
+
+
+def commit_rows_written(platform: str, records: list[tuple[int, int, datetime]]) -> None:
+    for card_id, price, captured_at in records:
+        _last_written_by_platform[platform][card_id] = (price, captured_at)
 
 
 def _heartbeat_minutes_for(card_id: int) -> int:
@@ -443,26 +465,27 @@ async def prune_bin_history(pool) -> int:
     #: over the next few passes instead.
     max_chunks = 20
     async with pool.acquire() as conn:
-        for _ in range(max_chunks):
-            status = await conn.execute(
-                """
-                DELETE FROM {PRICE_HISTORY_TABLE}
-                WHERE id IN (
-                    SELECT id FROM {PRICE_HISTORY_TABLE}
-                    WHERE captured_at < now() - make_interval(days => $1)
-                    LIMIT $2
+        for platform in PLATFORMS:
+            for _ in range(max_chunks):
+                table = PRICE_HISTORY_TABLES[platform]
+                status = await conn.execute(
+                    f"""
+                    DELETE FROM {table}
+                    WHERE id IN (
+                        SELECT id FROM {table}
+                        WHERE captured_at < now() - make_interval(days => $1)
+                        LIMIT $2
+                    )
+                    """,
+                    BIN_HISTORY_RETENTION_DAYS, PRUNE_BATCH_ROWS,
                 )
-                """.format(PRICE_HISTORY_TABLE=PRICE_HISTORY_TABLE),
-                BIN_HISTORY_RETENTION_DAYS, PRUNE_BATCH_ROWS,
-            )
-            # asyncpg returns the command tag, e.g. "DELETE 50000".
-            try:
-                deleted = int(status.split()[-1])
-            except (ValueError, IndexError, AttributeError):
-                break
-            deleted_total += deleted
-            if deleted < PRUNE_BATCH_ROWS:
-                break
+                try:
+                    deleted = int(status.split()[-1])
+                except (ValueError, IndexError, AttributeError):
+                    break
+                deleted_total += deleted
+                if deleted < PRUNE_BATCH_ROWS:
+                    break
     return deleted_total
 
 
@@ -690,7 +713,12 @@ async def harvest_feed(page, url: str) -> dict[str, Any]:
         if response.url.endswith("manifest.json") and "manifest" not in manifest_holder:
             manifest_holder["manifest"] = True
             pending.append(asyncio.ensure_future(read_manifest(response)))
-        for marker in (INDEX_MARKER, DYN_MARKER, MISC_MARKER):
+        markers = (
+            INDEX_MARKER,
+            *(DYN_MARKERS[platform] for platform in PLATFORMS),
+            *(MISC_MARKERS[platform] for platform in PLATFORMS),
+        )
+        for marker in markers:
             # Substring match: the content hash changes on every
             # republish, so an exact URL match would silently stop
             # working within the hour.
@@ -707,7 +735,7 @@ async def harvest_feed(page, url: str) -> dict[str, Any]:
         # dyn feed for a platform OTHER than the configured PLATFORM,
         # which the loop above would otherwise silently ignore.
         any_platform_match = _ANY_PLATFORM_DYN_RE.search(response.url)
-        if any_platform_match and any_platform_match.group(1) != PLATFORM:
+        if any_platform_match and any_platform_match.group(1) not in PLATFORMS:
             other_platform_dyn_seen.append(f"{any_platform_match.group(1)}: {response.url}")
 
     page.on("response", on_response)
@@ -770,11 +798,16 @@ async def harvest_feed(page, url: str) -> dict[str, Any]:
         fallback_status: dict[str, str] = {}
         manifest_body_for_fallback = manifest_holder.get("body")
         if isinstance(manifest_body_for_fallback, dict):
-            for key, logical_name in (
-                (INDEX_MARKER, "player-prices-index"),
-                (DYN_MARKER, f"player-prices-{PLATFORM}-dyn"),
-                (MISC_MARKER, MISC_MARKER),
-            ):
+            feed_assets = [(INDEX_MARKER, "player-prices-index")]
+            feed_assets.extend(
+                (DYN_MARKERS[platform], DYN_MARKERS[platform])
+                for platform in PLATFORMS
+            )
+            feed_assets.extend(
+                (MISC_MARKERS[platform], MISC_MARKERS[platform])
+                for platform in PLATFORMS
+            )
+            for key, logical_name in feed_assets:
                 if captured.get(key) is not None:
                     continue
                 file_hash = manifest_body_for_fallback.get(logical_name)
@@ -889,26 +922,31 @@ async def rediscover(page, *, attempt: int, max_attempts: int) -> dict[str, Any]
             return None
 
         index = captured.get(INDEX_MARKER)
-        dyn = captured.get(DYN_MARKER)
-        if index is None or dyn is None:
+        missing_platforms = [p for p in PLATFORMS if captured.get(DYN_MARKERS[p]) is None]
+        if index is None or missing_platforms:
             log.error(
                 "rediscovery FAILED (attempt %d/%d) - FUTGG_DISCOVER_URL=%s "
                 "did not yield the feed either (index=%s dyn=%s). Either "
                 "FUT.GG changed its asset naming again, or this fallback "
                 "URL itself is now stale and needs updating. diag=%s",
                 attempt, max_attempts, DISCOVER_URL,
-                index is not None, dyn is not None, captured.get("__diag"),
+                index is not None, not missing_platforms, captured.get("__diag"),
             )
             return None
 
         log.info(
-            "rediscovery SUCCEEDED (attempt %d/%d) - new index asset=%s "
-            "(%d B) new dyn asset=%s (%d B)",
+            "rediscovery SUCCEEDED (attempt %d/%d) - index asset=%s (%d B) "
+            "dyn assets=%s",
             attempt, max_attempts,
             captured.get(f"{INDEX_MARKER}__url", "?").rsplit("/", 1)[-1],
             captured.get(f"{INDEX_MARKER}__bytes", 0),
-            captured.get(f"{DYN_MARKER}__url", "?").rsplit("/", 1)[-1],
-            captured.get(f"{DYN_MARKER}__bytes", 0),
+            {
+                p: {
+                    "asset": captured.get(f"{DYN_MARKERS[p]}__url", "?").rsplit("/", 1)[-1],
+                    "bytes": captured.get(f"{DYN_MARKERS[p]}__bytes", 0),
+                }
+                for p in PLATFORMS
+            },
         )
         if PLAYER_URL != DISCOVER_URL:
             log.info(
@@ -940,24 +978,25 @@ async def resolve_player_url(pool: asyncpg.Pool) -> str:
 
 
 async def _ingest_misc_capture(pool: asyncpg.Pool, captured: dict[str, Any]) -> None:
-    payload = captured.get(MISC_MARKER)
-    if payload is None:
-        log.info("misc prices not captured for %s this cycle", PLATFORM)
-        return
-    try:
-        result = await ingest_misc_price_feed(
-            pool, payload, game_year=GAME_YEAR, platform=PLATFORM, apply=APPLY,
-        )
-        log.info(
-            "misc prices %s: %d/%d items written (%d changed, %d heartbeat%s)",
-            PLATFORM, result.get("written", 0), result.get("items", 0),
-            result.get("changed", 0), result.get("heartbeats", 0),
-            f", {result.get('pruned')} pruned" if result.get("pruned") else "",
-        )
-    except Exception:
-        # Misc feeds are additive: a missing or malformed misc payload must
-        # never prevent the existing player-price cycle from running.
-        log.exception("misc price import failed for %s; continuing player prices", PLATFORM)
+    for platform in PLATFORMS:
+        payload = captured.get(MISC_MARKERS[platform])
+        if payload is None:
+            log.info("misc prices not captured for %s this cycle", platform)
+            continue
+        try:
+            result = await ingest_misc_price_feed(
+                pool, payload, game_year=GAME_YEAR, platform=platform, apply=APPLY,
+            )
+            log.info(
+                "misc prices %s: %d/%d items written (%d changed, %d heartbeat%s)",
+                platform, result.get("written", 0), result.get("items", 0),
+                result.get("changed", 0), result.get("heartbeats", 0),
+                f", {result.get('pruned')} pruned" if result.get("pruned") else "",
+            )
+        except Exception:
+            # Misc feeds are additive: a malformed misc payload does not
+            # prevent either player-price feed from being processed.
+            log.exception("misc price import failed for %s; continuing player prices", platform)
 
 
 async def ingest_once(
@@ -975,11 +1014,11 @@ async def ingest_once(
     await _ingest_misc_capture(pool, captured)
 
     index = captured.get(INDEX_MARKER)
-    dyn = captured.get(DYN_MARKER)
-    if index is None or dyn is None:
+    missing_platforms = [p for p in PLATFORMS if captured.get(DYN_MARKERS[p]) is None]
+    if index is None or missing_platforms:
         log.warning(
-            "Feed not captured (index=%s dyn=%s) on PLAYER_URL=%s. diag=%s",
-            index is not None, dyn is not None, PLAYER_URL, captured.get("__diag"),
+            "Feed not captured (index=%s missing_platforms=%s) on PLAYER_URL=%s. diag=%s",
+            index is not None, missing_platforms, PLAYER_URL, captured.get("__diag"),
         )
 
         if not DISCOVERY_ENABLED:
@@ -1009,10 +1048,10 @@ async def ingest_once(
                     captured = recovered
                     await _ingest_misc_capture(pool, captured)
                     index = captured.get(INDEX_MARKER)
-                    dyn = captured.get(DYN_MARKER)
+                    missing_platforms = [p for p in PLATFORMS if captured.get(DYN_MARKERS[p]) is None]
                     break
 
-        if index is None or dyn is None:
+        if index is None or missing_platforms:
             log.error(
                 "Feed capture failed and automatic recovery did not succeed "
                 "- backing off %ds before the next attempt instead of the "
@@ -1030,38 +1069,43 @@ async def ingest_once(
     # Defense in depth: never seed players or write prices from wrong-year
     # feeds, including captures recovered through the rediscovery path.
     index_url = captured.get(f"{INDEX_MARKER}__url", "")
-    dyn_url = captured.get(f"{DYN_MARKER}__url", "")
-    if not (
-        _is_expected_price_feed_url(index_url, INDEX_MARKER)
-        and _is_expected_price_feed_url(dyn_url, DYN_MARKER)
+    dyn_urls = {p: captured.get(f"{DYN_MARKERS[p]}__url", "") for p in PLATFORMS}
+    if not _is_expected_price_feed_url(index_url, INDEX_MARKER) or any(
+        not _is_expected_price_feed_url(dyn_urls[p], DYN_MARKERS[p]) for p in PLATFORMS
     ):
         log.error(
             "REFUSING bulk price import: expected FC%d feeds, got index=%s dyn=%s",
-            GAME_YEAR, index_url or "<missing>", dyn_url or "<missing>",
+            GAME_YEAR, index_url or "<missing>", dyn_urls,
         )
         return {"ok": False, "reason": "feed_game_year_mismatch"}
 
     log.info("Validated FC%d bulk feed source URLs: index=%s dyn=%s",
-             GAME_YEAR, index_url, dyn_url)
+             GAME_YEAR, index_url, dyn_urls)
+    dyn = captured[DYN_MARKERS[PLATFORMS[0]]]
     log.info(
-        "captured index=%s (%d B) dyn=%s (%d B)",
+        "captured index=%s (%d B) dyn assets=%s",
         captured.get(f"{INDEX_MARKER}__url", "?").rsplit("/", 1)[-1],
         captured.get(f"{INDEX_MARKER}__bytes", 0),
-        captured.get(f"{DYN_MARKER}__url", "?").rsplit("/", 1)[-1],
-        captured.get(f"{DYN_MARKER}__bytes", 0),
+        {p: captured.get(f"{DYN_MARKERS[p]}__url", "?").rsplit("/", 1)[-1] for p in PLATFORMS},
     )
 
     with timers.track("decode"):
         ids = decode_ids(index)
-        prices = dyn.get("p") or []
+        prices_by_platform = {
+            platform: (captured[DYN_MARKERS[platform]].get("p") or [])
+            for platform in PLATFORMS
+        }
         statuses = dyn.get("s") or []
 
-    if not ids or len(ids) != len(prices):
-        log.error(
-            "Feed misaligned: ids=%d prices=%d. Refusing to use it.",
-            len(ids), len(prices),
-        )
+    if not ids:
+        log.error("Feed index contains no ids. Refusing to use it.")
         return {"ok": False}
+    for platform, prices in prices_by_platform.items():
+        if len(ids) != len(prices):
+            log.error("%s feed misaligned: ids=%d prices=%d. Refusing both feeds.",
+                      platform.upper(), len(ids), len(prices))
+            return {"ok": False, "reason": "feed_misaligned", "platform": platform}
+    prices = prices_by_platform[PLATFORMS[0]]
 
     by_id = {i: p for i, p in zip(ids, prices)}
     status_by_id = dict(zip(ids, statuses)) if len(statuses) == len(ids) else {}
@@ -1172,164 +1216,135 @@ async def ingest_once(
                      card_id, row["rating"], by_id[card_id])
         return {"ok": True, "coverage_pct": coverage_pct, "applied": False}
 
-    # ---- Write --------------------------------------------------------
+    # Prepare all platform batches first, so a malformed feed cannot result
+    # in one platform being applied while the other is silently skipped.
     now = datetime.now(timezone.utc)
-    candidates = [
-        (int(r["source_card_id"]), int(by_id[int(r["source_card_id"])]))
-        for r in matched
-        if by_id.get(int(r["source_card_id"]))
-    ]
-    # Skip observations that record nothing new. See CHANGE_ONLY_WRITES -
-    # 91.9% of writes to this table were repeats of the previous price,
-    # and the resulting volume was measurably starving the database.
-    records, changed_count, heartbeat_count = select_rows_to_write(candidates, now)
-    written_ids = {r[0] for r in records}
-    skipped = len(candidates) - len(records)
+    platform_work: dict[str, dict[str, Any]] = {}
+    for platform in PLATFORMS:
+        platform_by_id = dict(zip(ids, prices_by_platform[platform]))
+        candidates = [
+            (int(row["source_card_id"]), int(platform_by_id[int(row["source_card_id"])]))
+            for row in matched
+            if platform_by_id.get(int(row["source_card_id"]))
+        ]
+        records, changed_count, heartbeat_count = select_rows_to_write(
+            candidates, now, platform=platform, commit_state=False,
+        )
+        written_ids = {record[0] for record in records}
+        platform_work[platform] = {
+            "candidates": candidates,
+            "records": records,
+            "changed": changed_count,
+            "heartbeat": heartbeat_count,
+            "skipped": len(candidates) - len(records),
+            "skipped_ids": [cid for cid, _ in candidates if cid not in written_ids],
+            "no_market_ids": [
+                int(row["source_card_id"])
+                for row in matched
+                if not platform_by_id.get(int(row["source_card_id"]))
+            ],
+            "price_changes": list(_last_price_changes_by_platform.get(platform, [])),
+        }
 
-    # Cards the feed matched but priced at zero: it has told us they have
-    # no active market right now. That is an OBSERVATION, and until now it
-    # was discarded - the card simply fell out of `records`, got no
-    # bin_history row, and had its last_price_status left untouched.
-    #
-    # The consequence was a silent lie. last_price_status is sticky, so a
-    # card that stopped having a market kept advertising however it was
-    # last priced, and its BIN aged indefinitely while this worker ran
-    # every few minutes. Measured on the special tier: 98 cards still
-    # labelled 'bulk_feed' with a median BIN age of 2.9 hours, plus 97
-    # more carrying stale scraper statuses for the same reason - all of
-    # them cards the feed currently reports at zero.
-    #
-    # Recording it makes "we checked and there is no market" distinct from
-    # "we have not checked", which is the distinction every freshness
-    # number downstream was missing.
-    no_market_ids = [
-        int(r["source_card_id"])
-        for r in matched
-        if not by_id.get(int(r["source_card_id"]))
-    ]
     with timers.track("write"):
         async with pool.acquire() as conn:
             async with conn.transaction():
-                # One COPY beats tens of thousands of INSERTs. The whole
-                # point of this worker is that the catalogue arrives at
-                # once; writing it row-by-row would reintroduce exactly
-                # the round-trip cost the per-card path suffered from.
-                await conn.copy_records_to_table(
-                    PRICE_HISTORY_TABLE,
-                    records=[(cid, price, captured, PLATFORM, GAME_YEAR) for cid, price, captured in records],
-                    columns=["source_card_id", "lowest_bin", "captured_at", "platform", "game_year"],
-                )
-                # price_checked_at covers EVERY card the feed priced this
-                # cycle, including the ones whose price was unchanged and
-                # therefore got no bin_history row. That distinction is the
-                # entire point of the column: with change-only writes,
-                # bin_captured_at means "the price last moved", which for a
-                # stable card drifts arbitrarily far from "we checked".
-                # The engine's freshness gate needs the latter, and reading
-                # the former is what produced hours of
-                # `evaluated=1344 recommendations=0` in production - a
-                # special-tier card is rejected past 20 minutes, while a
-                # quiet card's bin_captured_at can legitimately be 29
-                # minutes old under the heartbeat schedule alone.
-                #
-                # last_price_status stays on `records` only. It describes
-                # how we obtained the price we hold, and skipping a write
-                # obtained nothing new to describe.
-                #
-                # The shared freshness/status columns on futgg_players
-                # describe the console feed only. PC observations stay in
-                # their own history table and do not overwrite console state.
-                if PLATFORM == "ps5":
-                    await conn.execute(
-                        """
-                        UPDATE futgg_players p
-                        SET price_updated_at = $2,
-                            price_checked_at = $2,
-                            last_price_status = 'bulk_feed'
-                        WHERE p.source_card_id = ANY($1::bigint[])
-                          AND p.game_year = $3
-                        """,
-                        [r[0] for r in records], now, GAME_YEAR,
-                    )
-                skipped_ids = [cid for cid, _ in candidates if cid not in written_ids]
-                if skipped_ids and PLATFORM == "ps5":
-                    await conn.execute(
-                        """
-                        UPDATE futgg_players p
-                        SET price_checked_at = $2
-                        WHERE p.source_card_id = ANY($1::bigint[])
-                          AND p.game_year = $3
-                        """,
-                        skipped_ids, now, GAME_YEAR,
-                    )
-                if no_market_ids and PLATFORM == "ps5":
-                    # Deliberately NOT writing a bin_history row here.
-                    # lowest_bin is INTEGER NOT NULL, and inventing a 0
-                    # would be worse than saying nothing - it would read
-                    # as a real price of zero to every consumer. The
-                    # observation lands on futgg_players instead, and
-                    # current_bin keeps showing the last real price until
-                    # the snapshot learns to suppress it (see below).
-                    #
-                    # price_updated_at is safe to bump: the engine's
-                    # price-age gate reads bin_checked_at, not this
-                    # column, so a no-market card cannot be made to look
-                    # freshly priced by it.
-                    #
-                    # price_checked_at is deliberately NOT bumped here,
-                    # for exactly that reason - it is the column the gate
-                    # now reads, and "the feed says this card has no
-                    # active listings" is not a confirmation of the price
-                    # we still hold. Leaving it alone lets such a card
-                    # age out of the gate on its own, which is correct.
-                    await conn.execute(
-                        """
-                        UPDATE futgg_players p
-                        SET price_updated_at = $2,
-                            last_price_status = 'bulk_no_market'
-                        WHERE p.source_card_id = ANY($1::bigint[])
-                          AND p.game_year = $3
-                        """,
-                        no_market_ids, now, GAME_YEAR,
-                    )
-                if _last_price_changes and PLATFORM == "ps5":
-                    # Handoff to the triggered-detailed-sales queue
-                    # (auto_sync/futgg_sales_triggers.py, Part 5): this
-                    # worker and futgg_sales_sync.py are separate
-                    # deployed processes, so _last_price_changes itself
-                    # (in-process only) never reaches the other side -
-                    # this table is the only channel between them.
-                    # Consumed, never deleted, by the trigger reader, so
-                    # a "why did this fire" question later still has an
-                    # answer.
-                    await conn.executemany(
-                        """
-                        INSERT INTO futgg_price_change_events
-                            (card_id, previous_price, new_price, detected_at)
-                        VALUES ($1, $2, $3, $4)
-                        """,
-                        [
-                            (card_id, previous_price, new_price, now)
-                            for card_id, previous_price, new_price in _last_price_changes
-                        ],
-                    )
-    log.info(
-        "WROTE %d prices in one COPY (%d changed, %d heartbeat, %d unchanged and "
-        "skipped); %d matched cards have no active market",
-        len(records), changed_count, heartbeat_count, skipped, len(no_market_ids),
-    )
-    return {
-        "ok": True, "coverage_pct": coverage_pct, "applied": True,
-        "written": len(records), "no_market": len(no_market_ids),
-        "seeded_from_feed": seeded_from_feed,
-        # (card_id, previous_price, new_price) for every genuine price
-        # change this cycle - see _last_price_changes' own comment. A
-        # future triggered-detailed-sales consumer reads this key
-        # directly rather than re-deriving "what changed" from
-        # bin_history itself.
-        "price_changes": list(_last_price_changes),
-    }
+                for platform in PLATFORMS:
+                    work = platform_work[platform]
+                    records = work["records"]
+                    if records:
+                        await conn.copy_records_to_table(
+                            PRICE_HISTORY_TABLES[platform],
+                            records=[
+                                (cid, price, captured_at, platform, GAME_YEAR)
+                                for cid, price, captured_at in records
+                            ],
+                            columns=["source_card_id", "lowest_bin", "captured_at", "platform", "game_year"],
+                        )
+                    # TradeHQ's shared freshness/status fields and event
+                    # queue continue to describe the console market only.
+                    if platform == "ps5":
+                        await conn.execute(
+                            """
+                            UPDATE futgg_players p
+                            SET price_updated_at = $2,
+                                price_checked_at = $2,
+                                last_price_status = 'bulk_feed'
+                            WHERE p.source_card_id = ANY($1::bigint[])
+                              AND p.game_year = $3
+                            """,
+                            [row[0] for row in records], now, GAME_YEAR,
+                        )
+                        if work["skipped_ids"]:
+                            await conn.execute(
+                                """
+                                UPDATE futgg_players p
+                                SET price_checked_at = $2
+                                WHERE p.source_card_id = ANY($1::bigint[])
+                                  AND p.game_year = $3
+                                """,
+                                work["skipped_ids"], now, GAME_YEAR,
+                            )
+                        if work["no_market_ids"]:
+                            await conn.execute(
+                                """
+                                UPDATE futgg_players p
+                                SET price_updated_at = $2,
+                                    last_price_status = 'bulk_no_market'
+                                WHERE p.source_card_id = ANY($1::bigint[])
+                                  AND p.game_year = $3
+                                """,
+                                work["no_market_ids"], now, GAME_YEAR,
+                            )
+                        if work["price_changes"]:
+                            await conn.executemany(
+                                """
+                                INSERT INTO futgg_price_change_events
+                                    (card_id, previous_price, new_price, detected_at)
+                                VALUES ($1, $2, $3, $4)
+                                """,
+                                [
+                                    (card_id, old_price, new_price, now)
+                                    for card_id, old_price, new_price in work["price_changes"]
+                                ],
+                            )
 
+    # Only advance the in-memory last-written cache after both tables commit.
+    for platform in PLATFORMS:
+        commit_rows_written(platform, platform_work[platform]["records"])
+
+    platform_results: dict[str, dict[str, Any]] = {}
+    for platform in PLATFORMS:
+        work = platform_work[platform]
+        platform_results[platform] = {
+            "written": len(work["records"]),
+            "changed": work["changed"],
+            "heartbeat": work["heartbeat"],
+            "skipped": work["skipped"],
+            "no_market": len(work["no_market_ids"]),
+            "price_changes": work["price_changes"],
+        }
+        log.info(
+            "%s WROTE %d prices (%d changed, %d heartbeat, %d unchanged/skipped); "
+            "%d matched cards have no active market",
+            platform.upper(), len(work["records"]), work["changed"],
+            work["heartbeat"], work["skipped"], len(work["no_market_ids"]),
+        )
+
+    result: dict[str, Any] = {
+        "ok": True, "coverage_pct": coverage_pct, "applied": True,
+        "seeded_from_feed": seeded_from_feed,
+        "platform_results": platform_results,
+    }
+    if len(PLATFORMS) == 1:
+        result.update(platform_results[PLATFORMS[0]])
+    else:
+        result["written"] = sum(item["written"] for item in platform_results.values())
+        result["no_market"] = sum(item["no_market"] for item in platform_results.values())
+    result["price_changes"] = platform_results.get(
+        "ps5", platform_results[PLATFORMS[0]],
+    )["price_changes"]
+    return result
 
 async def sleep_or_shutdown(seconds: float, shutdown_event: asyncio.Event) -> bool:
     """Sleep up to `seconds`, waking immediately if shutdown_event is set.
@@ -1373,15 +1388,24 @@ async def run_forever() -> None:
         DATABASE_URL, min_size=1, max_size=4, command_timeout=120
     )
     lock_conn = await pool.acquire()
-    lock_acquired = await lock_conn.fetchval(
-        "SELECT pg_try_advisory_lock(483920, hashtext($1))",
-        f"{GAME_YEAR}:{PLATFORM}",
-    )
-    if not lock_acquired:
+    locked_platforms: list[str] = []
+    for platform in PLATFORMS:
+        lock_acquired = await lock_conn.fetchval(
+            "SELECT pg_try_advisory_lock(483920, hashtext($1))",
+            f"{GAME_YEAR}:{platform}",
+        )
+        if lock_acquired:
+            locked_platforms.append(platform)
+            continue
         log.warning(
             "another %s price worker already owns the FC%s lock; exiting",
-            PLATFORM.upper(), GAME_YEAR,
+            platform.upper(), GAME_YEAR,
         )
+        for locked_platform in reversed(locked_platforms):
+            await lock_conn.fetchval(
+                "SELECT pg_advisory_unlock(483920, hashtext($1))",
+                f"{GAME_YEAR}:{locked_platform}",
+            )
         await pool.release(lock_conn)
         await pool.close()
         return
@@ -1485,14 +1509,18 @@ async def run_forever() -> None:
                 # is already best-effort internally (see monitoring.py) -
                 # no extra try/except needed here, same as every other
                 # caller of it.
-                await heartbeat(
-                    pool, HEARTBEAT_WORKER, ok=bool(result.get("ok")),
-                    detail=(
-                        f"cycle={cycle_number} coverage_pct={result.get('coverage_pct')} "
-                        f"written={result.get('written')} no_market={result.get('no_market')} "
-                        f"reason={result.get('reason')}"
-                    ),
-                )
+                for platform in PLATFORMS:
+                    platform_result = result.get("platform_results", {}).get(platform, result)
+                    await heartbeat(
+                        pool, HEARTBEAT_WORKERS[platform], ok=bool(result.get("ok")),
+                        detail=(
+                            f"cycle={cycle_number} platform={platform} "
+                            f"coverage_pct={result.get('coverage_pct')} "
+                            f"written={platform_result.get('written')} "
+                            f"no_market={platform_result.get('no_market')} "
+                            f"reason={result.get('reason')}"
+                        ),
+                    )
 
                 # Pruning is best-effort and must never take the ingest
                 # down with it: a failed DELETE means the table stays a bit
@@ -1523,12 +1551,13 @@ async def run_forever() -> None:
                 )
                 await sleep_or_shutdown(next_sleep, shutdown_event)
         finally:
-            log.info("shutting down: releasing %s / FC%s lock", PLATFORM.upper(), GAME_YEAR)
+            log.info("shutting down: releasing %s / FC%s lock(s)", ",".join(p.upper() for p in locked_platforms), GAME_YEAR)
             await browser.close()
-            await lock_conn.fetchval(
-                "SELECT pg_advisory_unlock(483920, hashtext($1))",
-                f"{GAME_YEAR}:{PLATFORM}",
-            )
+            for platform in reversed(locked_platforms):
+                await lock_conn.fetchval(
+                    "SELECT pg_advisory_unlock(483920, hashtext($1))",
+                    f"{GAME_YEAR}:{platform}",
+                )
             await pool.release(lock_conn)
             await pool.close()
     log.info("shutdown complete")

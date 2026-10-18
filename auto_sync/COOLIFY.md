@@ -150,15 +150,20 @@ crawling concurrently.
   Coolify unless you want to override it to `false` for a temporary
   read-only coverage check.
 
-**Optional tuning env vars:** `FUTGG_BULK_PLATFORM` (default `ps5`),
-`FUTGG_BULK_INTERVAL_SECONDS` (default `300`, minimum `60`),
-`PLAYWRIGHT_HEADLESS` (default `true`). See
-`futgg_bulk_price_sync.py`'s module docstring for the full mechanism.
+**Platform and cadence:** `Dockerfile.price` defaults to
+`FUTGG_BULK_PLATFORM=both`, capturing the PC and PS5 feeds from one page
+load every `FUTGG_BULK_INTERVAL_SECONDS` (default `300`, minimum `60`).
+Apply `backend/migrations/101_futbot_pc_bin_history.sql` to the configured
+price database before enabling combined mode. Set the platform to `ps5` or
+`pc` only when intentionally running a single-platform PriceSync.
+`PLAYWRIGHT_HEADLESS` defaults to `true`. See `futgg_bulk_price_sync.py`'s
+module docstring for the full mechanism.
 
 ### Manager and consumable prices
 
-The same worker also captures FUT.GG's `misc-prices-ps5` or
-`misc-prices-pc` feed on each page load. It stores price history for
+The same worker also captures the configured FUT.GG misc-price feed on
+each page load. In combined mode it captures both the `misc-prices-ps5`
+and `misc-prices-pc` feeds. It stores price history for
 manager cards, manager leagues, and chemistry styles in
 `futgg_misc_price_history`; player BIN history remains unchanged.
 Changed prices/statuses are written immediately, with a staggered
@@ -170,10 +175,10 @@ same core PostgreSQL database used by PriceSync before relying on this
 feed. If the backend has `RUN_MIGRATIONS_ON_BOOT=1`, its normal deploy
 will apply the migration; otherwise apply it through the repository's
 normal core-migration procedure before redeploying PriceSync. No new
-Coolify service or price-worker environment variable is needed: the
-existing PC and PS5 workers collect their respective feeds every five
-minutes. Check their logs for `misc prices ps5` or `misc prices pc`
-and item counts after redeploy.
+Coolify service or extra price-worker environment variable is needed.
+The single combined PriceSync service collects both platform feeds every
+five minutes. Check its logs for `misc prices ps5` and `misc prices pc`
+with item counts after redeploy.
 
 Example latest-price query:
 
