@@ -9,7 +9,9 @@ futgg_price_sync.py owns those.
 
 Recommended Railway Cron: once daily, e.g. 15 5 * * *
 
-Daily discovery is bounded by FUTGG_LISTING_MAX_PAGES; exhausting that
+Daily discovery uses the UI's newest-first JSON feed through browser fetch,
+with rendered listing discovery as a fallback when the API returns no usable
+cards. It is bounded by FUTGG_LISTING_MAX_PAGES; exhausting that
 budget is normal. Empty or blocked card grids remain failures. Full
 reconciliation is explicit (FUTGG_LISTING_FULL_SCAN=true), or optionally
 scheduled with FUTGG_CATALOGUE_RECONCILE_HOURS. Its per-game-year checkpoint
@@ -176,6 +178,7 @@ MAX_PAGES = MAX_PAGES_FULL if FULL_SCAN else MAX_PAGES_DAILY
 # Full reconciliation is opt-in. A bounded daily new-card scan must never
 # turn into a full catalogue crawl just because it reached its page budget.
 CATALOGUE_RECONCILE_HOURS = max(0, int(os.getenv("FUTGG_CATALOGUE_RECONCILE_HOURS", "0")))
+RECENT_API_ENABLED = os.getenv("FUTGG_RECENT_API", "true").strip().lower() in {"1", "true", "yes", "on"}
 
 # Full-scan discovery sources. /players/new/ is a recency-windowed feed,
 # not the whole catalogue (see module docstring) - full-scan mode walks
@@ -916,6 +919,103 @@ async def _paginate_listing(
     return seen
 
 
+def _parse_recent_api_card(row: Any) -> tuple[str, ListingCardMetadata] | None:
+    """Only accept the observed API card URL/EA identity and composited art.
+
+    overall/gradingScore are NOT GG Ratings. Price fields in this discovery
+    response do not establish live tradeability or market freshness.
+    """
+    if not isinstance(row, dict) or not isinstance(row.get("url"), str):
+        return None
+    parsed = urlparse(urljoin(BASE_URL, row["url"]))
+    match = CARD_URL_RE.match(parsed.path)
+    if parsed.hostname != urlparse(BASE_URL).hostname or not match:
+        return None
+    if int(match.group("game_year")) != GAME_YEAR:
+        return None
+    if str(row.get("eaId")) != match.group("card_id"):
+        return None
+    return _metadata_from_listing_node({"href": parsed.path, "image": row.get("cardImageUrl")})
+
+
+async def collect_recent_api_urls(page) -> ListingDiscovery:
+    """Read the newest-first JSON feed captured from FUT.GG's own UI.
+
+    Use browser fetch so the request shares the page's normal same-origin
+    session. Pagination must echo the requested currentPage; an ignored page
+    parameter or repeated data is an incomplete scan, never silent success.
+    """
+    urls = ListingDiscovery()
+    requested_page = 1
+    api_path = f"/api/fut/players/v2/{GAME_YEAR}/"
+    try:
+        response = await page.goto(
+            f"{BASE_URL}{GAME_PREFIX}/players/new/",
+            wait_until="domcontentloaded", timeout=TIMEOUT_MS,
+        )
+        if response is not None and response.status != 200:
+            raise RuntimeError(f"Recent-player page returned HTTP {response.status}")
+        for _ in range(MAX_PAGES_DAILY):
+            query = {"sorts": "-created_at"}
+            if requested_page != 1:
+                query["page"] = str(requested_page)
+            endpoint = api_path + "?" + urlencode(query)
+            result = await asyncio.wait_for(page.evaluate("""async endpoint => {
+                const response = await fetch(endpoint, {
+                    credentials: 'same-origin', headers: {Accept: 'application/json'}
+                });
+                return {
+                    status: response.status,
+                    payload: response.ok ? await response.json() : null
+                };
+            }""", endpoint), timeout=TIMEOUT_MS / 1000)
+            if not isinstance(result, dict) or result.get("status") != 200:
+                raise RuntimeError(f"Recent-player API returned HTTP {result.get('status') if isinstance(result, dict) else 'unknown'}")
+            payload = result.get("payload")
+            if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+                raise RuntimeError("Unexpected recent-player API response shape")
+            if type(payload.get("currentPage")) is not int or payload["currentPage"] != requested_page:
+                raise RuntimeError(f"Recent-player API did not return requested page {requested_page}")
+            if "next" not in payload:
+                raise RuntimeError("Recent-player API omitted pagination metadata")
+            rows = payload["data"]
+            before = len(urls)
+            invalid = 0
+            for row in rows:
+                parsed = _parse_recent_api_card(row)
+                if parsed is None:
+                    invalid += 1
+                    continue
+                url, metadata = parsed
+                urls[url] = _merge_listing_metadata(urls.get(url), metadata)
+            if invalid:
+                raise RuntimeError(f"Recent-player API page {requested_page}: {invalid} invalid card identities")
+            log.info("Recent-player API page=%d returned=%d new=%d unique=%d next=%s",
+                     requested_page, len(rows), len(urls) - before, len(urls), payload["next"])
+            if requested_page == 1 and not rows:
+                raise RuntimeError("Recent-player API first page was empty")
+            if rows and len(urls) == before:
+                raise RuntimeError(f"Recent-player API repeated cards on page {requested_page}")
+            if PLAYER_LIMIT and len(urls) >= PLAYER_LIMIT:
+                limited = ListingDiscovery()
+                limited.update(list(urls.items())[:PLAYER_LIMIT])
+                limited.issues.append(f"Recent-player API stopped at FUTGG_PLAYER_LIMIT={PLAYER_LIMIT}")
+                return limited
+            next_page = payload["next"]
+            if next_page is None:
+                break
+            if not rows or type(next_page) is not int or next_page <= requested_page:
+                raise RuntimeError("Recent-player API returned invalid next-page metadata")
+            requested_page = next_page
+            if PAGE_DELAY:
+                await asyncio.sleep(PAGE_DELAY)
+        return urls
+    except Exception as exc:
+        urls.issues.append(f"Recent-player API incomplete: {exc}")
+        log.warning("%s", urls.issues[-1])
+        return urls
+
+
 async def collect_listing_urls(page, *, full_scan: bool | None = None) -> dict[str, ListingCardMetadata]:
     """Top-level discovery entry point - see module docstring for the
     daily-vs-full-scan distinction and why full-scan walks more than
@@ -940,6 +1040,11 @@ async def collect_listing_urls(page, *, full_scan: bool | None = None) -> dict[s
     identically for that."""
     full_scan = FULL_SCAN if full_scan is None else full_scan
     if not full_scan:
+        if RECENT_API_ENABLED:
+            urls = await collect_recent_api_urls(page)
+            if urls or urls.complete:
+                return urls
+            log.warning("Recent-player API produced no usable cards; trying rendered recent-card listing")
         try:
             urls = await _paginate_listing(
                 page, f"{GAME_PREFIX}/players/new/?page={{page}}", MAX_PAGES, "daily-new",

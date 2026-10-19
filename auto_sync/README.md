@@ -395,12 +395,28 @@ Env vars (all in `config.py`, defaults documented there):
 
 ### Player catalogue discovery and optional recovery
 
-Normal PlayerSync runs check the recent-card feed at `/players/new/`, up to
-`FUTGG_LISTING_MAX_PAGES` pages. A value of 10 is a valid bounded daily scan;
+Normal PlayerSync runs use the newest-first JSON request made by
+`/players/new/`: `/api/fut/players/v2/{game_year}/?sorts=-created_at`.
+The request runs through browser fetch in the page's same-origin session,
+without imported cookies or credentials. Discovery follows the API's `next`
+page and validates `currentPage`, card URL/EA ID, and selected game year.
+It stops after `FUTGG_LISTING_MAX_PAGES` API pages. A value of 10 is a valid bounded daily scan;
 reaching that budget is a normal successful completion. It does not trigger
 a full scan or require coverage of the complete database.
 
-Page one uses the canonical URL. The worker waits for real parsed player
+The API supplies canonical card URLs and composited artwork. Detailed
+metadata still uses the existing per-card importer. No price or tradeability
+is inferred from the discovery payload, and neither `overall` nor
+`gradingScore` is interpreted as a GG Rating. The HAR's `total` value of
+10,000 is a feed count, not proof of complete catalogue coverage.
+
+If the API produces no usable cards, discovery falls back to the rendered
+recent-card grid (set `FUTGG_RECENT_API=false` to force that fallback).
+Partial API failures retain valid cards and mark the run incomplete.
+Repeated data, ignored pagination and invalid identities cannot be reported
+as a successful scan.
+
+For the rendered fallback, page one uses the canonical URL. The worker waits for real parsed player
 links instead of treating static navigation links or placeholder cards as a
 ready grid. By default, an empty grid can hydrate for up to
 `PLAYWRIGHT_TIMEOUT_MS` (45 seconds); optional GG-rating footers retain a

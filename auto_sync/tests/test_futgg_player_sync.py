@@ -27,6 +27,13 @@ os.environ.setdefault("DATABASE_URL", "postgresql://test:test@localhost/test")
 import futgg_player_sync as mod
 
 
+@pytest.fixture(autouse=True)
+def _test_rendered_discovery_by_default(monkeypatch):
+    # Existing pagination tests model the rendered fallback. API tests below
+    # explicitly opt into the captured JSON feed.
+    monkeypatch.setattr(mod, "RECENT_API_ENABLED", False)
+
+
 def run_async(coro_fn):
     """No pytest-asyncio in this environment - a plain asyncio.run()
     wrapper avoids adding a new test-only dependency for a handful of
@@ -1676,3 +1683,110 @@ async def test_empty_first_page_logs_diagnostics_and_stays_failed(monkeypatch, c
     assert not urls.complete
     page.evaluate.assert_awaited_once()
     assert "placeholderImages" in caplog.text
+
+
+class _FakeRecentApiPage(_FakeListingPage):
+    def __init__(self, payloads, status=200, dom_cards=None):
+        super().__init__(dom_cards or {})
+        self.payloads = payloads
+        self.api_status = status
+        self.api_urls = []
+
+    async def evaluate(self, script, endpoint=None):
+        if endpoint is None:
+            return await super().evaluate(script)
+        self.api_urls.append(endpoint)
+        query = dict(mod.parse_qsl(mod.urlparse(endpoint).query))
+        assert query["sorts"] == "-created_at"
+        page = int(query.get("page", 1))
+        return {"status": self.api_status, "payload": self.payloads.get(page)}
+
+
+def _api_card(n):
+    return {"eaId": 1000 + n, "url": _card_href(n), "cardImageUrl": None}
+
+
+@run_async
+async def test_recent_api_reads_actual_har_response_without_rendered_card_links(monkeypatch):
+    import json
+    monkeypatch.setattr(mod, "RECENT_API_ENABLED", True)
+    monkeypatch.setattr(mod, "MAX_PAGES_DAILY", 1)
+    monkeypatch.setattr(mod, "PLAYER_LIMIT", 0)
+    monkeypatch.setattr(mod, "PAGE_DELAY", 0)
+    payload = json.loads((Path(__file__).parent / "fixtures/futgg_new_players_api.json").read_text())
+    page = _FakeRecentApiPage({1: payload})
+    urls = await mod.collect_listing_urls(page)
+    assert len(urls) == 30
+    assert urls.complete
+    first_url = "https://www.fut.gg/players/275324-assane-diao-diaoune/27-50606972/"
+    assert first_url in urls
+    assert "futgg-player-item-card/27-50606972" in urls[first_url].image_url
+    assert urls[first_url].gg_rating is None  # overall/gradingScore are different values
+    assert page.api_urls == ["/api/fut/players/v2/27/?sorts=-created_at"]
+    assert len(page.goto_urls) == 1
+
+
+@run_async
+async def test_recent_api_follows_next_and_stops_at_ten_pages(monkeypatch):
+    monkeypatch.setattr(mod, "RECENT_API_ENABLED", True)
+    monkeypatch.setattr(mod, "MAX_PAGES_DAILY", 10)
+    monkeypatch.setattr(mod, "PLAYER_LIMIT", 0)
+    monkeypatch.setattr(mod, "PAGE_DELAY", 0)
+    page = _FakeRecentApiPage({n: {"data": [_api_card(n)], "currentPage": n, "next": n+1}
+                               for n in range(1, 20)})
+    urls = await mod.collect_listing_urls(page)
+    assert len(urls) == 10
+    assert urls.complete
+    assert len(page.api_urls) == 10
+    assert page.api_urls[-1] == "/api/fut/players/v2/27/?sorts=-created_at&page=10"
+
+
+@pytest.mark.parametrize("bad_page", [
+    {"data": [_api_card(2)], "currentPage": 1, "next": 3},
+    {"data": [_api_card(1)], "currentPage": 2, "next": 3},
+    {"data": [_api_card(2)], "currentPage": 2, "next": 2},
+    {"data": [_api_card(2)], "currentPage": 2},
+    {"data": [{"eaId": 999, "url": _card_href(2)}], "currentPage": 2, "next": None},
+    {"data": [], "currentPage": 2, "next": 3},
+])
+@run_async
+async def test_recent_api_invalid_pagination_or_identity_keeps_partial_data_and_fails(monkeypatch, bad_page):
+    monkeypatch.setattr(mod, "RECENT_API_ENABLED", True)
+    monkeypatch.setattr(mod, "MAX_PAGES_DAILY", 10)
+    monkeypatch.setattr(mod, "PLAYER_LIMIT", 0)
+    monkeypatch.setattr(mod, "PAGE_DELAY", 0)
+    page = _FakeRecentApiPage({1: {"data": [_api_card(1)], "currentPage": 1, "next": 2}, 2: bad_page})
+    urls = await mod.collect_listing_urls(page)
+    assert mod.urljoin(mod.BASE_URL, _card_href(1)) in urls
+    assert not urls.complete
+    assert len(page.api_urls) == 2
+    assert len(page.goto_urls) == 1  # partial API failures cannot be masked by a successful fallback
+
+
+@run_async
+async def test_recent_api_last_page_ends_early(monkeypatch):
+    monkeypatch.setattr(mod, "MAX_PAGES_DAILY", 10)
+    monkeypatch.setattr(mod, "PLAYER_LIMIT", 0)
+    monkeypatch.setattr(mod, "PAGE_DELAY", 0)
+    page = _FakeRecentApiPage({1: {"data": [_api_card(1)], "currentPage": 1, "next": None}})
+    urls = await mod.collect_recent_api_urls(page)
+    assert urls.complete and len(urls) == 1
+    assert len(page.api_urls) == 1
+
+
+@run_async
+async def test_blocked_recent_api_can_use_rendered_recent_listing(monkeypatch):
+    monkeypatch.setattr(mod, "RECENT_API_ENABLED", True)
+    monkeypatch.setattr(mod, "MAX_PAGES", 1)
+    monkeypatch.setattr(mod, "PLAYER_LIMIT", 0)
+    monkeypatch.setattr(mod, "LISTING_STABILIZE_MAX_ATTEMPTS", 1)
+    page = _FakeRecentApiPage({}, status=403, dom_cards={1: [_card_href(86)]})
+    urls = await mod.collect_listing_urls(page)
+    assert urls.complete and len(urls) == 1
+    assert len(page.goto_urls) == 2
+    assert all("/players/new/" in url for url in page.goto_urls)
+
+
+@pytest.mark.parametrize("url", ["https://example.com" + _card_href(1), _card_href(1, game_year=26)])
+def test_recent_api_rejects_wrong_origin_and_game_year(url):
+    assert mod._parse_recent_api_card({"eaId": 1001, "url": url}) is None
