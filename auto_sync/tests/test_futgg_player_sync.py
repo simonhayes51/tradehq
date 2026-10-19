@@ -110,6 +110,9 @@ class _FakeListingPage:
         self._current_page = int(match.group(1)) if match else 1
         return _FakeResponse(self._status)
 
+    async def evaluate(self, script):
+        return {"title": "New Players", "anchors": 30, "placeholderImages": 30}
+
     async def wait_for_timeout(self, ms):
         pass  # no real delay in tests - the stabilize-retry loop still runs its logic
 
@@ -1500,7 +1503,7 @@ async def test_empty_grid_recovers_on_second_navigation(monkeypatch):
     urls = await mod.collect_listing_urls(page)
     assert len(urls) == 1
     assert len(page.goto_urls) == 2
-    assert not urls.complete  # data recovered, but the page cap still truncated discovery
+    assert urls.complete  # a bounded daily scan may finish at its page budget
 
 
 @run_async
@@ -1565,7 +1568,7 @@ async def test_reconciliation_schedule_is_game_year_scoped(monkeypatch):
 
 @pytest.mark.parametrize("reconcile_due, complete, failed, expected_checkpoint", [
     (True, True, 0, True), (True, False, 0, False), (True, True, 1, False),
-    (False, True, 0, True), (False, False, 0, False),
+    (False, True, 0, False), (False, False, 0, False),
 ])
 @run_async
 async def test_crawl_advances_checkpoint_only_after_complete_success(
@@ -1607,10 +1610,6 @@ async def test_crawl_advances_checkpoint_only_after_complete_success(
     if not complete:
         urls.issues.append("catalogue reached page limit")
     discover = AsyncMock(return_value=urls)
-    if not reconcile_due:
-        daily = mod.ListingDiscovery()
-        daily.issues.append("daily-new reached page limit 10")
-        discover.side_effect = [daily, urls]
     monkeypatch.setattr(mod, "collect_listing_urls", discover)
     monkeypatch.setattr(mod, "existing_ids", AsyncMock(return_value=set()))
     monkeypatch.setattr(mod, "backfill_listing_card_images", AsyncMock(return_value=0))
@@ -1624,14 +1623,56 @@ async def test_crawl_advances_checkpoint_only_after_complete_success(
     heartbeat = AsyncMock()
     monkeypatch.setattr(mod, "heartbeat", heartbeat)
     monkeypatch.setattr(mod, "alert", AsyncMock())
-    if expected_checkpoint:
+    success = complete and not failed
+    if success:
         await mod.crawl_once()
     else:
         with pytest.raises(RuntimeError, match="Player sync incomplete"):
             await mod.crawl_once()
-    assert discover.await_count == (1 if reconcile_due else 2)
-    assert discover.call_args.kwargs == {"full_scan": True}
+    assert discover.await_count == 1
+    assert discover.call_args.kwargs == {"full_scan": reconcile_due}
     checkpoint_writes = [call for call in conn.execute.call_args_list
                          if "INSERT INTO futgg_player_reconciliation" in call.args[0]]
     assert bool(checkpoint_writes) is expected_checkpoint
-    assert heartbeat.call_args.kwargs["ok"] is expected_checkpoint
+    assert heartbeat.call_args.kwargs["ok"] is success
+
+
+@run_async
+async def test_daily_ten_page_budget_is_successful_and_keeps_new_source(monkeypatch):
+    monkeypatch.setattr(mod, "FULL_SCAN", False)
+    monkeypatch.setattr(mod, "MAX_PAGES", 10)
+    monkeypatch.setattr(mod, "PLAYER_LIMIT", 0)
+    monkeypatch.setattr(mod, "PAGE_DELAY", 0)
+    monkeypatch.setattr(mod, "LISTING_STABILIZE_MAX_ATTEMPTS", 1)
+    page = _FakeListingPage({i: [_card_href(i)] for i in range(1, 20)})
+    urls = await mod.collect_listing_urls(page)
+    assert len(urls) == 10
+    assert urls.complete
+    assert len(page.goto_urls) == 10
+    assert all("/players/new/" in url for url in page.goto_urls)
+
+
+@run_async
+async def test_card_grid_can_hydrate_after_the_old_four_second_wait(monkeypatch):
+    monkeypatch.setattr(mod, "FULL_SCAN", False)
+    monkeypatch.setattr(mod, "MAX_PAGES", 1)
+    monkeypatch.setattr(mod, "PLAYER_LIMIT", 0)
+    monkeypatch.setattr(mod, "LISTING_STABILIZE_MAX_ATTEMPTS", 30)
+    page = _FakeListingPage({1: [_card_href(86)]}, stale_reads={1: 20})
+    urls = await mod.collect_listing_urls(page)
+    assert len(urls) == 1
+    assert urls.complete
+    assert len(page.goto_urls) == 1
+
+
+@run_async
+async def test_empty_first_page_logs_diagnostics_and_stays_failed(monkeypatch, caplog):
+    from unittest.mock import AsyncMock
+    monkeypatch.setattr(mod, "FULL_SCAN", False)
+    monkeypatch.setattr(mod, "LISTING_STABILIZE_MAX_ATTEMPTS", 1)
+    page = _FakeListingPage({})
+    page.evaluate = AsyncMock(return_value={"title": "New Players", "placeholderImages": 30})
+    urls = await mod.collect_listing_urls(page)
+    assert not urls.complete
+    page.evaluate.assert_awaited_once()
+    assert "placeholderImages" in caplog.text

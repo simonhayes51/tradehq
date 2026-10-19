@@ -393,34 +393,32 @@ Env vars (all in `config.py`, defaults documented there):
 
 
 
-### Player catalogue recovery and incomplete scans
+### Player catalogue discovery and optional recovery
 
-PlayerSync now performs full selected-game-year discovery on the first run
-following this update, then weekly (`FUTGG_CATALOGUE_RECONCILE_HOURS=168`).
-The checkpoint is stored in `futgg_player_reconciliation`, keyed by game year,
-and only advances when pagination and card fetches both finish successfully.
-No separate backend migration is required: the worker creates this table.
+Normal PlayerSync runs check the recent-card feed at `/players/new/`, up to
+`FUTGG_LISTING_MAX_PAGES` pages. A value of 10 is a valid bounded daily scan;
+reaching that budget is a normal successful completion. It does not trigger
+a full scan or require coverage of the complete database.
 
-Redeploy the PlayerSync image built from `auto_sync/Dockerfile.player`, then
-trigger its scheduled job once. Keep `FUTGG_BACKFILL_RELEASE_METADATA=false`,
-`FUTGG_PLAYER_LIMIT=0`, and normally `FUTGG_REFRESH_EXISTING=false`. The first
-run automatically uses `FUTGG_LISTING_MAX_PAGES_FULL` (default 400 per source),
-even if the daily `FUTGG_LISTING_MAX_PAGES` override is still 10. Full discovery
-includes both the recent feed and the main catalogue, so older missed cards
-are eligible for import. Complete existing records are skipped; feed-only
-placeholders and records missing name, rating or position are fetched again.
+Page one uses the canonical URL. The worker waits for real parsed player
+links instead of treating static navigation links or placeholder cards as a
+ready grid. By default, an empty grid can hydrate for up to
+`PLAYWRIGHT_TIMEOUT_MS` (45 seconds); optional GG-rating footers retain a
+shorter wait. `FUTGG_LISTING_STABILIZE_ATTEMPTS` explicitly overrides the
+poll budget. Empty pages get a second navigation attempt. Persistent empty
+first pages remain failures, with page title, link samples, placeholder
+counts, failed script/data requests and HTTP errors logged for diagnosis.
 
-Daily discovery starts at `/players/new/`, rather than `?page=1`. Empty card
-grids are retried with another navigation. A truncated daily scan escalates
-to a full reconciliation automatically. Page/player limits, blocked pages,
-and failed partitions mark the run incomplete, retain useful imports, record
-a failed heartbeat and exit nonzero. If the full scan reaches its own cap,
-increase `FUTGG_LISTING_MAX_PAGES_FULL` and rerun; a capped run cannot advance
-the recovery checkpoint. Set `FUTGG_LISTING_FULL_SCAN=true` to explicitly
-force full discovery, or `FUTGG_CATALOGUE_RECONCILE_HOURS=0` to disable only
-the periodic reconciliation (incomplete daily scans still escalate).
+`FUTGG_LISTING_FULL_SCAN=true` explicitly requests catalogue recovery using
+`FUTGG_FULL_SCAN_PARTITIONS` and `FUTGG_LISTING_MAX_PAGES_FULL`. Full scans
+still require complete pagination and sufficient selected-game-year
+coverage. Periodic reconciliation is optional:
+`FUTGG_CATALOGUE_RECONCILE_HOURS=0` disables it (the default); a positive
+interval enables it. Daily failures never trigger a full scan automatically.
+The per-game-year recovery checkpoint advances only after complete full
+scans and successful metadata fetches.
 
-PlayerSync remains a one-shot scheduled worker. A deploy does not itself
-prove the missing cards were recovered: check its completion log and player
-search after the scheduled run. Production database access is needed to
-separately diagnose cards excluded by incorrect tradeability metadata.
+Complete existing records are skipped unless `FUTGG_REFRESH_EXISTING=true`.
+Feed-only placeholders and records missing name, rating or position are
+fetched again. Useful imports survive incomplete runs. Redeploy the worker
+from `auto_sync/Dockerfile.player` to apply changes, then check the run log.

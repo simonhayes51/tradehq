@@ -9,12 +9,11 @@ futgg_price_sync.py owns those.
 
 Recommended Railway Cron: once daily, e.g. 15 5 * * *
 
-The first run and then every FUTGG_CATALOGUE_RECONCILE_HOURS (168 by
-default) reconcile the complete selected-year catalogue. Incomplete daily
-discovery also escalates to full discovery. A durable, per-game-year
-checkpoint advances only after complete pagination and successful fetches.
-Page caps, blocked/empty first pages and failed partitions cannot report
-success, although valid discoveries are still imported.
+Daily discovery is bounded by FUTGG_LISTING_MAX_PAGES; exhausting that
+budget is normal. Empty or blocked card grids remain failures. Full
+reconciliation is explicit (FUTGG_LISTING_FULL_SCAN=true), or optionally
+scheduled with FUTGG_CATALOGUE_RECONCILE_HOURS. Its per-game-year checkpoint
+advances only after complete pagination and successful fetches.
 
 Two discovery modes:
   - Daily (default): a single partition, FUT.GG's newest-first feed
@@ -90,10 +89,11 @@ Important environment variables:
                                    complete catalogue; 0 disables the check)
   FUTGG_LISTING_IDLE_ROUNDS       4 (consecutive pages w/ 0 new cards before stopping, per partition)
   FUTGG_LISTING_PAGE_DELAY        0.5 seconds, between listing-page navigations
-  FUTGG_LISTING_STABILIZE_ATTEMPTS 10 (retries waiting for card links and rating footers to hydrate)
+  FUTGG_LISTING_STABILIZE_ATTEMPTS defaults to PLAYWRIGHT_TIMEOUT_MS / poll
+                                   interval (wait for rendered card links)
   FUTGG_LISTING_STABILIZE_POLL_MS 400 (wait between stabilize retries)
-  FUTGG_CATALOGUE_RECONCILE_HOURS 168 (first run + weekly full discovery;
-                                   0 disables scheduled reconciliation)
+  FUTGG_CATALOGUE_RECONCILE_HOURS 0 (disabled; opt in to periodic full
+                                   discovery with an interval in hours)
   FUTGG_REFRESH_EXISTING          false
   FUTGG_PLAYER_REQUEST_DELAY      0.35 seconds, per fetch worker
   FUTGG_PLAYER_CONCURRENCY        3 (parallel card-detail fetch workers - see _fetch_worker())
@@ -173,9 +173,9 @@ CONFIGURATION_ERROR = (
 MAX_PAGES_DAILY = max(1, int(os.getenv("FUTGG_LISTING_MAX_PAGES", "50")))
 MAX_PAGES_FULL = max(1, int(os.getenv("FUTGG_LISTING_MAX_PAGES_FULL", "400")))
 MAX_PAGES = MAX_PAGES_FULL if FULL_SCAN else MAX_PAGES_DAILY
-# Reconcile on the first run after deployment and weekly afterwards. The
-# checkpoint is written only after a complete, successful current-year scan.
-CATALOGUE_RECONCILE_HOURS = max(0, int(os.getenv("FUTGG_CATALOGUE_RECONCILE_HOURS", "168")))
+# Full reconciliation is opt-in. A bounded daily new-card scan must never
+# turn into a full catalogue crawl just because it reached its page budget.
+CATALOGUE_RECONCILE_HOURS = max(0, int(os.getenv("FUTGG_CATALOGUE_RECONCILE_HOURS", "0")))
 
 # Full-scan discovery sources. /players/new/ is a recency-windowed feed,
 # not the whole catalogue (see module docstring) - full-scan mode walks
@@ -235,8 +235,11 @@ PAGE_DELAY = max(0.0, float(os.getenv("FUTGG_LISTING_PAGE_DELAY", "0.5")))
 # steadily). collect_listing_urls() polls up to this many times, waiting
 # this long between attempts, until the visible cards differ from the
 # previous page's - see its own docstring.
-LISTING_STABILIZE_MAX_ATTEMPTS = max(1, int(os.getenv("FUTGG_LISTING_STABILIZE_ATTEMPTS", "10")))
 LISTING_STABILIZE_POLL_MS = max(50, int(os.getenv("FUTGG_LISTING_STABILIZE_POLL_MS", "400")))
+LISTING_STABILIZE_MAX_ATTEMPTS = max(1, int(os.getenv(
+    "FUTGG_LISTING_STABILIZE_ATTEMPTS",
+    str(max(10, (TIMEOUT_MS + LISTING_STABILIZE_POLL_MS - 1) // LISTING_STABILIZE_POLL_MS + 1)),
+)))
 
 REFRESH_EXISTING = os.getenv("FUTGG_REFRESH_EXISTING", "false").strip().lower() in {"1", "true", "yes", "on"}
 REQUEST_DELAY = max(0.0, float(os.getenv("FUTGG_PLAYER_REQUEST_DELAY", "0.35")))
@@ -718,6 +721,36 @@ async def catalogue_reconciliation_due(conn) -> bool:
     )
 
 
+def _log_listing_response(response) -> None:
+    if response.status >= 400 and response.request.resource_type in {"xhr", "fetch", "script"}:
+        log.warning("Listing resource HTTP %d host=%s path=%s type=%s",
+                    response.status, urlparse(response.url).hostname,
+                    urlparse(response.url).path, response.request.resource_type)
+
+
+def _log_listing_request_failure(request) -> None:
+    if request.resource_type in {"xhr", "fetch", "script"}:
+        log.warning("Listing resource failed host=%s path=%s type=%s failure=%s",
+                    urlparse(request.url).hostname, urlparse(request.url).path,
+                    request.resource_type, request.failure)
+
+
+async def _log_empty_listing(page, listing_url: str) -> None:
+    try:
+        diagnostic = await page.evaluate("""() => ({
+            title: document.title,
+            path: location.pathname,
+            anchors: document.querySelectorAll('a[href]').length,
+            playerLinkSamples: Array.from(document.querySelectorAll('a[href]'))
+                .map(a => a.getAttribute('href'))
+                .filter(href => href && href.includes('/players/')).slice(0, 6),
+            placeholderImages: document.querySelectorAll('img[alt="Player Card"]').length,
+        })""")
+        log.warning("Empty listing diagnostics url=%s details=%s", listing_url, diagnostic)
+    except Exception:
+        log.warning("Could not collect empty listing diagnostics for %s", listing_url, exc_info=True)
+
+
 async def _load_listing_cards(page, listing_url, partition_label, previous_page_hrefs):
     response = await page.goto(listing_url, wait_until="domcontentloaded", timeout=TIMEOUT_MS)
     status = response.status if response else 0
@@ -750,11 +783,12 @@ async def _load_listing_cards(page, listing_url, partition_label, previous_page_
         # page's cards (stale content still attached). Only a
         # non-empty read that actually differs from the previous page
         # is trusted without retrying.
-        if (
-            current_hrefs
-            and current_hrefs != previous_page_hrefs
-            and _listing_metadata_ready(current_hrefs)
+        if current_hrefs and (
+            (current_hrefs != previous_page_hrefs and _listing_metadata_ready(current_hrefs))
+            or _ >= 9
         ):
+            # Missing optional GG-rating footers or a repeated terminal grid
+            # must not consume the longer empty-grid hydration budget.
             break
         await page.wait_for_timeout(LISTING_STABILIZE_POLL_MS)
         current_hrefs = await _read_card_hrefs(page)
@@ -771,6 +805,7 @@ async def _paginate_listing(
     canonical_first_page: bool = False,
     page_callback: Callable[[int, dict[str, ListingCardMetadata]], Awaitable[None]] | None = None,
     target_game_year: int | None = None,
+    require_catalogue_end: bool = True,
 ) -> dict[str, ListingCardMetadata]:
     """Paginates a single FUT.GG listing partition (?page=1, ?page=2, ...
     against url_template, a path containing a literal '{page}'
@@ -823,6 +858,8 @@ async def _paginate_listing(
                     break
                 log.warning("Empty card grid partition=%s page=%d attempt=%d/2 url=%s",
                             partition_label, page_number, navigation_attempt + 1, listing_url)
+            if not current_hrefs:
+                await _log_empty_listing(page, listing_url)
             if page_number == 1 and not current_hrefs:
                 raise RuntimeError(f"No card tiles appeared on FUT.GG listing partition={partition_label} page=1")
         except Exception as exc:
@@ -870,8 +907,11 @@ async def _paginate_listing(
             await asyncio.sleep(random.uniform(PAGE_DELAY * 0.7, PAGE_DELAY * 1.3))
 
     else:
-        seen.issues.append(f"{partition_label}: reached page limit {max_pages} before a verified end")
-        log.warning("Incomplete listing: %s", seen.issues[-1])
+        if require_catalogue_end:
+            seen.issues.append(f"{partition_label}: reached page limit {max_pages} before a verified end")
+            log.warning("Incomplete listing: %s", seen.issues[-1])
+        else:
+            log.info("Daily recent-card page budget complete: pages=%d discovered=%d", max_pages, len(seen))
 
     return seen
 
@@ -904,6 +944,7 @@ async def collect_listing_urls(page, *, full_scan: bool | None = None) -> dict[s
             urls = await _paginate_listing(
                 page, f"{GAME_PREFIX}/players/new/?page={{page}}", MAX_PAGES, "daily-new",
                 target_game_year=GAME_YEAR, canonical_first_page=True,
+                require_catalogue_end=False,
             )
         except Exception as exc:
             log.warning("Daily discovery incomplete: %s", exc)
@@ -1499,6 +1540,8 @@ async def crawl_once() -> None:
             # by nature (stateful stabilize-retry against the previous page,
             # capped at a few hundred pages regardless), not the bottleneck.
             listing_page = await context.new_page()
+            listing_page.on("response", _log_listing_response)
+            listing_page.on("requestfailed", _log_listing_request_failure)
 
             if BACKFILL_RELEASE_METADATA:
                 # Backfill mode reuses EVERYTHING below this point - the same
@@ -1536,23 +1579,6 @@ async def crawl_once() -> None:
                 db_total = remaining   # skips the full-scan plausibility check below
             else:
                 urls = await collect_listing_urls(listing_page, full_scan=full_scan)
-                if not full_scan and not urls.complete:
-                    log.warning("Daily discovery incomplete; escalating to full catalogue reconciliation")
-                    daily_urls = urls
-                    full_scan = True
-                    try:
-                        urls = await collect_listing_urls(listing_page, full_scan=True)
-                    except Exception as exc:
-                        urls = ListingDiscovery()
-                        urls.issues.append(f"Full recovery failed: {exc}")
-                    # Preserve valid daily discoveries, even if another source
-                    # fails during the recovery pass. Only full-pass completion
-                    # can clear the incomplete status and advance the checkpoint.
-                    for url, metadata in daily_urls.items():
-                        match = CARD_URL_RE.match(urlparse(url).path)
-                        if not match or int(match.group("game_year")) != GAME_YEAR:
-                            continue
-                        urls[url] = _merge_listing_metadata(urls.get(url), metadata)
                 stats["discovered"] = len(urls)
                 stats["gg_ratings_found"] = sum(
                     metadata.gg_rating is not None for metadata in urls.values()
