@@ -2,12 +2,19 @@
 """Daily FUT.GG player catalogue sync.
 
 Discovers cards via real pagination (?page=N - see _paginate_listing()/
-collect_listing_urls()), visits only cards that are new (unless
-FUTGG_REFRESH_EXISTING=true), and upserts metadata into the independent
-futgg_players table. It intentionally does not write prices or sales;
+collect_listing_urls()), visits new cards and incomplete placeholder rows,
+and upserts metadata into the independent futgg_players table.
+FUTGG_REFRESH_EXISTING=true also revisits complete existing cards. It intentionally does not write prices or sales;
 futgg_price_sync.py owns those.
 
 Recommended Railway Cron: once daily, e.g. 15 5 * * *
+
+The first run and then every FUTGG_CATALOGUE_RECONCILE_HOURS (168 by
+default) reconcile the complete selected-year catalogue. Incomplete daily
+discovery also escalates to full discovery. A durable, per-game-year
+checkpoint advances only after complete pagination and successful fetches.
+Page caps, blocked/empty first pages and failed partitions cannot report
+success, although valid discoveries are still imported.
 
 Two discovery modes:
   - Daily (default): a single partition, FUT.GG's newest-first feed
@@ -85,6 +92,8 @@ Important environment variables:
   FUTGG_LISTING_PAGE_DELAY        0.5 seconds, between listing-page navigations
   FUTGG_LISTING_STABILIZE_ATTEMPTS 10 (retries waiting for card links and rating footers to hydrate)
   FUTGG_LISTING_STABILIZE_POLL_MS 400 (wait between stabilize retries)
+  FUTGG_CATALOGUE_RECONCILE_HOURS 168 (first run + weekly full discovery;
+                                   0 disables scheduled reconciliation)
   FUTGG_REFRESH_EXISTING          false
   FUTGG_PLAYER_REQUEST_DELAY      0.35 seconds, per fetch worker
   FUTGG_PLAYER_CONCURRENCY        3 (parallel card-detail fetch workers - see _fetch_worker())
@@ -164,6 +173,9 @@ CONFIGURATION_ERROR = (
 MAX_PAGES_DAILY = max(1, int(os.getenv("FUTGG_LISTING_MAX_PAGES", "50")))
 MAX_PAGES_FULL = max(1, int(os.getenv("FUTGG_LISTING_MAX_PAGES_FULL", "400")))
 MAX_PAGES = MAX_PAGES_FULL if FULL_SCAN else MAX_PAGES_DAILY
+# Reconcile on the first run after deployment and weekly afterwards. The
+# checkpoint is written only after a complete, successful current-year scan.
+CATALOGUE_RECONCILE_HOURS = max(0, int(os.getenv("FUTGG_CATALOGUE_RECONCILE_HOURS", "168")))
 
 # Full-scan discovery sources. /players/new/ is a recency-windowed feed,
 # not the whole catalogue (see module docstring) - full-scan mode walks
@@ -421,6 +433,12 @@ def _listing_metadata_ready(cards: dict[str, ListingCardMetadata]) -> bool:
 
 
 async def ensure_schema(conn: asyncpg.Connection) -> None:
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS futgg_player_reconciliation (
+            game_year SMALLINT PRIMARY KEY,
+            completed_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+    """)
     await conn.execute(
         """
         CREATE TABLE IF NOT EXISTS futgg_players (
@@ -676,6 +694,73 @@ def _canonical_first_listing_url(url: str) -> str:
     return urlunparse(parsed._replace(query=urlencode(query)))
 
 
+class ListingDiscovery(dict):
+    """Keep useful discoveries even when pagination could not be completed."""
+
+    def __init__(self):
+        super().__init__()
+        self.issues: list[str] = []
+
+    @property
+    def complete(self) -> bool:
+        return not self.issues
+
+
+async def catalogue_reconciliation_due(conn) -> bool:
+    if not CATALOGUE_RECONCILE_HOURS or BACKFILL_RELEASE_METADATA:
+        return False
+    return await conn.fetchval(
+        """SELECT NOT EXISTS (
+            SELECT 1 FROM futgg_player_reconciliation
+            WHERE game_year = $1
+              AND completed_at > now() - make_interval(hours => $2)
+        )""", GAME_YEAR, CATALOGUE_RECONCILE_HOURS,
+    )
+
+
+async def _load_listing_cards(page, listing_url, partition_label, previous_page_hrefs):
+    response = await page.goto(listing_url, wait_until="domcontentloaded", timeout=TIMEOUT_MS)
+    status = response.status if response else 0
+    if status != 200:
+        if status in BLOCKED_LISTING_STATUSES:
+            raise ListingDiscoveryBlocked(partition_label, status)
+        raise RuntimeError(f"FUT.GG listing partition={partition_label} returned HTTP {status}")
+
+    await dismiss_cookie_banner(page)
+
+    # FUT.GG's listing is client-rendered - a query-param-only
+    # navigation can leave the PREVIOUS page's cards still attached
+    # for a moment while the new content is still being fetched, so
+    # a static /players/ navigation link cannot confirm that the actual
+    # card grid has rendered. Confirmed live: a
+    # full-scan run oscillated between 30-new and 0-new pages instead
+    # of steadily accumulating, because some pages were read before
+    # their content had actually swapped in. Poll until the visible
+    # card hrefs differ from the previous page's, or give up after a
+    # bounded number of attempts - a genuine end-of-catalogue page
+    # that keeps re-serving the same content still correctly settles
+    # into "0 new" once attempts are exhausted; this only adds
+    # patience for the transient render-timing case.
+    current_hrefs = await _read_card_hrefs(page)
+    for _ in range(LISTING_STABILIZE_MAX_ATTEMPTS - 1):
+        # Retry while the read looks untrustworthy: EMPTY (the client
+        # render hasn't populated the card grid yet - true on page 1
+        # too, not just later pages with something to compare
+        # against) or IDENTICAL to the previous
+        # page's cards (stale content still attached). Only a
+        # non-empty read that actually differs from the previous page
+        # is trusted without retrying.
+        if (
+            current_hrefs
+            and current_hrefs != previous_page_hrefs
+            and _listing_metadata_ready(current_hrefs)
+        ):
+            break
+        await page.wait_for_timeout(LISTING_STABILIZE_POLL_MS)
+        current_hrefs = await _read_card_hrefs(page)
+    return current_hrefs
+
+
 async def _paginate_listing(
     page,
     url_template: str,
@@ -721,7 +806,7 @@ async def _paginate_listing(
     Returns card URL -> ListingCardMetadata. An optional callback runs
     after each page stabilises; the GG-rating backfill uses it to commit
     and checkpoint one listing page at a time."""
-    seen: dict[str, ListingCardMetadata] = {}
+    seen = ListingDiscovery()
     idle_pages = 0
     previous_page_hrefs: dict[str, ListingCardMetadata] = {}
 
@@ -729,67 +814,23 @@ async def _paginate_listing(
         listing_url = f"{BASE_URL}{url_template.format(page=page_number, game_year=GAME_YEAR, game_prefix=GAME_PREFIX)}"
         if canonical_first_page and page_number == 1:
             listing_url = _canonical_first_listing_url(listing_url)
-        response = await page.goto(listing_url, wait_until="domcontentloaded", timeout=TIMEOUT_MS)
-        status = response.status if response else 0
-        if status != 200:
-            if page_number == 1:
-                if status in BLOCKED_LISTING_STATUSES:
-                    raise ListingDiscoveryBlocked(partition_label, status)
-                raise RuntimeError(f"FUT.GG listing partition={partition_label} returned HTTP {status}")
-            if page_callback is not None:
-                raise RuntimeError(
-                    f"FUT.GG listing partition={partition_label} page={page_number} returned HTTP {status}"
-                )
-            log.warning(
-                "FUT.GG listing partition=%s page %d returned HTTP %d - stopping pagination",
-                partition_label, page_number, status,
-            )
-            break
-
-        await dismiss_cookie_banner(page)
         try:
-            await page.locator("a[href*='/players/']").first.wait_for(state="attached", timeout=TIMEOUT_MS)
-        except PlaywrightTimeoutError as exc:
-            if page_number == 1:
-                raise RuntimeError(f"No card links appeared on FUT.GG listing partition={partition_label}") from exc
-            log.info(
-                "No card links on listing partition=%s page %d - treating as end of catalogue",
-                partition_label, page_number,
-            )
+            for navigation_attempt in range(2):
+                current_hrefs = await _load_listing_cards(
+                    page, listing_url, partition_label, previous_page_hrefs,
+                )
+                if current_hrefs:
+                    break
+                log.warning("Empty card grid partition=%s page=%d attempt=%d/2 url=%s",
+                            partition_label, page_number, navigation_attempt + 1, listing_url)
+            if page_number == 1 and not current_hrefs:
+                raise RuntimeError(f"No card tiles appeared on FUT.GG listing partition={partition_label} page=1")
+        except Exception as exc:
+            if page_number == 1 or page_callback is not None:
+                raise
+            seen.issues.append(f"{partition_label} page={page_number}: {exc}")
+            log.warning("Incomplete listing: %s", seen.issues[-1])
             break
-
-        # FUT.GG's listing is client-rendered - a query-param-only
-        # navigation can leave the PREVIOUS page's cards still attached
-        # for a moment while the new content is still being fetched, so
-        # the "attached" wait above only confirms *some* /players/ link
-        # exists, not that it's THIS page's content. Confirmed live: a
-        # full-scan run oscillated between 30-new and 0-new pages instead
-        # of steadily accumulating, because some pages were read before
-        # their content had actually swapped in. Poll until the visible
-        # card hrefs differ from the previous page's, or give up after a
-        # bounded number of attempts - a genuine end-of-catalogue page
-        # that keeps re-serving the same content still correctly settles
-        # into "0 new" once attempts are exhausted; this only adds
-        # patience for the transient render-timing case.
-        current_hrefs = await _read_card_hrefs(page)
-        for _ in range(LISTING_STABILIZE_MAX_ATTEMPTS - 1):
-            # Retry while the read looks untrustworthy: EMPTY (the client
-            # render hasn't populated the card grid yet - true on page 1
-            # too, not just later pages with something to compare
-            # against - the earlier "a[href*='/players/']" wait above can
-            # resolve instantly against the site's static nav link before
-            # the real listing has rendered) or IDENTICAL to the previous
-            # page's cards (stale content still attached). Only a
-            # non-empty read that actually differs from the previous page
-            # is trusted without retrying.
-            if (
-                current_hrefs
-                and current_hrefs != previous_page_hrefs
-                and _listing_metadata_ready(current_hrefs)
-            ):
-                break
-            await page.wait_for_timeout(LISTING_STABILIZE_POLL_MS)
-            current_hrefs = await _read_card_hrefs(page)
 
         before = len(seen)
         for card_url, metadata in current_hrefs.items():
@@ -806,6 +847,7 @@ async def _paginate_listing(
         )
 
         if PLAYER_LIMIT and len(seen) >= PLAYER_LIMIT:
+            seen.issues.append(f"{partition_label}: stopped at FUTGG_PLAYER_LIMIT={PLAYER_LIMIT}")
             break
 
         page_matches_target_year = target_game_year is None or any(
@@ -827,10 +869,14 @@ async def _paginate_listing(
         if page_number < start_page + max_pages - 1 and PAGE_DELAY:
             await asyncio.sleep(random.uniform(PAGE_DELAY * 0.7, PAGE_DELAY * 1.3))
 
+    else:
+        seen.issues.append(f"{partition_label}: reached page limit {max_pages} before a verified end")
+        log.warning("Incomplete listing: %s", seen.issues[-1])
+
     return seen
 
 
-async def collect_listing_urls(page) -> dict[str, ListingCardMetadata]:
+async def collect_listing_urls(page, *, full_scan: bool | None = None) -> dict[str, ListingCardMetadata]:
     """Top-level discovery entry point - see module docstring for the
     daily-vs-full-scan distinction and why full-scan walks more than
     /players/new/.
@@ -852,31 +898,33 @@ async def collect_listing_urls(page) -> dict[str, ListingCardMetadata]:
     place that image can be captured. Callers that only need the URLs can
     still iterate/len() this like a plain list - dict keys behave
     identically for that."""
-    if not FULL_SCAN:
+    full_scan = FULL_SCAN if full_scan is None else full_scan
+    if not full_scan:
         try:
             urls = await _paginate_listing(
                 page, f"{GAME_PREFIX}/players/new/?page={{page}}", MAX_PAGES, "daily-new",
-                target_game_year=GAME_YEAR,
+                target_game_year=GAME_YEAR, canonical_first_page=True,
             )
-        except ListingDiscoveryBlocked as exc:
-            log.warning(
-                "Discovery mode=daily source=partition:%s blocked with HTTP %d - "
-                "skipping player discovery for this run; existing catalogue stays intact",
-                exc.partition_label,
-                exc.status,
-            )
-            return {}
+        except Exception as exc:
+            log.warning("Daily discovery incomplete: %s", exc)
+            urls = ListingDiscovery()
+            urls.issues.append(str(exc))
+            return urls
         log.info("Discovery mode=daily source=partition:daily-new unique=%d", len(urls))
         if PLAYER_LIMIT:
-            return dict(list(urls.items())[:PLAYER_LIMIT])
+            limited = ListingDiscovery()
+            limited.update(list(urls.items())[:PLAYER_LIMIT])
+            limited.issues = urls.issues
+            return limited
         return urls
 
-    combined: dict[str, ListingCardMetadata] = {}
+    combined = ListingDiscovery()
     partition_failures: list[str] = []
     for name, template in FULL_SCAN_PARTITIONS:
         try:
             partition_urls = await _paginate_listing(
                 page, template, MAX_PAGES_FULL, name, canonical_first_page=True,
+                target_game_year=GAME_YEAR if "/players/new/" in template else None,
             )
         except Exception as exc:
             partition_failures.append(f"{name}: {exc}")
@@ -885,8 +933,12 @@ async def collect_listing_urls(page) -> dict[str, ListingCardMetadata]:
                 name, exc,
             )
             continue
+        combined.issues.extend(partition_urls.issues)
         before = len(combined)
         for card_url, metadata in partition_urls.items():
+            match = CARD_URL_RE.match(urlparse(card_url).path)
+            if not match or int(match.group("game_year")) != GAME_YEAR:
+                continue
             combined[card_url] = _merge_listing_metadata(combined.get(card_url), metadata)
         log.info(
             "Discovery mode=full source=partition:%s partition_unique=%d new_to_combined=%d combined_total=%d",
@@ -895,6 +947,9 @@ async def collect_listing_urls(page) -> dict[str, ListingCardMetadata]:
         if PLAYER_LIMIT and len(combined) >= PLAYER_LIMIT:
             break
 
+    combined.issues.extend(partition_failures)
+    if not combined:
+        combined.issues.append(f"No cards discovered for game_year={GAME_YEAR}")
     if not combined and partition_failures:
         raise RuntimeError(
             "All FUT.GG full-scan listing partitions failed: "
@@ -906,7 +961,10 @@ async def collect_listing_urls(page) -> dict[str, ListingCardMetadata]:
         len(FULL_SCAN_PARTITIONS), len(combined),
     )
     if PLAYER_LIMIT:
-        return dict(list(combined.items())[:PLAYER_LIMIT])
+        limited = ListingDiscovery()
+        limited.update(list(combined.items())[:PLAYER_LIMIT])
+        limited.issues = combined.issues
+        return limited
     return combined
 
 
@@ -940,6 +998,10 @@ async def existing_ids(conn: asyncpg.Connection, urls, game_year: int = GAME_YEA
         FROM futgg_players
         WHERE source_card_id = ANY($1::bigint[])
           AND game_year = $2
+          AND NOT ('feed_only_placeholder' = ANY(metadata_warnings))
+          AND name IS NOT NULL
+          AND rating IS NOT NULL
+          AND primary_position IS NOT NULL
         """,
         ids, game_year,
     )
@@ -1393,6 +1455,9 @@ async def crawl_once() -> None:
     try:
         async with pool.acquire() as conn:
             await ensure_schema(conn)
+            full_scan = FULL_SCAN or await catalogue_reconciliation_due(conn)
+        if full_scan and not FULL_SCAN:
+            log.info("Catalogue reconciliation due: running full current-year discovery to recover missed cards")
 
         async with Stealth().use_async(async_playwright()) as patched_playwright:
             playwright = patched_playwright
@@ -1470,7 +1535,24 @@ async def crawl_once() -> None:
                 known = set()          # force every backfill row to be fetched
                 db_total = remaining   # skips the full-scan plausibility check below
             else:
-                urls = await collect_listing_urls(listing_page)
+                urls = await collect_listing_urls(listing_page, full_scan=full_scan)
+                if not full_scan and not urls.complete:
+                    log.warning("Daily discovery incomplete; escalating to full catalogue reconciliation")
+                    daily_urls = urls
+                    full_scan = True
+                    try:
+                        urls = await collect_listing_urls(listing_page, full_scan=True)
+                    except Exception as exc:
+                        urls = ListingDiscovery()
+                        urls.issues.append(f"Full recovery failed: {exc}")
+                    # Preserve valid daily discoveries, even if another source
+                    # fails during the recovery pass. Only full-pass completion
+                    # can clear the incomplete status and advance the checkpoint.
+                    for url, metadata in daily_urls.items():
+                        match = CARD_URL_RE.match(urlparse(url).path)
+                        if not match or int(match.group("game_year")) != GAME_YEAR:
+                            continue
+                        urls[url] = _merge_listing_metadata(urls.get(url), metadata)
                 stats["discovered"] = len(urls)
                 stats["gg_ratings_found"] = sum(
                     metadata.gg_rating is not None for metadata in urls.values()
@@ -1485,7 +1567,7 @@ async def crawl_once() -> None:
                         "FUT.GG full-card artwork: listing_cards=%d backfilled_existing=%d",
                         len(urls), image_backfilled,
                     )
-                    db_total = await conn.fetchval("SELECT COUNT(*) FROM futgg_players")
+                    db_total = await conn.fetchval("SELECT COUNT(*) FROM futgg_players WHERE game_year = $1", GAME_YEAR)
                     listing_years = {
                         int(match.group("game_year"))
                         for url in urls
@@ -1497,9 +1579,11 @@ async def crawl_once() -> None:
                         )
                         stats["gg_rows_updated"] += result.updated
 
-            scan_plausible = True
-            if FULL_SCAN:
-                scan_plausible = _full_scan_is_plausible(len(urls), db_total, FULL_SCAN_MIN_COVERAGE)
+            scan_plausible = getattr(urls, "complete", True)
+            if not scan_plausible:
+                log.error("Discovery incomplete: %s", "; ".join(urls.issues))
+            if full_scan and not BACKFILL_RELEASE_METADATA:
+                scan_plausible = scan_plausible and _full_scan_is_plausible(len(urls), db_total, FULL_SCAN_MIN_COVERAGE)
                 log.info(
                     "Full-scan plausibility check: discovered=%d db_total=%d min_coverage=%.2f plausible=%s",
                     len(urls), db_total, FULL_SCAN_MIN_COVERAGE, scan_plausible,
@@ -1518,7 +1602,7 @@ async def crawl_once() -> None:
 
             log.info(
                 "Discovery mode=%s discovered=%d known=%d targets=%d refresh_existing=%s concurrency=%d",
-                "full" if FULL_SCAN else "daily", len(urls), len(known), len(targets), REFRESH_EXISTING, PLAYER_CONCURRENCY,
+                "full" if full_scan else "daily", len(urls), len(known), len(targets), REFRESH_EXISTING, PLAYER_CONCURRENCY,
             )
 
             queue: "asyncio.Queue[tuple[int, FetchTarget]]" = asyncio.Queue()
@@ -1541,11 +1625,17 @@ async def crawl_once() -> None:
                 log.warning("Circuit breaker tripped: %s - stopped fetching remaining cards this run", breaker.trip_reason)
 
             ok = (
-                (stats["failed"] == 0 or (stats["new"] + stats["updated"]) > 0)
+                stats["failed"] == 0
                 and not breaker.tripped
                 and scan_plausible
             )
             async with pool.acquire() as conn:
+                if ok and full_scan and not BACKFILL_RELEASE_METADATA:
+                    await conn.execute(
+                        """INSERT INTO futgg_player_reconciliation (game_year, completed_at)
+                           VALUES ($1, now()) ON CONFLICT (game_year)
+                           DO UPDATE SET completed_at = EXCLUDED.completed_at""", GAME_YEAR,
+                    )
                 await heartbeat(
                     conn,
                     "futgg_player_sync",
@@ -1554,12 +1644,14 @@ async def crawl_once() -> None:
                 )
             if not scan_plausible:
                 await alert(
-                    f"futgg_player_sync full-scan looked incomplete: discovered={len(urls)} "
+                    f"futgg_player_sync discovery incomplete: discovered={len(urls)} "
                     f"db_total={db_total} min_coverage={FULL_SCAN_MIN_COVERAGE}"
                 )
             elif not ok:
                 await alert(f"futgg_player_sync failed: {stats}")
-            log.info("Run complete: mode=%s scan_plausible=%s %s", "full" if FULL_SCAN else "daily", scan_plausible, stats)
+            log.info("Run complete: mode=%s scan_plausible=%s %s", "full" if full_scan else "daily", scan_plausible, stats)
+            if not ok:
+                raise RuntimeError("Player sync incomplete; useful upserts retained, reconciliation checkpoint not advanced")
 
     finally:
         # Every cleanup step is independently fault-tolerant. Before this,
@@ -1604,4 +1696,5 @@ if __name__ == "__main__":
     except Exception as exc:
         log.exception("futgg_player_sync failed: %s", exc)
         sys.exit(1)
+
 

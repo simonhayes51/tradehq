@@ -166,7 +166,7 @@ async def test_collect_listing_urls_navigates_pages_in_order(monkeypatch):
     urls = await mod.collect_listing_urls(page)
 
     assert page.goto_urls == [
-        "https://www.fut.gg/players/new/?page=1",
+        "https://www.fut.gg/players/new/",
         "https://www.fut.gg/players/new/?page=2",
         "https://www.fut.gg/players/new/?page=3",
     ]
@@ -184,7 +184,8 @@ async def test_daily_listing_403_skips_discovery_without_crashing(monkeypatch):
     urls = await mod.collect_listing_urls(page)
 
     assert urls == {}
-    assert page.goto_urls == ["https://www.fut.gg/players/new/?page=1"]
+    assert not urls.complete
+    assert page.goto_urls == ["https://www.fut.gg/players/new/"]
 
 
 def test_collect_listing_urls_no_scroll_calls():
@@ -217,7 +218,7 @@ async def test_collect_listing_urls_stops_at_max_pages(monkeypatch):
     urls = await mod.collect_listing_urls(page)
 
     assert page.goto_urls == [
-        "https://www.fut.gg/players/new/?page=1",
+        "https://www.fut.gg/players/new/",
         "https://www.fut.gg/players/new/?page=2",
     ]
     assert len(urls) == 2
@@ -245,7 +246,7 @@ async def test_collect_listing_urls_stops_early_after_idle_pages(monkeypatch):
     urls = await mod.collect_listing_urls(page)
 
     assert page.goto_urls == [
-        "https://www.fut.gg/players/new/?page=1",
+        "https://www.fut.gg/players/new/",
         "https://www.fut.gg/players/new/?page=2",
         "https://www.fut.gg/players/new/?page=3",
     ]
@@ -282,7 +283,7 @@ async def test_daily_mode_stops_once_pages_stop_matching_current_year(monkeypatc
     urls = await mod.collect_listing_urls(page)
 
     assert page.goto_urls == [
-        "https://www.fut.gg/players/new/?page=1",
+        "https://www.fut.gg/players/new/",
         "https://www.fut.gg/players/new/?page=2",
         "https://www.fut.gg/players/new/?page=3",
         "https://www.fut.gg/players/new/?page=4",
@@ -312,11 +313,12 @@ async def test_collect_listing_urls_stops_when_no_card_links_present(monkeypatch
     urls = await mod.collect_listing_urls(page)
 
     assert page.goto_urls == [
-        "https://www.fut.gg/players/new/?page=1",
+        "https://www.fut.gg/players/new/",
         "https://www.fut.gg/players/new/?page=2",
         "https://www.fut.gg/players/new/?page=3",
-        "https://www.fut.gg/players/new/?page=4",
+        *[f"https://www.fut.gg/players/new/?page={n}" for n in range(4, 8) for _ in range(2)],
     ]
+    assert urls.complete
     assert len(urls) == 3
 
 
@@ -337,7 +339,7 @@ async def test_collect_listing_urls_respects_player_limit(monkeypatch):
 
     assert len(urls) == 3
     assert page.goto_urls == [
-        "https://www.fut.gg/players/new/?page=1",
+        "https://www.fut.gg/players/new/",
         "https://www.fut.gg/players/new/?page=2",
     ]
 
@@ -394,7 +396,7 @@ async def test_collect_listing_urls_gives_up_after_stabilize_attempts_exhausted(
 
     assert len(urls) == 1
     assert page.goto_urls == [
-        "https://www.fut.gg/players/new/?page=1",
+        "https://www.fut.gg/players/new/",
         "https://www.fut.gg/players/new/?page=2",
     ]
 
@@ -432,15 +434,15 @@ async def test_collect_listing_urls_retries_page_one_when_grid_not_yet_rendered(
 
     assert len(urls) == 3
     assert page.goto_urls == [
-        "https://www.fut.gg/players/new/?page=1",
+        "https://www.fut.gg/players/new/",
         "https://www.fut.gg/players/new/?page=2",
     ]
 
 
 @run_async
-async def test_collect_listing_urls_falls_back_when_explicit_page_one_is_empty(monkeypatch):
-    """FUT.GG can expose page 1 at the canonical URL while ?page=1
-    hydrates to an empty grid. Do not silently miss the top cards."""
+async def test_collect_listing_urls_uses_canonical_page_one_when_explicit_is_empty(monkeypatch):
+    """The canonical URL must be used before moving to page two; the
+    explicit ?page=1 URL renders no cards in this regression fixture."""
     monkeypatch.setattr(mod, "MAX_PAGES", 2)
     monkeypatch.setattr(mod, "PLAYER_LIMIT", 0)
     monkeypatch.setattr(mod, "IDLE_ROUNDS", 10)
@@ -458,7 +460,6 @@ async def test_collect_listing_urls_falls_back_when_explicit_page_one_is_empty(m
 
     assert len(urls) == 3
     assert page.goto_urls == [
-        "https://www.fut.gg/players/new/?page=1",
         "https://www.fut.gg/players/new/",
         "https://www.fut.gg/players/new/?page=2",
     ]
@@ -611,7 +612,7 @@ async def test_full_scan_uses_configured_partitions_and_dedupes(monkeypatch):
 
 def test_canonical_first_listing_url_removes_page_one_only():
     assert mod._canonical_first_listing_url("https://www.fut.gg/players/?page=1") == "https://www.fut.gg/players/"
-    assert mod._canonical_first_listing_url("https://www.fut.gg/players/new/?page=1") == "https://www.fut.gg/players/new/"
+    assert mod._canonical_first_listing_url("https://www.fut.gg/players/new/") == "https://www.fut.gg/players/new/"
     assert mod._canonical_first_listing_url("https://www.fut.gg/players/?page=2") == "https://www.fut.gg/players/?page=2"
 
 
@@ -635,7 +636,9 @@ async def test_full_scan_continues_when_new_partition_does_not_render(monkeypatc
 
     expected = {mod.urljoin(mod.BASE_URL, _card_href(n)) for n in (2, 3)}
     assert set(urls.keys()) == expected
+    assert not urls.complete
     assert page.goto_urls == [
+        "https://www.fut.gg/players/new/",
         "https://www.fut.gg/players/new/",
         "https://www.fut.gg/players/",
     ]
@@ -733,14 +736,14 @@ async def test_daily_mode_only_touches_the_new_partition(monkeypatch):
         [("new", "/players/new/?page={page}"), ("catalogue", "/players/?page={page}")],
     )
     hrefs_by_path = {
-        "/players/new/?page=1": [_card_href(1)],
+        "/players/new/": [_card_href(1)],
         "/players/": [_card_href(2), _card_href(3)],
     }
     page = _FakeMultiPartitionPage(hrefs_by_path)
 
     urls = await mod.collect_listing_urls(page)
 
-    assert page.goto_urls == ["https://www.fut.gg/players/new/?page=1"]
+    assert page.goto_urls == ["https://www.fut.gg/players/new/"]
     assert len(urls) == 1
 
 
@@ -815,8 +818,8 @@ async def test_full_scan_discovers_known_regression_base_cards(monkeypatch):
     HAALAND_ID, MBAPPE_ID = 239085, 231747
     hrefs_by_path = {
         "/players/": [
-            f"/players/{HAALAND_ID}-erling-haaland/26-{HAALAND_ID}/",
-            f"/players/{MBAPPE_ID}-kylian-mbappe/26-{MBAPPE_ID}/",
+            f"/players/{HAALAND_ID}-erling-haaland/{mod.GAME_YEAR}-{HAALAND_ID}/",
+            f"/players/{MBAPPE_ID}-kylian-mbappe/{mod.GAME_YEAR}-{MBAPPE_ID}/",
         ],
     }
     page = _FakeMultiPartitionPage(hrefs_by_path)
@@ -1464,3 +1467,171 @@ async def test_listing_rating_update_retries_postgres_deadlock(monkeypatch):
         26,
         True,
     )
+
+
+
+@run_async
+async def test_empty_first_grid_retries_navigation_then_marks_incomplete(monkeypatch):
+    monkeypatch.setattr(mod, "FULL_SCAN", False)
+    monkeypatch.setattr(mod, "PLAYER_LIMIT", 0)
+    monkeypatch.setattr(mod, "LISTING_STABILIZE_MAX_ATTEMPTS", 1)
+    page = _FakeListingPage({})
+    urls = await mod.collect_listing_urls(page)
+    assert not urls.complete
+    assert "No card tiles" in urls.issues[0]
+    assert page.goto_urls == ["https://www.fut.gg/players/new/"] * 2
+
+
+@run_async
+async def test_empty_grid_recovers_on_second_navigation(monkeypatch):
+    monkeypatch.setattr(mod, "FULL_SCAN", False)
+    monkeypatch.setattr(mod, "MAX_PAGES", 1)
+    monkeypatch.setattr(mod, "PLAYER_LIMIT", 0)
+    monkeypatch.setattr(mod, "LISTING_STABILIZE_MAX_ATTEMPTS", 1)
+
+    class RetryPage(_FakeListingPage):
+        async def goto(self, *args, **kwargs):
+            response = await super().goto(*args, **kwargs)
+            if len(self.goto_urls) == 2:
+                self._pages_hrefs[1] = [_card_href(99)]
+            return response
+
+    page = RetryPage({})
+    urls = await mod.collect_listing_urls(page)
+    assert len(urls) == 1
+    assert len(page.goto_urls) == 2
+    assert not urls.complete  # data recovered, but the page cap still truncated discovery
+
+
+@run_async
+async def test_reconciliation_recovers_cards_outside_recent_feed(monkeypatch):
+    monkeypatch.setattr(mod, "FULL_SCAN", False)
+    monkeypatch.setattr(mod, "MAX_PAGES_FULL", 10)
+    monkeypatch.setattr(mod, "IDLE_ROUNDS", 2)
+    monkeypatch.setattr(mod, "PAGE_DELAY", 0)
+    monkeypatch.setattr(mod, "PLAYER_LIMIT", 0)
+    monkeypatch.setattr(mod, "LISTING_STABILIZE_MAX_ATTEMPTS", 1)
+    monkeypatch.setattr(mod, "FULL_SCAN_PARTITIONS", [
+        ("new", "/players/new/?page={page}"),
+        ("catalogue", "/players/?page={page}"),
+    ])
+    page = _FakeMultiPartitionPage({
+        "/players/new/": [_card_href(1)],
+        "/players/": [_card_href(1)],
+        "/players/?page=2": [_card_href(86), _card_href(87, game_year=26)],
+    })
+    urls = await mod.collect_listing_urls(page, full_scan=True)
+    assert urls.complete
+    targets, skipped = mod._build_targets(urls, known={1001}, refresh_existing=False)
+    assert skipped == 1
+    assert [t.url for t in targets] == [mod.urljoin(mod.BASE_URL, _card_href(86))]
+
+
+@run_async
+async def test_later_http_failure_preserves_cards_but_marks_incomplete(monkeypatch):
+    monkeypatch.setattr(mod, "PLAYER_LIMIT", 0)
+    monkeypatch.setattr(mod, "PAGE_DELAY", 0)
+    monkeypatch.setattr(mod, "LISTING_STABILIZE_MAX_ATTEMPTS", 1)
+
+    class BlockedPage(_FakeListingPage):
+        async def goto(self, *args, **kwargs):
+            response = await super().goto(*args, **kwargs)
+            return _FakeResponse(429) if self._current_page == 2 else response
+
+    urls = await mod._paginate_listing(BlockedPage({1: [_card_href(1)]}),
+                                       "/players/?page={page}", 10, "catalogue")
+    assert len(urls) == 1
+    assert not urls.complete
+    assert "429" in urls.issues[0]
+
+
+@run_async
+async def test_reconciliation_schedule_is_game_year_scoped(monkeypatch):
+    from unittest.mock import AsyncMock
+    monkeypatch.setattr(mod, "CATALOGUE_RECONCILE_HOURS", 168)
+    monkeypatch.setattr(mod, "BACKFILL_RELEASE_METADATA", False)
+    conn = type("Conn", (), {"fetchval": AsyncMock(return_value=True)})()
+    assert await mod.catalogue_reconciliation_due(conn)
+    sql, year, hours = conn.fetchval.call_args.args
+    assert "game_year = $1" in sql
+    assert (year, hours) == (mod.GAME_YEAR, 168)
+    conn.fetchval.return_value = False
+    assert not await mod.catalogue_reconciliation_due(conn)
+    conn.fetchval.reset_mock()
+    monkeypatch.setattr(mod, "CATALOGUE_RECONCILE_HOURS", 0)
+    assert not await mod.catalogue_reconciliation_due(conn)
+    conn.fetchval.assert_not_called()
+
+
+@pytest.mark.parametrize("reconcile_due, complete, failed, expected_checkpoint", [
+    (True, True, 0, True), (True, False, 0, False), (True, True, 1, False),
+    (False, True, 0, True), (False, False, 0, False),
+])
+@run_async
+async def test_crawl_advances_checkpoint_only_after_complete_success(
+    monkeypatch, reconcile_due, complete, failed, expected_checkpoint,
+):
+    from unittest.mock import AsyncMock, MagicMock
+    monkeypatch.setattr(mod, "CONFIGURATION_ERROR", "")
+    monkeypatch.setattr(mod, "BACKFILL_RELEASE_METADATA", False)
+    monkeypatch.setattr(mod, "FULL_SCAN", False)
+    monkeypatch.setattr(mod, "PLAYER_CONCURRENCY", 1)
+    monkeypatch.setattr(mod, "REFRESH_EXISTING", False)
+    conn = MagicMock()
+    conn.fetchval = AsyncMock(return_value=1)
+    conn.execute = AsyncMock()
+    conn.close = AsyncMock()
+    acquire = MagicMock()
+    acquire.__aenter__ = AsyncMock(return_value=conn)
+    acquire.__aexit__ = AsyncMock(return_value=False)
+    pool = MagicMock()
+    pool.acquire.return_value = acquire
+    pool.close = AsyncMock()
+    monkeypatch.setattr(mod, "connect_with_retry", AsyncMock(return_value=conn))
+    monkeypatch.setattr(mod, "create_pool_with_retry", AsyncMock(return_value=pool))
+    monkeypatch.setattr(mod, "ensure_schema", AsyncMock())
+    monkeypatch.setattr(mod, "catalogue_reconciliation_due", AsyncMock(return_value=reconcile_due))
+    page = MagicMock(close=AsyncMock())
+    context = MagicMock(new_page=AsyncMock(return_value=page))
+    browser = MagicMock(new_context=AsyncMock(return_value=context))
+    playwright = MagicMock()
+    playwright.chromium.launch = AsyncMock(return_value=browser)
+    manager = MagicMock()
+    manager.__aenter__ = AsyncMock(return_value=playwright)
+    manager.__aexit__ = AsyncMock(return_value=False)
+    stealth = MagicMock()
+    stealth.use_async.return_value = manager
+    monkeypatch.setattr(mod, "Stealth", lambda: stealth)
+    urls = mod.ListingDiscovery()
+    urls[mod.urljoin(mod.BASE_URL, _card_href(86))] = mod.ListingCardMetadata()
+    if not complete:
+        urls.issues.append("catalogue reached page limit")
+    discover = AsyncMock(return_value=urls)
+    if not reconcile_due:
+        daily = mod.ListingDiscovery()
+        daily.issues.append("daily-new reached page limit 10")
+        discover.side_effect = [daily, urls]
+    monkeypatch.setattr(mod, "collect_listing_urls", discover)
+    monkeypatch.setattr(mod, "existing_ids", AsyncMock(return_value=set()))
+    monkeypatch.setattr(mod, "backfill_listing_card_images", AsyncMock(return_value=0))
+    monkeypatch.setattr(mod, "update_listing_gg_ratings", AsyncMock(return_value=type("R", (), {"updated": 0})()))
+
+    async def fetch_worker(_worker_id, _page, _pool, _queue, _total, stats, _breaker):
+        stats["failed"] = failed
+        stats["new"] = 1 - failed
+
+    monkeypatch.setattr(mod, "_fetch_worker", fetch_worker)
+    heartbeat = AsyncMock()
+    monkeypatch.setattr(mod, "heartbeat", heartbeat)
+    monkeypatch.setattr(mod, "alert", AsyncMock())
+    if expected_checkpoint:
+        await mod.crawl_once()
+    else:
+        with pytest.raises(RuntimeError, match="Player sync incomplete"):
+            await mod.crawl_once()
+    assert discover.await_count == (1 if reconcile_due else 2)
+    assert discover.call_args.kwargs == {"full_scan": True}
+    checkpoint_writes = [call for call in conn.execute.call_args_list
+                         if "INSERT INTO futgg_player_reconciliation" in call.args[0]]
+    assert bool(checkpoint_writes) is expected_checkpoint
+    assert heartbeat.call_args.kwargs["ok"] is expected_checkpoint

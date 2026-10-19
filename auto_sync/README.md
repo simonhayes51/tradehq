@@ -390,3 +390,37 @@ Env vars (all in `config.py`, defaults documented there):
 `FAILURE_CACHE_TTL_MINUTES`, plus per-worker
 `BIN_SUCCESS_REFRESH_MINUTES`/`BIN_WORKER_CONCURRENCY`/
 `SALES_SUCCESS_REFRESH_MINUTES`/`SALES_WORKER_CONCURRENCY`.
+
+
+
+### Player catalogue recovery and incomplete scans
+
+PlayerSync now performs full selected-game-year discovery on the first run
+following this update, then weekly (`FUTGG_CATALOGUE_RECONCILE_HOURS=168`).
+The checkpoint is stored in `futgg_player_reconciliation`, keyed by game year,
+and only advances when pagination and card fetches both finish successfully.
+No separate backend migration is required: the worker creates this table.
+
+Redeploy the PlayerSync image built from `auto_sync/Dockerfile.player`, then
+trigger its scheduled job once. Keep `FUTGG_BACKFILL_RELEASE_METADATA=false`,
+`FUTGG_PLAYER_LIMIT=0`, and normally `FUTGG_REFRESH_EXISTING=false`. The first
+run automatically uses `FUTGG_LISTING_MAX_PAGES_FULL` (default 400 per source),
+even if the daily `FUTGG_LISTING_MAX_PAGES` override is still 10. Full discovery
+includes both the recent feed and the main catalogue, so older missed cards
+are eligible for import. Complete existing records are skipped; feed-only
+placeholders and records missing name, rating or position are fetched again.
+
+Daily discovery starts at `/players/new/`, rather than `?page=1`. Empty card
+grids are retried with another navigation. A truncated daily scan escalates
+to a full reconciliation automatically. Page/player limits, blocked pages,
+and failed partitions mark the run incomplete, retain useful imports, record
+a failed heartbeat and exit nonzero. If the full scan reaches its own cap,
+increase `FUTGG_LISTING_MAX_PAGES_FULL` and rerun; a capped run cannot advance
+the recovery checkpoint. Set `FUTGG_LISTING_FULL_SCAN=true` to explicitly
+force full discovery, or `FUTGG_CATALOGUE_RECONCILE_HOURS=0` to disable only
+the periodic reconciliation (incomplete daily scans still escalate).
+
+PlayerSync remains a one-shot scheduled worker. A deploy does not itself
+prove the missing cards were recovered: check its completion log and player
+search after the scheduled run. Production database access is needed to
+separately diagnose cards excluded by incorrect tradeability metadata.
