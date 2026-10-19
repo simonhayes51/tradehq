@@ -1621,23 +1621,14 @@ async def crawl_once() -> None:
             # construction rather than by assumption. If FUT.GG turns out to
             # render server-side in a fixed zone instead, this changes
             # nothing and costs nothing.
+            # Chromium owns Sec-Fetch-*, client hints and the User-Agent.
+            # Context-wide navigation headers also affect scripts and fetches,
+            # and can invalidate their request metadata before any HTTP reply.
             context = await browser.new_context(
-                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
                 viewport={'width': 1920, 'height': 1080},
                 device_scale_factor=1,
                 is_mobile=False,
                 has_touch=False,
-                extra_http_headers={
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-                    'Accept-Language': 'en-GB,en;q=0.9',
-                    'Sec-Ch-Ua': '"Chromium";v="128", "Google Chrome";v="128", "Not;A=Brand";v="99"',
-                    'Sec-Ch-Ua-Mobile': '?0',
-                    'Sec-Ch-Ua-Platform': '"Windows"',
-                    'Sec-Fetch-Dest': 'document',
-                    'Sec-Fetch-Mode': 'navigate',
-                    'Sec-Fetch-Site': 'none',
-                    'Upgrade-Insecure-Requests': '1',
-                },
                 locale='en-GB',
                 timezone_id=BROWSER_TIMEZONE,
             )

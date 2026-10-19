@@ -1638,6 +1638,10 @@ async def test_crawl_advances_checkpoint_only_after_complete_success(
             await mod.crawl_once()
     assert discover.await_count == 1
     assert discover.call_args.kwargs == {"full_scan": reconcile_due}
+    browser_options = browser.new_context.call_args.kwargs
+    assert "extra_http_headers" not in browser_options
+    assert "user_agent" not in browser_options
+    assert browser_options["locale"] == "en-GB"
     checkpoint_writes = [call for call in conn.execute.call_args_list
                          if "INSERT INTO futgg_player_reconciliation" in call.args[0]]
     assert bool(checkpoint_writes) is expected_checkpoint
