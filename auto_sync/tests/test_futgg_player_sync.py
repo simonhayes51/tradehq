@@ -1602,7 +1602,7 @@ async def test_crawl_advances_checkpoint_only_after_complete_success(
     monkeypatch.setattr(mod, "ensure_schema", AsyncMock())
     monkeypatch.setattr(mod, "catalogue_reconciliation_due", AsyncMock(return_value=reconcile_due))
     page = MagicMock(close=AsyncMock())
-    context = MagicMock(new_page=AsyncMock(return_value=page))
+    context = MagicMock(new_page=AsyncMock(return_value=page), route=AsyncMock())
     browser = MagicMock(new_context=AsyncMock(return_value=context))
     playwright = MagicMock()
     playwright.chromium.launch = AsyncMock(return_value=browser)
@@ -1623,6 +1623,7 @@ async def test_crawl_advances_checkpoint_only_after_complete_success(
     monkeypatch.setattr(mod, "update_listing_gg_ratings", AsyncMock(return_value=type("R", (), {"updated": 0})()))
 
     async def fetch_worker(_worker_id, _page, _pool, _queue, _total, stats, _breaker):
+        page.close.assert_awaited()  # listing frontend released before fetching
         stats["failed"] = failed
         stats["new"] = 1 - failed
 
@@ -1794,3 +1795,108 @@ async def test_blocked_recent_api_can_use_rendered_recent_listing(monkeypatch):
 @pytest.mark.parametrize("url", ["https://example.com" + _card_href(1), _card_href(1, game_year=26)])
 def test_recent_api_rejects_wrong_origin_and_game_year(url):
     assert mod._parse_recent_api_card({"eaId": 1001, "url": url}) is None
+
+
+@run_async
+async def test_api_crash_retries_same_page_without_losing_previous_results(monkeypatch):
+    from unittest.mock import AsyncMock, MagicMock
+    monkeypatch.setattr(mod, "MAX_PAGES_DAILY", 3)
+    monkeypatch.setattr(mod, "PAGE_DELAY", 0)
+    monkeypatch.setattr(mod, "PLAYER_LIMIT", 0)
+    payloads = {n: {"currentPage": n, "next": n+1 if n < 3 else None,
+                    "data": [_api_card(n)]} for n in range(1, 4)}
+
+    class CrashedPage(_FakeRecentApiPage):
+        async def evaluate(self, script, endpoint=None):
+            if endpoint and "page=2" in endpoint:
+                raise RuntimeError("Page.evaluate: Target crashed")
+            return await super().evaluate(script, endpoint)
+
+    first, replacement = CrashedPage(payloads), _FakeRecentApiPage(payloads)
+    first.close, replacement.close = AsyncMock(), AsyncMock()
+    first.context = MagicMock(new_page=AsyncMock(return_value=replacement))
+    result = await mod.collect_recent_api_urls(first)
+    assert result.complete and len(result) == 3
+    assert [dict(mod.parse_qsl(mod.urlparse(url).query)).get("page")
+            for url in replacement.api_urls] == ["2", "3"]
+    first.close.assert_awaited_once()
+    replacement.close.assert_awaited_once()
+
+
+@run_async
+async def test_repeated_api_crash_is_bounded_and_preserves_partial_results(monkeypatch):
+    from unittest.mock import AsyncMock, MagicMock
+    monkeypatch.setattr(mod, "MAX_PAGES_DAILY", 10)
+    monkeypatch.setattr(mod, "PAGE_DELAY", 0)
+    monkeypatch.setattr(mod, "PLAYER_LIMIT", 0)
+
+    class CrashedPage(_FakeRecentApiPage):
+        async def evaluate(self, script, endpoint=None):
+            if endpoint and "page=2" in endpoint:
+                raise RuntimeError("Target crashed")
+            return await super().evaluate(script, endpoint)
+
+    payloads = {1: {"currentPage": 1, "next": 2, "data": [_api_card(1)]}}
+    first, replacement = CrashedPage(payloads), CrashedPage(payloads)
+    first.close, replacement.close = AsyncMock(), AsyncMock()
+    first.context = MagicMock(new_page=AsyncMock(return_value=replacement))
+    result = await mod.collect_recent_api_urls(first)
+    assert len(result) == 1 and not result.complete
+    first.context.new_page.assert_awaited_once()
+    replacement.close.assert_awaited_once()
+
+
+@pytest.mark.parametrize("repeat_crash", [False, True])
+@run_async
+async def test_worker_recreates_crashed_page_and_does_not_poison_next_card(monkeypatch, repeat_crash):
+    from unittest.mock import AsyncMock, MagicMock
+    urls = [f"https://www.fut.gg/players/{n}-p/26-{n}/" for n in (1, 2)]
+    harness = _FetchWorkerHarness(monkeypatch, dict(zip(urls, (1, 2))))
+
+    class CrashedPage(_FakeCardPage):
+        async def goto(self, url, **kwargs):
+            if url == urls[0]:
+                self.visited.append(url)
+                raise RuntimeError("Page.goto: Page crashed")
+            return await super().goto(url, **kwargs)
+
+    first = CrashedPage()
+    replacement = CrashedPage() if repeat_crash else _FakeCardPage()
+    healthy = _FakeCardPage()
+    for page in (first, replacement, healthy):
+        page.close = AsyncMock()
+    context = MagicMock(new_page=AsyncMock(side_effect=[replacement, healthy]))
+    first.context = replacement.context = context
+    queue = asyncio.Queue()
+    for index, url in enumerate(urls, 1):
+        queue.put_nowait((index, mod.FetchTarget(url, False, mod.ListingCardMetadata())))
+    stats = {"new": 0, "updated": 0, "failed": 0}
+    breaker = mod.CircuitBreaker(threshold=5)
+    await mod._fetch_worker(1, first, _FakePool(), queue, 2, stats, breaker)
+    await asyncio.wait_for(queue.join(), 1)
+    assert harness.upserted == ([2] if repeat_crash else [1, 2])
+    assert stats == {"new": 1 if repeat_crash else 2, "updated": 0, "failed": int(repeat_crash)}
+    assert not breaker.tripped
+    first.close.assert_awaited_once()
+    replacement.close.assert_awaited_once()
+    if repeat_crash:
+        assert healthy.visited == [urls[1]]
+        healthy.close.assert_awaited_once()
+
+
+@pytest.mark.parametrize("url,kind,blocked", [
+    ("https://cmp.uniconsent.com/v2/cmp.js", "script", True),
+    ("https://analytics.google.com/g/collect", "fetch", True),
+    ("https://www.fut.gg/image.png", "image", True),
+    ("https://assets.fut.gg/index.js", "script", False),
+    ("https://www.fut.gg/api/fut/players/v2/27/", "fetch", False),
+    ("https://challenges.cloudflare.com/turnstile/v0/api.js", "script", False),
+    ("https://www.fut.gg/cdn-cgi/challenge-platform/scripts/jsd/main.js", "script", False),
+])
+@run_async
+async def test_resource_filter_keeps_application_and_challenge_requests(url, kind, blocked):
+    from unittest.mock import AsyncMock, MagicMock
+    route = MagicMock(request=MagicMock(url=url, resource_type=kind), abort=AsyncMock(), continue_=AsyncMock())
+    await mod._route_player_resource(route)
+    assert route.abort.await_count == int(blocked)
+    assert route.continue_.await_count == int(not blocked)

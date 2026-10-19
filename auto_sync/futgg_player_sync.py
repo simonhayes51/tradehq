@@ -732,6 +732,8 @@ def _log_listing_response(response) -> None:
 
 
 def _log_listing_request_failure(request) -> None:
+    if _skip_player_resource(request):
+        return  # Deliberately blocked advertising/media is not a sync failure.
     if request.resource_type in {"xhr", "fetch", "script"}:
         log.warning("Listing resource failed host=%s path=%s type=%s failure=%s",
                     urlparse(request.url).hostname, urlparse(request.url).path,
@@ -938,6 +940,43 @@ def _parse_recent_api_card(row: Any) -> tuple[str, ListingCardMetadata] | None:
     return _metadata_from_listing_node({"href": parsed.path, "image": row.get("cardImageUrl")})
 
 
+def _page_crashed(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return "page crashed" in message or "target crashed" in message
+
+
+async def _close_page(page) -> None:
+    try:
+        await page.close()
+    except Exception:
+        log.debug("Page already unavailable during cleanup", exc_info=True)
+
+
+async def _replace_crashed_page(page):
+    context = page.context
+    await _close_page(page)
+    return await context.new_page()
+
+
+def _skip_player_resource(request) -> bool:
+    # Advertising scripts/iframes otherwise keep running while we fetch JSON
+    # or parse a card. Retain application JS, CSS, APIs and challenge resources.
+    host = (urlparse(request.url).hostname or "").lower()
+    trackers = ("uniconsent.com", "google-analytics.com", "analytics.google.com",
+                "googletagmanager.com", "googlesyndication.com", "doubleclick.net",
+                "bidstorm.tech", "adnxs.com", "amazon-adsystem.com")
+    return request.resource_type in ("image", "media", "font") or any(
+        host == domain or host.endswith("." + domain) for domain in trackers
+    )
+
+
+async def _route_player_resource(route) -> None:
+    if _skip_player_resource(route.request):
+        await route.abort()
+    else:
+        await route.continue_()
+
+
 async def collect_recent_api_urls(page) -> ListingDiscovery:
     """Read the newest-first JSON feed captured from FUT.GG's own UI.
 
@@ -946,6 +985,7 @@ async def collect_recent_api_urls(page) -> ListingDiscovery:
     parameter or repeated data is an incomplete scan, never silent success.
     """
     urls = ListingDiscovery()
+    original_page = page
     requested_page = 1
     api_path = f"/api/fut/players/v2/{GAME_YEAR}/"
     try:
@@ -960,15 +1000,29 @@ async def collect_recent_api_urls(page) -> ListingDiscovery:
             if requested_page != 1:
                 query["page"] = str(requested_page)
             endpoint = api_path + "?" + urlencode(query)
-            result = await asyncio.wait_for(page.evaluate("""async endpoint => {
-                const response = await fetch(endpoint, {
-                    credentials: 'same-origin', headers: {Accept: 'application/json'}
-                });
-                return {
-                    status: response.status,
-                    payload: response.ok ? await response.json() : null
-                };
-            }""", endpoint), timeout=TIMEOUT_MS / 1000)
+            for attempt in range(2):
+                try:
+                    result = await asyncio.wait_for(page.evaluate("""async endpoint => {
+                        const response = await fetch(endpoint, {
+                            credentials: 'same-origin', headers: {Accept: 'application/json'}
+                        });
+                        return {
+                            status: response.status,
+                            payload: response.ok ? await response.json() : null
+                        };
+                    }""", endpoint), timeout=TIMEOUT_MS / 1000)
+                    break
+                except Exception as exc:
+                    if not _page_crashed(exc) or attempt:
+                        raise
+                    log.warning("Recent-player renderer crashed on page=%d; recreating page and retrying once", requested_page)
+                    page = await _replace_crashed_page(page)
+                    response = await page.goto(
+                        f"{BASE_URL}{GAME_PREFIX}/players/new/",
+                        wait_until="domcontentloaded", timeout=TIMEOUT_MS,
+                    )
+                    if response is not None and response.status != 200:
+                        raise RuntimeError(f"Recent-player recovery returned HTTP {response.status}")
             if not isinstance(result, dict) or result.get("status") != 200:
                 raise RuntimeError(f"Recent-player API returned HTTP {result.get('status') if isinstance(result, dict) else 'unknown'}")
             payload = result.get("payload")
@@ -1014,6 +1068,9 @@ async def collect_recent_api_urls(page) -> ListingDiscovery:
         urls.issues.append(f"Recent-player API incomplete: {exc}")
         log.warning("%s", urls.issues[-1])
         return urls
+    finally:
+        if page is not original_page:
+            await _close_page(page)
 
 
 async def collect_listing_urls(page, *, full_scan: bool | None = None) -> dict[str, ListingCardMetadata]:
@@ -1480,58 +1537,66 @@ async def _fetch_worker(
     stats: dict[str, int],
     breaker: CircuitBreaker,
 ) -> None:
-    while True:
-        if breaker.tripped:
-            log.warning("worker=%d stopping: circuit breaker tripped (%s)", worker_id, breaker.trip_reason)
-            return
-        try:
-            index, target = queue.get_nowait()
-        except asyncio.QueueEmpty:
-            return
+    try:
+        while True:
+            if breaker.tripped:
+                log.warning("worker=%d stopping: circuit breaker tripped (%s)", worker_id, breaker.trip_reason)
+                return
+            try:
+                index, target = queue.get_nowait()
+            except asyncio.QueueEmpty:
+                return
 
-        url, existed, listing = target.url, target.existed, target.listing
+            url, existed, listing = target.url, target.existed, target.listing
 
-        try:
-            response = await page.goto(url, wait_until="domcontentloaded", timeout=TIMEOUT_MS)
-            status = response.status if response else 0
-            if status in (403, 429):
-                breaker.record_failure(f"HTTP {status}")
+            try:
+                for attempt in range(2):
+                    try:
+                        response = await page.goto(url, wait_until="domcontentloaded", timeout=TIMEOUT_MS)
+                        status = response.status if response else 0
+                        if status != 200:
+                            raise RuntimeError(f"HTTP {status}")
+                        await page.locator(".fc-card").first.wait_for(state="attached", timeout=15000)
+                        await page.wait_for_timeout(800)
+                        card = parse_futgg_card(await page.content(), url)
+                        break
+                    except Exception as exc:
+                        if not _page_crashed(exc):
+                            raise
+                        log.warning("[%d/%d] worker=%d renderer crashed; replacing page%s", index, total, worker_id,
+                                    " and retrying this card once" if not attempt else " for the next card")
+                        page = await _replace_crashed_page(page)
+                        if attempt:
+                            raise
+                if listing.image_url:
+                    # The composited full-card image only exists on the
+                    # listing grid tile, never on the card's own detail page
+                    # (confirmed live - see collect_listing_urls'/
+                    # _read_card_hrefs' docstrings) - parse_futgg_card() can
+                    # never set this itself, so apply what the listing crawl
+                    # already captured for this URL.
+                    card.card_image_url = listing.image_url
+                card.gg_rating = listing.gg_rating
+                async with pool.acquire() as conn:
+                    await upsert_card(conn, card)
+                breaker.record_success()
+                stats["updated" if existed else "new"] += 1
+                log.info(
+                    "[%d/%d] worker=%d upserted id=%s name=%r rating=%s gg_rating=%s rarity=%r tier=%s",
+                    index, total, worker_id, card.source_card_id, card.name, card.rating,
+                    card.gg_rating, card.rarity, classify_price_tier(card),
+                )
+            except Exception as exc:
                 stats["failed"] += 1
-                log.warning("[%d/%d] worker=%d blocked HTTP %d: %s", index, total, worker_id, status, url)
+                breaker.record_failure(f"{type(exc).__name__}: {exc}")
+                log.warning("[%d/%d] worker=%d failed %s: %s", index, total, worker_id, url, exc)
+            finally:
                 queue.task_done()
-                continue
-            if status != 200:
-                raise RuntimeError(f"HTTP {status}")
-            await page.locator(".fc-card").first.wait_for(state="attached", timeout=15000)
-            await page.wait_for_timeout(800)
-            card = parse_futgg_card(await page.content(), url)
-            if listing.image_url:
-                # The composited full-card image only exists on the
-                # listing grid tile, never on the card's own detail page
-                # (confirmed live - see collect_listing_urls'/
-                # _read_card_hrefs' docstrings) - parse_futgg_card() can
-                # never set this itself, so apply what the listing crawl
-                # already captured for this URL.
-                card.card_image_url = listing.image_url
-            card.gg_rating = listing.gg_rating
-            async with pool.acquire() as conn:
-                await upsert_card(conn, card)
-            breaker.record_success()
-            stats["updated" if existed else "new"] += 1
-            log.info(
-                "[%d/%d] worker=%d upserted id=%s name=%r rating=%s gg_rating=%s rarity=%r tier=%s",
-                index, total, worker_id, card.source_card_id, card.name, card.rating,
-                card.gg_rating, card.rarity, classify_price_tier(card),
-            )
-        except Exception as exc:
-            stats["failed"] += 1
-            breaker.record_failure(f"{type(exc).__name__}: {exc}")
-            log.warning("[%d/%d] worker=%d failed %s: %s", index, total, worker_id, url, exc)
-        finally:
-            queue.task_done()
 
-        if REQUEST_DELAY:
-            await asyncio.sleep(random.uniform(REQUEST_DELAY * 0.7, REQUEST_DELAY * 1.3))
+            if REQUEST_DELAY:
+                await asyncio.sleep(random.uniform(REQUEST_DELAY * 0.7, REQUEST_DELAY * 1.3))
+    finally:
+        await _close_page(page)
 
 
 async def crawl_once() -> None:
@@ -1632,6 +1697,7 @@ async def crawl_once() -> None:
                 locale='en-GB',
                 timezone_id=BROWSER_TIMEZONE,
             )
+            await context.route("**/*", _route_player_resource)
             # Listing/pagination stays on its own dedicated page - sequential
             # by nature (stateful stabilize-retry against the previous page,
             # capped at a few hundred pages regardless), not the bottleneck.
@@ -1674,7 +1740,12 @@ async def crawl_once() -> None:
                 known = set()          # force every backfill row to be fetched
                 db_total = remaining   # skips the full-scan plausibility check below
             else:
-                urls = await collect_listing_urls(listing_page, full_scan=full_scan)
+                try:
+                    urls = await collect_listing_urls(listing_page, full_scan=full_scan)
+                finally:
+                    # Release the frontend and its background activity before
+                    # card-detail workers start using the same browser.
+                    await _close_page(listing_page)
                 stats["discovered"] = len(urls)
                 stats["gg_ratings_found"] = sum(
                     metadata.gg_rating is not None for metadata in urls.values()
@@ -1741,7 +1812,7 @@ async def crawl_once() -> None:
                 )
             finally:
                 for fetch_page in fetch_pages:
-                    await fetch_page.close()
+                    await _close_page(fetch_page)
 
             if breaker.tripped:
                 log.warning("Circuit breaker tripped: %s - stopped fetching remaining cards this run", breaker.trip_reason)
