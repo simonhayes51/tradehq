@@ -1848,7 +1848,7 @@ async def test_repeated_api_crash_is_bounded_and_preserves_partial_results(monke
 
 @pytest.mark.parametrize("repeat_crash", [False, True])
 @run_async
-async def test_worker_recreates_crashed_page_and_does_not_poison_next_card(monkeypatch, repeat_crash):
+async def test_worker_replaces_failed_page_and_does_not_poison_next_card(monkeypatch, repeat_crash):
     from unittest.mock import AsyncMock, MagicMock
     urls = [f"https://www.fut.gg/players/{n}-p/26-{n}/" for n in (1, 2)]
     harness = _FetchWorkerHarness(monkeypatch, dict(zip(urls, (1, 2))))
@@ -1857,7 +1857,7 @@ async def test_worker_recreates_crashed_page_and_does_not_poison_next_card(monke
         async def goto(self, url, **kwargs):
             if url == urls[0]:
                 self.visited.append(url)
-                raise RuntimeError("Page.goto: Page crashed")
+                raise RuntimeError("Page.goto: Timeout 45000ms exceeded")
             return await super().goto(url, **kwargs)
 
     first = CrashedPage()

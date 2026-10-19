@@ -940,9 +940,13 @@ def _parse_recent_api_card(row: Any) -> tuple[str, ListingCardMetadata] | None:
     return _metadata_from_listing_node({"href": parsed.path, "image": row.get("cardImageUrl")})
 
 
-def _page_crashed(exc: Exception) -> bool:
+def _page_recoverable(exc: Exception) -> bool:
     message = str(exc).lower()
-    return "page crashed" in message or "target crashed" in message
+    # A timed-out goto can leave Chromium navigating in the background. Reusing
+    # that page interrupts the next goto, so replace it before the next attempt.
+    return any(token in message for token in (
+        "page crashed", "target crashed", "timeout", "interrupted by another navigation",
+    ))
 
 
 async def _close_page(page) -> None:
@@ -1013,9 +1017,9 @@ async def collect_recent_api_urls(page) -> ListingDiscovery:
                     }""", endpoint), timeout=TIMEOUT_MS / 1000)
                     break
                 except Exception as exc:
-                    if not _page_crashed(exc) or attempt:
+                    if not _page_recoverable(exc) or attempt:
                         raise
-                    log.warning("Recent-player renderer crashed on page=%d; recreating page and retrying once", requested_page)
+                    log.warning("Recent-player page failed on page=%d; recreating it and retrying once", requested_page)
                     page = await _replace_crashed_page(page)
                     response = await page.goto(
                         f"{BASE_URL}{GAME_PREFIX}/players/new/",
@@ -1561,9 +1565,9 @@ async def _fetch_worker(
                         card = parse_futgg_card(await page.content(), url)
                         break
                     except Exception as exc:
-                        if not _page_crashed(exc):
+                        if not _page_recoverable(exc):
                             raise
-                        log.warning("[%d/%d] worker=%d renderer crashed; replacing page%s", index, total, worker_id,
+                        log.warning("[%d/%d] worker=%d page failed; replacing it%s", index, total, worker_id,
                                     " and retrying this card once" if not attempt else " for the next card")
                         page = await _replace_crashed_page(page)
                         if attempt:
