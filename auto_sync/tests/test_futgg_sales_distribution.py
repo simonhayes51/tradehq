@@ -23,6 +23,8 @@ def test_catalogue_boundaries(monkeypatch):
         (1, True, True, 27, 79, 'Gold Rare'),
         (2, True, True, 27, 80, 'Gold Rare'),
         (3, True, True, 27, 91, 'Icon'),
+        (11, True, True, 27, 88, 'Hero'),
+        (12, True, True, 27, 87, 'Team of the Week'),
         (4, True, True, 27, 82, 'Silver Rare'),
         (5, True, True, 27, 82, 'Bronze Rare'),
         (6, True, True, 27, None, 'Gold Rare'),
@@ -30,9 +32,10 @@ def test_catalogue_boundaries(monkeypatch):
         (8, False, True, 27, 91, 'Gold Rare'),
         (9, True, False, 27, 91, 'Gold Rare'),
         (10, True, None, 27, 85, None),
+        (13, True, True, 27, 85, ''),
     ])
     ids = [row[0] for row in db.execute(f'SELECT id FROM players p WHERE {sales.sales_catalogue_filter("p")} ORDER BY id')]
-    assert ids == [2, 3, 10]
+    assert ids == [3, 11, 12]
     db.close()
 
 
