@@ -1596,7 +1596,7 @@ async def select_due(conn: asyncpg.Connection) -> list[asyncpg.Record]:
         return guaranteed
 
     overflow = await conn.fetch(
-        """
+        f"""
         SELECT source_card_id, rating, next_sales_due_at, source_url,
                sales_first_read_at, sales_consecutive_failures,
                COALESCE(cp.effective_tier, 'NORMAL') AS effective_tier
