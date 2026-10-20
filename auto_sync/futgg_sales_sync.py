@@ -104,7 +104,7 @@ from futgg_price_access import build_batch_script
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("futgg_sales_sync")
 
-SCRIPT_VERSION = "futgg-sales-sync-v1"
+SCRIPT_VERSION = "futgg-sales-sync-specials-v2"
 
 DATABASE_URL = (os.getenv("DATABASE_URL") or "").strip()
 if not DATABASE_URL:
@@ -147,7 +147,12 @@ def sales_catalogue_filter(alias: str = "p") -> str:
         f"AND COALESCE({alias}.is_tradeable, TRUE) = TRUE "
         f"AND {alias}.game_year = {int(GAME_YEAR)} "
         f"AND {alias}.rating >= {int(MIN_SALES_RATING)} "
-        f"AND ({alias}.rarity IS NULL OR {alias}.rarity IN ('Gold Rare', 'Icon'))"
+        f"AND {alias}.rarity IS NOT NULL "
+        f"AND BTRIM({alias}.rarity) <> '' "
+        f"AND LOWER(BTRIM({alias}.rarity)) NOT IN ("
+        f"'common', 'rare', 'gold', 'silver', 'bronze', "
+        f"'gold common', 'gold rare', 'silver common', 'silver rare', "
+        f"'bronze common', 'bronze rare')"
     )
 
 #: Cards per browser round trip. Each runs sign+fetch concurrently inside
@@ -1563,14 +1568,19 @@ async def select_due(conn: asyncpg.Connection) -> list[asyncpg.Record]:
             SELECT source_card_id, rating, next_sales_due_at, source_url,
                    sales_first_read_at, sales_consecutive_failures,
                    COALESCE(cp.effective_tier, 'NORMAL') AS effective_tier
-            FROM futgg_players
-            LEFT JOIN card_priority cp ON cp.card_id = futgg_players.source_card_id
+            FROM futgg_players p
+            LEFT JOIN card_priority cp ON cp.card_id = p.source_card_id
             WHERE is_active
               AND is_tradeable IS DISTINCT FROM FALSE
               AND game_year = $2
               AND (next_sales_due_at IS NULL OR next_sales_due_at <= NOW())
               AND {_TIER_WHERE[tier]}
+              AND ({sales_catalogue_filter("p")})
             ORDER BY
+                CASE LOWER(BTRIM(p.rarity))
+                     WHEN 'icon' THEN 0
+                     WHEN 'hero' THEN 1
+                     ELSE 2 END,
                 (sales_first_read_at IS NOT NULL),
                 next_sales_due_at ASC NULLS FIRST,
                 rating DESC NULLS LAST
@@ -1586,18 +1596,23 @@ async def select_due(conn: asyncpg.Connection) -> list[asyncpg.Record]:
         return guaranteed
 
     overflow = await conn.fetch(
-        """
+        f"""
         SELECT source_card_id, rating, next_sales_due_at, source_url,
                sales_first_read_at, sales_consecutive_failures,
                COALESCE(cp.effective_tier, 'NORMAL') AS effective_tier
-        FROM futgg_players
-        LEFT JOIN card_priority cp ON cp.card_id = futgg_players.source_card_id
+        FROM futgg_players p
+        LEFT JOIN card_priority cp ON cp.card_id = p.source_card_id
         WHERE is_active
           AND is_tradeable IS DISTINCT FROM FALSE
           AND game_year = $3
           AND (next_sales_due_at IS NULL OR next_sales_due_at <= NOW())
           AND NOT (source_card_id = ANY($1::bigint[]))
+          AND ({sales_catalogue_filter("p")})
         ORDER BY
+            CASE LOWER(BTRIM(p.rarity))
+                 WHEN 'icon' THEN 0
+                 WHEN 'hero' THEN 1
+                 ELSE 2 END,
             -- For the overflow slots prefer urgent cards with the oldest
             -- successful sales checks. Their long-overdue observations
             -- are the most likely to fail the engine's sales-freshness
