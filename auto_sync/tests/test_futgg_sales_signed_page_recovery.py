@@ -174,12 +174,11 @@ class TestProcessBatchCrashRecovery:
                                timers=mod.StageTimers(), throttle=throttle))
 
         assert stats["batch_errors"] == 1
-        # A crash still counts as a fully-throttled batch for the
-        # circuit breaker's own bookkeeping - stopping further
-        # selection this cycle is still correct while the page was
-        # dead; recreating it is what makes the NEXT batch able to
-        # succeed instead of failing identically forever.
-        assert throttle.consecutive_fully_throttled_batches == 1
+        # A renderer crash is local browser failure, not an upstream
+        # rate limit. Keep the FUT.GG throttle state untouched and ask the
+        # run loop to recycle the complete browser at the cycle boundary.
+        assert throttle.consecutive_fully_throttled_batches == 0
+        assert handle.browser_recycle_requested
         # The actual fix: the handle now points at a fresh page, not
         # the permanently-crashed one.
         assert handle.page is replacement
