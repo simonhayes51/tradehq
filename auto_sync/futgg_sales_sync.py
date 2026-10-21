@@ -2417,6 +2417,10 @@ class SignedPageHandle:
         self.page = page
         self.context = context
         self.anchor = anchor
+        # A renderer crash may recur even after replacing its Page. The
+        # run loop consumes this flag and recycles the whole browser/context
+        # between batches, releasing renderer and browser process state.
+        self.browser_recycle_requested = False
 
     async def recreate(self) -> None:
         """Best-effort: replace a crashed/closed page with a fresh one
@@ -2473,14 +2477,26 @@ async def process_batch(
         except Exception as exc:
             log.warning("batch fetch failed", exc_info=True)
             stats["batch_errors"] += 1
-            throttle.record(len(ids), len(ids))
             crashed = is_crashed_page_error(exc)
             try:
                 crashed = crashed or page_handle.page.is_closed()
             except Exception:
                 pass
             if crashed:
+                # Renderer death is a local browser failure, not evidence
+                # of FUT.GG throttling. Do not shrink the upstream request
+                # budget or trigger the hour-long rate-limit breaker. Ask
+                # run_forever to recycle the entire browser at the cycle
+                # boundary; recreating only this Page can leave a damaged
+                # Chromium process alive.
+                page_handle.browser_recycle_requested = True
                 await page_handle.recreate()
+                log.warning(
+                    "signed_fetch renderer crashed; stopping this cycle and "
+                    "requesting a full browser recycle"
+                )
+            else:
+                throttle.record(len(ids), len(ids))
             return
 
     await apply_batch_results(pool, rows, results, stats, timers, throttle)
@@ -3298,6 +3314,12 @@ async def run_forever() -> None:
                             signed_page_handle, pool, due[offset: offset + size], stats, timers, throttle
                         )
                         offset += size
+                        if signed_page_handle.browser_recycle_requested:
+                            log.warning(
+                                "ending signed_fetch cycle after renderer crash "
+                                "so the browser can be recycled"
+                            )
+                            break
 
                         attempted = stats["ok"] + stats["failed"]
                         if attempted - last_progress_attempted >= PROGRESS_LOG_EVERY:
@@ -3554,15 +3576,26 @@ async def run_forever() -> None:
                 # page_capture pool) in one call; _launch_browser_resources
                 # then rebuilds exactly the set this transport needs, the
                 # same as the initial startup.
-                if (
+                crash_recycle = (
+                    transport == "signed_fetch"
+                    and signed_page_handle is not None
+                    and signed_page_handle.browser_recycle_requested
+                )
+                time_recycle = (
                     BROWSER_RECYCLE_MINUTES
                     and (time.monotonic() - browser_started_at) >= BROWSER_RECYCLE_MINUTES * 60
-                ):
-                    log.info(
-                        "recycling browser after %.0f minute(s) "
-                        "(FUTGG_SALES_BROWSER_RECYCLE_MINUTES=%d)",
-                        (time.monotonic() - browser_started_at) / 60, BROWSER_RECYCLE_MINUTES,
-                    )
+                )
+                if crash_recycle or time_recycle:
+                    if crash_recycle:
+                        log.warning(
+                            "recycling the full Chromium browser after a signed_fetch renderer crash"
+                        )
+                    else:
+                        log.info(
+                            "recycling browser after %.0f minute(s) "
+                            "(FUTGG_SALES_BROWSER_RECYCLE_MINUTES=%d)",
+                            (time.monotonic() - browser_started_at) / 60, BROWSER_RECYCLE_MINUTES,
+                        )
                     try:
                         await browser.close()
                     except Exception:
