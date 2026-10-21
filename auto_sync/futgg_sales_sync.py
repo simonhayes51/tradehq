@@ -104,7 +104,7 @@ from futgg_price_access import build_batch_script
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("futgg_sales_sync")
 
-SCRIPT_VERSION = "futgg-sales-sync-specials-v2"
+SCRIPT_VERSION = "futgg-sales-sync-specials-v3"
 
 DATABASE_URL = (os.getenv("DATABASE_URL") or "").strip()
 if not DATABASE_URL:
