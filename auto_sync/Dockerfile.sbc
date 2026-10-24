@@ -34,4 +34,4 @@ ENV PYTHONUNBUFFERED=1
 ENV DISPLAY=:99
 ENV PLAYWRIGHT_HEADLESS=false
 
-CMD ["bash", "/app/docker-entrypoint-sbc.sh"]
+CMD ["sleep", "infinity"]
