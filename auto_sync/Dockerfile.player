@@ -38,4 +38,4 @@ RUN chmod +x /app/docker-entrypoint-player.sh
 ENV PLAYWRIGHT_HEADLESS=false
 ENV FUTGG_GAME_YEAR=27
 
-CMD ["/app/docker-entrypoint-player.sh"]
+CMD ["sleep", "infinity"]
