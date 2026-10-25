@@ -87,7 +87,7 @@ def _reason_rank(card) -> int:
     reasons = set(card.reasons)
     if reasons & USER_DRIVEN_REASONS:
         return 0
-    if (triggers.REASON_LIVE_RECOMMENDATION in reasons or triggers.REASON_DISCORD_CANDIDATE in reasons) and card.details.get(triggers.REASON_LIVE_RECOMMENDATION, {}).get("signal") in ("buy", "strong_buy"):
+    if (triggers.REASON_LIVE_RECOMMENDATION in reasons or triggers.REASON_DISCORD_CANDIDATE in reasons) and (getattr(card, "details", {}) or {}).get(triggers.REASON_LIVE_RECOMMENDATION, {}).get("signal") in ("buy", "strong_buy"):
         return 1
     if reasons & {
         triggers.REASON_LIVE_RECOMMENDATION,
