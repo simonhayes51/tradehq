@@ -87,6 +87,8 @@ def _reason_rank(card) -> int:
     reasons = set(card.reasons)
     if reasons & USER_DRIVEN_REASONS:
         return 0
+    if (triggers.REASON_LIVE_RECOMMENDATION in reasons or triggers.REASON_DISCORD_CANDIDATE in reasons) and (getattr(card, "details", {}) or {}).get(triggers.REASON_LIVE_RECOMMENDATION, {}).get("signal") in ("buy", "strong_buy"):
+        return 1
     if reasons & {
         triggers.REASON_LIVE_RECOMMENDATION,
         triggers.REASON_DISCORD_CANDIDATE,
@@ -95,13 +97,13 @@ def _reason_rank(card) -> int:
         triggers.REASON_NEW_RELEASE,
         REASON_PREMIUM_STALE_SALES,
     }:
-        return 1
+        return 2
     if reasons & {
         REASON_GOLD_RARE_ROTATION,
         triggers.REASON_MARKET_ACTIVITY,
     }:
-        return 2
-    return 3
+        return 3
+    return 4
 
 
 def rebalance_slot_count(due_count: int) -> int:
@@ -214,7 +216,7 @@ async def _hydrate_rebalance_candidates(
             0 if gold_rotation else 1,
             # Gold Rare fairness is oldest-check-first. Do not let rating turn
             # an "even rotation" back into repeatedly selecting the same stars.
-            _checked_at_sort_value(row) if gold_rotation else 0.0,
+            _checked_at_sort_value(row),
             -float(_row_value(row, "current_bin", 0) or 0),
             -int(_row_value(row, "rating", 0) or 0),
             card_id,
@@ -306,6 +308,7 @@ async def _record_live_observation(
                 "live_scheduler_changed": bool(rebalanced_ids),
                 "extra_sales_requests": 0,
                 "rebalanced_card_ids": rebalanced_ids,
+                "rebalanced_reasons": {str(card.card_id): list(card.reasons) for card in selection.cards if int(card.card_id) in rebalanced_set},
                 "cards": card_details,
             }),
         )
@@ -380,6 +383,17 @@ async def run() -> None:
                 slots,
                 rebalanced_ids,
             )
+            if rebalanced_ids:
+                chosen_by_id = {int(_row_value(row, "source_card_id")): row for row in candidates}
+                live_by_id = {int(card.card_id): card for card in selection.cards}
+                log.info(
+                    "sales priority pickups: %s",
+                    [
+                        {"card_id": card_id, "reasons": list(live_by_id[card_id].reasons),
+                         "last_successful_check": str(_row_value(chosen_by_id[card_id], "last_sales_status_at"))}
+                        for card_id in rebalanced_ids if card_id in chosen_by_id and card_id in live_by_id
+                    ],
+                )
         except Exception:
             final_due = baseline_due
             log.warning(
