@@ -32,7 +32,7 @@ done
 # Works safely with the currently deployed long-running service, while
 # FUTGG_CONTENT_RUN_ONCE=true keeps compatibility with a Scheduled Task.
 if [ "${FUTGG_CONTENT_RUN_ONCE:-false}" = "true" ] || [ "${FUTGG_CONTENT_DIAGNOSTIC:-false}" = "true" ]; then
-  exec python futgg_content_sync.py
+  python futgg_content_sync.py
 fi
 
 INTERVAL="${FUTGG_CONTENT_INTERVAL_SECONDS:-21600}"
