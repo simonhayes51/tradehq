@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hmac
 import os
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Header, HTTPException, Query
@@ -46,7 +47,8 @@ async def flipiq_opportunities(
         raise HTTPException(status_code=401, detail="Invalid FLIPIQ service token")
 
     filters = PlayerFilters(max_price_age_minutes=LIVE_OPPORTUNITY_MAX_PRICE_AGE_MINUTES)
-    rows = _apply_filters_in_python(await _segmented_candidates(provider), filters)
+    candidates = await _segmented_candidates(provider)
+    rows = _apply_filters_in_python(candidates, filters)
     scored = await _score_and_filter(
         rows,
         min_expected_profit=min_profit,
@@ -66,5 +68,13 @@ async def flipiq_opportunities(
         "page_size": page_size,
         "total": total,
         "scanner_candidates_considered": len(rows),
+        "diagnostics": {
+            "candidate_pool": len(candidates),
+            "fresh_price_candidates": len(rows),
+            "rejected_by_price_or_tradeability": len(candidates) - len(rows),
+            "qualified_opportunities": total,
+            "max_price_age_minutes": LIVE_OPPORTUNITY_MAX_PRICE_AGE_MINUTES,
+            "checked_at": datetime.now(timezone.utc).isoformat(),
+        },
         "source": "tradehq_live_revalidated",
     }
