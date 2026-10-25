@@ -86,3 +86,16 @@ def test_user_and_live_signal_reasons_rank_ahead_of_background_activity():
     assert worker._reason_rank(watch) < worker._reason_rank(live)
     assert worker._reason_rank(live) < worker._reason_rank(market)
     assert worker._reason_rank(market) < worker._reason_rank(stale)
+
+
+def test_buy_candidates_beat_watch_and_background_at_same_budget():
+    from futgg_sales_triggers import REASON_LIVE_RECOMMENDATION
+    buy = SimpleNamespace(reasons=(REASON_LIVE_RECOMMENDATION,), details={REASON_LIVE_RECOMMENDATION: {"signal": "buy"}})
+    watch = SimpleNamespace(reasons=(REASON_LIVE_RECOMMENDATION,), details={REASON_LIVE_RECOMMENDATION: {"signal": "watch"}})
+    assert worker._reason_rank(buy) < worker._reason_rank(watch)
+
+
+def test_same_priority_prefers_oldest_successful_check():
+    older = {"source_card_id": 1, "last_sales_status_at": datetime(2026, 10, 20, tzinfo=timezone.utc)}
+    newer = {"source_card_id": 2, "last_sales_status_at": datetime(2026, 10, 25, tzinfo=timezone.utc)}
+    assert worker._checked_at_sort_value(older) < worker._checked_at_sort_value(newer)
