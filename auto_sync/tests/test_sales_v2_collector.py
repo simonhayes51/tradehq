@@ -67,3 +67,21 @@ def test_throttle_error_resets_recovery_and_preserves_backoff(monkeypatch):
     assert worker.delay == 80.0
     worker.record(1, 0)
     assert worker.delay == 75.0
+
+
+def test_probe_stops_acceleration_after_first_throttle(monkeypatch):
+    monkeypatch.setattr(v2, "PROBE_MODE", True)
+    monkeypatch.setattr(v2, "RECOVERY_SUCCESS_REQUESTS", 30)
+    monkeypatch.setattr(v2, "RECOVERY_DELAY_STEP_SECONDS", 10.0)
+    worker = v2.GuardedRecoveryThrottle(
+        batch_size=8, delay=20, resume_batch_size=1, resume_delay=80
+    )
+    for _ in range(30):
+        worker.record(1, 0)
+    assert worker.delay == 70
+    worker.record(1, 1)
+    assert worker._probe_stopped
+    backed_off = worker.delay
+    for _ in range(100):
+        worker.record(1, 0)
+    assert worker.delay == backed_off
