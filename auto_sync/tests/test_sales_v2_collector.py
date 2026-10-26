@@ -35,3 +35,35 @@ def test_min_interval_and_min_bin_guardrails(monkeypatch):
     monkeypatch.setattr(v2, "TARGET_INTERVAL_MINUTES", 30)
     with pytest.raises(SystemExit, match="TARGET_MINUTES"):
         v2.configure()
+
+
+
+def test_guarded_recovery_requires_sustained_clean_requests(monkeypatch):
+    monkeypatch.setattr(v2, "RECOVERY_SUCCESS_REQUESTS", 3)
+    monkeypatch.setattr(v2, "RECOVERY_DELAY_STEP_SECONDS", 5.0)
+    worker = v2.GuardedRecoveryThrottle(
+        batch_size=8, delay=20.0, resume_batch_size=1, resume_delay=80.0
+    )
+    assert worker.batch_size == worker.max_batch == 1
+    worker.record(1, 0)
+    worker.record(1, 0)
+    assert worker.delay == 80.0
+    worker.record(1, 0)
+    assert worker.delay == 75.0
+
+
+def test_throttle_error_resets_recovery_and_preserves_backoff(monkeypatch):
+    monkeypatch.setattr(v2, "RECOVERY_SUCCESS_REQUESTS", 3)
+    worker = v2.GuardedRecoveryThrottle(
+        batch_size=8, delay=20.0, resume_batch_size=1, resume_delay=40.0
+    )
+    worker.record(1, 0)
+    worker.record(1, 0)
+    worker.record(1, 1)
+    assert worker.delay == 80.0
+    worker.record(1, 0)
+    assert worker.delay == 80.0
+    worker.record(1, 0)
+    assert worker.delay == 80.0
+    worker.record(1, 0)
+    assert worker.delay == 75.0
