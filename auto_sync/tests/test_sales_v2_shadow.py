@@ -53,5 +53,5 @@ def test_capacity_math_does_not_claim_hourly_is_possible():
     result = capacity_summary(1296, 480, 60)
     assert result["required_checks_per_day"] == 31104
     assert result["required_per_minute"] == 21.6
-    assert result["estimated_refresh_hours"] == 64.8
-    assert result["sustainable_at_observed_rate"] is False
+    assert result["optimistic_refresh_hours"] == 64.8
+    assert result["hourly_feasible_even_if_all_attempts_succeed"] is False
