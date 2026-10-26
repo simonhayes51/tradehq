@@ -112,3 +112,18 @@ V2 measured throttle recovery after 90 clean requests: batch=1 delay 80.0s -> 75
 Inspect 429/403 errors and `throttle[...]` logs across several cycles.
 A clean first two cycles does not prove a higher sustainable limit; the
 recovery can reverse itself whenever the source signals throttling.
+
+
+## Optional bounded higher-rate probe
+
+To identify a higher sustainable rate, set `SALES_V2_PROBE_MODE=true`
+on the existing V2 SalesSync resource and redeploy **once**.
+With a sequential batch of one, the controller cuts request spacing by
+10 seconds after each 30 clean responses, down to the existing sustainable
+floor (default 20 seconds). The **first** rate-limit response immediately
+invokes the normal backoff and stops any additional acceleration until
+the worker is restarted. Rate-limit Retry-After and circuit breakers are
+retained. This is a temporary measurement mode; disable
+`SALES_V2_PROBE_MODE` after identifying a suitable sustained rate.
+A process/container restart restarts the probe, so do not leave this mode
+enabled indefinitely without supervision. No hourly-coverage guarantee.
