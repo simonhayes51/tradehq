@@ -45,6 +45,7 @@ def configure() -> None:
         for tier in sales.SALES_INTERVALS
     })
     sales.select_due = select_market_due
+    sales.report_coverage = report_market_coverage
     log.warning(
         "SalesSync V2 fetch ACTIVE min_bin=%d premium_bin=%d target=%dmin "
         "writes=%s; shared V1 advisory lock and rate limits retained",
@@ -140,6 +141,54 @@ async def select_market_due(conn):
         sum(r["sales_first_read_at"] is None for r in result),
     )
     return result
+
+
+
+async def report_market_coverage(conn):
+    """Report useful-market coverage, not the entire 23k-card catalogue.
+
+    Existing V1 report_coverage counts cheap and no-market cards even
+    though V2 intentionally does not schedule them. Snapshot sales_count
+    is the same 7-day signal sample the intelligence engine consumes.
+    """
+    row = await conn.fetchrow(
+        """
+        SELECT count(*) AS total,
+               count(*) FILTER (WHERE COALESCE(m.sales_count, 0) > 0) AS any_sales,
+               count(*) FILTER (WHERE COALESCE(m.sales_count, 0) >= 5) AS enough_sales,
+               count(*) FILTER (WHERE p.sales_first_read_at IS NULL) AS never_read,
+               count(*) FILTER (WHERE p.sales_consecutive_failures >= 5) AS chronic_failures,
+               count(*) FILTER (
+                   WHERE p.last_sales_status = 'success'
+                     AND p.last_sales_status_at >= NOW() - ($3::int * interval '1 minute')
+               ) AS recently_successful
+        FROM futgg_players p
+        JOIN futgg_market_snapshot m
+          ON m.source_card_id = p.source_card_id AND m.game_year = p.game_year
+        WHERE p.game_year = $1 AND p.is_active
+          AND p.is_tradeable IS DISTINCT FROM FALSE
+          AND m.current_bin >= $2
+        """,
+        int(sales.GAME_YEAR), MIN_BIN, TARGET_INTERVAL_MINUTES,
+    )
+    total = int(row["total"] or 0)
+    if total == 0:
+        log.warning("V2 coverage: no eligible priced cards")
+        return None
+    log.info(
+        "V2 eligible-market coverage: sales=%d/%d enough_sales=%d/%d "
+        "never_successfully_read=%d chronic_failures=%d "
+        "checked_successfully_within_target=%d/%d",
+        row["any_sales"], total, row["enough_sales"], total,
+        row["never_read"], row["chronic_failures"], row["recently_successful"], total,
+    )
+    return {
+        "total": total,
+        "any_sales": int(row["any_sales"] or 0),
+        "enough_sales": int(row["enough_sales"] or 0),
+        "never_read": int(row["never_read"] or 0),
+        "chronic_failures": int(row["chronic_failures"] or 0),
+    }
 
 
 if __name__ == "__main__":
