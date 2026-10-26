@@ -23,8 +23,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 MIN_BIN = int(os.getenv("SALES_V2_MIN_BIN", "5000"))
 PREMIUM_BIN = int(os.getenv("SALES_V2_PREMIUM_BIN", "20000"))
 TARGET_INTERVAL_MINUTES = int(os.getenv("SALES_V2_TARGET_MINUTES", "60"))
-OBSERVED_SUCCESSFUL_CHECKS_PER_DAY = int(
-    os.getenv("SALES_V2_OBSERVED_DAILY_CHECKS", "480")
+OBSERVED_ATTEMPTS_PER_DAY = int(
+    os.getenv("SALES_V2_OBSERVED_DAILY_ATTEMPTS", "480")
 )
 GAME_YEAR = int(os.getenv("FUTGG_GAME_YEAR", "27"))
 
@@ -76,11 +76,11 @@ def capacity_summary(eligible_count: int, rate_per_day: int, target_minutes: int
         "target_minutes": target_minutes,
         "required_checks_per_day": math.ceil(target_per_day),
         "required_per_minute": round(target_per_day / 1440, 2),
-        "observed_checks_per_day": rate_per_day,
-        "estimated_refresh_hours": round(
+        "observed_attempts_per_day": rate_per_day,
+        "optimistic_refresh_hours": round(
             eligible_count * 24 / rate_per_day, 1
         ) if rate_per_day > 0 else None,
-        "sustainable_at_observed_rate": rate_per_day >= target_per_day,
+        "hourly_feasible_even_if_all_attempts_succeed": rate_per_day >= target_per_day,
     }
 
 
@@ -111,7 +111,7 @@ async def run() -> None:
         all_rows = [dict(row) for row in rows]
         due = select_candidates(all_rows, now)
         log.info("V2 shadow: %s", capacity_summary(
-            len(all_rows), OBSERVED_SUCCESSFUL_CHECKS_PER_DAY,
+            len(all_rows), OBSERVED_ATTEMPTS_PER_DAY,
             TARGET_INTERVAL_MINUTES,
         ))
         log.info(
