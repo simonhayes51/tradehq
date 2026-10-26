@@ -82,3 +82,33 @@ V2 replaces the **selection policy** (market BIN >=5k, any rarity/rating,
 reuses V1's fetch/parse/write/rate-limit machinery. The source can provide
 only sales it exposes; V2 cannot recreate missed older completed auctions.
 Collect metrics after deployment before changing intervals or request budgets.
+
+
+## V2 guarded throttle recovery (26 October 2026)
+
+The original controller defaulted to `FUTGG_SALES_THROTTLE_AUTO_RECOVERY=false`,
+leaving a previously persisted `batch=1 delay=80s` indefinitely even
+when hundreds of requests succeeded without any errors. Simply enabling
+the legacy recovery could accelerate every three batches into a new 429
+storm. V2 now implements a separate conservative policy:
+
+* Remains at **batch=1** (no request bursts).
+* Reduces the delay by **five seconds** only after **90 consecutive
+  clean requests**; never below the existing sustainable floor (default
+  20 seconds).
+* Any rate-limited request immediately applies the existing exponential
+  backoff, honours Retry-After, and resets the V2 recovery counter.
+* Persists the learned delay via the existing throttle state table.
+* Applies only when `FUTGG_SALES_WORKER_VERSION=v2`; V1 retains its
+  original behaviour.
+
+No new Coolify variables are required. Deploy updated TradeHQ main to
+the *same* SalesSync resource. Recovery logs look like:
+
+```
+V2 measured throttle recovery after 90 clean requests: batch=1 delay 80.0s -> 75.0s
+```
+
+Inspect 429/403 errors and `throttle[...]` logs across several cycles.
+A clean first two cycles does not prove a higher sustainable limit; the
+recovery can reverse itself whenever the source signals throttling.
