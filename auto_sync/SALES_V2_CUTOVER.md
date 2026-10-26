@@ -1,77 +1,84 @@
-# SalesSync V2 — controlled cutover
+# SalesSync V2 — one-resource cutover (Coolify)
 
-V2 is a **market-value sales collector**, not a new BIN worker. The existing
-bulk BIN worker remains the canonical pricing source. V2 uses the existing
-SalesSync transports, response parsing, deduplicated database inserts,
-rate-limiter/circuit breaker, retry backoff, schema and advisory lock.
+**No extra resource is required.** Use your existing SalesSync Coolify service,
+using the existing `auto_sync/Dockerfile.sales`. V1 is the default; V2 is an
+explicit mode switch in the same image/entrypoint. This preserves the existing
+Xvfb, restart management, and bundled bulk BIN worker when enabled.
 
-## Selection
+## Already checked
 
-* FC27 active players with snapshot BIN >= `SALES_V2_MIN_BIN` (default 5000).
-* Any rarity/rating, excluding only cards explicitly marked untradeable.
-  Unknown tradeability is **not** evidence that a card is tradeable.
-* 20% of each selection reserved for 5k–20k cards, remainder for 20k+,
-  with unused capacity filled from either group.
-* Never-successfully-read cards first; oldest attempted among peers.
-* After a successful request, attempt again when the target age has passed.
-  Prior V1 success schedules do not extend that target.
-* Failed/excluded requests always honour existing backoff due timestamps.
-* Reuses V1's conservative request budget; 60 minutes is an **aspiration**,
-  not a guaranteed check interval. Real 429s must take precedence.
+The DB-only V2 shadow on 26 October 2026 returned 1,295 eligible cards,
+940 due, and 220 without successful checks. It sends **no requests**.
 
-## Safe evaluation — no external FUT.GG traffic
+## Before switching
 
-Run inside a TradeHQ/SalesSync environment with `DATABASE_URL`:
+1. Confirm whether the current SalesSync resource runs bulk prices:
+   `FUTGG_RUN_BULK_WITH_SALES=true` means **yes**. Leave this value
+   unchanged so BIN updates continue after the change.
+2. Check for *any other* separate SalesSync deployments/cron jobs and stop
+   them. Only one completed-sales collector should exist.
+3. Keep the current SalesSync resource and Dockerfile. Redeploying it in V2
+   mode stops V1 and starts V2. Both collectors use the same DB advisory
+   lock, preventing concurrent card-selection runs during rolling deployment.
 
-```bash
-PYTHONPATH=auto_sync python3 auto_sync/sales_v2_shadow.py
-```
+## One production configuration (existing SalesSync service)
 
-This is DB-only. It neither fetches sales nor writes scheduler state.
+In **Coolify > existing SalesSync > Environment Variables**, add:
 
-## Stage 2 — fetch-only test
-
-**Stop V1 first**, including any secondary or scheduled SalesSync instances.
-Run this from the existing SalesSync image/environment (it needs headed
-Chromium/Xvfb where used by V1), changing its command/entrypoint to execute
-`python3 sales_v2_collector.py` from the `auto_sync` working directory.
-
-```
+```dotenv
+FUTGG_SALES_WORKER_VERSION=v2
 SALES_V2_ENABLE_FETCH=true
-SALES_V2_ALLOW_WRITES=false
+SALES_V2_ALLOW_WRITES=true
 SALES_V2_MIN_BIN=5000
 SALES_V2_PREMIUM_BIN=20000
 SALES_V2_TARGET_MINUTES=60
 ```
 
-V2 takes **the same PostgreSQL advisory lock** as V1. If V1 is still
-running, V2 cannot start collecting. Fetch-only still makes real requests:
-do not run two source consumers in parallel. Never treat a clean handful
-of batches as proof a higher long-term request rate is sustainable.
+Retain the existing `DATABASE_URL`, Playwright/Xvfb settings, throttle
+variables and `FUTGG_RUN_BULK_WITH_SALES`. Do **not** increase request
+concurrency, lower rate-limit backoffs, or run an additional sales resource.
+Keep `FUTGG_SALES_MAX_CYCLES` and `FUTGG_SALES_MAX_RUNTIME_MINUTES`
+unset/0 for a continuous production service. Deploy current TradeHQ `main`.
 
-## Stage 3 — production cutover
+V2 does not promise that every card will be checked hourly: achieving that
+for 1,295 cards would require 31,080 successful checks/day, significantly
+above the observed ~480 attempts/day. The source's actual limits win.
 
-Only after controlled throughput/429 and correctness verification:
+## Initial logs to verify
 
-```
-SALES_V2_ALLOW_WRITES=true
-```
+* `Sales collector mode: v2 (script=sales_v2_collector.py)`
+* `SalesSync V2 fetch ACTIVE ... writes=True`
+* `V2 market selection: cards=... premium=... base=...`
+* `V2 eligible-market coverage:`
+* Normal `cards_ok`, `failed`, `sales`, and 429/backoff reports
 
-Keep V1 stopped. The existing shared SalesSync DB schema/history remains
-in use and no database reset is required.
+If the startup log still says `Starting FUT.GG sales sync with read-only
+information shadow...`, you are running the old V1 image or wrong resource.
 
-## Why target age is not a promise
+V2 reuses the existing hardened fetcher, deduplicated sales inserts, failure
+backoff, throttle and circuit breaker. It does not delete historical sales or
+create a new DB. Unknown tradeability remains unknown; no BIN-only inference.
 
-1296 cards * 24 checks/day = 31,104 successful checks/day for hourly
-coverage. Historical observations of ~480 attempts/day are far below
-that target; V2 **must not** achieve it by disabling upstream limits.
-Measure attempted/succeeded per minute, throttle responses, age-to-last
-successful check, distinct new sales inserted and age of latest
-completed sale separately. The source may not expose historical sales
-beyond its returned window, and no scheduler can recover unobserved prints.
+## Optional one-cycle fetch-only smoke test
 
-## Rollback
+If testing against the live source **before enabling writes**, change only
+`SALES_V2_ALLOW_WRITES=false` with `FUTGG_SALES_WORKER_VERSION=v2`.
+The entrypoint automatically bounds this mode to one cycle **if no runtime
+limit is supplied**. Warning: a Coolify restart-always policy can restart a
+completed one-cycle container and generate repeated requests. For this reason,
+don't run this optional mode unattended or with automatic restarts enabled.
+The DB-only `sales_v2_shadow.py` is always safe to run while V1 is active.
 
-Stop V2, restart the old SalesSync resource/command, leaving the DB and
-existing history in place. Both versions deliberately share the same
-lock, schema and idempotent sales upserts. Restore its original env.
+## Rollback (same resource, no additional changes)
+
+Set `FUTGG_SALES_WORKER_VERSION=v1`, redeploy. This restores the original
+`futgg_sales_shadow_worker.py` while retaining all existing PostgreSQL
+sales history and bulk-price process.
+
+## Boundaries
+
+V2 replaces the **selection policy** (market BIN >=5k, any rarity/rating,
+20% reserve for 5k-20k, fair oldest-first selection). It deliberately
+reuses V1's fetch/parse/write/rate-limit machinery. The source can provide
+only sales it exposes; V2 cannot recreate missed older completed auctions.
+Collect metrics after deployment before changing intervals or request budgets.

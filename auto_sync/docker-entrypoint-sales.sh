@@ -176,9 +176,39 @@ request_stop() {
 trap request_stop INT TERM
 trap cleanup EXIT
 
+# Single-resource V1/V2 selection. Keep the existing Xvfb and optional bulk
+# price process alive across a controlled V2 cutover. Never launch both
+# completed-sales workers inside this resource.
+SALES_WORKER_MODE="${FUTGG_SALES_WORKER_VERSION:-v1}"
+case "$SALES_WORKER_MODE" in
+    v1)
+        SALES_WORKER_SCRIPT="futgg_sales_shadow_worker.py"
+        ;;
+    v2)
+        SALES_WORKER_SCRIPT="sales_v2_collector.py"
+        if [ "${SALES_V2_ENABLE_FETCH:-false}" != "true" ]; then
+            echo "FATAL: V2 requires SALES_V2_ENABLE_FETCH=true"
+            exit 1
+        fi
+        # Dry runs don't update due times. Force a bounded single cycle
+        # rather than re-requesting the same candidates repeatedly.
+        if [ "${SALES_V2_ALLOW_WRITES:-false}" != "true" ]; then
+            if [ "${FUTGG_SALES_MAX_CYCLES:-0}" = "0" ] && [ "${FUTGG_SALES_MAX_RUNTIME_MINUTES:-0}" = "0" ]; then
+                export FUTGG_SALES_MAX_CYCLES=1
+                echo "V2 read-only test: limiting to one cycle automatically"
+            fi
+        fi
+        ;;
+    *)
+        echo "FATAL: FUTGG_SALES_WORKER_VERSION must be v1 or v2"
+        exit 1
+        ;;
+esac
+echo "Sales collector mode: ${SALES_WORKER_MODE} (script=${SALES_WORKER_SCRIPT})"
+
 while [ "$STOP_REQUESTED" = "0" ]; do
-    echo "Starting FUT.GG sales sync with read-only information shadow..."
-    python futgg_sales_shadow_worker.py &
+    echo "Starting FUT.GG sales collector: ${SALES_WORKER_MODE}"
+    python "$SALES_WORKER_SCRIPT" &
     SALES_PID=$!
 
     while kill -0 "$SALES_PID" 2>/dev/null; do
