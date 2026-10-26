@@ -84,7 +84,8 @@ def test_sales_check_metadata_enriches_displayed_cards_only(monkeypatch):
         return [{"source_card_id": 42}]
 
     async def series(provider, rows):
-        return {}
+        from datetime import datetime, timedelta, timezone
+        return {42: [{"approximate_sold_at": datetime.now(timezone.utc) - timedelta(minutes=n)} for n in (10, 20)]}
 
     async def score(rows, **kwargs):
         return [(rows[0], object())]
@@ -102,3 +103,23 @@ def test_sales_check_metadata_enriches_displayed_cards_only(monkeypatch):
     ))
     assert result["items"][0]["sales_last_attempt_status"] == "success"
     assert result["items"][0]["sales_last_successful_check_at"] == "2026-10-26T07:00:00+00:00"
+
+
+def test_recent_sales_gate_excludes_old_or_single_sale():
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+    recent = [{"approximate_sold_at": now - timedelta(minutes=10)}]
+    assert flipiq_market._recent_completed_sales_count(recent, now) == 1
+    old = [{"approximate_sold_at": now - timedelta(hours=16)}]
+    assert flipiq_market._recent_completed_sales_count(old, now) == 0
+    enough = recent + [{"approximate_sold_at": now - timedelta(minutes=50)}]
+    assert flipiq_market._recent_completed_sales_count(enough, now) == 2
+
+
+def test_recent_sales_gate_rejects_future_and_bad_timestamps():
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+    sales = [{"approximate_sold_at": now + timedelta(hours=1)},
+             {"approximate_sold_at": "not-a-timestamp"},
+             {"approximate_sold_at": None}]
+    assert flipiq_market._recent_completed_sales_count(sales, now) == 0
