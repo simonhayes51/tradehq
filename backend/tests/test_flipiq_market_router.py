@@ -93,6 +93,7 @@ def test_sales_check_metadata_enriches_displayed_cards_only(monkeypatch):
     monkeypatch.setattr(flipiq_market, "_bin_observations_for_rows", series)
     monkeypatch.setattr(flipiq_market, "_score_and_filter", score)
     monkeypatch.setattr(flipiq_market, "_item_with_intelligence", lambda row, ci: dict(row))
+    monkeypatch.setattr(flipiq_market, "_opportunity_sort_key", lambda item: 0)
     result = asyncio.run(flipiq_market.flipiq_opportunities(
         min_profit=500, page=1, page_size=25,
         service_token="a" * 64, provider=Provider(),
