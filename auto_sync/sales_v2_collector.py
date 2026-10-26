@@ -1,0 +1,147 @@
+"""SalesSync V2 collector entrypoint, sharing V1's hardened fetch/write transport.
+
+SAFETY: Runs only when SALES_V2_ENABLE_FETCH=true; additionally requires
+SALES_V2_ALLOW_WRITES=true for production writes. Uses the SAME Postgres
+advisory lock as V1. Do not run both as production services: V1 wins the
+lock until stopped. A single source budget is never doubled.
+
+This deliberately reuses the battle-tested signed fetch, page-capture,
+429 circuit breaker, deduplicating INSERTs and failure retry mechanics.
+Only the catalogue selection and post-success cadence are changed.
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+
+import futgg_sales_sync as sales
+from sales_v2_shadow import MIN_BIN, PREMIUM_BIN, TARGET_INTERVAL_MINUTES
+
+log = logging.getLogger("sales_v2_collector")
+
+
+def _enabled(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"true", "1", "yes"}
+
+
+def configure() -> None:
+    if not _enabled("SALES_V2_ENABLE_FETCH"):
+        raise SystemExit(
+            "V2 fetch disabled. Run sales_v2_shadow.py for the DB-only audit; "
+            "set SALES_V2_ENABLE_FETCH=true only after stopping V1."
+        )
+    if MIN_BIN < 1000:
+        raise SystemExit("SALES_V2_MIN_BIN must be at least 1000")
+    if TARGET_INTERVAL_MINUTES < 60:
+        raise SystemExit("SALES_V2_TARGET_MINUTES must be >=60")
+    # Fail closed. Never turn on production writes implicitly because
+    # FUTGG_SALES_APPLY defaults to true in the legacy worker.
+    sales.APPLY = _enabled("SALES_V2_ALLOW_WRITES")
+    # V2 collects any market-valued card, regardless of rarity and rating.
+    # Every selected row is assigned the same cadence after success.
+    sales.SALES_INTERVALS.update({
+        tier: TARGET_INTERVAL_MINUTES
+        for tier in sales.SALES_INTERVALS
+    })
+    sales.select_due = select_market_due
+    log.warning(
+        "SalesSync V2 fetch ACTIVE min_bin=%d premium_bin=%d target=%dmin "
+        "writes=%s; shared V1 advisory lock and rate limits retained",
+        MIN_BIN, PREMIUM_BIN, TARGET_INTERVAL_MINUTES, sales.APPLY,
+    )
+
+
+async def select_market_due(conn):
+    """Every 5k+ card gets a fair chance, within existing source budget.
+
+    A previous successful check can be rescheduled after target_minutes
+    even when V1 wrote a later next_due_at. Failures retain their actual
+    retry/backoff deadline; no_price_section exclusions also retain it.
+    No-price cards are not fetched. Never-read cards are preferred, with
+    both >20k and 5k-20k receiving service via a reserved quota.
+    """
+    limit = sales.SELECT_LIMIT
+    # 20% guaranteed slots for the less expensive end to avoid starvation.
+    cheap_floor = max(1, limit // 5)
+    sql = """
+        SELECT p.source_card_id, p.rating, p.next_sales_due_at,
+               p.source_url, p.sales_first_read_at,
+               p.sales_consecutive_failures,
+               'CRITICAL'::text AS effective_tier
+        FROM futgg_players p
+        JOIN futgg_market_snapshot m
+          ON m.source_card_id = p.source_card_id AND m.game_year = p.game_year
+        WHERE p.game_year = $1
+          AND p.is_active
+          AND p.is_tradeable IS DISTINCT FROM FALSE
+          AND m.current_bin >= $2
+          AND m.current_bin < $3
+          AND (
+              CASE
+                WHEN p.last_sales_status = 'success'
+                THEN p.last_sales_status_at IS NULL
+                  OR p.last_sales_status_at <= NOW() - ($4::int * interval '1 minute')
+                ELSE p.next_sales_due_at IS NULL OR p.next_sales_due_at <= NOW()
+              END
+          )
+        ORDER BY (p.sales_first_read_at IS NOT NULL),
+                 p.last_sales_status_at ASC NULLS FIRST,
+                 p.source_card_id
+        LIMIT $5
+    """
+    # Avoid 90x individual queries. Two bounded selects are enough.
+    cheaper = await conn.fetch(
+        sql, int(sales.GAME_YEAR), MIN_BIN, PREMIUM_BIN,
+        TARGET_INTERVAL_MINUTES, cheap_floor,
+    )
+    premium = await conn.fetch(
+        sql, int(sales.GAME_YEAR), PREMIUM_BIN, 2147483647,
+        TARGET_INTERVAL_MINUTES, limit - len(cheaper),
+    )
+    # Fill any slack in either group with due cards; don't reserve idle
+    # quota. A deduplicated source-id list protects against duplicate work.
+    result = list(cheaper) + list(premium)
+    if len(result) < limit:
+        extra = await conn.fetch(
+            """
+            SELECT p.source_card_id, p.rating, p.next_sales_due_at,
+                   p.source_url, p.sales_first_read_at,
+                   p.sales_consecutive_failures,
+                   'CRITICAL'::text AS effective_tier
+            FROM futgg_players p
+            JOIN futgg_market_snapshot m
+              ON m.source_card_id = p.source_card_id AND m.game_year = p.game_year
+            WHERE p.game_year = $1 AND p.is_active
+              AND p.is_tradeable IS DISTINCT FROM FALSE
+              AND m.current_bin >= $2
+              AND NOT (p.source_card_id = ANY($3::bigint[]))
+              AND (
+                  CASE
+                    WHEN p.last_sales_status = 'success'
+                    THEN p.last_sales_status_at IS NULL
+                      OR p.last_sales_status_at <= NOW() - ($4::int * interval '1 minute')
+                    ELSE p.next_sales_due_at IS NULL OR p.next_sales_due_at <= NOW()
+                  END
+              )
+            ORDER BY (p.sales_first_read_at IS NOT NULL),
+                     p.last_sales_status_at ASC NULLS FIRST,
+                     p.source_card_id
+            LIMIT $5
+            """,
+            int(sales.GAME_YEAR), MIN_BIN,
+            [int(r["source_card_id"]) for r in result],
+            TARGET_INTERVAL_MINUTES, limit - len(result),
+        )
+        result.extend(extra)
+    log.info(
+        "V2 market selection: cards=%d premium=%d base=%d never_read=%d",
+        len(result), len(premium), len(result) - len(premium),
+        sum(r["sales_first_read_at"] is None for r in result),
+    )
+    return result
+
+
+if __name__ == "__main__":
+    configure()
+    asyncio.run(sales.run_forever())
