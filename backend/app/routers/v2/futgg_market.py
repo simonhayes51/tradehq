@@ -765,10 +765,15 @@ async def _score_and_filter(
     max_evidence_age_minutes: Optional[int] = None,
     sales_by_card: Optional[Dict[int, List[Dict[str, Any]]]] = None,
     bin_by_card: Optional[Dict[int, List[Any]]] = None,
+    diagnostic_rejections: Optional[Dict[str, int]] = None,
 ) -> List[Any]:
     out = []
     sales_by_card = sales_by_card or {}
     bin_by_card = bin_by_card or {}
+    def reject(reason: str) -> None:
+        if diagnostic_rejections is not None:
+            diagnostic_rejections[reason] = diagnostic_rejections.get(reason, 0) + 1
+
     # See _score_and_filter_lock's own comment: serializes concurrent
     # callers so the second (third, fourth...) one for the same cache
     # window finds evaluate_card()'s results already cached instead of
@@ -790,28 +795,37 @@ async def _score_and_filter(
                 # loop had no equivalent isolation, which is exactly how one
                 # bad row emptied the entire feed on 2026-09-05.
                 log.warning("evaluate_card failed for card_id=%s", card_id, exc_info=True)
+                reject("evaluation_error")
                 continue
             if require_confirmed_sales and (
                 ci.valuation_source != "completed_sales" or ci.evidence_quality != "confirmed"
             ):
+                reject("unconfirmed_sales")
                 continue
             if max_evidence_age_minutes is not None and (
                 ci.evidence_age_minutes is None or ci.evidence_age_minutes > max_evidence_age_minutes
             ):
+                reject("stale_sales_evidence")
                 continue
             if signals is not None and ci.signal not in signals:
+                reject("not_buy_signal")
                 continue
             if risk is not None and ci.risk_level != risk:
+                reject("risk")
                 continue
             if min_expected_profit is not None and (
                 ci.expected_profit_after_tax is None or float(ci.expected_profit_after_tax) < min_expected_profit
             ):
+                reject("profit_below_minimum")
                 continue
             if min_roi is not None and (ci.expected_roi is None or float(ci.expected_roi) < min_roi):
+                reject("roi_below_minimum")
                 continue
             if min_confidence is not None and (ci.confidence_score is None or ci.confidence_score < min_confidence):
+                reject("confidence_below_minimum")
                 continue
             if min_liquidity is not None and (ci.liquidity_score is None or ci.liquidity_score < min_liquidity):
+                reject("liquidity_below_minimum")
                 continue
             out.append((row, ci))
     return out

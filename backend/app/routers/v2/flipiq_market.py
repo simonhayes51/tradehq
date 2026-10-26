@@ -49,6 +49,7 @@ async def flipiq_opportunities(
     filters = PlayerFilters(max_price_age_minutes=LIVE_OPPORTUNITY_MAX_PRICE_AGE_MINUTES)
     candidates = await _segmented_candidates(provider)
     rows = _apply_filters_in_python(candidates, filters)
+    rejections: Dict[str, int] = {}
     scored = await _score_and_filter(
         rows,
         min_expected_profit=min_profit,
@@ -58,6 +59,7 @@ async def flipiq_opportunities(
         max_evidence_age_minutes=MAX_OPPORTUNITY_EVIDENCE_AGE_MINUTES,
         sales_by_card=await _sales_for_rows(provider, rows),
         bin_by_card=await _bin_observations_for_rows(provider, rows),
+        diagnostic_rejections=rejections,
     )
     scored.sort(key=_opportunity_sort_key)
     total = len(scored)
@@ -83,6 +85,7 @@ async def flipiq_opportunities(
             "price_stale_or_untradeable": len(candidates) - len(rows),
             "rejected_by_price_or_tradeability": len(candidates) - len(rows),
             "qualified_opportunities": total,
+            "rejection_reasons": rejections,
             "max_price_age_minutes": LIVE_OPPORTUNITY_MAX_PRICE_AGE_MINUTES,
             "checked_at": datetime.now(timezone.utc).isoformat(),
         },
