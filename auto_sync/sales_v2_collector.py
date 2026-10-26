@@ -31,11 +31,12 @@ def _enabled(name: str) -> bool:
 # the windowed FUT.GG quota is exhausted. V2 instead makes at most one
 # small adjustment per completed selection-sized block of successful
 # requests. No new simultaneous requests are introduced.
+PROBE_MODE = _enabled("SALES_V2_PROBE_MODE")
 RECOVERY_SUCCESS_REQUESTS = max(
-    30, int(os.getenv("SALES_V2_RECOVERY_SUCCESS_REQUESTS", "90"))
+    30, int(os.getenv("SALES_V2_RECOVERY_SUCCESS_REQUESTS", "30" if PROBE_MODE else "90"))
 )
 RECOVERY_DELAY_STEP_SECONDS = min(
-    5.0, max(0.5, float(os.getenv("SALES_V2_RECOVERY_DELAY_STEP_SECONDS", "5")))
+    10.0 if PROBE_MODE else 5.0, max(0.5, float(os.getenv("SALES_V2_RECOVERY_DELAY_STEP_SECONDS", "10" if PROBE_MODE else "5")))
 )
 _BaseThrottle = sales.AdaptiveThrottle
 
@@ -54,11 +55,17 @@ class GuardedRecoveryThrottle(_BaseThrottle):
         self.batch_size = 1
         self.max_batch = 1
         self._v2_clean_requests = 0
+        self._probe_stopped = False
 
     def record(self, attempted, throttled, retry_after_seconds=None):
         super().record(attempted, throttled, retry_after_seconds)
         if throttled:
             self._v2_clean_requests = 0
+            if PROBE_MODE:
+                self._probe_stopped = True
+                log.warning("V2 probe rate limited: acceleration disabled until restart; %s", self.describe())
+            return
+        if PROBE_MODE and self._probe_stopped:
             return
         if attempted <= 0:
             return
@@ -99,6 +106,8 @@ def configure() -> None:
     # opted in: only the deliberate conservative V2 recovery is active.
     sales.THROTTLE_AUTO_RECOVERY = False
     sales.AdaptiveThrottle = GuardedRecoveryThrottle
+    if PROBE_MODE:
+        log.warning("V2 accelerated probe: step=%.1fs per %d clean requests, batch=1; stop on first throttle", RECOVERY_DELAY_STEP_SECONDS, RECOVERY_SUCCESS_REQUESTS)
     sales.select_due = select_market_due
     sales.report_coverage = report_market_coverage
     log.warning(
