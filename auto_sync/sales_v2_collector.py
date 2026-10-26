@@ -25,6 +25,57 @@ def _enabled(name: str) -> bool:
     return os.getenv(name, "").strip().lower() in {"true", "1", "yes"}
 
 
+
+# V1 automatic recovery is off for good reason: the original controller
+# speeds up every few successful *batches*, causing a 429 storm once
+# the windowed FUT.GG quota is exhausted. V2 instead makes at most one
+# small adjustment per completed selection-sized block of successful
+# requests. No new simultaneous requests are introduced.
+RECOVERY_SUCCESS_REQUESTS = max(
+    30, int(os.getenv("SALES_V2_RECOVERY_SUCCESS_REQUESTS", "90"))
+)
+RECOVERY_DELAY_STEP_SECONDS = min(
+    5.0, max(0.5, float(os.getenv("SALES_V2_RECOVERY_DELAY_STEP_SECONDS", "5")))
+)
+_BaseThrottle = sales.AdaptiveThrottle
+
+
+class GuardedRecoveryThrottle(_BaseThrottle):
+    """Conservative recovery: 90 consecutive clean requests -> 5s less delay.
+
+    Any throttled result resets the streak and existing base.record()
+    immediately applies normal backoff. Batch size is capped to one to
+    avoid suddenly spiking concurrent requests after clean cycles.
+    Resume/persisted delay continues to be honoured.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.batch_size = 1
+        self.max_batch = 1
+        self._v2_clean_requests = 0
+
+    def record(self, attempted, throttled, retry_after_seconds=None):
+        super().record(attempted, throttled, retry_after_seconds)
+        if throttled:
+            self._v2_clean_requests = 0
+            return
+        if attempted <= 0:
+            return
+        self._v2_clean_requests += attempted
+        if self._v2_clean_requests < RECOVERY_SUCCESS_REQUESTS:
+            return
+        self._v2_clean_requests = 0
+        previous = self.delay
+        self.delay = max(self.min_delay, self.delay - RECOVERY_DELAY_STEP_SECONDS)
+        if self.delay < previous:
+            log.warning(
+                "V2 measured throttle recovery after %d clean requests: "
+                "batch=1 delay %.1fs -> %.1fs (floor=%.1fs)",
+                RECOVERY_SUCCESS_REQUESTS, previous, self.delay, self.min_delay,
+            )
+
+
 def configure() -> None:
     if not _enabled("SALES_V2_ENABLE_FETCH"):
         raise SystemExit(
@@ -44,6 +95,7 @@ def configure() -> None:
         tier: TARGET_INTERVAL_MINUTES
         for tier in sales.SALES_INTERVALS
     })
+    sales.AdaptiveThrottle = GuardedRecoveryThrottle
     sales.select_due = select_market_due
     sales.report_coverage = report_market_coverage
     log.warning(
