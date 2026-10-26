@@ -21,8 +21,11 @@ MIN_OPPORTUNITY_LIQUIDITY = float(
 MAX_OPPORTUNITY_EVIDENCE_AGE_MINUTES = int(
     os.getenv("MAX_OPPORTUNITY_EVIDENCE_AGE_MINUTES", str(48 * 60))
 )
+# Bulk BIN checks run every ~5 minutes; the materialized view refreshes
+# asynchronously. A 3-minute limit creates predictable gaps where every
+# candidate looks stale despite healthy ingestion. Bound at 10 minutes.
 MAX_OPPORTUNITY_PRICE_AGE_MINUTES = int(
-    os.getenv("LIVE_OPPORTUNITY_MAX_PRICE_AGE_MINUTES", "3")
+    os.getenv("LIVE_OPPORTUNITY_MAX_PRICE_AGE_MINUTES", "10")
 )
 
 
