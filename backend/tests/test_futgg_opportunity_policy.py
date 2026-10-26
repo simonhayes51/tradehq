@@ -30,3 +30,18 @@ def test_missing_economics_remain_unknown():
     ci = SimpleNamespace(recommended_buy_max=None, recommended_sell_target=1200)
     assert policy.minimum_profit_at_max_buy(ci) is None
     assert policy.roi_at_max_buy(ci) is None
+
+
+
+def test_live_price_gate_allows_normal_five_minute_feed_cycle():
+    from datetime import datetime, timedelta, timezone
+    from app.services.market_data_provider import PlayerFilters
+    now = datetime.now(timezone.utc)
+    rows = [
+        {"source_card_id": 1, "bin_checked_at": now - timedelta(minutes=6), "is_tradeable": None},
+        {"source_card_id": 2, "bin_checked_at": now - timedelta(minutes=12), "is_tradeable": None},
+    ]
+    accepted = futgg_market._apply_filters_in_python(
+        rows, PlayerFilters(max_price_age_minutes=10)
+    )
+    assert [r["source_card_id"] for r in accepted] == [1]
