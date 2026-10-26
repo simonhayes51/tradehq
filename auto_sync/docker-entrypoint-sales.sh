@@ -193,7 +193,7 @@ case "$SALES_WORKER_MODE" in
         # Dry runs don't update due times. Force a bounded single cycle
         # rather than re-requesting the same candidates repeatedly.
         if [ "${SALES_V2_ALLOW_WRITES:-false}" != "true" ]; then
-            if [ -z "${FUTGG_SALES_MAX_CYCLES:-}" ] && [ -z "${FUTGG_SALES_MAX_RUNTIME_MINUTES:-}" ]; then
+            if [ "${FUTGG_SALES_MAX_CYCLES:-0}" = "0" ] && [ "${FUTGG_SALES_MAX_RUNTIME_MINUTES:-0}" = "0" ]; then
                 export FUTGG_SALES_MAX_CYCLES=1
                 echo "V2 read-only test: limiting to one cycle automatically"
             fi
