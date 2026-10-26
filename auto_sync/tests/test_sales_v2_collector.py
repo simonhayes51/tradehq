@@ -22,6 +22,7 @@ def test_writes_disabled_by_default(monkeypatch):
     v2.configure()
     assert sales.APPLY is False
     assert sales.select_due is v2.select_market_due
+    assert sales.report_coverage is v2.report_market_coverage
     assert set(sales.SALES_INTERVALS.values()) == {60}
 
 
