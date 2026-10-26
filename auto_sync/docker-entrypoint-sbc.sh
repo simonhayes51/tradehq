@@ -4,35 +4,61 @@ set -euo pipefail
 # FUT.GG challenges plain server HTTP with 403s. Run real headed Chromium on
 # the same fixed virtual display used successfully by the sales collector.
 DISPLAY_VALUE="${DISPLAY:-:99}"
+export DISPLAY="$DISPLAY_VALUE"
 DISPLAY_NUM="${DISPLAY_VALUE#:}"
 SOCKET="/tmp/.X11-unix/X${DISPLAY_NUM}"
 LOCK="/tmp/.X${DISPLAY_NUM}-lock"
-if [ -e "$LOCK" ]; then
-  stale_pid="$(tr -d '[:space:]' < "$LOCK" 2>/dev/null || true)"
-  if [ -n "$stale_pid" ] && kill -0 "$stale_pid" 2>/dev/null; then
-    echo "FATAL: Xvfb display ${DISPLAY} is already owned by PID ${stale_pid}"
-    exit 1
+XVFB_PID=""
+
+cleanup() {
+  if [ -n "$XVFB_PID" ] && kill -0 "$XVFB_PID" 2>/dev/null; then
+    kill "$XVFB_PID" 2>/dev/null || true
+    wait "$XVFB_PID" 2>/dev/null || true
   fi
-  rm -f "$LOCK"
-fi
-rm -f "$SOCKET"
-Xvfb "$DISPLAY_VALUE" -screen 0 1920x1080x24 -nolisten tcp &
-XVFB_PID=$!
-cleanup() { kill "$XVFB_PID" 2>/dev/null || true; }
+}
 trap cleanup EXIT
 trap 'exit 0' INT TERM
 
-for _ in $(seq 1 30); do
-  [ -e "$SOCKET" ] && break
-  kill -0 "$XVFB_PID" 2>/dev/null || { echo "FATAL: Xvfb exited during startup"; exit 1; }
-  sleep 0.1
-done
-[ -e "$SOCKET" ] || { echo "FATAL: Xvfb did not create ${SOCKET}"; exit 1; }
+# Coolify scheduled tasks can run inside an existing container; an earlier
+# invocation might have left a functioning Xvfb. Never kill it or delete
+# its live socket. Reuse an active display; reap only one we start.
+if [ -e "$LOCK" ]; then
+  stale_pid="$(tr -d '[:space:]' < "$LOCK" 2>/dev/null || true)"
+  if [ -n "$stale_pid" ] && kill -0 "$stale_pid" 2>/dev/null; then
+    if [ -S "$SOCKET" ]; then
+      echo "Reusing running Xvfb on $DISPLAY_VALUE (PID $stale_pid)"
+    else
+      echo "FATAL: Xvfb lock $LOCK belongs to live PID $stale_pid but socket missing"
+      exit 1
+    fi
+  else
+    echo "Removing stale Xvfb lock $LOCK"
+    rm -f "$LOCK" "$SOCKET"
+  fi
+elif [ -e "$SOCKET" ]; then
+  echo "FATAL: socket $SOCKET present without lock; refusing to remove it"
+  exit 1
+fi
+
+if [ ! -S "$SOCKET" ]; then
+  echo "Starting Xvfb on $DISPLAY_VALUE..."
+  Xvfb "$DISPLAY_VALUE" -screen 0 1920x1080x24 -nolisten tcp &
+  XVFB_PID=$!
+  for _ in $(seq 1 30); do
+    [ -S "$SOCKET" ] && break
+    kill -0 "$XVFB_PID" 2>/dev/null || { echo "FATAL: Xvfb exited during startup"; exit 1; }
+    sleep 0.1
+  done
+  [ -S "$SOCKET" ] || { echo "FATAL: Xvfb did not create $SOCKET"; exit 1; }
+  echo "Xvfb ready on $DISPLAY_VALUE"
+fi
 
 # Works safely with the currently deployed long-running service, while
 # FUTGG_CONTENT_RUN_ONCE=true keeps compatibility with a Scheduled Task.
 if [ "${FUTGG_CONTENT_RUN_ONCE:-false}" = "true" ] || [ "${FUTGG_CONTENT_DIAGNOSTIC:-false}" = "true" ]; then
+  echo "SBCSync one-shot execution"
   python futgg_content_sync.py
+  exit $?
 fi
 
 INTERVAL="${FUTGG_CONTENT_INTERVAL_SECONDS:-21600}"
