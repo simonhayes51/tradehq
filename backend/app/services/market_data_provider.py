@@ -641,6 +641,40 @@ class FutggMarketDataProvider(MarketDataProvider):
             await _attach_sbc_reward_watch(conn, [result])
         return result
 
+    async def get_sales_check_status_by_ids(self, card_ids: List[int]) -> Dict[int, Dict[str, Any]]:
+        """Latest SalesSync ATTEMPT and status, independently of latest sale time.
+
+        last_sales_status_at is stamped on failures too, so it must never be
+        labelled a successful check unless last_sales_status == 'success'.
+        A failed most-recent attempt means the last successful check is unknown
+        with the current schema; do not manufacture one.
+        """
+        if not card_ids:
+            return {}
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT source_card_id, last_sales_status, last_sales_status_at,
+                       next_sales_due_at, sales_consecutive_failures
+                FROM futgg_players
+                WHERE source_card_id = ANY($1::bigint[]) AND game_year = $2
+                """,
+                list(set(card_ids)), active_game_year(),
+            )
+        return {
+            int(row["source_card_id"]): {
+                "sales_last_attempt_at": row["last_sales_status_at"].isoformat()
+                if row["last_sales_status_at"] else None,
+                "sales_last_attempt_status": row["last_sales_status"],
+                "sales_last_successful_check_at": row["last_sales_status_at"].isoformat()
+                if row["last_sales_status"] == "success" and row["last_sales_status_at"] else None,
+                "sales_next_due_at": row["next_sales_due_at"].isoformat()
+                if row["next_sales_due_at"] else None,
+                "sales_consecutive_failures": int(row["sales_consecutive_failures"] or 0),
+            }
+            for row in rows
+        }
+
     async def get_players_by_ids(self, card_ids: List[int]) -> Dict[int, Dict[str, Any]]:
         """Batch lookup keyed by source_card_id - for callers rendering a
         list of already-known ids (e.g. a watchlist) that would otherwise

@@ -62,8 +62,17 @@ async def flipiq_opportunities(
     scored.sort(key=_opportunity_sort_key)
     total = len(scored)
     window = scored[(page - 1) * page_size : page * page_size]
+    # Only hydrate displayed cards, never the full scoring population.
+    check_states = await provider.get_sales_check_status_by_ids(
+        [int(row["source_card_id"]) for row, _ci in window]
+    )
+    items = []
+    for row, ci in window:
+        item = _item_with_intelligence(row, ci)
+        item.update(check_states.get(int(row["source_card_id"]), {}))
+        items.append(item)
     return {
-        "items": [_item_with_intelligence(row, ci) for row, ci in window],
+        "items": items,
         "page": page,
         "page_size": page_size,
         "total": total,
@@ -71,6 +80,7 @@ async def flipiq_opportunities(
         "diagnostics": {
             "candidate_pool": len(candidates),
             "fresh_price_candidates": len(rows),
+            "price_stale_or_untradeable": len(candidates) - len(rows),
             "rejected_by_price_or_tradeability": len(candidates) - len(rows),
             "qualified_opportunities": total,
             "max_price_age_minutes": LIVE_OPPORTUNITY_MAX_PRICE_AGE_MINUTES,
