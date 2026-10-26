@@ -95,6 +95,9 @@ def configure() -> None:
         tier: TARGET_INTERVAL_MINUTES
         for tier in sales.SALES_INTERVALS
     })
+    # Disable the legacy three-batch recovery even if an old Coolify env
+    # opted in: only the deliberate conservative V2 recovery is active.
+    sales.THROTTLE_AUTO_RECOVERY = False
     sales.AdaptiveThrottle = GuardedRecoveryThrottle
     sales.select_due = select_market_due
     sales.report_coverage = report_market_coverage
