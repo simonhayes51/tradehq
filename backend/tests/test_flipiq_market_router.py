@@ -64,6 +64,8 @@ def test_service_route_reuses_live_market_checks(monkeypatch):
     assert observed["signals"] == {"buy", "strong_buy"}
     assert observed["min_expected_profit"] == 500
     assert "bin_by_card" in observed
+    assert isinstance(observed["diagnostic_rejections"], dict)
+    assert result["diagnostics"]["rejection_reasons"] == {}
 
 
 def test_sales_check_metadata_enriches_displayed_cards_only(monkeypatch):
