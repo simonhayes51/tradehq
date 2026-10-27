@@ -1060,6 +1060,58 @@ class FutggMarketDataProvider(MarketDataProvider):
             )
         return out
 
+    async def select_flipiq_price_drops(
+        self, *, threshold: float = 16.0, hours: int = 6, limit: int = 80,
+    ) -> List[Dict[str, Any]]:
+        """Find observed BIN declines across ALL active priced FC27 cards.
+
+        Use the latest checked BIN from the snapshot and a bounded
+        observation near the window start. A missing reference is unknown,
+        never treated as a drop. Uses the console market only.
+        """
+        if hours not in (3, 6, 9):
+            raise ValueError("hours must be 3, 6 or 9")
+        threshold = min(75.0, max(1.0, float(threshold)))
+        limit = min(150, max(1, int(limit)))
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                WITH priced AS (
+                  SELECT p.source_card_id, m.current_bin
+                  FROM futgg_players p
+                  JOIN futgg_market_snapshot m
+                    ON m.source_card_id = p.source_card_id
+                   AND m.game_year = p.game_year
+                  WHERE p.game_year = $1 AND p.is_active
+                    AND p.is_tradeable IS DISTINCT FROM FALSE
+                    AND m.current_bin >= 5000
+                    AND m.bin_captured_at >= now() - interval '10 minutes'
+                )
+                SELECT q.source_card_id, q.current_bin,
+                       prev.lowest_bin AS reference_bin,
+                       prev.captured_at AS reference_at,
+                       (100.0 * (q.current_bin::numeric / prev.lowest_bin - 1))::float
+                         AS drop_pct
+                FROM priced q
+                JOIN LATERAL (
+                    SELECT h.lowest_bin, h.captured_at
+                    FROM futgg_bin_history h
+                    WHERE h.source_card_id = q.source_card_id
+                      AND h.game_year = $1 AND h.platform = 'ps5'
+                      AND h.lowest_bin > 0
+                      AND h.captured_at <= now() - make_interval(hours => $2)
+                      AND h.captured_at >= now() - make_interval(hours => $2) - interval '45 minutes'
+                    ORDER BY h.captured_at DESC LIMIT 1
+                ) prev ON TRUE
+                WHERE q.current_bin::numeric <=
+                  prev.lowest_bin * (1.0 - $3::numeric / 100.0)
+                ORDER BY (q.current_bin::numeric / prev.lowest_bin) ASC
+                LIMIT $4
+                """,
+                active_game_year(), hours, threshold, limit,
+            )
+        return [dict(r) for r in rows]
+
     async def get_bin_observations_by_ids(
         self, card_ids: List[int],
     ) -> Dict[int, List[Tuple[int, datetime]]]:

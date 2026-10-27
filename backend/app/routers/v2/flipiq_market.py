@@ -124,3 +124,70 @@ async def flipiq_opportunities(
         },
         "source": "tradehq_live_revalidated",
     }
+
+
+@router.get("/market/flipiq-price-drops")
+async def flipiq_price_drops(
+    drop: float = Query(16, ge=1, le=75),
+    hours: int = Query(6),
+    page_size: int = Query(50, ge=1, le=80),
+    service_token: Optional[str] = Header(None, alias="X-FLIPIQ-Token"),
+    provider: FutggMarketDataProvider = ProviderDep,
+) -> Dict[str, Any]:
+    """Price drop discoveries, NOT trading recommendations.
+
+    Scans all priced active cards, irrespective of BUY signal. Bounce
+    evidence is measured from historical BIN data, not predicted by AI.
+    """
+    from app.services.flipiq_recovery import recovery_evidence
+    expected = os.getenv("FLIPIQ_SERVICE_TOKEN", "")
+    if len(expected) < 32:
+        raise HTTPException(status_code=503, detail="FLIPIQ service integration not configured")
+    if not service_token or not hmac.compare_digest(service_token, expected):
+        raise HTTPException(status_code=401, detail="Invalid FLIPIQ service token")
+    if hours not in (3, 6, 9):
+        raise HTTPException(status_code=422, detail="hours must be 3, 6 or 9")
+    detected = await provider.select_flipiq_price_drops(
+        threshold=drop, hours=hours, limit=page_size,
+    )
+    ids = [int(row["source_card_id"]) for row in detected]
+    observations = await provider.get_bin_observations_by_ids(ids)
+    # Detail lookup is deliberately limited to returned cards; don't
+    # evaluate all ~20k priced cards or fetch 7d history for non-drops.
+    items = []
+    for candidate in detected:
+        card_id = int(candidate["source_card_id"])
+        player = await provider.get_player(card_id)
+        if player is None:
+            continue
+        evidence = recovery_evidence(
+            observations.get(card_id, []),
+            drop_pct=drop, lookback_hours=hours,
+        )
+        items.append({
+            **dict(player),
+            "drop_pct": round(float(candidate["drop_pct"]), 2),
+            "reference_bin": int(candidate["reference_bin"]),
+            "reference_at": candidate["reference_at"].isoformat(),
+            "recovery": evidence,
+            "recovery_status": (
+                "HISTORICALLY_RECOVERED" if evidence["recovery_rate"] is not None
+                and evidence["recovery_rate"] >= 60 else
+                "HISTORICALLY_WEAK" if evidence["recovery_rate"] is not None
+                else "INSUFFICIENT_HISTORY"
+            ),
+            "potential_rebound_net": (
+                int(candidate["reference_bin"] * .95) -
+                int(int(candidate["reference_bin"] * .95) * .05) -
+                int(candidate["current_bin"])
+            ),
+        })
+    return {
+        "items": items,
+        "total": len(items),
+        "drop_threshold_pct": drop,
+        "window_hours": hours,
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+        "source": "observed_bin_history_not_buy_signals",
+        "disclaimer": "Historical BIN recovery is not a forecast; sale prices and profit are not guaranteed.",
+    }
