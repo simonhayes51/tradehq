@@ -1088,6 +1088,23 @@ class FutggMarketDataProvider(MarketDataProvider):
                     AND p.rating BETWEEN 1 AND 99
                     AND m.current_bin >= 5000
                     AND m.bin_captured_at >= now() - interval '10 minutes'
+                    -- Fresh BIN alone is not current demand: an obsolete
+                    -- card may keep a listed asking price for days while
+                    -- no one is buying it. Require two observed completed
+                    -- sales in the past 3 hours for an actionable drop.
+                    AND m.latest_sale_at >= now() - interval '3 hours'
+                    AND (
+                      SELECT count(*) FROM (
+                        SELECT 1
+                        FROM futgg_sales_history sh
+                        WHERE sh.source_card_id = p.source_card_id
+                          AND sh.game_year = p.game_year
+                          AND sh.platform = 'ps5'
+                          AND sh.approximate_sold_at >= now() - interval '3 hours'
+                          AND sh.approximate_sold_at <= now()
+                        LIMIT 2
+                      ) recent_sales
+                    ) >= 2
                 )
                 SELECT q.source_card_id, q.current_bin,
                        prev.lowest_bin AS reference_bin,
