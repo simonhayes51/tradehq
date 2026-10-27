@@ -193,3 +193,62 @@ async def flipiq_price_drops(
         "source": "observed_bin_history_not_buy_signals",
         "disclaimer": "Historical BIN recovery is not a forecast; sale prices and profit are not guaranteed.",
     }
+
+
+@router.get("/market/flipiq-investments")
+async def flipiq_investments(
+    page_size: int = Query(50, ge=1, le=80),
+    service_token: Optional[str] = Header(None, alias="X-FLIPIQ-Token"),
+    provider: FutggMarketDataProvider = ProviderDep,
+) -> Dict[str, Any]:
+    """Evidence-based investment shortlist, expressly NOT publishable BUY tips.
+
+    Source snapshots + sustained historic BIN ranges are distinct from
+    live order-book depth. Every result requires human supply verification.
+    """
+    from app.services.flipiq_investments import investment_case
+    expected = os.getenv("FLIPIQ_SERVICE_TOKEN", "")
+    if len(expected) < 32:
+        raise HTTPException(status_code=503, detail="FLIPIQ service integration not configured")
+    if not service_token or not hmac.compare_digest(service_token, expected):
+        raise HTTPException(status_code=401, detail="Invalid FLIPIQ service token")
+    universe = await provider.select_flipiq_investment_universe(limit=120)
+    histories = await provider.get_flipiq_investment_history(
+        [int(p["source_card_id"]) for p in universe]
+    )
+    now = datetime.now(timezone.utc)
+    results = []
+    reasons: Dict[str, int] = {}
+    for player in universe:
+        card_id = int(player["source_card_id"])
+        case = investment_case(
+            histories.get(card_id, []),
+            current_bin=int(player["current_bin"]), now=now,
+        )
+        if not case["qualified"]:
+            reason = case["reason"]
+            reasons[reason] = reasons.get(reason, 0) + 1
+            continue
+        observations = sorted(histories.get(card_id, []), key=lambda item: item[1])
+        results.append({
+            **dict(player), **case,
+            "price_history": [
+                {"time": at.isoformat(), "price": int(price)}
+                for price, at in observations if at >= now - timedelta(hours=12)
+            ][-200:],
+            "sales_evidence": "at_least_two_sales_rows_in_last_three_hours",
+        })
+    results.sort(key=lambda item: (item["hypothetical_net_profit"], item["hypothetical_roi_pct"]), reverse=True)
+    return {
+        "items": results[:page_size],
+        "total": len(results),
+        "universe_checked": len(universe),
+        "rejection_reasons": reasons,
+        "constraints": {
+            "min_rating": 82, "min_bin": 15000,
+            "min_hypothetical_net": 10000, "min_roi_pct": 10,
+            "recent_sales_hours": 3, "market_depth_verified": False,
+        },
+        "checked_at": now.isoformat(),
+        "disclaimer": "Research leads only. Historical BIN medians are not realizable offers; no depth, subscriber capacity or future return is verified.",
+    }
