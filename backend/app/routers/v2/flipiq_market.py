@@ -230,12 +230,16 @@ async def flipiq_investments(
             reasons[reason] = reasons.get(reason, 0) + 1
             continue
         observations = sorted(histories.get(card_id, []), key=lambda item: item[1])
+        hourly = {}
+        for price, at in observations:
+            if at >= now - timedelta(hours=12):
+                hourly[int(at.timestamp() // 3600)] = (price, at)
         results.append({
             **dict(player), **case,
             "price_history": [
                 {"time": at.isoformat(), "price": int(price)}
-                for price, at in observations if at >= now - timedelta(hours=12)
-            ][-200:],
+                for _hour, (price, at) in sorted(hourly.items())
+            ],
             "sales_evidence": "at_least_two_sales_rows_in_last_three_hours",
         })
     results.sort(key=lambda item: (item["hypothetical_net_profit"], item["hypothetical_roi_pct"]), reverse=True)
