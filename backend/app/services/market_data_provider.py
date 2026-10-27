@@ -1131,6 +1131,46 @@ class FutggMarketDataProvider(MarketDataProvider):
             )
         return [dict(r) for r in rows]
 
+    async def select_flipiq_investment_universe(self, *, limit: int = 120) -> List[Dict[str, Any]]:
+        """Preselect liquid, identified 82+ cards >=15k for investment analysis.
+
+        This is a research universe, not a list of executable market offers.
+        """
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT m.source_card_id, m.current_bin, m.rating, m.name,
+                       m.display_name, m.rarity, m.primary_position,
+                       m.player_image_url, m.bin_captured_at, m.latest_sale_at,
+                       m.sales_median, m.sales_count
+                FROM futgg_market_snapshot m
+                JOIN futgg_players p
+                  ON p.source_card_id=m.source_card_id AND p.game_year=m.game_year
+                WHERE m.game_year=$1
+                  AND p.is_active AND p.is_tradeable IS DISTINCT FROM FALSE
+                  AND m.rating >= 82 AND m.current_bin >= 15000
+                  AND NULLIF(BTRIM(COALESCE(m.name,'')),'') IS NOT NULL
+                  AND m.bin_captured_at >= now() - interval '10 minutes'
+                  AND m.latest_sale_at >= now() - interval '3 hours'
+                  AND EXISTS (
+                    SELECT 1 FROM futgg_sales_history sh
+                    WHERE sh.source_card_id=m.source_card_id
+                      AND sh.game_year=m.game_year AND sh.platform='ps5'
+                      AND sh.approximate_sold_at >= now()-interval '3 hours'
+                    OFFSET 1 LIMIT 1
+                  )
+                ORDER BY m.sales_count DESC NULLS LAST, m.current_bin DESC
+                LIMIT $2
+                """, active_game_year(), min(180, max(1, int(limit))),
+            )
+        return [dict(row) for row in rows]
+
+    async def get_flipiq_investment_history(self, card_ids: List[int]):
+        """Bounded 72h PS5 BIN history for the research universe."""
+        return await load_bin_observations(
+            self._pool, card_ids, days=3, limit_per_card=850,
+        )
+
     async def get_bin_observations_by_ids(
         self, card_ids: List[int],
     ) -> Dict[int, List[Tuple[int, datetime]]]:
