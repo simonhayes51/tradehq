@@ -1084,6 +1084,8 @@ class FutggMarketDataProvider(MarketDataProvider):
                    AND m.game_year = p.game_year
                   WHERE p.game_year = $1 AND p.is_active
                     AND p.is_tradeable IS DISTINCT FROM FALSE
+                    AND NULLIF(BTRIM(COALESCE(p.name, '')), '') IS NOT NULL
+                    AND p.rating BETWEEN 1 AND 99
                     AND m.current_bin >= 5000
                     AND m.bin_captured_at >= now() - interval '10 minutes'
                 )

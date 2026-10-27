@@ -155,10 +155,11 @@ async def flipiq_price_drops(
     # Detail lookup is deliberately limited to returned cards; don't
     # evaluate all ~20k priced cards or fetch 7d history for non-drops.
     items = []
+    now = datetime.now(timezone.utc)
     for candidate in detected:
         card_id = int(candidate["source_card_id"])
         player = await provider.get_player(card_id)
-        if player is None:
+        if not player or not player.get("name") or not player.get("rating"):
             continue
         evidence = recovery_evidence(
             observations.get(card_id, []),
@@ -166,6 +167,7 @@ async def flipiq_price_drops(
         )
         items.append({
             **dict(player),
+            "price_history": [{"time": at.isoformat(), "price": int(price)} for price, at in sorted(observations.get(card_id, []), key=lambda point: point[1]) if at >= now - timedelta(hours=12)][-200:],
             "drop_pct": round(float(candidate["drop_pct"]), 2),
             "reference_bin": int(candidate["reference_bin"]),
             "reference_at": candidate["reference_at"].isoformat(),
