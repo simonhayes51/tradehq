@@ -640,37 +640,26 @@ def build_opportunity_post_embed(row: dict[str, Any], ci: Any, *, test: bool = F
         market_read = "Trend evidence unavailable"
     if len(market_read) > 240:
         market_read = market_read[:237].rstrip() + "..."
+    # Mobile-first native Discord embed: the trading decision is visible first.
+    # Keep the underlying prices, evidence and buttons unchanged.
     fields = [
-        {
-            "name": "LIVE PRICE",
-            "value": f"{embeds.coins(live_price)} coins",
-            "inline": True,
-        },
-        {"name": "MAX BUY — DO NOT CHASE", "value": f"{embeds.coins(buy_ceiling)} coins", "inline": True},
-        {"name": "SELL TARGET", "value": f"{embeds.coins(sell_target)} coins", "inline": True},
-        {
-            "name": "MIN PROFIT AT MAX BUY (after EA tax)",
-            "value": f"{embeds.coins(conservative_profit, signed=True)} coins" if conservative_profit is not None else "n/a",
-            "inline": True,
-        },
-        {"name": "PRICE CHECKED", "value": checked_label, "inline": True},
-        {"name": "ENTRY WINDOW", "value": f"{OPPORTUNITY_ENTRY_WINDOW_MINUTES} minutes", "inline": True},
-        {"name": "RISK", "value": risk.title() if risk != "unknown" else "Unknown", "inline": True},
-        {"name": "SELLING SPEED", "value": _liquidity_label(ci.liquidity_score), "inline": True},
-        {"name": "CONFIDENCE", "value": f"{(ci.confidence_score or 0):.0%}", "inline": True},
-        {"name": "SALES EVIDENCE", "value": f"{sales_count} recent · {evidence_source} · {evidence_age_label}", "inline": False},
-        {"name": "MARKET READ", "value": market_read, "inline": False},
+        {"name": "🟢 MAX BUY · DO NOT CHASE", "value": f"**{embeds.coins(buy_ceiling)}** coins", "inline": True},
+        {"name": "🎯 SELL TARGET", "value": f"**{embeds.coins(sell_target)}** coins", "inline": True},
+        {"name": "💰 MIN PROFIT · AFTER TAX", "value": f"**{embeds.coins(conservative_profit, signed=True)}** coins" if conservative_profit is not None else "n/a", "inline": True},
+        {"name": "📊 LIVE PRICE", "value": f"{embeds.coins(live_price)} coins", "inline": True},
+        {"name": "🛡️ RISK / SPEED", "value": f"{risk.title()} · {_liquidity_label(ci.liquidity_score)} selling", "inline": True},
+        {"name": "🎯 CONFIDENCE", "value": f"{(ci.confidence_score or 0):.0%}", "inline": True},
+        {"name": "📈 MARKET READ", "value": market_read, "inline": False},
+        {"name": "🕒 TIMING", "value": f"Price: {checked_label} · Entry: {OPPORTUNITY_ENTRY_WINDOW_MINUTES}m", "inline": False},
+        {"name": "📋 SALES EVIDENCE", "value": f"{sales_count} recent · {evidence_source} · {evidence_age_label}", "inline": False},
     ]
     embed: dict[str, Any] = {
         "title": f"{'[TEST] ' if test else ''}{embeds.card_label(row)}",
-        "description": "🧪 **TEST POST — not a real trade**" if test else "⚡ **Trade setup** · Enter only at or below MAX BUY; target and profit are estimates, not guarantees.",
+        "description": "🧪 **TEST POST — not a real trade**" if test else "⚡ **PREMIUM TRADE · CONSOLE**\\nBuy at or below MAX BUY. Never chase the price.",
         "color": 0xF97316 if test else _RISK_COLORS.get(risk, embeds.BRAND_COLOR),
         "author": embeds.brand_author(app_url),
         "fields": fields,
-        "footer": {
-            "text": "EAFC.Live — this is a placeholder test post." if test
-            else "EAFC.Live — recheck in-game. Never pay above MAX BUY; this entry signal expires quickly."
-        },
+        "footer": {"text": "EAFC.Live · TEST ONLY" if test else "EAFC.Live · Recheck in-game · Estimated profit, not guaranteed"},
         "timestamp": _now().isoformat(),
     }
     if thumbnail:
