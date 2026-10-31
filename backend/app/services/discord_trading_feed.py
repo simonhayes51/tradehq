@@ -642,32 +642,32 @@ def build_opportunity_post_embed(row: dict[str, Any], ci: Any, *, test: bool = F
         market_read = market_read[:237].rstrip() + "..."
     # Mobile-first native Discord embed: the trading decision is visible first.
     # Keep the underlying prices, evidence and buttons unchanged.
-    # Discord mobile often stacks inline fields. Keep the decision in one
-    # compact description rather than relying on desktop-style columns.
-    price_line = (
-        f"**BUY ≤ {embeds.coins(buy_ceiling)}**  •  "
-        f"**SELL {embeds.coins(sell_target)}**\\n"
-        f"**MIN PROFIT {embeds.coins(conservative_profit, signed=True)}** after tax"
-        if conservative_profit is not None
-        else f"**BUY ≤ {embeds.coins(buy_ceiling)}**  •  **SELL {embeds.coins(sell_target)}**"
-    )
-    summary = (
-        f"{price_line}\\n"
-        f"Live: {embeds.coins(live_price)} coins  •  Confidence: {(ci.confidence_score or 0):.0%}\\n"
-        f"Risk: {risk.title()}  •  Selling: {_liquidity_label(ci.liquidity_score)}\\n"
-        f"🕒 {checked_label}  •  Entry: {OPPORTUNITY_ENTRY_WINDOW_MINUTES}m"
-    )
-    fields = [
-        {"name": "📈 MARKET CONTEXT", "value": market_read, "inline": False},
-        {"name": "📋 SALES EVIDENCE", "value": f"{sales_count} recent · {evidence_source} · {evidence_age_label}", "inline": False},
+    # Simple, mobile-first wording for new traders. Avoid technical jargon.
+    buy_text = embeds.coins(buy_ceiling)
+    sell_text = embeds.coins(sell_target)
+    profit_text = embeds.coins(conservative_profit, signed=True) if conservative_profit is not None else None
+    risk_label = {"low": "🟢 Low risk", "medium": "🟡 Medium risk", "high": "🔴 High risk"}.get(risk, "⚪ Risk unknown")
+    speed = _liquidity_label(ci.liquidity_score)
+    speed_label = {"High": "⚡ Sells quickly", "Medium": "⏳ May take time to sell", "Low": "🐢 May sell slowly"}.get(speed, f"Selling speed: {speed}")
+    summary_lines = [
+        "🛒 **BUY FOR NO MORE THAN**",
+        f"**{buy_text} coins**",
+        "",
+        "💰 **SELL FOR**",
+        f"**{sell_text} coins**",
+        "",
+        "✅ **POSSIBLE PROFIT**",
+        f"**{profit_text} coins** (after EA tax)" if profit_text is not None else "Not available",
+        "",
+        f"{risk_label}  •  {speed_label}",
+        f"⏰ Buy within {OPPORTUNITY_ENTRY_WINDOW_MINUTES} minutes if the price is still right.",
     ]
     embed: dict[str, Any] = {
         "title": f"{'[TEST] ' if test else ''}{embeds.card_label(row)}",
-        "description": ("🧪 **TEST POST — not a real trade**\\n" if test else "⚡ **PREMIUM TRADE · CONSOLE**\\n") + summary,
+        "description": ("🧪 **TEST ONLY — not a real trade**\n\n" if test else "⚡ **TRADE ALERT**\n\n") + "\n".join(summary_lines),
         "color": 0xF97316 if test else _RISK_COLORS.get(risk, embeds.BRAND_COLOR),
         "author": embeds.brand_author(app_url),
-        "fields": fields,
-        "footer": {"text": "EAFC.Live · TEST ONLY" if test else "EAFC.Live · Recheck in-game · Never chase MAX BUY · Estimates only"},
+        "footer": {"text": "EAFC.Live · TEST ONLY" if test else "Check the price in-game first. Profit is not guaranteed."},
         "timestamp": _now().isoformat(),
     }
     if thumbnail:
