@@ -845,6 +845,7 @@ async def _pc_market_rows(provider, rows):
                    sales_window_earliest_at=pc["sales_window_earliest_at"],
                    sales_window_latest_at=pc["sales_window_latest_at"],
                    latest_sale_at=pc["sales_window_latest_at"],
+                   latest_sale_price=pc["sales_median"],
                    sales_window_span_minutes=(pc["sales_window_latest_at"]-pc["sales_window_earliest_at"]).total_seconds()/60 if pc["sales_window_earliest_at"] else None,
                    sales_dispersion_ratio=(float(pc["sales_stddev"])/float(pc["sales_median"])) if pc["sales_stddev"] and pc["sales_median"] else None,
                    sales_interdecile_ratio=(float(pc["sales_p90"])-float(pc["sales_p10"]))/float(pc["sales_median"]) if pc["sales_median"] else None,
@@ -1213,10 +1214,10 @@ async def list_opportunities(
         None, rating_min, rating_max, position, rarity, club, league, nation,
         max_price, min_price, max_price_age_minutes,
     )
-    rows = _apply_filters_in_python(await _segmented_candidates(provider), filters)
+    rows = await _segmented_candidates(provider)
     if platform == "pc":
         rows = await _pc_market_rows(provider, rows)
-        rows = _apply_filters_in_python(rows, filters)
+    rows = _apply_filters_in_python(rows, filters)
     scored = await _score_and_filter(
         rows, risk=risk, min_expected_profit=min_profit, min_roi=min_roi,
         min_confidence=min_confidence,
