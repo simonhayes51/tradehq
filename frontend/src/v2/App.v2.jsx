@@ -37,7 +37,7 @@ import "./styles/mobile-menu-final.css";
 export default function V2App() {
   return (
     <Routes>
-      <Route path="preview-v4" element={<V4Preview />} />
+      <Route path="preview-v4/*" element={<V4Preview />} />
       <Route index element={<ShellLayout><HomeDashboard /></ShellLayout>} />
       {/* FUT.GG migration: was a redirect to /trade-finder (no
           dedicated opportunities page existed); now a real page wired to
