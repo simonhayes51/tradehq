@@ -27,6 +27,7 @@ import "./v2/styles/tokens.css";
 import "./styles/public-site.css";
 import "./v3/design/tokens.css";
 import "./v3/design/public.css";
+import "./v3/design/masthead.css";
 
 const APP_SIGNUP = `${APP_ORIGIN}/#/signup`;
 const APP_LOGIN = `${APP_ORIGIN}/#/login`;
