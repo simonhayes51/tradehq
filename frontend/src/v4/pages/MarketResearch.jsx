@@ -9,16 +9,7 @@ function Header({type}){
  const shortlist=type==="opportunities";
  return <header className="v4-research-heading"><div><div className="v4-eyebrow">{shortlist?"LIVE MARKET / CURATED":"RESEARCH / CUSTOM SCAN"}</div><h1>{shortlist?"THE SHORTLIST.":"FIND YOUR EDGE."}</h1><p>{shortlist?"Live buy candidates screened by the backend. Review the numbers and check in-game prices before buying.":"Explore the wider market with filters tailored to your trading strategy."}</p></div><Link to={shortlist?"/trade-finder":"/opportunities"} className="v4-button v4-button--secondary">{shortlist?"Open Trade Finder":"Today's shortlist"} <ArrowRight size={16}/></Link></header>;
 }
-export default function MarketResearch({type="opportunities"}){
- const [risk,setRisk]=useState("");
- const [confidence,setConfidence]=useState("");
- const [maxPrice,setMaxPrice]=useState("");
- const params={risk:risk||undefined,min_confidence:confidence?Number(confidence)/100:undefined,max_price_age_minutes:3,page_size:40,...(type==="finder"&&maxPrice?{max_price:Number(maxPrice)}:{})};
- // Both hooks are unconditional to preserve hook order; React Query's
- // cached requests remain separate. The inactive feed is not displayed.
- const opportunities=useFutggOpportunities(type==="opportunities"?params:{page_size:1});
- const finder=useFutggTradeFinder(type==="finder"?params:{page_size:1});
- const query=type==="finder"?finder:opportunities;
+function ResearchScreen({type,query,risk,setRisk,confidence,setConfidence,maxPrice,setMaxPrice}){
  const items=getItems(query.data);
  return <div className="v4-research-page"><Header type={type}/><section className="v4-research-controls" aria-label="Filter market">
   <label>Risk<select value={risk} onChange={e=>setRisk(e.target.value)}><option value="">All risks</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select></label>
@@ -27,3 +18,18 @@ export default function MarketResearch({type="opportunities"}){
   <span className="v4-research-count">{query.isLoading?"SCANNING":`${items.length} RESULTS`}</span>
  </section><ResearchResults query={query} items={items}/><p className="v4-research-disclaimer">*Estimated profit after EA tax at maximum buy price. Results are not guaranteed. Verify all prices in-game before buying.</p></div>;
 }
+
+function OpportunitiesScreen(){
+ const [risk,setRisk]=useState("");
+ const [confidence,setConfidence]=useState("");
+ const query=useFutggOpportunities({risk:risk||undefined,min_confidence:confidence?Number(confidence)/100:undefined,max_price_age_minutes:3,page_size:40});
+ return <ResearchScreen type="opportunities" query={query} risk={risk} setRisk={setRisk} confidence={confidence} setConfidence={setConfidence} maxPrice="" setMaxPrice={()=>{}}/>;
+}
+function FinderScreen(){
+ const [risk,setRisk]=useState("");
+ const [confidence,setConfidence]=useState("");
+ const [maxPrice,setMaxPrice]=useState("");
+ const query=useFutggTradeFinder({risk:risk||undefined,min_confidence:confidence?Number(confidence)/100:undefined,max_price_age_minutes:3,page_size:40,max_price:maxPrice?Number(maxPrice):undefined});
+ return <ResearchScreen type="finder" query={query} risk={risk} setRisk={setRisk} confidence={confidence} setConfidence={setConfidence} maxPrice={maxPrice} setMaxPrice={setMaxPrice}/>;
+}
+export default function MarketResearch({type="opportunities"}){return type==="finder"?<FinderScreen/>:<OpportunitiesScreen/>;}
