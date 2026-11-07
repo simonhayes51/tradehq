@@ -1,0 +1,118 @@
+/* The Edge light-surface audit — all customer routes.
+   Keep the navigation rail and player-card artwork dark for contrast.
+   Do not affect public marketing, admin, modals, or payment mechanics. */
+
+/* The V3 shell was still forcing a black canvas onto every legacy route. */
+.v2-root.v3-platform{
+ --v2-bg:#f4f4f1;--v2-card:#fff;--v2-elevated:#f8f8f6;
+ --v2-border:#dededb;--v2-text:#161616;--v2-muted:#626262;
+ --v2-dim:#777;--v2-accent:#e45100;--v2-positive:#167647;
+ --bg:#f4f4f1;--panel:#fff;--panel2:#f8f8f6;--line:#dededb;
+ --text:#161616;--muted:#626262;--green:#e45100;
+ background:#f4f4f1;color:#161616;
+}
+.v2-root.v3-platform::before,.v2-root.v3-platform::after{display:none}
+.v3-platform .v2-shell-content{background:#f4f4f1;color:#161616;min-height:100vh}
+.v3-platform .v2-destination{background:#f4f4f1!important;background-image:none!important;color:#161616}
+.v3-platform .v2-page-head h1,.v3-platform .v2-page-head h2{color:#111}
+.v3-platform .v2-page-head>div>span{color:#d34d00}
+.v3-platform .v2-page-head p{color:#626262}
+.v3-platform .v2-page-state{background:#fff;border-color:#d9d9d6;color:#626262}
+.v3-platform .v2-search-box,.v3-platform .v2-search-box input{
+ background:#fff;color:#111;border-color:#d9d9d6
+}
+.v3-platform .v2-player-result,.v3-platform .v2-market-row,
+.v3-platform .v2-watch-card,.v3-platform .v2-modal,
+.v3-platform .upgrade-prompt,.v3-platform .locked-opportunity{
+ background:#fff;color:#111;border-color:#dededb
+}
+.v3-platform .v2-player-result:hover,.v3-platform .v2-market-row:hover{background:#fff3eb;border-color:#ff5a00}
+.v3-platform .v2-primary-link,.v3-platform .v2-icon-action,
+.v3-platform .v2-page-state a,.v3-platform .v2-page-state button{
+ background:#ff5a00;color:#fff;border-color:#ff5a00
+}
+.v3-platform :is(input,select,textarea):not([type="checkbox"]):not([type="radio"]){
+ color-scheme:light
+}
+
+/* Old V3 components still had black cards independent of V2 tokens. */
+.v3-platform .v3-page-banner{background:#fff;color:#111;border-top-color:#ff5a00;border-radius:10px}
+.v3-platform .v3-page-banner p{color:#525252}
+.v3-platform .v3-research-card{background:#fff;color:#111;border-color:#dededb}
+.v3-platform .v3-research-top{background:#fff;color:#c64a00;border-bottom:1px solid #e8e8e5}
+.v3-platform .v3-research-art{background:#f3f3f0}
+.v3-platform .v3-research-economics{border-color:#dededb}
+.v3-platform .v3-research-footer{color:#626262}
+.v3-platform .v3-research-identity p{color:#626262}
+
+/* SBC and Gallery — override the dark hero and remaining dark cards
+   from content-intelligence.css, not only the surrounding canvas. */
+.v3-platform .content-page{background:#f4f4f1;color:#111}
+.v3-platform .content-hero,.v3-platform .content-detail-hero{
+ background:#fff;color:#111;border:1px solid #dededb;border-top:5px solid #ff5a00
+}
+.v3-platform .content-hero p,.v3-platform .content-detail-hero p{color:#626262}
+.v3-platform .content-hero .content-source,.v3-platform .content-detail-hero .content-source{color:#111}
+.v3-platform .content-hero::after,.v3-platform .content-detail-hero::after{opacity:.28}
+.v3-platform .content-panel,.v3-platform .content-stats,
+.v3-platform .challenge-card,.v3-platform .content-set-card{background:#fff;color:#111;border-color:#dededb}
+.v3-platform .content-toolbar :is(input,select),.v3-platform .content-search{background:#fff;color:#111;border-color:#dededb}
+.v3-platform .gallery-row:not(.gallery-head):hover{background:#fff3eb}
+
+/* Track record, launch movers and Discord feed. */
+.v3-platform .rpr-page{color:#111}
+.v3-platform .rpr-window-panel,.v3-platform .rpr-answer,.v3-platform .rpr-proof,
+.v3-platform .rpr-advanced,.v3-platform .rpr-datebar{background:#fff;color:#111;border-color:#dededb}
+.v3-platform .rpr-windows button.active{border-color:#ff5a00;background:#fff1e8}
+.v3-platform .rpr-datebar input[type="date"]{color-scheme:light;background:#fff;color:#111}
+.v3-platform .rpr-controls :is(select,button),.v3-platform .rpr-datebar button{background:#fff;color:#111;border-color:#dededb}
+.v3-platform .discord-feed-v2{color:#111}
+.v3-platform .discord-feed-v2 :is(input,select),.v3-platform .discord-feed-actions button,
+.v3-platform .discord-feed-guild-picker button{background:#fff;color:#111;border-color:#dededb}
+.v3-platform .discord-feed-guild-picker button.active{color:#c64a00;border-color:#ff5a00;background:#fff1e8}
+.v3-platform .discord-feed-save{background:#ff5a00;color:#fff}
+.v3-platform .discord-feed-guide-link{color:#c64a00}
+
+/* Membership: value column no longer a giant black slab. */
+.v3-platform .v3-billing-value{background:#fff;color:#111;border:1px solid #dededb;border-top:5px solid #ff5a00}
+.v3-platform .v3-billing-value li,.v3-platform .v3-billing-value-foot{border-color:#e3e3e0;color:#333}
+.v3-platform .v3-billing-value>p{color:#626262}
+.v3-platform .v3-billing-stamp{background:#ff5a00;color:#fff}
+
+/* Account and remaining V2 card surfaces. */
+.v3-platform .v2-account-hero,.v3-platform .v2-account-panel,
+.v3-platform .v2-account-links>a{background:#fff;color:#111;border-color:#dededb}
+.v3-platform .v2-account-hero h2,.v3-platform .v2-account-links>a>svg{color:#d34d00}
+.v3-platform .v2-account-hero p,.v3-platform .v2-account-links span{color:#626262}
+.v3-platform .v2-account-avatar{background:#fff1e8;color:#d34d00;border-color:#ff5a00}
+.v3-platform .v2-account-danger{background:#fff5f5;color:#831f2a;border-color:#e4b9bf}
+.v3-platform .v2-account-panel dl>div{border-color:#e5e5e2}
+.v3-platform .v2-account-panel dt{color:#626262}
+
+/* Welcome flow is outside the shell; give new users the same theme. */
+.onboarding{background:#f4f4f1;color:#111}
+.onboarding-brand{color:#d34d00}
+.onboarding-brand b{color:#111}
+.onboarding-skip{color:#555;border-color:#d9d9d6}
+.onboarding-skip:hover{color:#111;border-color:#ff5a00}
+.onboarding-lede,.onboarding-hint{color:#626262}
+.onboarding-field legend svg{color:#e45100}
+.onboarding-options button{background:#fff;color:#111;border-color:#d9d9d6}
+.onboarding-options button.selected{background:#fff1e8;color:#a83c00;border-color:#ff5a00}
+.onboarding :is(input,select,textarea){color-scheme:light}
+.onboarding-next{background:#ff5a00;color:#fff}
+.onboarding-pick,.onboarding-picks{border-color:#dededb}
+.onboarding-pick{background:#fff;color:#111}
+
+/* V4 is already mostly light; remove the remaining broad black blocks,
+   while leaving compact artwork placeholders and the navigation dark. */
+.v4-app .v4-opportunity-art{background:#f1f1ee;border:1px solid #e3e3e0}
+.v4-app .v4-opportunity-art>span{color:#d34d00}
+.v4-app .v4-sidebar,.v4-app .v4-mobile-nav,.v4-app .v4-menu-sheet{background:#111;color:#fff}
+.v4-app .v4-home-shortcuts a,.v4-app .v4-home-feed{background:#fff}
+.v4-app .v4-home-shortcuts a:hover{background:#fff3eb;border-color:#ff5a00}
+@media(max-width:720px){
+ .v3-platform .v2-shell-content{padding-left:10px;padding-right:10px}
+ .v3-platform .v2-destination{padding:18px 6px 100px}
+ .v3-platform .v3-page-banner{padding:20px 16px}
+}
