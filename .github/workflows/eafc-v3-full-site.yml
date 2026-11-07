@@ -1,0 +1,25 @@
+name: EAFC V3 full-site verification
+on:
+  pull_request:
+    paths:
+      - "frontend/**"
+      - ".github/workflows/eafc-v3-full-site.yml"
+  push:
+    branches:
+      - feature/eafc-v3-platform-rebuild
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - run: npm run test -- --run
