@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { Activity, ArrowUpRight, Briefcase, TrendingUp, UserCircle, Compass, Crown, House, Menu, Search, SlidersHorizontal, Star, Users, X } from "lucide-react";
-import { useAuth } from "../../context/AuthContext";
-import { useEntitlements } from "../../context/EntitlementsContext";
+import { useAuth } from "../context/AuthContext";
+import { useEntitlements } from "../context/EntitlementsContext";
 import "./platform.css";
 
 const PRIMARY = [
