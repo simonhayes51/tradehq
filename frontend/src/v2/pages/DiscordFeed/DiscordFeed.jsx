@@ -1,3 +1,4 @@
+import PageBanner from "../../../v3/PageBanner";
 // src/v2/pages/DiscordFeed/DiscordFeed.jsx
 //
 // Web management page for the self-service Discord Server Feed, backing
@@ -217,6 +218,7 @@ export default function DiscordFeed() {
 
   return (
     <main className="v2-destination discord-feed-v2">
+      <PageBanner kicker="COMMUNITY / DISCORD FEEDS" title="POWER YOUR SERVER." description="Manage your Discord trading feed, settings and delivery." issue="07 / COMMUNITY"/>
       <PageHead title="Server Feed" />
       <header className="discord-feed-head">
         <h1>Discord Server Feed</h1>
