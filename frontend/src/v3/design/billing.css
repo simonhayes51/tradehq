@@ -1,0 +1,7 @@
+/* EAFC.Live 3.0 billing editorial treatment. Stripe logic unchanged. */
+.v3-root .billing-v2 { max-width:860px; }
+.v3-root .billing-v2-head h1 { font-family:var(--v3-display); text-transform:uppercase; font-size:clamp(38px,5vw,64px); letter-spacing:-.02em; line-height:1; }
+.v3-root .billing-v2-context { background:rgba(255,90,0,.12); border-color:rgba(255,90,0,.4); color:var(--v3-orange); }
+.v3-root .billing-v2-btn { border-radius:5px; }
+.v3-root .billing-v2-btn:focus-visible { outline:3px solid var(--v3-orange); outline-offset:3px; }
+.v3-root .billing-v2-price .amount { font-family:var(--v3-display); font-weight:900; }
