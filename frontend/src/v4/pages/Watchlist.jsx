@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link } from "react-router-dom";
+import Link from "../components/V4Link";
 import { useQueryClient } from "@tanstack/react-query";
 import toast from "react-hot-toast";
 import { Bell, RefreshCw, Trash2, ArrowRight, Star } from "lucide-react";
