@@ -1,0 +1,26 @@
+/* Light login and registration screens. */
+.login-page,.signup-page{background:#f4f4f1;color:#111}
+.login-card{background:#fff;border-color:#dededb;box-shadow:0 12px 35px rgba(0,0,0,.055)}
+.login-brand .brand-mark{background:#ff5a00;color:#fff}
+.login-brand span{color:#111}
+.login-brand span b{color:#d34d00}
+.login-card h1,.signup-card h1{color:#111}
+.login-card .login-lede,.signup-lede{color:#626262}
+.signup-brand{color:#d34d00}
+.signup-brand b{color:#111}
+.signup-includes li{color:#333}
+.signup-includes svg{color:#e45100}
+.signup-cta{background:#ff5a00;color:#fff}
+.signup-reassure,.signup-signin,.signup-compare-note,.signup-legal{color:#626262}
+.signup-signin a{color:#c64a00}
+.signup-compare{border-color:#dededb}
+.signup-compare summary{color:#111}
+.signup-legal a{color:#555}
+.login-page :is(input,select),.signup-page :is(input,select){color-scheme:light}
+.login-page :is(a,button,input):focus-visible,.signup-page :is(a,button,input):focus-visible{outline:3px solid #ff5a00;outline-offset:2px}
+/* Public marketing page: neutral content sections with orange accents. */
+.v3-public .pub-proof,.v3-public .pub-signal-strip{background:#f4f4f1;color:#111;border-color:#dededb}
+.v3-public .v3-magazine-feature-0{background:#fff;color:#111;border-color:#dededb}
+.v3-public .v3-magazine-feature-0 p{color:#626262}
+.v3-public .v3-magazine-image{background:#f4f4f1}
+.v3-public .pub-hero-visual{background:#f4f4f1}
