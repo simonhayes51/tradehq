@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link } from "react-router-dom";
+import Link from "../components/V4Link";
 import { ArrowRight } from "lucide-react";
 import { useFutggOpportunities, useFutggTradeFinder } from "../../v2/hooks/useFutggMarket";
 import { ResearchResults } from "../components/ResearchResults";
@@ -29,7 +29,7 @@ function FinderScreen(){
  const [risk,setRisk]=useState("");
  const [confidence,setConfidence]=useState("");
  const [maxPrice,setMaxPrice]=useState("");
- const query=useFutggTradeFinder({risk:risk||undefined,min_confidence:confidence?Number(confidence)/100:undefined,max_price_age_minutes:3,page_size:40,max_price:maxPrice?Number(maxPrice):undefined});
+ const query=useFutggTradeFinder({risk:risk||undefined,min_confidence:confidence?Number(confidence):undefined,max_price_age:3,page_size:40,budget:maxPrice?Number(maxPrice):undefined});
  return <ResearchScreen type="finder" query={query} risk={risk} setRisk={setRisk} confidence={confidence} setConfidence={setConfidence} maxPrice={maxPrice} setMaxPrice={setMaxPrice}/>;
 }
 export default function MarketResearch({type="opportunities"}){return type==="finder"?<FinderScreen/>:<OpportunitiesScreen/>;}

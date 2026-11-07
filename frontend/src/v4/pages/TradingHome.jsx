@@ -1,4 +1,4 @@
-import { Link } from "react-router-dom";
+import Link from "../components/V4Link";
 import { ArrowRight, BarChart2, Search, Star, Wallet } from "lucide-react";
 import { useFutggOpportunities } from "../../v2/hooks/useFutggMarket";
 import "./home.css";
@@ -10,8 +10,8 @@ function Opportunity({item}){
  const entry=item.recommended_buy_max;
  const profit=item.minimum_profit_at_max_buy??item.expected_profit_after_tax;
  return <article className="v4-opportunity">
-   <div className="v4-opportunity-art">{item.composited_image_url||item.image_url?<img src={item.composited_image_url||item.image_url} alt="" loading="lazy"/>:<span>EAFC</span>}</div>
-   <div className="v4-opportunity-copy"><div className="v4-eyebrow">{item.rating??"—"} OVR · {item.position??"—"}</div><h3>{item.name||"Unknown player"}</h3><div className="v4-opportunity-numbers"><div><span>BUY MAX</span><strong>{isLocked?"LOCKED":fmt(entry)}</strong></div><div><span>MIN PROFIT*</span><strong className="v4-positive">{isLocked?"LOCKED":profit==null?"—":`+${fmt(profit)}`}</strong></div></div><Link className="v4-opportunity-action" to={isLocked?"/billing":`/players/${id}`}>{isLocked?"View Elite":"View analysis"} <ArrowRight size={16}/></Link></div>
+   <div className="v4-opportunity-art">{item.composited_image_url||item.player_image_url||item.image_url?<img src={item.composited_image_url||item.player_image_url||item.image_url} alt="" loading="lazy"/>:<span>EAFC</span>}</div>
+   <div className="v4-opportunity-copy"><div className="v4-eyebrow">{item.rating??"—"} OVR · {item.position??"—"}</div><h3>{item.display_name||item.name||"Unknown player"}</h3><div className="v4-opportunity-numbers"><div><span>BUY MAX</span><strong>{isLocked?"LOCKED":fmt(entry)}</strong></div><div><span>MIN PROFIT*</span><strong className="v4-positive">{isLocked?"LOCKED":profit==null?"—":`+${fmt(profit)}`}</strong></div></div><Link className="v4-opportunity-action" to={isLocked?"/billing":`/players/${id}`}>{isLocked?"View Elite":"View analysis"} <ArrowRight size={16}/></Link></div>
  </article>;
 }
 export default function TradingHome(){
