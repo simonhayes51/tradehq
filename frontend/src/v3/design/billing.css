@@ -5,3 +5,23 @@
 .v3-root .billing-v2-btn { border-radius:5px; }
 .v3-root .billing-v2-btn:focus-visible { outline:3px solid var(--v3-orange); outline-offset:3px; }
 .v3-root .billing-v2-price .amount { font-family:var(--v3-display); font-weight:900; }
+
+/* Actual V3 membership masthead and price layout */
+.v3-root .billing-v2{max-width:1050px;padding-top:28px}
+.v3-root .v3-billing-editorial{display:grid;grid-template-columns:minmax(0,1fr) 205px;gap:18px;align-items:stretch;background:#f5f4f0;color:#0b0b0b;border-top:8px solid #ff5a00;overflow:hidden}
+.v3-root .v3-billing-copy{padding:clamp(24px,4vw,52px)}
+.v3-root .v3-billing-kicker{display:block;font-size:11px;letter-spacing:.14em;font-weight:900;color:#c34700}
+.v3-root .v3-billing-editorial h1{font:italic 900 clamp(54px,7vw,98px)/.86 var(--v3-display,'Barlow Condensed',Impact,sans-serif);letter-spacing:-.02em;text-transform:uppercase;margin:23px 0}
+.v3-root .v3-billing-editorial h1 em{font-style:inherit;color:#ff5a00}
+.v3-root .v3-billing-editorial p{font-size:15px;line-height:1.6;color:#444;max-width:53ch}
+.v3-root .v3-billing-tags{display:flex;flex-wrap:wrap;gap:8px;margin-top:23px}
+.v3-root .v3-billing-tags span{border:1px solid #bcbcbc;padding:8px;font-size:10px;font-weight:850;letter-spacing:.04em}
+.v3-root .v3-billing-stamp{background:#0b0b0b;color:#ff5a00;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;border-left:6px solid #ff5a00}
+.v3-root .v3-billing-stamp strong{font:italic 900 60px/1 var(--v3-display,Impact,sans-serif)}
+.v3-root .v3-billing-stamp span{font-size:10px;font-weight:850;letter-spacing:.18em}
+.v3-root .billing-v2-toggle{border-radius:0;align-self:center}
+.v3-root .billing-v2-price-card{border:2px solid #ff5a00;border-radius:3px}
+.v3-root .billing-v2-price .amount{font-size:clamp(44px,6vw,76px);letter-spacing:-.025em}
+.v3-root .billing-v2-btn.primary{background:#ff5a00;border-color:#ff5a00;color:#fff;text-transform:uppercase;font-weight:850;letter-spacing:.04em}
+.v3-root .billing-v2-feature-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+@media(max-width:700px){.v3-root .v3-billing-editorial{grid-template-columns:1fr}.v3-root .v3-billing-stamp{display:none}.v3-root .v3-billing-editorial h1{font-size:clamp(52px,13vw,82px)}.v3-root .billing-v2-feature-grid{grid-template-columns:1fr}}
