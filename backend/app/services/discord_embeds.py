@@ -12,7 +12,7 @@ from decimal import Decimal
 from typing import Any, Optional
 
 BRAND_NAME = "EAFC.Live"
-BRAND_COLOR = 0x22C55E
+BRAND_COLOR = 0xFF5A00  # EAFC.Live 3.0 electric orange; semantic status colours stay separate
 BRAND_COLOR_WARN = 0xEAB308
 BRAND_COLOR_DANGER = 0xEF4444
 BRAND_COLOR_NEUTRAL = 0x64748B

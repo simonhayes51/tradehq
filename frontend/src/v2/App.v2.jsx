@@ -1,6 +1,9 @@
 import { Navigate, Routes, Route, Link } from "react-router-dom";
 import "./styles/tokens.css";
 import "./styles/mobile-polish.css";
+import "../v3/design/tokens.css";
+import "../v3/design/billing.css";
+import "../v3/design/member.css";
 import Nav from "./components/Nav";
 import LimitReachedPrompt from "./components/LimitReachedPrompt";
 import HomeDashboard from "./pages/HomeDashboard/HomeDashboard";
@@ -116,7 +119,7 @@ function NotFound() {
 
 function ShellLayout({ children }) {
   return (
-    <div className="v2-root">
+    <div className="v2-root v3-root">
       <Nav />
       <div className="v2-shell-content">{children}</div>
       <LimitReachedPrompt />

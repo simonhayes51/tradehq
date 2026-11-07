@@ -25,6 +25,8 @@ import { DiscordCommandsGuide, DiscordServerFeedGuide, GettingStartedGuide, Guid
 import api from "./axios";
 import "./v2/styles/tokens.css";
 import "./styles/public-site.css";
+import "./v3/design/tokens.css";
+import "./v3/design/public.css";
 
 const APP_SIGNUP = `${APP_ORIGIN}/#/signup`;
 const APP_LOGIN = `${APP_ORIGIN}/#/login`;
@@ -527,7 +529,7 @@ export default function PublicSite() {
 
   return (
     <HashRouter>
-      <div className="pub-root">
+      <div className="pub-root v3-public">
         <PublicNav />
         <Routes>
           <Route index element={<PublicHome />} />
