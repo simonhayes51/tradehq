@@ -1,5 +1,5 @@
 import { Link, useLocation } from "react-router-dom";
-const AVAILABLE=["/","/opportunities","/trade-finder","/players","/watchlist"];
+const AVAILABLE=["/","/opportunities","/trade-finder","/players","/watchlist","/account"];
 export default function V4Link({to,...props}){
  const {pathname}=useLocation();
  const inPreview=pathname.startsWith("/preview-v4");
