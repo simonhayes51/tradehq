@@ -10,12 +10,12 @@ import "./watchlist.css";
 const fmt=n=>n==null?"—":Number(n).toLocaleString("en-GB",{maximumFractionDigits:0});
 export default function Watchlist(){
  const qc=useQueryClient(),query=useWatchlist();
- const items=Array.isArray(query.data)?query.data:query.data?.items||[];
+ const items=Array.isArray(query.data)?query.data:Array.isArray(query.data?.items)?query.data.items:[];
  const alertsQuery=useQuery({queryKey:["v2","watchlist","alerts"],queryFn:async()=>{const data=await getAlerts({__skipAuthRedirect:true,__noRetry:true,timeout:8000});return Array.isArray(data?.items)?data.items:[]},retry:false,staleTime:30000});
  const alerts=alertsQuery.data||[];
  const [target,setTarget]=useState(null),[confirm,setConfirm]=useState(null),[busy,setBusy]=useState(null),[rulesOpen,setRulesOpen]=useState(false);
  const [form,setForm]=useState({rise_pct:10,fall_pct:10,metric:"price",cooloff_minutes:30});
- const refresh=()=>qc.invalidateQueries({queryKey:["v2","watchlist"]});
+ const refresh=()=>qc.invalidateQueries({queryKey:["v2","watchlist","list"]});
  const refreshRules=()=>qc.invalidateQueries({queryKey:["v2","watchlist","alerts"]});
  async function act(id,fn,success){setBusy(id);try{await fn();refresh();if(success)toast.success(success)}catch{toast.error("That action failed. Please try again.")}finally{setBusy(null);setConfirm(null)}}
  async function saveAlert(e){e.preventDefault();setBusy("alert");try{await createAlert({card_id:Number(target.card_id),platform:String(target.platform||"ps").toLowerCase(),metric:form.metric,rise_pct:Number(form.rise_pct),fall_pct:Number(form.fall_pct),cooloff_minutes:Number(form.cooloff_minutes)});refreshRules();setTarget(null);toast.success("Alert saved")}catch{toast.error("Could not save alert")}finally{setBusy(null)}}
