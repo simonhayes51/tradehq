@@ -506,6 +506,9 @@ export default function Billing() {
             {success ? <div className="billing-v2-msg ok">{success}</div> : null}
             {error ? <div className="billing-v2-msg err"><AlertTriangle size={15} /> {error}</div> : null}
 
+            <section className="v3-billing-offer-grid" aria-label="Choose your Elite plan">
+              <div className="v3-billing-checkout">
+                <div className="v3-billing-offer-label">01 / CHOOSE YOUR MEMBERSHIP</div>
             <div className="billing-v2-toggle" role="tablist" aria-label="Billing cycle">
               <button role="tab" aria-selected={billingCycle === "monthly"} className={billingCycle === "monthly" ? "active" : ""} onClick={() => setBillingCycle("monthly")}>Monthly</button>
               <button role="tab" aria-selected={billingCycle === "yearly"} className={billingCycle === "yearly" ? "active" : ""} onClick={() => setBillingCycle("yearly")}>
@@ -538,6 +541,17 @@ export default function Billing() {
               </button>
               <div className="billing-v2-secure"><Shield size={13} /> Secure payment via Stripe · Cancel any time</div>
             </SectionCard>
+
+
+              </div>
+              <aside className="v3-billing-value">
+                <div className="v3-billing-offer-label">02 / WHAT YOU UNLOCK</div>
+                <h2>ALL THE DATA.<br/>NONE OF THE GUESSWORK.</h2>
+                <ul>{ELITE_FEATURES.slice(0,5).map(feature=><li key={feature.title}><Check size={17}/><span>{feature.title}</span></li>)}</ul>
+                <p>Free accounts remain available. Upgrade when you want the full set of tools and opportunities.</p>
+                <div className="v3-billing-value-foot"><Shield size={16}/> Secure checkout through Stripe</div>
+              </aside>
+            </section>
 
             <SectionCard title="What's included">
               <div className="billing-v2-feature-grid">
