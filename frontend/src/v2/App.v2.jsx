@@ -7,6 +7,7 @@ import "../v3/design/member.css";
 import "../v3/design/trading-desk.css";
 import PlatformNav from "../v3/PlatformNav";
 import LimitReachedPrompt from "./components/LimitReachedPrompt";
+import V4Preview from "../v4/Preview";
 import HomeDashboard from "./pages/HomeDashboard/HomeDashboard";
 import PlayerPage from "./pages/PlayerPage/PlayerPage";
 import AdminSbcImports from "./pages/AdminSbcImports/AdminSbcImports";
@@ -36,6 +37,7 @@ import "./styles/mobile-menu-final.css";
 export default function V2App() {
   return (
     <Routes>
+      <Route path="preview-v4/*" element={<V4Preview />} />
       <Route index element={<ShellLayout><HomeDashboard /></ShellLayout>} />
       {/* FUT.GG migration: was a redirect to /trade-finder (no
           dedicated opportunities page existed); now a real page wired to

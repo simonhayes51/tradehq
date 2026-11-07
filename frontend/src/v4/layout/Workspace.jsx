@@ -1,0 +1,49 @@
+import { useState } from "react";
+import { Link, useLocation } from "react-router-dom";
+import { BarChart2, Home, Menu, Search, Sliders, Star, X, Zap } from "lucide-react";
+import "../design/foundation.css";
+import "./workspace.css";
+
+const MAIN = [
+ {path:"/",label:"Home",icon:Home},
+ {path:"/opportunities",label:"Trades",icon:BarChart2},
+ {path:"/trade-finder",label:"Finder",icon:Sliders},
+ {path:"/watchlist",label:"Watchlist",icon:Star},
+];
+const EXTRA = [
+ {path:"/players",label:"Player research"},
+ {path:"/portfolio",label:"Portfolio"},
+ {path:"/track-record",label:"Track record"},
+ {path:"/billing",label:"Membership"},
+ {path:"/account",label:"Account"},
+ {path:"/discord-feed",label:"Discord feeds"},
+ {path:"/sbc",label:"SBC market"},
+ {path:"/gallery",label:"Gallery"},
+ {path:"/chat",label:"AI assistant"},
+];
+function isCurrent(path,target){return target==="/"?path==="/":path===target||path.startsWith(target+"/");}
+function Brand(){return <Link to="/" className="v4-brand" aria-label="EAFC.Live home"><span className="v4-brand-mark">/</span><span>EAFC<span>.LIVE</span><small>TRADING INTELLIGENCE</small></span></Link>;}
+function NavLink({item,path,onClick}){
+ const Icon=item.icon;
+ return <Link to={item.path} onClick={onClick} className={"v4-nav-link"+(isCurrent(path,item.path)?" v4-nav-link--current":"")} aria-current={isCurrent(path,item.path)?"page":undefined}>{Icon?<Icon size={18} aria-hidden="true"/>:null}<span>{item.label}</span></Link>;
+}
+export default function Workspace({children}){
+ const {pathname}=useLocation();
+ const [menuOpen,setMenuOpen]=useState(false);
+ return <div className="v4-app v4-workspace">
+   <aside className="v4-sidebar" aria-label="Desktop navigation">
+     <Brand/>
+     <div className="v4-sidebar-caption">MARKET WORKSPACE</div>
+     <nav aria-label="Primary">{MAIN.map(item=><NavLink key={item.path} item={item} path={pathname}/>)}</nav>
+     <div className="v4-sidebar-caption">TOOLS & ACCOUNT</div>
+     <nav aria-label="Tools">{EXTRA.map(item=><NavLink key={item.path} item={item} path={pathname}/>)}</nav>
+     <Link className="v4-sidebar-elite" to="/billing"><Zap size={18}/> EXPLORE ELITE</Link>
+   </aside>
+   <div className="v4-workspace-main">
+     <header className="v4-topbar"><div className="v4-mobile-brand"><Brand/></div><Link to="/players" className="v4-search-link"><Search size={17}/><span>Search players and prices</span><span className="v4-search-shortcut">/</span></Link><Link to="/account" className="v4-topbar-account">ACCOUNT</Link></header>
+     <main id="v4-main" className="v4-content">{children}</main>
+   </div>
+   <nav className="v4-mobile-nav" aria-label="Mobile primary navigation">{MAIN.map(item=><NavLink key={item.path} item={item} path={pathname}/>)}<button type="button" onClick={()=>setMenuOpen(true)} aria-label="More navigation"><Menu size={21}/><span>More</span></button></nav>
+   {menuOpen?<div className="v4-menu-layer"><button className="v4-menu-backdrop" type="button" aria-label="Close menu" onClick={()=>setMenuOpen(false)}/><div className="v4-menu-sheet" role="dialog" aria-modal="true" aria-label="More navigation"><div className="v4-menu-title">MORE <button type="button" onClick={()=>setMenuOpen(false)} aria-label="Close menu"><X size={21}/></button></div><nav>{EXTRA.map(item=><NavLink key={item.path} item={item} path={pathname} onClick={()=>setMenuOpen(false)}/>)}</nav></div></div>:null}
+ </div>;
+}
