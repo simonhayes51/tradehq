@@ -54,7 +54,7 @@ function scrollToId(id) {
 function Brand() {
   return (
     <Link to="/" className="pub-brand" aria-label="EAFC.Live home">
-      <img src="/icons/icon-192x192.png" alt="" width="38" height="38" />
+      <span className="v3-brand-mark" aria-hidden="true">/</span>
       <span>EAFC.<b>Live</b></span>
     </Link>
   );
@@ -126,42 +126,30 @@ function ProductImage({ src, alt, className = "" }) {
 
 function Hero() {
   return (
-    <section className="pub-hero">
-      <div className="pub-glow pub-glow-one" />
-      <div className="pub-container pub-hero-inner">
-        <div className="pub-hero-copy">
-          <div className="pub-eyebrow"><span /> LIVE EA FC MARKET INTELLIGENCE</div>
-          <h1>Know what to buy.<br /><em>Know when to sell.</em></h1>
-          <p>
-            EAFC.Live uses live prices and completed sales to find potential trades.
-            See what to pay, what you could make after tax and how risky it looks before spending your coins.
-          </p>
-          <div className="pub-hero-actions">
-            <a href={APP_SIGNUP} className="pub-button">Create free account <ArrowRight size={17} /></a>
-            <button type="button" className="pub-button pub-button-ghost" onClick={() => scrollToId("product")}>
-              See how it works
-            </button>
+    <section className="pub-hero v3-home-hero">
+      <div className="pub-container v3-hero-grid">
+        <div className="v3-hero-main">
+          <div className="v3-hero-eyebrow"><span>THE TRADING DESK</span><span>EA SPORTS FC MARKET INTELLIGENCE</span></div>
+          <h1>READ THE MARKET.<br/><em>OWN YOUR NEXT MOVE.</em></h1>
+          <p>Live EA FC prices. Real trading opportunities. Buy targets, expected returns after tax and risk checks — all in one place.</p>
+          <div className="v3-hero-actions">
+            <a href={APP_SIGNUP} className="v3-hero-cta">Start trading free <ArrowRight size={20}/></a>
+            <button type="button" onClick={()=>scrollToId("product")} className="v3-hero-secondary">Explore the platform <ArrowRight size={18}/></button>
           </div>
-          <div className="pub-hero-note">
-            <Check size={15} /> Free forever
-            <span />
-            <Check size={15} /> No card required
-          </div>
+          <div className="v3-hero-legal"><Check size={15}/> Free account available <span/> <Check size={15}/> No card required to start</div>
         </div>
-        <div className="pub-hero-visual">
-          <div className="pub-hero-product-label">
-            <img src="/icons/icon-192x192.png" alt="" />
-            <div><strong>EAFC.<b>Live</b></strong><span>LIVE MARKET INTELLIGENCE</span></div>
-            <em><i /> SCANNING</em>
+        <div className="v3-hero-showcase">
+          <div className="v3-showcase-top"><span>EAFC.LIVE / TRADING TERMINAL</span><span className="v3-showcase-live">● MARKET SCAN</span></div>
+          <div className="v3-showcase-frame">
+            <img src="/marketing/eafc-dashboard.svg" alt="EAFC.Live product preview showing a trading opportunity and market information"/>
           </div>
-          <img src="/marketing/eafc-dashboard.svg" alt="EAFC.Live showing a live trade with buy price, expected profit and confidence" />
+          <div className="v3-showcase-bottom"><span>01 / LIVE OPPORTUNITIES</span><span>PRICES · EVIDENCE · DECISIONS</span></div>
         </div>
       </div>
-      <div className="pub-container pub-signal-strip" aria-label="Product highlights">
-        <div><strong>15k+</strong><span>cards priced</span></div>
-        <div><strong>Live</strong><span>market updates</span></div>
-        <div><strong>After tax</strong><span>profit calculations</span></div>
-        <div><strong>Console + PC</strong><span>market support</span></div>
+      <div className="v3-hero-ticker" aria-label="Platform features">
+        <div className="pub-container v3-ticker-inner">
+          <span>LIVE MARKET DATA</span><b>✳</b><span>BUY / SELL TARGETS</span><b>✳</b><span>AFTER-TAX RETURNS</span><b>✳</b><span>WATCHLIST ALERTS</span>
+        </div>
       </div>
     </section>
   );
