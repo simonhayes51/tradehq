@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
+import Link from "../components/V4Link";
 import { ArrowLeft, Bell, Check, RefreshCw, Shield, Star } from "lucide-react";
 import { useFutggPlayer, useFutggPlayerPrices, useFutggPlayerSales } from "../../v2/hooks/useFutggMarket";
 import { addWatch } from "../../api/watchlist";
