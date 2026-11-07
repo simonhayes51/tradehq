@@ -1,5 +1,6 @@
 import "../v3/design/tokens.css";
 import "../v3/design/billing.css";
+import "../v3/design/member.css";
 import { Navigate, Routes, Route, Link } from "react-router-dom";
 import "./styles/tokens.css";
 import "./styles/mobile-polish.css";
