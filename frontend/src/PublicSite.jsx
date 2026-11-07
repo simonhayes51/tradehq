@@ -1,3 +1,5 @@
+import "./v3/design/tokens.css";
+import "./v3/design/public.css";
 import { useEffect, useState } from "react";
 import { HashRouter, Link, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import {
@@ -527,7 +529,7 @@ export default function PublicSite() {
 
   return (
     <HashRouter>
-      <div className="pub-root">
+      <div className="pub-root v3-public">
         <PublicNav />
         <Routes>
           <Route index element={<PublicHome />} />
