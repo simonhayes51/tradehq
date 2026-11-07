@@ -784,12 +784,96 @@ _score_and_filter_lock = asyncio.Lock()
 def _cached_evaluate_card(row, *, sales, bin_observations):
     card_id = int(row["source_card_id"])
     now = time.monotonic()
-    cached = _evaluate_card_cache.get(card_id)
+    cached = _evaluate_card_cache.get((card_id, row.get("platform", "ps5")))
     if cached is not None and (now - cached[0]) < _EVALUATE_CARD_CACHE_SECONDS:
         return cached[1]
     ci = evaluate_card(row, sales=sales, bin_observations=bin_observations)
-    _evaluate_card_cache[card_id] = (now, ci)
+    _evaluate_card_cache[(card_id, row.get("platform", "ps5"))] = (now, ci)
     return ci
+
+
+async def _pc_market_rows(provider, rows):
+    """Replace console snapshot figures with PC-only observed prices and sales."""
+    if not rows:
+        return []
+    ids = [int(r["source_card_id"]) for r in rows]
+    from app.services.game_cycle import active_game_year
+    async with provider._pool.acquire() as conn:
+        records = await conn.fetch("""
+            WITH latest AS (
+              SELECT DISTINCT ON (source_card_id) source_card_id,
+                     lowest_bin, captured_at, source_age_text
+              FROM futgg_bin_history
+              WHERE game_year=$2 AND platform='pc' AND source_card_id=ANY($1::bigint[])
+              ORDER BY source_card_id, captured_at DESC
+            ), recent AS (
+              SELECT source_card_id, sold_price, approximate_sold_at
+              FROM futgg_sales_history
+              WHERE game_year=$2 AND platform='pc'
+                AND source_card_id=ANY($1::bigint[])
+                AND approximate_sold_at >= now()-interval '7 days'
+            ), stats AS (
+              SELECT source_card_id, count(*) AS sales_count,
+                percentile_cont(0.5) WITHIN GROUP (ORDER BY sold_price) AS sales_median,
+                percentile_cont(0.1) WITHIN GROUP (ORDER BY sold_price) AS sales_p10,
+                percentile_cont(0.9) WITHIN GROUP (ORDER BY sold_price) AS sales_p90,
+                min(sold_price) AS sales_low, max(sold_price) AS sales_high,
+                stddev_pop(sold_price) AS sales_stddev,
+                min(approximate_sold_at) AS sales_window_earliest_at,
+                max(approximate_sold_at) AS sales_window_latest_at
+              FROM recent GROUP BY source_card_id
+            )
+            SELECT l.*, s.sales_count,s.sales_median,s.sales_p10,s.sales_p90,
+                   s.sales_low,s.sales_high,s.sales_stddev,
+                   s.sales_window_earliest_at,s.sales_window_latest_at
+            FROM latest l LEFT JOIN stats s USING(source_card_id)
+        """, ids, active_game_year())
+    by_id={int(r["source_card_id"]):dict(r) for r in records}
+    result=[]
+    for original in rows:
+        pc=by_id.get(int(original["source_card_id"]))
+        if not pc or not pc["lowest_bin"] or not pc["sales_count"]:
+            continue
+        row=dict(original)
+        row.update(current_bin=pc["lowest_bin"],bin_captured_at=pc["captured_at"],
+                   price_updated_at=pc["captured_at"],bin_checked_at=pc["captured_at"],
+                   bin_source_age_text=pc["source_age_text"],
+                   sales_count=pc["sales_count"],sales_median=pc["sales_median"],
+                   sales_trimmed_mean=pc["sales_median"],sales_p10=pc["sales_p10"],
+                   sales_p90=pc["sales_p90"],sales_low=pc["sales_low"],
+                   sales_high=pc["sales_high"],sales_stddev=pc["sales_stddev"],
+                   sales_window_earliest_at=pc["sales_window_earliest_at"],
+                   sales_window_latest_at=pc["sales_window_latest_at"],
+                   latest_sale_at=pc["sales_window_latest_at"],
+                   sales_window_span_minutes=(pc["sales_window_latest_at"]-pc["sales_window_earliest_at"]).total_seconds()/60 if pc["sales_window_earliest_at"] else None,
+                   sales_dispersion_ratio=(float(pc["sales_stddev"])/float(pc["sales_median"])) if pc["sales_stddev"] and pc["sales_median"] else None,
+                   sales_interdecile_ratio=(float(pc["sales_p90"])-float(pc["sales_p10"]))/float(pc["sales_median"]) if pc["sales_median"] else None,
+                   platform="pc")
+        result.append(row)
+    return result
+
+
+async def _pc_sales_for_rows(provider, rows):
+    ids=[int(r["source_card_id"]) for r in rows]
+    if not ids:
+        return {}
+    from app.services.game_cycle import active_game_year
+    async with provider._pool.acquire() as conn:
+        records=await conn.fetch("""
+            SELECT s.source_card_id,s.sold_price,s.approximate_sold_at
+            FROM unnest($1::bigint[]) ids(card_id)
+            CROSS JOIN LATERAL (
+              SELECT source_card_id,sold_price,approximate_sold_at
+              FROM futgg_sales_history
+              WHERE source_card_id=ids.card_id AND game_year=$2 AND platform='pc'
+                AND approximate_sold_at>=now()-interval '7 days'
+              ORDER BY approximate_sold_at DESC LIMIT 50
+            ) s
+        """,ids,active_game_year())
+    out={}
+    for record in records:
+        out.setdefault(int(record["source_card_id"]),[]).append(dict(record))
+    return out
 
 
 async def _score_and_filter(
@@ -1117,6 +1201,7 @@ async def list_opportunities(
     min_liquidity: Optional[float] = Query(None, ge=0, le=1),
     page: int = Query(1, ge=1),
     page_size: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
+    platform: str = Query("console", pattern="^(console|pc)$"),
     provider: FutggMarketDataProvider = ProviderDep,
     viewer: Viewer = Depends(get_viewer),
 ) -> Dict[str, Any]:
@@ -1129,6 +1214,9 @@ async def list_opportunities(
         max_price, min_price, max_price_age_minutes,
     )
     rows = _apply_filters_in_python(await _segmented_candidates(provider), filters)
+    if platform == "pc":
+        rows = await _pc_market_rows(provider, rows)
+        rows = _apply_filters_in_python(rows, filters)
     scored = await _score_and_filter(
         rows, risk=risk, min_expected_profit=min_profit, min_roi=min_roi,
         min_confidence=min_confidence,
@@ -1136,13 +1224,13 @@ async def list_opportunities(
         signals={"buy", "strong_buy"},
         require_confirmed_sales=True,
         max_evidence_age_minutes=MAX_OPPORTUNITY_EVIDENCE_AGE_MINUTES,
-        sales_by_card=await _sales_for_rows(provider, rows),
-        bin_by_card=await _bin_observations_for_rows(provider, rows),
+        sales_by_card=await (_pc_sales_for_rows(provider, rows) if platform == "pc" else _sales_for_rows(provider, rows)),
+        bin_by_card={} if platform == "pc" else await _bin_observations_for_rows(provider, rows),
     )
     scored.sort(key=_opportunity_sort_key)  # see _opportunity_sort_key
     total = len(scored)
     window = scored[(page - 1) * page_size: page * page_size]
-    items = [_item_with_intelligence(row, ci) for row, ci in window]
+    items = [dict(_item_with_intelligence(row, ci), platform=platform) for row, ci in window]
 
     # The gate. Elite gets `items` as-is; everyone else gets the same list
     # re-serialised through the preview allow-list, with the current
@@ -1318,6 +1406,7 @@ async def trade_finder(
     meaningful_profit: bool = Query(False, description="Apply a profit floor relative to price, not just an ROI%, so a trivial coin move on a cheap card can't rank as a headline opportunity"),
     page: int = Query(1, ge=1),
     page_size: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
+    platform: str = Query("console", pattern="^(console|pc)$"),
     provider: FutggMarketDataProvider = ProviderDep,
     # Elite only, enforced here rather than by hiding the nav item.
     # Trade Finder is the power-search over the WHOLE eligible universe -
@@ -1343,6 +1432,9 @@ async def trade_finder(
     # universe, not a filtered view of the same narrow shortlist
     # Opportunities and Home draw from.
     rows = _apply_filters_in_python(await _segmented_candidates(provider), filters)
+    if platform == "pc":
+        rows = await _pc_market_rows(provider, rows)
+        rows = _apply_filters_in_python(rows, filters)
 
     risk_order = {"low": 0, "medium": 1, "high": 2, "avoid": 3}
     max_risk_rank = risk_order.get(risk_tolerance, 2) if risk_tolerance else None
@@ -1359,8 +1451,8 @@ async def trade_finder(
         rows, min_expected_profit=min_profit, min_roi=min_roi,
         min_confidence=min_confidence, min_liquidity=min_liquidity,
         signals={"buy", "strong_buy"} if require_executable else {"buy", "strong_buy", "watch"},
-        sales_by_card=await _sales_for_rows(provider, rows),
-        bin_by_card=await _bin_observations_for_rows(provider, rows),
+        sales_by_card=await (_pc_sales_for_rows(provider, rows) if platform == "pc" else _sales_for_rows(provider, rows)),
+        bin_by_card={} if platform == "pc" else await _bin_observations_for_rows(provider, rows),
     )
     if max_risk_rank is not None:
         scored = [(row, ci) for row, ci in scored if risk_order.get(ci.risk_level, 3) <= max_risk_rank]
@@ -1393,7 +1485,7 @@ async def trade_finder(
 
     total = len(scored)
     window = scored[(page - 1) * page_size: page * page_size]
-    items = [_item_with_intelligence(row, ci) for row, ci in window]
+    items = [dict(_item_with_intelligence(row, ci), platform=platform) for row, ci in window]
     return {"items": items, "page": page, "page_size": page_size, "total": total, "sort_by": sort_by}
 
 
