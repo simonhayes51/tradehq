@@ -1,0 +1,10 @@
+/* EAFC.Live 3.0 — sports editorial brand tokens. Scoped: no global V2 regressions. */
+@import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800;900&family=Inter:wght@400;500;600;700;800&display=swap');
+:root { --v3-orange:#ff5a00; --v3-orange-hover:#e64e00; --v3-ink:#0b0b0b; --v3-paper:#fff; --v3-concrete:#ededed; --v3-slate:#171717; --v3-border:#d8d8d8; --v3-positive:#31ce7a; --v3-negative:#ff6060; --v3-display:'Barlow Condensed','Arial Narrow',Impact,sans-serif; --v3-body:'Inter',system-ui,sans-serif; }
+.v3-root { --v2-bg:#0b0b0b; --v2-card:#171717; --v2-elevated:#222; --v2-border:#333; --v2-text:#fff; --v2-muted:#b8b8b8; --v2-dim:#898989; --v2-accent:#ff5a00; --v2-positive:#31ce7a; --v2-negative:#ff6060; --v2-warning:#f5bd46; --v2-radius:7px; --v2-font:var(--v3-body); --v2-font-display:var(--v3-display); --green:var(--v3-orange); background:var(--v3-ink); color:var(--v3-paper); }
+.v3-root :is(h1,h2,h3,.v2-page-title) { text-wrap:balance; }
+.v3-root :is(button,a,input,select,textarea):focus-visible { outline:3px solid var(--v3-orange); outline-offset:3px; }
+.v3-root :is(.v2-card,.v2-section-card) { border-color:#343434; }
+.v3-root .fut-brand b { color:var(--v3-orange); }
+.v3-root ::selection { background:var(--v3-orange); color:white; }
+@media (prefers-reduced-motion:reduce) { .v3-root *, .v3-public * { animation-duration:.01ms!important; transition-duration:.01ms!important; scroll-behavior:auto!important; } }
