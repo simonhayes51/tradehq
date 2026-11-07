@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link } from "react-router-dom";
+import Link from "../components/V4Link";
 import { ArrowRight } from "lucide-react";
 import { useFutggOpportunities, useFutggTradeFinder } from "../../v2/hooks/useFutggMarket";
 import { ResearchResults } from "../components/ResearchResults";
