@@ -137,7 +137,7 @@ FRONTEND_URL = os.getenv("FRONTEND_URL", "https://app.eafc.live").rstrip("/")
 # Trial length, in days. A pricing decision, so it belongs in
 # configuration and not in a request body - see create_checkout_session().
 # 0 disables the trial entirely.
-STRIPE_TRIAL_DAYS = int(os.getenv("STRIPE_TRIAL_DAYS", "7"))
+STRIPE_TRIAL_DAYS = int(os.getenv("STRIPE_TRIAL_DAYS", "0"))
 PORT = int(os.getenv("PORT", 8000))
 
 ENV = os.getenv("ENV", "production").lower()
