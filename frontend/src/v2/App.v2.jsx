@@ -16,6 +16,7 @@ import V4PlayerDetail from "../v4/pages/PlayerDetail";
 import V4Watchlist from "../v4/pages/Watchlist";
 import V4Portfolio from "../v4/pages/Portfolio";
 import V4Account from "../v4/pages/Account";
+import V4Insights from "../v4/pages/MarketInsights";
 import HomeDashboard from "./pages/HomeDashboard/HomeDashboard";
 import PlayerPage from "./pages/PlayerPage/PlayerPage";
 import AdminSbcImports from "./pages/AdminSbcImports/AdminSbcImports";
@@ -50,6 +51,7 @@ export default function V2App() {
       {/* FUT.GG migration: was a redirect to /trade-finder (no
           dedicated opportunities page existed); now a real page wired to
           GET /api/v2/opportunities. */}
+      <Route path="insights" element={<V4Workspace><V4Insights /></V4Workspace>} />
       <Route path="opportunities" element={<V4Workspace><V4Research type="opportunities" /></V4Workspace>} />
       {/* Investments is retired from the product surface.
           The Investment Engine calculates in SHADOW MODE in every

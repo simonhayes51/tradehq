@@ -22,6 +22,7 @@ export default function TradingHome(){
  return <div className="v4-home">
   <div className="v4-home-heading"><div><div className="v4-eyebrow">EAFC.LIVE / TRADING DESK</div><h1>YOUR MARKET.<br/><em>YOUR MOVE.</em></h1><p>Live opportunities, clear entry targets and the tools to act on them.</p></div><Link to="/opportunities" className="v4-button v4-button--primary">See all trades <ArrowRight size={16}/></Link></div>
   <div className="v4-home-shortcuts">
+   <Link to="/insights"><Star size={18}/><span>New: Easy Insights</span><ArrowRight size={16}/></Link>
    <Link to="/opportunities"><BarChart2 size={18}/><span>Opportunities</span><ArrowRight size={16}/></Link>
    <Link to="/trade-finder"><Search size={18}/><span>Trade Finder</span><ArrowRight size={16}/></Link>
    <Link to="/watchlist"><Star size={18}/><span>Watchlist</span><ArrowRight size={16}/></Link>

@@ -11,6 +11,7 @@ const MAIN = [
  {path:"/watchlist",label:"Watchlist",icon:Star},
 ];
 const EXTRA = [
+ {path:"/insights",label:"New: Easy Insights"},
  {path:"/players",label:"Player research"},
  {path:"/portfolio",label:"Portfolio"},
  {path:"/track-record",label:"Track record"},
@@ -25,7 +26,7 @@ function isCurrent(path,target){return target==="/"?path==="/":path===target||pa
 function Brand({prefix=""}){return <Link to={prefix||"/"} className="v4-brand" aria-label="EAFC.Live home"><span className="v4-brand-mark">/</span><span>EAFC<span>.LIVE</span><small>TRADING INTELLIGENCE</small></span></Link>;}
 function NavLink({item,path,onClick,prefix=""}){
  const Icon=item.icon;
- return <Link to={prefix && ["/","/opportunities","/trade-finder","/watchlist","/players","/portfolio","/account"].includes(item.path)?prefix+item.path:item.path} onClick={onClick} className={"v4-nav-link"+(isCurrent(path,item.path)?" v4-nav-link--current":"")} aria-current={isCurrent(path,item.path)?"page":undefined}>{Icon?<Icon size={18} aria-hidden="true"/>:null}<span>{item.label}</span></Link>;
+ return <Link to={prefix && ["/","/opportunities","/trade-finder","/watchlist","/players","/portfolio","/account","/insights"].includes(item.path)?prefix+item.path:item.path} onClick={onClick} className={"v4-nav-link"+(isCurrent(path,item.path)?" v4-nav-link--current":"")} aria-current={isCurrent(path,item.path)?"page":undefined}>{Icon?<Icon size={18} aria-hidden="true"/>:null}<span>{item.label}</span></Link>;
 }
 export default function Workspace({children}){
  const {pathname}=useLocation();
