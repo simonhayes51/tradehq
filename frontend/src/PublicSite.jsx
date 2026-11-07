@@ -1,5 +1,3 @@
-import "./v3/design/tokens.css";
-import "./v3/design/public.css";
 import { useEffect, useState } from "react";
 import { HashRouter, Link, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import {
@@ -27,6 +25,8 @@ import { DiscordCommandsGuide, DiscordServerFeedGuide, GettingStartedGuide, Guid
 import api from "./axios";
 import "./v2/styles/tokens.css";
 import "./styles/public-site.css";
+import "./v3/design/tokens.css";
+import "./v3/design/public.css";
 
 const APP_SIGNUP = `${APP_ORIGIN}/#/signup`;
 const APP_LOGIN = `${APP_ORIGIN}/#/login`;
