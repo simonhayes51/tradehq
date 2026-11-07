@@ -21,3 +21,16 @@
 .v4-mobile-brand,.v4-mobile-nav,.v4-menu-layer{display:none}
 @media(max-width:960px){.v4-workspace{grid-template-columns:1fr}.v4-sidebar{display:none}.v4-mobile-brand{display:block}.v4-mobile-brand .v4-brand{font-size:20px}.v4-mobile-brand .v4-brand-mark{width:25px;height:30px}.v4-mobile-brand .v4-brand small{font-size:6px}.v4-topbar{padding:0 14px;height:58px}.v4-topbar-account{display:none}.v4-search-link{max-width:330px}.v4-content{padding:16px 14px 96px}.v4-mobile-nav{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));position:fixed;bottom:0;left:0;right:0;z-index:50;background:#0b0b0b;color:#fff;padding:4px 5px calc(5px + env(safe-area-inset-bottom,0px));border-top:1px solid #303030}.v4-mobile-nav a,.v4-mobile-nav button{display:flex;flex-direction:column;justify-content:center;align-items:center;gap:5px;min-height:55px;background:none;border:0;color:#aaa;text-decoration:none;font-size:10px;font-weight:800}.v4-mobile-nav .v4-nav-link--current{color:var(--v4-orange);box-shadow:inset 0 3px var(--v4-orange);background:#191919}.v4-menu-layer{display:block;position:fixed;inset:0;z-index:49}.v4-menu-backdrop{position:absolute;inset:0;border:0;background:rgba(0,0,0,.75);width:100%}.v4-menu-sheet{position:absolute;left:8px;right:8px;bottom:calc(69px + env(safe-area-inset-bottom,0px));max-height:72vh;overflow:auto;background:#121212;color:#fff;border:1px solid #444;border-radius:10px;padding:12px}.v4-menu-title{display:flex;justify-content:space-between;align-items:center;font:900 12px var(--v4-body);letter-spacing:.1em;color:var(--v4-orange);padding:10px}.v4-menu-title button{background:none;border:0;color:white}.v4-menu-sheet nav{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px}}
 @media(max-width:500px){.v4-topbar .v4-search-link{max-width:180px}.v4-search-link span:not(.v4-search-shortcut){display:none}.v4-content{padding:12px 10px 95px}}
+
+/* The Edge wordmark must be readable on both white mobile headers and dark sidebar. */
+.v4-topbar .v4-brand{color:#111!important;font-family:Inter,system-ui,sans-serif;font-size:29px;font-weight:900;font-style:normal;letter-spacing:-.07em}
+.v4-topbar .v4-brand>span:last-child{color:#ff5a00}
+.v4-sidebar .v4-brand>span:last-child{color:#ff5a00}
+.v4-brand>span:last-child{display:block;min-width:0}
+.v4-topbar .v4-brand small{color:#666;letter-spacing:.09em;font-weight:800;font-size:8px}
+.v4-sidebar .v4-brand small{color:#a3a3a3}
+@media(max-width:500px){
+ .v4-mobile-brand .v4-brand{font-size:23px;gap:7px}
+ .v4-mobile-brand .v4-brand small{font-size:6px;letter-spacing:.055em}
+ .v4-topbar .v4-search-link{max-width:116px;min-width:65px}
+}

@@ -11,16 +11,16 @@ const MAIN = [
  {path:"/watchlist",label:"Watchlist",icon:Star},
 ];
 const EXTRA = [
- {path:"/insights",label:"New: Easy Insights"},
- {path:"/players",label:"Player research"},
+ {path:"/insights",label:"Easy Insights"},
+ {path:"/players",label:"Find a player"},
  {path:"/portfolio",label:"Portfolio"},
- {path:"/track-record",label:"Track record"},
+ {path:"/track-record",label:"How our picks did"},
  {path:"/billing",label:"Membership"},
  {path:"/account",label:"Account"},
  {path:"/discord-feed",label:"Discord feeds"},
  {path:"/sbc",label:"SBC market"},
  {path:"/gallery",label:"Gallery"},
- {path:"/chat",label:"AI assistant"},
+ {path:"/chat",label:"Ask The Edge"},
 ];
 function isCurrent(path,target){return target==="/"?path==="/":path===target||path.startsWith(target+"/");}
 function Brand({prefix=""}){return <Link to={prefix||"/"} className="v4-brand" aria-label="The Edge home"><span className="v4-brand-mark">/</span><span>edge<small>ULTIMATE TEAM TOOLS</small></span></Link>;}
@@ -36,7 +36,7 @@ export default function Workspace({children}){
  return <div className="v4-app v4-workspace">
    <aside className="v4-sidebar" aria-label="Desktop navigation">
      <Brand prefix={prefix}/>
-     <div className="v4-sidebar-caption">MARKET WORKSPACE</div>
+     <div className="v4-sidebar-caption">YOUR TOOLS</div>
      <nav aria-label="Primary">{MAIN.map(item=><NavLink key={item.path} item={item} path={activePath} prefix={prefix}/>)}</nav>
      <div className="v4-sidebar-caption">TOOLS & ACCOUNT</div>
      <nav aria-label="Tools">{EXTRA.map(item=><NavLink key={item.path} item={item} path={activePath} prefix={prefix}/>)}</nav>
