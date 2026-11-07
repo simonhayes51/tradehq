@@ -1,0 +1,33 @@
+/* EAFC.Live 3.0 public masthead — a new layout, not a recoloured legacy hero. */
+.v3-public .v3-brand-mark{display:inline-flex;align-items:center;justify-content:center;background:#ff5a00;color:#fff;font:900 29px/1 var(--v3-display,Impact,sans-serif);transform:skew(-13deg);width:29px;height:34px}
+.v3-public .pub-brand{gap:8px}
+.v3-public .v3-home-hero{background:#f5f4f0;color:#0b0b0b;padding:0}
+.v3-public .v3-hero-grid{display:grid;grid-template-columns:minmax(0,1.05fr) minmax(0,.95fr);gap:0;align-items:stretch;min-height:640px}
+.v3-public .v3-hero-main{padding:clamp(54px,7vw,108px) clamp(22px,4vw,70px) 70px 0;display:flex;flex-direction:column;justify-content:center}
+.v3-public .v3-hero-eyebrow{display:flex;gap:12px;flex-wrap:wrap;align-items:center;font-size:11px;font-weight:900;letter-spacing:.12em;text-transform:uppercase}
+.v3-public .v3-hero-eyebrow span:first-child{background:#ff5a00;color:#fff;padding:8px 10px}
+.v3-public .v3-hero-eyebrow span:last-child{color:#333}
+.v3-public .v3-hero-main h1{font-family:var(--v3-display,'Barlow Condensed',Impact,sans-serif);font-style:italic;text-transform:uppercase;font-size:clamp(68px,7.5vw,126px);font-weight:900;line-height:.83;letter-spacing:-.035em;margin:28px 0;overflow-wrap:normal}
+.v3-public .v3-hero-main h1 em{color:#ff5a00;font-style:inherit}
+.v3-public .v3-hero-main>p{font-size:clamp(16px,1.45vw,20px);line-height:1.5;color:#343434;max-width:550px;margin:0}
+.v3-public .v3-hero-actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:32px}
+.v3-public .v3-hero-actions a,.v3-public .v3-hero-actions button{min-height:54px;display:inline-flex;align-items:center;justify-content:center;gap:12px;padding:0 20px;font-size:13px;font-weight:850;text-transform:uppercase;letter-spacing:.04em;text-decoration:none;cursor:pointer;border-radius:0}
+.v3-public .v3-hero-cta{background:#ff5a00;color:#fff;border:2px solid #ff5a00}
+.v3-public .v3-hero-cta:hover{background:#d84900}
+.v3-public .v3-hero-secondary{background:transparent;color:#0b0b0b;border:2px solid #0b0b0b}
+.v3-public .v3-hero-secondary:hover{background:#0b0b0b;color:#fff}
+.v3-public .v3-hero-legal{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin-top:22px;font-size:12px;color:#555}
+.v3-public .v3-hero-legal svg{color:#ff5a00}
+.v3-public .v3-hero-legal span{width:1px;height:14px;background:#aaa;margin:0 7px}
+.v3-public .v3-hero-showcase{background:#101010;color:#fff;border-left:9px solid #ff5a00;display:flex;flex-direction:column;justify-content:space-between;padding:26px;min-width:0;position:relative}
+.v3-public .v3-hero-showcase:before{content:"";position:absolute;top:14%;right:0;width:55%;height:35%;background:linear-gradient(130deg,transparent 45%,rgba(255,90,0,.25) 45%,rgba(255,90,0,.25) 52%,transparent 52%);pointer-events:none}
+.v3-public .v3-showcase-top,.v3-public .v3-showcase-bottom{position:relative;z-index:1;display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;font-size:10px;font-weight:850;letter-spacing:.1em}
+.v3-public .v3-showcase-live{color:#ff5a00}
+.v3-public .v3-showcase-frame{position:relative;z-index:1;border:1px solid #3d3d3d;background:#1a1a1a;box-shadow:15px 15px 0 rgba(255,90,0,.18);padding:12px;margin:35px 6px 35px 0}
+.v3-public .v3-showcase-frame img{width:100%;display:block;height:auto;max-height:490px;object-fit:contain}
+.v3-public .v3-showcase-bottom{color:#999;border-top:1px solid #444;padding-top:15px}
+.v3-public .v3-hero-ticker{background:#ff5a00;color:#0b0b0b}
+.v3-public .v3-ticker-inner{min-height:58px;display:flex;align-items:center;justify-content:space-between;gap:12px;font:900 clamp(12px,1.4vw,18px)/1 var(--v3-display,Impact,sans-serif);letter-spacing:.055em}
+.v3-public .v3-ticker-inner b{font-size:20px}
+@media(max-width:1000px){.v3-public .v3-hero-grid{grid-template-columns:1fr}.v3-public .v3-hero-main{padding:65px 0}.v3-public .v3-hero-showcase{min-height:420px;border-left:0;border-top:8px solid #ff5a00}.v3-public .v3-hero-main h1{font-size:clamp(64px,11vw,105px)}}
+@media(max-width:600px){.v3-public .v3-hero-main{padding:48px 0}.v3-public .v3-hero-main h1{font-size:clamp(56px,13.7vw,86px);line-height:.9}.v3-public .v3-hero-eyebrow{font-size:9px}.v3-public .v3-hero-showcase{padding:18px;min-height:300px}.v3-public .v3-showcase-frame{margin:20px 0}.v3-public .v3-hero-actions a,.v3-public .v3-hero-actions button{width:100%}.v3-public .v3-ticker-inner{flex-wrap:wrap;justify-content:center;padding:14px 0;gap:10px}.v3-public .v3-ticker-inner b{display:none}.v3-public .v3-ticker-inner span{font-size:12px}}
