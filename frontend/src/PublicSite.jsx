@@ -482,8 +482,8 @@ function FinalCTA() {
 function EditorialProduct() {
   const features=[
     {number:"01",eyebrow:"THE OPPORTUNITIES",title:"SEE THE MOVE.",copy:"Live buy candidates, clear entry prices and estimated returns after tax. Evidence first, hype never.",image:"/marketing/eafc-dashboard.svg"},
-    {number:"02",eyebrow:"TRADE FINDER",title:"FIND YOUR ANGLE.",copy:"Your budget, your filters, your strategy. Research cards by risk, position, price and expected return.",image:"/marketing/eafc-trade-finder.svg"},
-    {number:"03",eyebrow:"YOUR WORKSPACE",title:"TRACK EVERY COIN.",copy:"Watch prices, set alerts and record your trades. Build a clearer picture of what works for you.",image:"/marketing/eafc-portfolio.svg"}
+    {number:"02",eyebrow:"TRADE FINDER",title:"FIND YOUR ANGLE.",copy:"Your budget, your filters, your strategy. Research cards by risk, position, price and expected return.",image:"/marketing/eafc-mobile-finder.svg"},
+    {number:"03",eyebrow:"YOUR WORKSPACE",title:"TRACK EVERY COIN.",copy:"Watch prices, set alerts and record your trades. Build a clearer picture of what works for you.",image:"/marketing/eafc-mobile-home.svg"}
   ];
   return <section id="product" className="v3-magazine">
     <div className="pub-container">
