@@ -1,0 +1,19 @@
+/* EAFC.Live 3.0 member and mobile polish. Presentation only. */
+.v3-root .fut-dashboard-shell { background:#0b0b0b; }
+.v3-root .fut-topbar { border-bottom-color:#333; }
+.v3-root .fut-main { color:#fff; }
+.v3-root .lead-card { border:1px solid #444; border-left:4px solid var(--v3-orange); border-radius:7px; }
+.v3-root .lead-label,.v3-root .panel-label { font-family:var(--v3-display); font-weight:800; text-transform:uppercase; letter-spacing:.035em; }
+.v3-root .lead-numbers { font-variant-numeric:tabular-nums; }
+.v3-root .market-panel { border-color:#333; border-radius:7px; }
+.v3-root .market-live-pill { border-color:var(--v3-orange); }
+.v3-root .v2-global-nav { border-color:#333; }
+.v3-root .v2-global-nav a:focus-visible,.v3-root .v2-global-nav button:focus-visible { outline:3px solid var(--v3-orange); outline-offset:2px; }
+.v3-root .mobile-more-upgrade { border-color:var(--v3-orange); background:rgba(255,90,0,.1); color:var(--v3-orange); }
+@media(max-width:800px){
+ .v3-root .v2-shell-content { padding-bottom:calc(80px + env(safe-area-inset-bottom,0px)); }
+ .v3-root .v2-global-nav { background:#101010; border-top:1px solid #3b3b3b; }
+ .v3-root .mobile-more-trigger { min-height:44px; }
+ .v3-root .lead-card { border-left-width:3px; }
+ .v3-root :is(button,a,input,select) { touch-action:manipulation; }
+}
