@@ -1,12 +1,12 @@
 import { useState } from "react";
 import { Link, useLocation } from "react-router-dom";
-import { Activity, ArrowUpRight, Briefcase, TrendingUp, UserCircle, Compass, Crown, House, Menu, Search, SlidersHorizontal, Star, Users, X } from "lucide-react";
+import { Activity, ArrowUpRight, Briefcase, TrendingUp, UserCircle, Compass, Crown, Home, Menu, Search, SlidersHorizontal, Star, Users, X } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
 import { useEntitlements } from "../context/EntitlementsContext";
 import "./platform.css";
 
 const PRIMARY = [
-  {to:"/",label:"The Desk",short:"Desk",icon:House},
+  {to:"/",label:"The Desk",short:"Desk",icon:Home},
   {to:"/opportunities",label:"Opportunities",short:"Trades",icon:TrendingUp},
   {to:"/trade-finder",label:"Trade Finder",short:"Finder",icon:SlidersHorizontal},
   {to:"/players",label:"Player Research",short:"Players",icon:Search},
