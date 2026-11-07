@@ -1,3 +1,4 @@
+import PageBanner from "../../../v3/PageBanner";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { ArrowRight, Bell, ChevronRight, Lock, Search, Star, Target, X, Zap } from "lucide-react";
@@ -263,10 +264,10 @@ export default function HomeDashboard(){
   // not merely hidden with CSS - so a phone never pays to render the
   // Track Record ledger, Market Map and Strategy Finder simultaneously
   // just to show the Top Card decision.
-  const showOverview=!isMobile||mobileSection==="overview";
-  const showOpportunities=!isMobile||mobileSection==="opportunities";
-  const showTrackRecord=!isMobile||mobileSection==="overview";
-  const showMarket=!isMobile||mobileSection==="market";
+  const showOverview=true;
+  const showOpportunities=false;
+  const showTrackRecord=false;
+  const showMarket=false;
   const topAlerts=(dashboard.watchlistAlerts||[]).slice(0,2);
   const unreadAlerts=panelUnread==null?Number(dashboard.unreadAlertCount||0):panelUnread;
   // One shape for the feed, built from two sources, each row carrying its
@@ -320,8 +321,13 @@ export default function HomeDashboard(){
           <NotificationsPanel open={alertsOpen} onClose={()=>setAlertsOpen(false)} onUnreadCount={setPanelUnread} rules={dashboard.alertRules||[]}/>
         </div>
       </header>
-      <Ticker items={futggItems} events={dashboard.latestMarketEvents}/>
-      {isMobile?<nav className="mobile-section-tabs" aria-label="Dashboard sections">{MOBILE_SECTIONS.map(([key,label])=><button key={key} type="button" role="tab" aria-selected={mobileSection===key} className={mobileSection===key?"active":""} onClick={()=>setMobileSection(key)}>{label}</button>)}</nav>:null}
+      <PageBanner kicker="THE TRADING DESK / LIVE MARKET" title="GOOD MOVES START HERE." description="One place to check the market, act on a trade and get back to trading. Your full tools are a tap away." action="ALL TRADES" actionTo="/opportunities"/>
+      <nav className="v3-home-quicklinks" aria-label="Trading shortcuts">
+        <Link to="/opportunities"><Zap size={17}/> <span>LIVE OPPORTUNITIES</span><ArrowRight size={16}/></Link>
+        <Link to="/trade-finder"><Search size={17}/> <span>TRADE FINDER</span><ArrowRight size={16}/></Link>
+        <Link to="/watchlist"><Star size={17}/> <span>WATCHLIST</span><ArrowRight size={16}/></Link>
+        <Link to="/portfolio"><Target size={17}/> <span>PORTFOLIO</span><ArrowRight size={16}/></Link>
+      </nav>
 
       {showOverview?<>
         <section className="v3-editorial-stage">
@@ -376,7 +382,7 @@ export default function HomeDashboard(){
             <PulseFooter nextPromo={dashboard.nextPromo} sbcImpact={dashboard.latestSbcImpact}/>
           </aside>
         </section>
-        {isMobile&&topAlerts.length?<div className="mobile-top-alerts"><div className="section-head compact"><div><span>ALERTS</span><h2>Affecting your watchlist</h2></div><Link to="/watchlist">Open</Link></div>{topAlerts.map((x,index)=><Link className="feed-row compact" key={x.id||index} to={x.href||`/players/${x.cardId}`}><i/><div><strong>{x.title}</strong><span>{[x.movement,x.age].filter(Boolean).join(" · ")}</span></div></Link>)}</div>:null}
+        {topAlerts.length?<div className="mobile-top-alerts"><div className="section-head compact"><div><span>ALERTS</span><h2>Affecting your watchlist</h2></div><Link to="/watchlist">Open</Link></div>{topAlerts.map((x,index)=><Link className="feed-row compact" key={x.id||index} to={x.href||`/players/${x.cardId}`}><i/><div><strong>{x.title}</strong><span>{[x.movement,x.age].filter(Boolean).join(" · ")}</span></div></Link>)}</div>:null}
       </>:null}
 
       {showTrackRecord?<TrackRecordSummary/>:null}
