@@ -1,3 +1,4 @@
+import PageBanner from "../../../v3/PageBanner";
 // src/v2/pages/TradeFinder/TradeFinder.jsx
 //
 // FUT.GG migration: switched from the legacy FUTBIN-backed
@@ -103,6 +104,7 @@ export default function TradeFinder() {
   const signedOut = query.isError && query.error?.response?.status === 401;
 
   return <main className="v2-destination trade-finder-page">
+      <PageBanner kicker="RESEARCH / TRADE FINDER" title="FIND YOUR EDGE." description="Set your budget, risk and return targets. Explore the full live-priced market using your own filters." action="SHORTLIST" actionTo="/opportunities"/>
     <PageHead eyebrow="TRADE FINDER" title="Search every trade, your way" copy="Set your budget, minimum return, risk, position, rarity and sort order — every current live-priced trade is in scope here, not just the pre-filtered buy signals. Just want today's top picks with no setup? Try Opportunities." />
 
     <Link className="opp-crosslink" to="/opportunities">
