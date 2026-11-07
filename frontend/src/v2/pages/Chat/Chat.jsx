@@ -29,9 +29,9 @@ const SUGGESTIONS = ["Should I buy Mbappe 92?", "Who should I buy for 40k?", "Ho
 // assistant is instructed to decline rather than answer from the model's
 // own (non-existent, and never current) market knowledge.
 const CAPABILITIES = [
-  "Look up any card's live price, verdict, buy/sell targets and risk",
-  "Find trades that fit a coin budget right now",
-  "Report how published recommendations have actually performed",
+  "Check a player's latest price and suggested buy or sell price",
+  "Find players that fit your coin budget",
+  "See how our past picks performed",
 ];
 
 export default function Chat() {
@@ -50,9 +50,9 @@ export default function Chat() {
   return (
     <main className="v2-destination">
       <PageHead
-        eyebrow="AI TRADING ASSISTANT"
-        title="Ask about any card or budget"
-        copy="Every number in a reply comes from a live market lookup on this site - never invented, and never a prediction."
+        eyebrow="THE EDGE / ASK A QUESTION"
+        title="Ask The Edge"
+        copy="Ask about a player, your coin budget or how our picks have done. Prices come from our market data, not guesses."
       />
 
       {unavailable ? (
@@ -61,7 +61,7 @@ export default function Chat() {
           title="The assistant isn't available right now"
           text={typeof unavailable === "string" && unavailable
             ? unavailable
-            : "This part of EAFC.Live isn't switched on yet. Everything else - Opportunities, Trade Finder and player pages - works as normal."}
+            : "This tool isn't switched on right now. Everything else - Opportunities, Trade Finder and player pages - works as normal."}
         />
       ) : entitlementsLoading ? (
         <div className="v2-page-state" role="status">Checking your plan…</div>
