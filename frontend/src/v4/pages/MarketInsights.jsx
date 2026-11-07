@@ -6,7 +6,7 @@ import { useFutggOpportunities } from "../../v2/hooks/useFutggMarket";
 import { getTradeHistory } from "../../v2/api/trades";
 import "./market-insights.css";
 
-const num = value => Number.isFinite(Number(value)) ? Number(value) : null;
+const num = value => value === null || value === undefined || value === "" || !Number.isFinite(Number(value)) ? null : Number(value);
 const coins = value => num(value) == null ? "—" : Math.round(Number(value)).toLocaleString("en-GB");
 const rows = data => Array.isArray(data?.items) ? data.items : Array.isArray(data?.results) ? data.results : Array.isArray(data) ? data : [];
 const readPrice = item => num(item.current_bin ?? item.price ?? item.current_price);
