@@ -42,6 +42,7 @@ import { useEntitlements } from "../context/EntitlementsContext";
 import "./styles/mobile-screenshot-fixes.css";
 import "./styles/mobile-player-redesign.css";
 import "./styles/mobile-menu-final.css";
+import "../v3/edge-legacy-bridge.css";
 
 export default function V2App() {
   return (
