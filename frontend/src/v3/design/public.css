@@ -1,0 +1,37 @@
+/* EAFC.Live 3.0: sports editorial public experience. Loaded after legacy public CSS. */
+.v3-public { --pub-green:#ff5a00; --pub-green-dark:#e64e00; --pub-black:#0b0b0b; --pub-panel:#171717; --pub-soft:#f5f5f5; --pub-muted:#666; --pub-border:rgba(0,0,0,.12); background:#fff; color:#0b0b0b; font-family:var(--v3-body); }
+.v3-public .pub-nav { background:rgba(255,255,255,.96); border-bottom:2px solid #0b0b0b; backdrop-filter:blur(12px); }
+.v3-public .pub-brand { color:#0b0b0b; font-family:var(--v3-display); font-style:italic; font-size:30px; letter-spacing:-.025em; }
+.v3-public .pub-brand b { color:var(--v3-orange); }
+.v3-public .pub-brand img { border-radius:5px; box-shadow:none; }
+.v3-public .pub-nav-links button,.v3-public .pub-login { color:#222; }
+.v3-public .pub-nav-links button:hover,.v3-public .pub-login:hover { color:var(--v3-orange); }
+.v3-public .pub-button { background:var(--v3-orange); border-color:var(--v3-orange); color:#fff; border-radius:5px; font-weight:800; box-shadow:none; }
+.v3-public .pub-button:hover { background:var(--v3-orange-hover); border-color:var(--v3-orange-hover); }
+.v3-public .pub-button-ghost { background:transparent; color:#0b0b0b; border-color:#0b0b0b; }
+.v3-public .pub-button-ghost:hover { background:#0b0b0b; border-color:#0b0b0b; color:white; }
+.v3-public .pub-hero { background:linear-gradient(118deg,#fff 0%,#fff 63%,#ff5a00 63.1%,#ff5a00 66%,#111 66.1%,#111 100%); padding-top:80px; }
+.v3-public .pub-hero h1 { color:#0b0b0b; font-family:var(--v3-display); font-style:italic; text-transform:uppercase; font-size:clamp(58px,7.3vw,116px); line-height:.87; letter-spacing:-.035em; font-weight:900; }
+.v3-public .pub-hero h1 em { color:var(--v3-orange); }
+.v3-public .pub-hero-copy>p { color:#303030; }
+.v3-public .pub-eyebrow { color:#0b0b0b; }
+.v3-public .pub-eyebrow>span { background:var(--v3-orange); height:5px; transform:skew(-15deg); }
+.v3-public .pub-hero-note { color:#444; }
+.v3-public .pub-hero-note svg { color:var(--v3-orange); }
+.v3-public .pub-hero-visual { border:2px solid #0b0b0b; border-radius:6px; background:#141414; box-shadow:16px 16px 0 #ff5a00; }
+.v3-public .pub-hero-visual::after { background:rgba(255,90,0,.12); }
+.v3-public .pub-hero-product-label em,.v3-public .pub-hero-product-label strong b { color:var(--v3-orange); }
+.v3-public .pub-hero-product-label em i { background:var(--v3-orange); box-shadow:none; }
+.v3-public .pub-signal-strip { background:#0b0b0b; color:white; border-color:#333; }
+.v3-public .pub-proof { background:#0b0b0b; color:white; }
+.v3-public .pub-section-heading h2,.v3-public .pub-split-copy h2 { font-family:var(--v3-display); text-transform:uppercase; font-size:clamp(44px,5vw,72px); line-height:.95; letter-spacing:-.02em; }
+.v3-public .pub-section-soft { background:#f5f5f5; color:#111; }
+.v3-public .pub-pricing { background:#ededed; color:#111; }
+.v3-public .pub-plan { border:1px solid #c7c7c7; border-radius:6px; }
+.v3-public .pub-plan-featured { border:3px solid var(--v3-orange); box-shadow:10px 10px 0 rgba(255,90,0,.15); }
+.v3-public .pub-plan-badge,.v3-public .pub-plan li svg { color:var(--v3-orange); }
+.v3-public .pub-plan h3 { font-family:var(--v3-display); font-size:34px; text-transform:uppercase; }
+.v3-public .pub-plan:not(.pub-plan-featured) .pub-button-ghost { color:#111; border-color:#111; }
+.v3-public :is(a,button,input,select,textarea):focus-visible { outline:3px solid var(--v3-orange); outline-offset:3px; }
+@media(max-width:900px){.v3-public .pub-hero{background:linear-gradient(160deg,#fff 0%,#fff 83%,#ff5a00 83%,#ff5a00 85%,#111 85%)}.v3-public .pub-hero-visual{box-shadow:7px 7px 0 #ff5a00}}
+@media(max-width:600px){.v3-public .pub-hero h1{font-size:clamp(52px,15vw,84px)}.v3-public .pub-brand{font-size:25px}}
