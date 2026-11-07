@@ -1,4 +1,4 @@
-import { Link } from "react-router-dom";
+import Link from "./V4Link";
 import { ArrowRight } from "lucide-react";
 import "./research.css";
 const number=value=>value==null||!Number.isFinite(Number(value))?"—":Math.round(Number(value)).toLocaleString("en-GB");
