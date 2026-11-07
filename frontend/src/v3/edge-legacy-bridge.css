@@ -62,3 +62,13 @@
  .v3-platform .gallery-row>b{font-size:11px}
  .v3-platform .content-toolbar select{min-width:0}
 }
+
+/* Keep chat headings legible if older themes add bright decorative overlays. */
+.v3-platform .v2-destination:has(.v2-chat-suggestions) .v2-page-head,
+.v3-platform .v2-destination:has(.v2-chat-panel) .v2-page-head{
+ position:relative;isolation:isolate;background:#101010!important;background-image:none!important;
+}
+.v3-platform .v2-destination:has(.v2-chat-suggestions) .v2-page-head::before,
+.v3-platform .v2-destination:has(.v2-chat-suggestions) .v2-page-head::after,
+.v3-platform .v2-destination:has(.v2-chat-panel) .v2-page-head::before,
+.v3-platform .v2-destination:has(.v2-chat-panel) .v2-page-head::after{display:none!important}
