@@ -17,3 +17,22 @@
  .v3-root .lead-card { border-left-width:3px; }
  .v3-root :is(button,a,input,select) { touch-action:manipulation; }
 }
+
+/* V3 navigation — editorial rail and accessible mobile dock */
+.v3-root .fut-side{background:#0d0d0d;border-right:1px solid #333}
+.v3-root .fut-brand{display:flex;align-items:center;gap:10px;padding-top:24px;padding-bottom:26px}
+.v3-root .fut-brand strong{font:italic 900 29px/1 var(--v3-display,'Barlow Condensed',Impact,sans-serif);letter-spacing:-.02em}
+.v3-root .v3-nav-mark{display:inline-flex;align-items:center;justify-content:center;background:#ff5a00;color:#fff;width:27px;height:33px;transform:skew(-13deg);font:900 29px/1 var(--v3-display,Impact,sans-serif)}
+.v3-root .v2-global-nav nav>a{border-radius:0;border-left:3px solid transparent;font-size:13px;font-weight:700}
+.v3-root .v2-global-nav nav>a.active{background:#ff5a00!important;color:#fff!important;border-left-color:#fff}
+.v3-root .v2-global-nav nav>a.active svg{color:#fff!important}
+.v3-root .v2-global-nav nav>a:hover:not(.active){background:#222}
+.v3-root .v2-global-nav .nav-upgrade{background:#ff5a00;color:#fff;border-radius:2px}
+@media(max-width:800px){
+ .v3-root .fut-side{border-right:0;border-top:1px solid #444;background:#0d0d0d}
+ .v3-root .v2-global-nav nav>a{border-left:0;border-top:3px solid transparent;border-radius:0;min-height:55px}
+ .v3-root .v2-global-nav nav>a.active{border-top-color:#ff5a00;border-left:0;background:#191919!important;color:#ff5a00!important}
+ .v3-root .v2-global-nav nav>a.active svg{color:#ff5a00!important}
+ .v3-root .mobile-more-trigger.active{color:#ff5a00}
+ .v3-root .mobile-more-menu{background:#171717;border:1px solid #333}
+}

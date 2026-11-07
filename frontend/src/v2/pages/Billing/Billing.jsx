@@ -493,10 +493,14 @@ export default function Billing() {
           </>
         ) : (
           <>
-            <header className="billing-v2-head">
-              {unlockContext ? <span className="billing-v2-context">{contextSentence}</span> : null}
-              <h1>Upgrade to EAFC.Live Elite</h1>
-              <p>{unlockContext ? contextSentence : "Get the full EAFC.Live trading toolkit."}</p>
+            <header className="v3-billing-editorial">
+              <div className="v3-billing-copy">
+                <span className="v3-billing-kicker">EAFC.LIVE / ELITE MEMBERSHIP</span>
+                <h1>YOUR EDGE.<br/><em>YOUR MARKET.</em></h1>
+                <p>{unlockContext ? contextSentence : "The full trading desk. Every eligible opportunity, deeper research, more alerts and your complete portfolio history."}</p>
+                <div className="v3-billing-tags"><span>LIVE OPPORTUNITIES</span><span>TRADE FINDER</span><span>PORTFOLIO</span></div>
+              </div>
+              <div className="v3-billing-stamp" aria-hidden="true"><Crown size={42}/><strong>ELITE</strong><span>FULL ACCESS</span></div>
             </header>
 
             {success ? <div className="billing-v2-msg ok">{success}</div> : null}

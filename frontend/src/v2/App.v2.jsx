@@ -4,6 +4,7 @@ import "./styles/mobile-polish.css";
 import "../v3/design/tokens.css";
 import "../v3/design/billing.css";
 import "../v3/design/member.css";
+import "../v3/design/trading-desk.css";
 import Nav from "./components/Nav";
 import LimitReachedPrompt from "./components/LimitReachedPrompt";
 import HomeDashboard from "./pages/HomeDashboard/HomeDashboard";

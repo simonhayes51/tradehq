@@ -86,7 +86,7 @@ export default function Sidebar() {
   };
 
   return <aside className="fut-side v2-global-nav">
-    <Link className="fut-brand" to="/" aria-label="EAFC.Live home"><img className="brand-logo" src="/icons/icon-192x192.png" alt="" /><strong>EAFC<b>.Live</b></strong></Link>
+    <Link className="fut-brand" to="/" aria-label="EAFC.Live home"><span className="v3-nav-mark" aria-hidden="true">/</span><strong>EAFC<b>.Live</b></strong></Link>
     <nav aria-label="Main">
       {items.map((item) => renderItem(item))}
       {mobileOverflowItems.length ? (
