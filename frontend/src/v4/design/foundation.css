@@ -1,0 +1,35 @@
+/* EAFC.Live — independent V4 design language. Never imported by V2/V3. */
+@import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:ital,wght@0,600;0,700;0,800;0,900;1,800;1,900&family=Inter:wght@400;500;600;700;800;900&display=swap');
+.v4-app {
+ --v4-ink:#111111;--v4-charcoal:#1b1b1b;--v4-black:#080808;
+ --v4-paper:#ffffff;--v4-canvas:#f4f4f1;--v4-muted:#626262;
+ --v4-line:#d9d9d6;--v4-orange:#ff5a00;--v4-orange-dark:#d94b00;
+ --v4-positive:#13824b;--v4-negative:#c53236;--v4-warning:#ae6900;
+ --v4-display:'Barlow Condensed',Impact,'Arial Narrow',sans-serif;
+ --v4-body:Inter,system-ui,-apple-system,sans-serif;
+ font-family:var(--v4-body);font-size:14px;line-height:1.5;
+ color:var(--v4-ink);background:var(--v4-canvas);min-height:100vh;
+ -webkit-font-smoothing:antialiased;
+}
+.v4-app *, .v4-app *::before, .v4-app *::after {box-sizing:border-box}
+.v4-app button,.v4-app input,.v4-app select,.v4-app textarea {font:inherit}
+.v4-app button {cursor:pointer}
+.v4-app a {color:inherit}
+.v4-app :focus-visible {outline:3px solid var(--v4-orange);outline-offset:3px}
+.v4-app h1,.v4-app h2,.v4-app h3,.v4-app p {margin-top:0}
+.v4-app .v4-display {font-family:var(--v4-display);font-weight:900;font-style:italic;line-height:.95;text-transform:uppercase}
+.v4-app .v4-eyebrow {font-size:10px;font-weight:900;letter-spacing:.13em;text-transform:uppercase}
+.v4-app .v4-text-muted {color:var(--v4-muted)}
+.v4-app .v4-number {font-variant-numeric:tabular-nums}
+.v4-app .v4-positive {color:var(--v4-positive)}
+.v4-app .v4-negative {color:var(--v4-negative)}
+.v4-app .v4-panel {background:var(--v4-paper);border:1px solid var(--v4-line);border-radius:8px}
+.v4-app .v4-button {display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:44px;padding:10px 16px;border-radius:6px;border:1px solid transparent;text-decoration:none;font-weight:800;font-size:12px;line-height:1.3}
+.v4-app .v4-button--primary {background:var(--v4-orange);color:#fff}
+.v4-app .v4-button--primary:hover {background:var(--v4-orange-dark)}
+.v4-app .v4-button--secondary {background:var(--v4-paper);border-color:var(--v4-line);color:var(--v4-ink)}
+.v4-app .v4-button--secondary:hover {border-color:var(--v4-ink)}
+.v4-app .v4-status {display:inline-flex;align-items:center;gap:6px;padding:5px 9px;background:#e8f4ec;color:#166c40;border-radius:100px;font-size:10px;font-weight:800}
+.v4-app .v4-status::before {content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
+.v4-app .v4-sr-only {position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+@media(prefers-reduced-motion:reduce){.v4-app *, .v4-app *::before, .v4-app *::after {scroll-behavior:auto!important;transition-duration:.01ms!important;animation-duration:.01ms!important}}
