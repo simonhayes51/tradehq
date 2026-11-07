@@ -1,23 +1,23 @@
 import { useState } from "react";
 import { Link, useLocation } from "react-router-dom";
-import { Activity, ArrowUpRight, Bell, BriefcaseBusiness, ChartNoAxesCombined, ChevronRight, CircleUserRound, Compass, Crown, House, Menu, Search, SlidersHorizontal, Star, Users, X } from "lucide-react";
+import { Activity, ArrowUpRight, Briefcase, TrendingUp, UserCircle, Compass, Crown, House, Menu, Search, SlidersHorizontal, Star, Users, X } from "lucide-react";
 import { useAuth } from "../../context/AuthContext";
 import { useEntitlements } from "../../context/EntitlementsContext";
 import "./platform.css";
 
 const PRIMARY = [
   {to:"/",label:"The Desk",short:"Desk",icon:House},
-  {to:"/opportunities",label:"Opportunities",short:"Trades",icon:ChartNoAxesCombined},
+  {to:"/opportunities",label:"Opportunities",short:"Trades",icon:TrendingUp},
   {to:"/trade-finder",label:"Trade Finder",short:"Finder",icon:SlidersHorizontal},
   {to:"/players",label:"Player Research",short:"Players",icon:Search},
 ];
 const PERSONAL = [
   {to:"/watchlist",label:"My Watchlist",short:"Watch",icon:Star,auth:true},
-  {to:"/portfolio",label:"My Portfolio",short:"Portfolio",icon:BriefcaseBusiness,auth:true},
+  {to:"/portfolio",label:"My Portfolio",short:"Portfolio",icon:Briefcase,auth:true},
   {to:"/track-record",label:"Track Record",short:"Results",icon:Activity},
   {to:"/discord-feed",label:"Discord Feed",short:"Feed",icon:Users,auth:true},
   {to:"/billing",label:"Membership",short:"Elite",icon:Crown},
-  {to:"/account",label:"My Account",short:"Account",icon:CircleUserRound,auth:true},
+  {to:"/account",label:"My Account",short:"Account",icon:UserCircle,auth:true},
 ];
 const MORE = [{to:"/sbc",label:"SBC Market"},{to:"/gallery",label:"FUT Gallery"},{to:"/release-price-rises",label:"Launch Movers"},{to:"/chat",label:"AI Chat"}];
 function active(path,to){return to==="/"?path==="/":path===to||path.startsWith(to+"/");}
