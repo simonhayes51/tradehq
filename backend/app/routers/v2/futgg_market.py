@@ -527,6 +527,42 @@ def _filters_from_query(
     )
 
 
+
+@router.get("/market/rating-prices")
+async def rating_prices(
+    provider: FutggMarketDataProvider = ProviderDep,
+) -> Dict[str, Any]:
+    """Public aggregate of fresh, tradeable card prices by overall rating.
+
+    Aggregates only; no player-level premium recommendations are exposed.
+    Uses the current game cycle and reports the sample size explicitly.
+    """
+    from app.services.game_cycle import active_game_year
+    async with provider._pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT rating::int AS rating,
+                   COUNT(*)::int AS card_count,
+                   ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP
+                         (ORDER BY current_bin))::bigint AS typical_price,
+                   MIN(current_bin)::bigint AS lowest_price
+            FROM futgg_market_snapshot
+            WHERE game_year = $1
+              AND rating BETWEEN 83 AND 89
+              AND is_tradeable IS NOT FALSE
+              AND rarity IS DISTINCT FROM 'FUT Champions'
+              AND current_bin > 0
+              AND COALESCE(bin_checked_at, bin_captured_at)
+                  >= NOW() - INTERVAL '30 minutes'
+            GROUP BY rating ORDER BY rating
+            """,
+            active_game_year(),
+        )
+    return {"items": [dict(row) for row in rows],
+            "sample": "Current-game tradeable cards with prices checked in the last 30 minutes",
+            "checked_at": datetime.now(timezone.utc).isoformat()}
+
+
 @router.get("/players")
 async def list_players(
     search: Optional[str] = Query(None, description="Diacritic-insensitive name search"),
