@@ -479,13 +479,42 @@ function FinalCTA() {
   );
 }
 
+function EditorialProduct() {
+  const features=[
+    {number:"01",eyebrow:"THE OPPORTUNITIES",title:"SEE THE MOVE.",copy:"Live buy candidates, clear entry prices and estimated returns after tax. Evidence first, hype never.",image:"/marketing/eafc-dashboard.svg"},
+    {number:"02",eyebrow:"TRADE FINDER",title:"FIND YOUR ANGLE.",copy:"Your budget, your filters, your strategy. Research cards by risk, position, price and expected return.",image:"/marketing/eafc-trade-finder.svg"},
+    {number:"03",eyebrow:"YOUR WORKSPACE",title:"TRACK EVERY COIN.",copy:"Watch prices, set alerts and record your trades. Build a clearer picture of what works for you.",image:"/marketing/eafc-portfolio.svg"}
+  ];
+  return <section id="product" className="v3-magazine">
+    <div className="pub-container">
+      <div className="v3-magazine-heading"><div><span className="v3-magazine-kicker">INSIDE THE PLATFORM / 001—003</span><h2>THE TOOLS.<br/><em>THE WHOLE PICTURE.</em></h2></div><p>One connected trading workspace. Everything you need to spot a potential move, understand the numbers and stay on top of your portfolio.</p></div>
+      <div className="v3-magazine-grid">
+        {features.map((f,i)=><article key={f.number} className={"v3-magazine-feature v3-magazine-feature-"+i}>
+          <div className="v3-magazine-feature-head"><span>{f.number} / {f.eyebrow}</span><ArrowRight size={18}/></div>
+          <h3>{f.title}</h3><p>{f.copy}</p>
+          <div className="v3-magazine-image"><img src={f.image} alt={f.eyebrow+" product preview"} loading="lazy" onError={e=>{e.currentTarget.style.display="none";}}/></div>
+        </article>)}
+      </div>
+      <div className="v3-magazine-footer"><span>MADE FOR EA FC TRADERS</span><a href={APP_SIGNUP}>OPEN YOUR FREE ACCOUNT <ArrowRight size={17}/></a></div>
+    </div>
+  </section>;
+}
+
+function EditorialHow() {
+  return <section id="how" className="v3-how"><div className="pub-container"><div className="v3-how-heading"><span>THE PROCESS / NO GUESSWORK</span><h2>THREE STEPS.<br/>BETTER DECISIONS.</h2></div><div className="v3-how-grid">{[
+    ["01","SCAN","Check current opportunities and market prices."],
+    ["02","CHECK","Review entry price, risk and estimated profit after EA tax."],
+    ["03","TRACK","Watch your targets and record your results."]
+  ].map(([n,t,c])=><div className="v3-how-step" key={n}><span>{n}</span><strong>{t}</strong><p>{c}</p></div>)}</div></div></section>;
+}
+
 function PublicHome() {
   const location = useLocation();
   useEffect(() => {
     if (!location.state?.scrollTo) return;
     requestAnimationFrame(() => scrollToId(location.state.scrollTo));
   }, [location.state]);
-  return <main><Hero /><ProofBand /><FeatureIntro /><MobileProduct /><HowItWorks /><DiscordSection /><PublicTrackRecord /><Pricing /><FAQ /><FinalCTA /></main>;
+  return <main><Hero /><ProofBand /><EditorialProduct /><EditorialHow /><PublicTrackRecord /><DiscordSection /><Pricing /><FAQ /><FinalCTA /></main>;
 }
 
 function ForwardToApp() {
