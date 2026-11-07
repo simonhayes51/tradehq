@@ -1,3 +1,4 @@
+import PageBanner from "../../../v3/PageBanner";
 import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { ArrowUpRight, Briefcase, Calculator, ExternalLink, Gift, Layers, LogOut, MessageCircle, RefreshCw, Star, Trash2, Trophy, User, Users, Wrench } from "lucide-react";
@@ -149,7 +150,8 @@ export default function Account() {
         not by whichever name happens to be on it today. The username is
         still here, just as account information (identity strip below,
         and the Username row in Account details), not the heading. */}
-    <PageHead eyebrow="YOUR ACCOUNT" title="Account" copy="Your membership, saved cards and trading record in one place." />
+    <PageBanner kicker="WORKSPACE / YOUR ACCOUNT" title="YOUR ACCOUNT." description="Manage your membership, saved cards and trading settings." issue="06 / ACCOUNT"/>
+      <PageHead eyebrow="YOUR ACCOUNT" title="Account" copy="Your membership, saved cards and trading record in one place." />
 
     {/* Who's signed in, on its own - separate from the plan card below.
         The avatar used to sit INSIDE the "Current plan" card, which read
