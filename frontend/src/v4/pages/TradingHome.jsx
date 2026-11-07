@@ -1,4 +1,4 @@
-import { Link } from "react-router-dom";
+import Link from "../components/V4Link";
 import { ArrowRight, BarChart2, Search, Star, Wallet } from "lucide-react";
 import { useFutggOpportunities } from "../../v2/hooks/useFutggMarket";
 import "./home.css";
