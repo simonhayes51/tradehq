@@ -1,3 +1,4 @@
+import { useState } from "react";
 import Link from "../components/V4Link";
 import { ArrowRight, BarChart2, Search, Star, Wallet } from "lucide-react";
 import { useFutggOpportunities } from "../../v2/hooks/useFutggMarket";
@@ -15,7 +16,8 @@ function Opportunity({item}){
  </article>;
 }
 export default function TradingHome(){
- const query=useFutggOpportunities({page_size:8,max_price_age_minutes:3});
+ const [platform,setPlatform]=useState("console");
+ const query=useFutggOpportunities({platform,page_size:8,max_price_age_minutes:3});
  const items=Array.isArray(query.data?.items)?query.data.items:[];
  const unlocked=items.filter(x=>!x.locked);
  const lead=unlocked[0]??null;
@@ -28,6 +30,7 @@ export default function TradingHome(){
    <Link to="/watchlist"><Star size={18}/><span>Watchlist</span><ArrowRight size={16}/></Link>
    <Link to="/portfolio"><Wallet size={18}/><span>Portfolio</span><ArrowRight size={16}/></Link>
   </div>
+  <div style={{display:"flex",gap:8,alignItems:"center",margin:"12px 0"}}><label htmlFor="home-market">Trading market</label><select id="home-market" value={platform} onChange={e=>setPlatform(e.target.value)} style={{padding:"9px 12px",border:"1px solid #ddd",borderRadius:6,background:"#fff"}}><option value="console">Console (PS / Xbox)</option><option value="pc">PC</option></select></div>
   <section className="v4-home-feed" aria-labelledby="v4-feed-heading"><div className="v4-home-feed-head"><div><div className="v4-eyebrow">TODAY'S PICKS</div><h2 id="v4-feed-heading">THE SHORTLIST</h2></div><span className="v4-status">{query.isLoading?"Checking market":"Market feed"}</span></div>
    {query.isLoading?<div className="v4-home-state" role="status">Looking for today's player picks…</div>:query.isError?<div className="v4-home-state" role="alert">Market data is unavailable right now. <button type="button" onClick={()=>query.refetch()}>Try again</button></div>:lead?<><Opportunity item={lead}/>{unlocked.slice(1,3).map(item=><Opportunity key={item.card_id??item.source_card_id} item={item}/>)}</>:<div className="v4-home-state">No picks are ready right now. See all trades or check back later.</div>}
    <div className="v4-home-feed-foot">*Possible coins after the 5% in-game selling fee, if you buy at or below the shown price. Check the game before buying — profit isn't guaranteed.</div>
