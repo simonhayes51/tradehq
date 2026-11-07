@@ -102,3 +102,11 @@
 .v3-platform .club-page .club-kpi{border-radius:0;border-top:3px solid #ff5a00}
 .v3-platform .club-page .club-panel{border-radius:0}
 @media(max-width:800px){.v3-platform .v3-home-quicklinks{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.v3-platform .v3-home-quicklinks a{min-height:49px;padding:10px;font-size:10px}.v3-platform .v3-home-quicklinks a svg{width:15px}.v3-platform .club-page .club-hero{padding:20px}}
+
+/* The V3 masthead replaces (rather than duplicates) old PageHead on migrated pages. */
+.v3-platform .v2-destination:has(> .v3-page-banner) > .v2-page-head{display:none}
+.v3-platform .v2-account-page{max-width:1180px}
+.v3-platform .v2-account-page .v2-section-card{border-radius:0}
+.v3-platform .discord-feed-v2{max-width:1180px}
+.v3-platform .discord-feed-v2 .discord-feed-head{border-top:3px solid #ff5a00;padding-top:18px}
+.v3-platform .v2-destination:has(> .v3-page-banner) .v2-primary-link{border-radius:2px}
