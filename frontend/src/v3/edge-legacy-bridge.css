@@ -1,0 +1,64 @@
+/* The Edge: visual bridge for pages still using the older V3 shell.
+   Scoped to avoid changing admin or unrelated V2 screens. */
+.v3-platform:has(.content-page){background:#f4f4f1;color:#111}
+.v3-platform .content-page{
+ --v2-accent:#ff5a00;--v2-muted:#626262;--v2-text:#111;
+ --v2-bg:#f8f8f6;--v2-card:#fff;--v2-border:#d9d9d6;
+ --v2-font:Inter,system-ui,sans-serif;
+ background:#f4f4f1;color:#111;
+}
+.v3-platform .content-hero,.v3-platform .content-detail-hero{
+ background:#111;color:#fff;border-color:#111;border-radius:12px;
+}
+.v3-platform .content-hero p,.v3-platform .content-detail-hero p{color:#d5d5d5}
+.v3-platform .content-hero:after,.v3-platform .content-detail-hero:after{
+ border-color:rgba(255,90,0,.24);
+ box-shadow:0 0 0 40px rgba(255,90,0,.045),0 0 0 80px rgba(255,90,0,.025)
+}
+.v3-platform .content-hero .content-source,.v3-platform .content-detail-hero .content-source{color:#fff}
+.v3-platform .content-stats,.v3-platform .content-panel,.v3-platform .content-set-card,
+.v3-platform .challenge-card{background:#fff;color:#111;border-color:#d9d9d6;border-radius:10px}
+.v3-platform .content-toolbar select,.v3-platform .content-search{
+ background:#fff;color:#111;border-color:#d9d9d6;border-radius:8px
+}
+.v3-platform .content-search input{color:#111}
+.v3-platform .content-chips button{border-radius:7px}
+.v3-platform .content-player{background:#f8f8f6;border-color:#dededb;color:#111;border-radius:8px}
+.v3-platform .gallery-row{border-color:#e4e4e1}
+.v3-platform .gallery-row:not(.gallery-head):hover{background:#fff1e9}
+.v3-platform .gallery-grade{border-radius:6px}
+.v3-platform .grade-s,.v3-platform .grade-a{background:#fff0e6;color:#d34d00;border-color:#ff5a00}
+.v3-platform .grade-b{color:#7a5500}
+.v3-platform .content-section-head p{color:#626262}
+.v3-platform .content-stats span{color:#626262}
+.v3-platform .content-price-row span{color:#626262}
+.v3-platform .gallery-token{color:#c64a00}
+.v3-platform .content-player-copy b{color:#c64a00}
+.edge-gallery-more{display:block;width:100%;margin-top:14px;min-height:46px;
+ border:1px solid #ff5a00;background:#fff3eb;color:#b94100;border-radius:9px;
+ font:800 13px Inter,system-ui,sans-serif;cursor:pointer}
+.edge-gallery-more:hover{background:#ffe4d4}
+.v3-platform .v3-rail-brand>span:last-child{color:#ff5a00;font:900 28px/1 Inter,system-ui,sans-serif;letter-spacing:-.06em}
+.v3-platform .v3-rail-brand small{color:#aaa;font-size:8px;letter-spacing:.1em}
+.v3-platform .v3-mobile-brand>span:last-child{color:#ff5a00}
+/* AI page keeps a deliberate dark surface, but no unrelated neon-green branding. */
+.v3-platform:has(.v2-chat-panel),.v3-platform:has(.v2-chat-suggestions){--v2-accent:#ff5a00;--green:#ff5a00}
+.v3-platform .v2-destination:has(.v2-chat-panel),
+.v3-platform .v2-destination:has(.v2-chat-suggestions){
+ background:#101010!important;background-image:none!important;
+ color:#f5f5f5;
+}
+.v3-platform .v2-destination:has(.v2-chat-panel) .v2-page-head>div>span,
+.v3-platform .v2-destination:has(.v2-chat-suggestions) .v2-page-head>div>span{color:#ff5a00}
+.v3-platform .v2-chat-input button{background:#ff5a00;color:#fff}
+.v3-platform .v2-chat-suggestions button:hover{border-color:#ff5a00;color:#ff5a00}
+.v3-platform .v2-chat-capabilities li::before{color:#ff5a00}
+@media(max-width:720px){
+ .v3-platform .content-page{padding:14px 10px 100px;gap:12px}
+ .v3-platform .content-hero,.v3-platform .content-detail-hero{padding:24px 18px}
+ .v3-platform .content-panel{padding:14px}
+ .v3-platform .gallery-row{grid-template-columns:minmax(0,1fr) 34px 76px 46px;gap:7px}
+ .v3-platform .gallery-row strong{overflow-wrap:anywhere}
+ .v3-platform .gallery-row>b{font-size:11px}
+ .v3-platform .content-toolbar select{min-width:0}
+}
