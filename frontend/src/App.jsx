@@ -8,6 +8,7 @@ import { DashboardProvider } from "./context/DashboardContext";
 import { SettingsProvider } from "./context/SettingsContext";
 import { EntitlementsProvider } from "./context/EntitlementsContext";
 
+import "./styles/edge-auth-public-light.css";
 import ErrorBoundary from "./components/ErrorBoundary";
 import Layout from "./components/Layout";
 import Loading from "./components/Loading";
