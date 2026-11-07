@@ -25,3 +25,22 @@
 .v3-root .billing-v2-btn.primary{background:#ff5a00;border-color:#ff5a00;color:#fff;text-transform:uppercase;font-weight:850;letter-spacing:.04em}
 .v3-root .billing-v2-feature-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
 @media(max-width:700px){.v3-root .v3-billing-editorial{grid-template-columns:1fr}.v3-root .v3-billing-stamp{display:none}.v3-root .v3-billing-editorial h1{font-size:clamp(52px,13vw,82px)}.v3-root .billing-v2-feature-grid{grid-template-columns:1fr}}
+
+/* V3 checkout is a two-column purchase decision, not the old vertical price stack. */
+.v3-root .v3-billing-offer-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(290px,.9fr);gap:14px;align-items:stretch;margin:22px 0}
+.v3-root .v3-billing-checkout{background:#f5f4f0;color:#0b0b0b;padding:24px;border-top:5px solid #ff5a00;min-width:0}
+.v3-root .v3-billing-offer-label{font:850 11px var(--v3-body,Inter,sans-serif);letter-spacing:.14em;color:#e04f00;margin-bottom:20px}
+.v3-root .v3-billing-checkout .billing-v2-toggle{background:#e8e6e0;color:#111;border:1px solid #bbb;margin:0 0 18px}
+.v3-root .v3-billing-checkout .billing-v2-toggle button{color:#222}
+.v3-root .v3-billing-checkout .billing-v2-toggle button.active{background:#111;color:#fff}
+.v3-root .v3-billing-checkout .billing-v2-price-card{background:#fff;color:#111;border:2px solid #111;border-radius:0;box-shadow:none}
+.v3-root .v3-billing-checkout .billing-v2-price{color:#111}
+.v3-root .v3-billing-checkout .billing-v2-secure{color:#555}
+.v3-root .v3-billing-value{background:#171717;color:#fff;border-top:5px solid #ff5a00;padding:28px;display:flex;flex-direction:column}
+.v3-root .v3-billing-value h2{font:italic 900 clamp(36px,4vw,55px)/.95 var(--v3-display,Impact,sans-serif);text-transform:uppercase;margin:6px 0 24px}
+.v3-root .v3-billing-value ul{list-style:none;padding:0;margin:0}
+.v3-root .v3-billing-value li{display:flex;align-items:start;gap:10px;padding:11px 0;border-top:1px solid #383838;font-size:13px;font-weight:700}
+.v3-root .v3-billing-value li svg{color:#ff5a00;flex:none}
+.v3-root .v3-billing-value>p{font-size:12px;line-height:1.6;color:#b6b6b6;margin:22px 0}
+.v3-root .v3-billing-value-foot{display:flex;gap:8px;align-items:center;border-top:1px solid #383838;padding-top:16px;margin-top:auto;color:#bcbcbc;font-size:11px}
+@media(max-width:850px){.v3-root .v3-billing-offer-grid{grid-template-columns:1fr}.v3-root .v3-billing-checkout,.v3-root .v3-billing-value{padding:20px}.v3-root .v3-billing-value h2{font-size:39px}}

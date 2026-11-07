@@ -1,3 +1,4 @@
+import PageBanner from "../../../v3/PageBanner";
 // src/v2/pages/TrackRecord/TrackRecord.jsx
 //
 // The full performance record: window tabs, the chronological ledger, the
@@ -14,6 +15,7 @@ import "../../styles/v2-destinations.css";
 export default function TrackRecord() {
   return (
     <main className="v2-destination">
+      <PageBanner kicker="PERFORMANCE / TRACK RECORD" title="SHOW THE RECEIPTS." description="Explore published calls, outcomes and how results are measured." issue="05 / RESULTS"/>
       <PageHead
         eyebrow="TRACK RECORD"
         title="Every published call, graded"

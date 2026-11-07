@@ -1,3 +1,5 @@
+import TradeResearchCard from "../../../v3/TradeResearchCard";
+import PageBanner from "../../../v3/PageBanner";
 // src/v2/pages/TradeFinder/TradeFinder.jsx
 //
 // FUT.GG migration: switched from the legacy FUTBIN-backed
@@ -103,6 +105,7 @@ export default function TradeFinder() {
   const signedOut = query.isError && query.error?.response?.status === 401;
 
   return <main className="v2-destination trade-finder-page">
+      <PageBanner kicker="RESEARCH / TRADE FINDER" title="FIND YOUR EDGE." description="Set your budget, risk and return targets. Explore the full live-priced market using your own filters." action="SHORTLIST" actionTo="/opportunities"/>
     <PageHead eyebrow="TRADE FINDER" title="Search every trade, your way" copy="Set your budget, minimum return, risk, position, rarity and sort order — every current live-priced trade is in scope here, not just the pre-filtered buy signals. Just want today's top picks with no setup? Try Opportunities." />
 
     <Link className="opp-crosslink" to="/opportunities">
@@ -207,50 +210,8 @@ export default function TradeFinder() {
     ) : query.isError ? (
       <EmptyState icon={<ShieldAlert size={25}/>} error text="Trade Finder could not load results just now. This is a fault on our side, not a limit on your account." action={<button onClick={() => query.refetch()}>Try again</button>} />
     ) : items.length ? (
-      <section className="finder-grid">
-        {items.map((item) => {
-          const cardId = item.card_id ?? item.source_card_id;
-          const confidence = item.confidence_score != null ? Math.round(Number(item.confidence_score) * 100) : null;
-          const roi = item.roi_at_max_buy != null ? Number(item.roi_at_max_buy) * 100 : item.expected_roi != null ? Number(item.expected_roi) * 100 : null;
-          return <Link className="finder-card" key={cardId} to={`/players/${cardId}`} state={{ from: "trade-finder" }}>
-            <div className="finder-card-top">
-              <img src={item.composited_image_url || item.image_url || "/img/card-placeholder.png"} alt="" />
-              <div><h2>{item.name || "Unknown player"}</h2><div className="v2-meta-pills"><span className={`finder-signal-pill signal-${item.signal || "unknown"}`}>{item.signal === "watch" ? "WATCH" : "BUY"}</span><StatusLegend/><span>{item.rating ?? "—"} OVR</span><span>{item.position || "—"}</span><span>{versionLabel(item.rarity)}</span></div><p className="finder-why">{buildWhyText(item)}</p></div>
-              <span className="finder-confidence">{confidence == null ? "—" : `${confidence}%`}<small>CONFIDENCE</small></span>
-            </div>
-            <div className="finder-signals">
-              {/* Never fall back to current_bin here. "BUY BELOW <the
-                  current asking price>" is not advice, it is the ask
-                  echoed back under an advisory label - the circularity
-                  engine v2 exists to prevent. No ceiling means we could
-                  not value the card, and CoinValue already renders null
-                  as an em dash. */}
-              {/* Use the same conservative max-buy economics shown by
-                  Discord. If the live ask is below the ceiling, show the
-                  current executable estimate and the worst-case profit
-                  at the full advertised ceiling separately. */}
-              <div className="entry">
-                <span>{item.expected_profit_basis != null && item.recommended_buy_max != null
-                       && item.expected_profit_basis !== item.recommended_buy_max
-                       ? "BUY NOW" : "BUY BELOW"}</span>
-                <CoinValue value={item.expected_profit_basis ?? item.recommended_buy_max}/>
-                {item.expected_profit_basis != null && item.recommended_buy_max != null
-                 && item.expected_profit_basis !== item.recommended_buy_max
-                  ? <small>pay up to <CoinValue value={item.recommended_buy_max}/></small>
-                  : null}
-              </div>
-              <ArrowRight size={18}/>
-              <div className="profit"><span>MIN PROFIT AT MAX BUY</span><CoinValue value={item.minimum_profit_at_max_buy ?? item.expected_profit_after_tax} signed/><small>{roi == null ? "—" : `${roi > 0 ? "+" : ""}${roi.toFixed(1)}%`} after tax</small></div>
-            </div>
-            <div className="finder-card-foot">
-              <span className={`risk-${String(item.risk_level || "unknown").toLowerCase()}`}>{riskLabel(item.risk_level)}</span>
-              {item.evidence_quality === "estimated"
-                ? <span className="bin-estimate-badge" title="Based on listing-price movement, not confirmed sales">BIN estimate</span>
-                : null}
-              <MarketFreshness priceAgeSeconds={item.price_age_seconds} checkedAt={item.current_bin_checked_at || item.bin_checked_at || item.current_bin_captured_at} staleThresholdSeconds={LIVE_PRICE_MAX_AGE_SECONDS} compact />
-            </div>
-          </Link>;
-        })}
+      <section className="v3-research-grid" aria-label="Matching trade research">
+        {items.map(item=><TradeResearchCard key={item.card_id??item.source_card_id} item={item} priceAgeLimit={LIVE_PRICE_MAX_AGE_SECONDS}/>)}
       </section>
     ) : <EmptyFeedReason noun="trades" filtersActive={filtersActive} onClearFilters={() => setFilters(DEFAULTS)} />}
   </main>;

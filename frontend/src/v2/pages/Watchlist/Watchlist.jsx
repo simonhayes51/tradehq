@@ -1,3 +1,4 @@
+import PageBanner from "../../../v3/PageBanner";
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { ArrowRight, Bell, MoreVertical, RefreshCw, Star, Trash2 } from "lucide-react";
@@ -130,6 +131,7 @@ export default function Watchlist() {
 
   return (
     <main className="v2-destination">
+      <PageBanner kicker="YOUR WORKSPACE / WATCHLIST" title="ON YOUR RADAR." description="Keep an eye on cards, price movements and alerts without losing track of the market." action="FIND PLAYERS" actionTo="/players"/>
       <PageHead
         eyebrow="YOUR WATCHLIST"
         title="Cards you’re tracking"

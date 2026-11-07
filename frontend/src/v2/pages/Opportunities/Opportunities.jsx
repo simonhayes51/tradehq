@@ -1,3 +1,4 @@
+import PageBanner from "../../../v3/PageBanner";
 // src/v2/pages/Opportunities/Opportunities.jsx
 //
 // FUT.GG migration: wired to GET /api/v2/opportunities (buy/strong_buy
@@ -62,6 +63,7 @@ export default function Opportunities() {
 
   return (
     <main className="v2-destination trade-finder-page opportunities-page">
+      <PageBanner kicker="LIVE DESK / TRADE OPPORTUNITIES" title="THE SHORTLIST." description="Market-checked trade candidates with buy targets, expected returns and risk signals. Always verify in-game prices before buying." action="FINDER" actionTo="/trade-finder"/>
       <PageHead
         eyebrow="OPPORTUNITIES"
         title="Today's shortlist, no setup needed"
