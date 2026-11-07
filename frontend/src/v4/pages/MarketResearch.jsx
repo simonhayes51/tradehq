@@ -22,7 +22,7 @@ function ResearchScreen({type,query,risk,setRisk,confidence,setConfidence,maxPri
 function OpportunitiesScreen(){
  const [risk,setRisk]=useState("");
  const [confidence,setConfidence]=useState("");
- const query=useFutggOpportunities({risk:risk||undefined,min_confidence:confidence?Number(confidence):undefined,max_price_age_minutes:3,page_size:40});
+ const query=useFutggOpportunities({risk:risk||undefined,min_confidence:confidence?Number(confidence)/100:undefined,max_price_age_minutes:3,page_size:40});
  return <ResearchScreen type="opportunities" query={query} risk={risk} setRisk={setRisk} confidence={confidence} setConfidence={setConfidence} maxPrice="" setMaxPrice={()=>{}}/>;
 }
 function FinderScreen(){
