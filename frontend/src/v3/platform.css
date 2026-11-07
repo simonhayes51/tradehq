@@ -84,3 +84,21 @@
 }
 @media(max-width:390px){.v3-platform .v3-lead-story{grid-template-columns:1fr 102px}.v3-platform .v3-lead-art{padding:8px}.v3-platform .v3-story-meta{gap:5px}.v3-platform .v3-lead h1{font-size:35px}.v3-platform .v3-story-prices strong{font-size:19px}}
 @media(prefers-reduced-motion:reduce){.v3-platform *{animation-duration:.01ms!important;transition-duration:.01ms!important}}
+
+/* Trading home: compact task-based entry, not the legacy dashboard's three tabs. */
+.v3-platform .v3-home-quicklinks{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:9px;margin:0 0 20px}
+.v3-platform .v3-home-quicklinks a{display:flex;align-items:center;gap:10px;min-height:58px;padding:13px 15px;border:1px solid #3d3d3d;background:#191919;color:#fff;text-decoration:none;font-size:11px;font-weight:850;letter-spacing:.04em}
+.v3-platform .v3-home-quicklinks a svg:first-child{color:#ff5a00;flex:none}
+.v3-platform .v3-home-quicklinks a svg:last-child{margin-left:auto;flex:none}
+.v3-platform .v3-home-quicklinks a:hover{border-color:#ff5a00;background:#26201c}
+.v3-platform .v3-editorial-stage{margin:0 0 18px}
+.v3-platform .mobile-top-alerts{background:#171717;border:1px solid #383838;padding:15px;margin:0 0 20px}
+.v3-platform .v3-page-banner-aside{display:inline-flex;align-items:center;gap:8px;text-decoration:none}
+.v3-platform .v3-page-banner-aside:hover{color:#c74800}
+.v3-platform .opportunities-page>.v2-page-head,.v3-platform .trade-finder-page>.v2-page-head{display:none}
+.v3-platform .v2-watch-head-actions{display:flex;gap:8px;flex-wrap:wrap}
+.v3-platform .club-page .club-hero{background:#f5f4f0;color:#0b0b0b;border-top:7px solid #ff5a00;padding:30px}
+.v3-platform .club-page .club-hero h1{font:italic 900 clamp(42px,5vw,70px)/.9 var(--v3-display);text-transform:uppercase}
+.v3-platform .club-page .club-kpi{border-radius:0;border-top:3px solid #ff5a00}
+.v3-platform .club-page .club-panel{border-radius:0}
+@media(max-width:800px){.v3-platform .v3-home-quicklinks{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.v3-platform .v3-home-quicklinks a{min-height:49px;padding:10px;font-size:10px}.v3-platform .v3-home-quicklinks a svg{width:15px}.v3-platform .club-page .club-hero{padding:20px}}
