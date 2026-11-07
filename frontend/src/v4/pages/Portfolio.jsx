@@ -3,6 +3,7 @@ import { ArrowRight, Check, Plus, RefreshCw, Search } from "lucide-react";
 import { closeTrade, getOpenTrades, getTradeHistory, getTradingPerformance } from "../../v2/api/trades";
 import Link from "../components/V4Link";
 import "./portfolio.css";
+import "./watchlist.css";
 const coins=n=>n==null?"—":Math.round(Number(n)).toLocaleString("en-GB");
 const signed=n=>n==null?"—":`${Number(n)>0?"+":""}${coins(n)}`;
 const PAGE=20;
