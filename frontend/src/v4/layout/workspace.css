@@ -34,3 +34,30 @@
  .v4-mobile-brand .v4-brand small{font-size:6px;letter-spacing:.055em}
  .v4-topbar .v4-search-link{max-width:116px;min-width:65px}
 }
+
+
+/* Unified light surfaces across all V4 screens, including mobile navigation. */
+.v4-app{--v4-canvas:#f7f7f5;--v4-black:#ffffff;--v4-charcoal:#f2f2ef;--v4-line:#e1e1dc}
+.v4-app .v4-sidebar{background:#fff;color:#171717;border-right:1px solid var(--v4-line)}
+.v4-app .v4-sidebar .v4-brand{color:#111!important}
+.v4-app .v4-sidebar .v4-brand small{color:#666}
+.v4-app .v4-sidebar-caption{color:#777}
+.v4-app .v4-sidebar .v4-nav-link{color:#484848}
+.v4-app .v4-sidebar .v4-nav-link:hover{background:#f5f5f2;color:#111}
+.v4-app .v4-sidebar .v4-nav-link--current{background:#fff0e7;color:#d84c00}
+.v4-app .v4-sidebar-elite{border-radius:7px}
+.v4-app .v4-mobile-nav{background:#fff;color:#222;border-top:1px solid var(--v4-line);box-shadow:0 -3px 18px #0000000a}
+.v4-app .v4-mobile-nav a,.v4-app .v4-mobile-nav button{color:#666}
+.v4-app .v4-mobile-nav .v4-nav-link--current{background:#fff0e7;color:#e65000}
+.v4-app .v4-menu-backdrop{background:#0008}
+.v4-app .v4-menu-sheet{background:#fff;color:#111;border-color:var(--v4-line)}
+.v4-app .v4-menu-title button{color:#111}
+.v4-app .v4-menu-sheet .v4-nav-link{color:#333}
+.v4-app .v4-menu-sheet .v4-nav-link--current{background:#fff0e7;color:#d84c00}
+.v4-app .v4-content{padding-bottom:105px}
+.v4-app .v4-topbar{background:#fff}
+.v4-app .v4-research-heading p{line-height:1.45}
+@media(max-width:500px){
+.v4-app .v4-content{padding:14px 12px 100px}
+.v4-app .v4-mobile-nav a,.v4-app .v4-mobile-nav button{min-height:52px}
+}
