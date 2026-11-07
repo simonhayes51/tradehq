@@ -1,0 +1,41 @@
+/* V3 Trading Desk — real structural replacement for the former Top Card layout. */
+.v3-root .v3-editorial-stage{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(270px,.75fr);gap:18px;align-items:stretch;margin:24px 0 30px}
+.v3-root .v3-lead{background:#f7f6f2;color:#101010;min-width:0;border:1px solid #e0ded9;overflow:hidden}
+.v3-root .v3-lead-masthead{display:flex;justify-content:space-between;align-items:center;gap:12px;background:#0b0b0b;color:#fff;padding:13px 20px}
+.v3-root .v3-edition{display:inline-flex;align-items:center;gap:8px;color:#ff5a00;font:800 13px/1 'Inter',sans-serif;letter-spacing:.08em}
+.v3-root .v3-issue{font:700 10px/1 'Inter',sans-serif;letter-spacing:.14em;color:#aaa}
+.v3-root .v3-lead-story{display:grid;grid-template-columns:minmax(0,1fr) minmax(175px,36%);min-height:440px}
+.v3-root .v3-lead-content{display:flex;flex-direction:column;min-width:0;padding:clamp(22px,3vw,42px)}
+.v3-root .v3-story-kicker{display:flex;align-items:center;gap:9px;font-size:10px;font-weight:800;letter-spacing:.14em;color:#c34a0b}
+.v3-root .v3-live-dot{height:7px;width:7px;border-radius:50%;background:#ff5a00}
+.v3-root .v3-story-separator{color:#bbb}
+.v3-root .v3-lead h1,.v3-root .v3-lead-empty h2{font-family:var(--v3-display,'Barlow Condensed',Impact,sans-serif);font-weight:900;font-style:italic;text-transform:uppercase;letter-spacing:-.02em;font-size:clamp(46px,5vw,82px);line-height:.88;margin:19px 0}
+.v3-root .v3-story-meta{display:flex;align-items:center;flex-wrap:wrap;gap:12px}
+.v3-root .v3-confidence{font-size:11px;font-weight:800;text-transform:uppercase;color:#555}
+.v3-root .v3-story-reason{color:#444;line-height:1.55;font-size:14px;margin:22px 0 16px}
+.v3-root .v3-story-prices{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));border-top:2px solid #111;border-bottom:2px solid #111;margin-top:auto}
+.v3-root .v3-story-prices>div{min-width:0;padding:15px 10px 15px 0}
+.v3-root .v3-story-prices>div+div{border-left:1px solid #d3d3d3;padding-left:12px}
+.v3-root .v3-story-prices span,.v3-root .v3-story-prices small{display:block;font-size:10px;font-weight:750;letter-spacing:.035em}
+.v3-root .v3-story-prices strong{display:block;font:800 clamp(20px,2.2vw,32px)/1.2 var(--v3-display,Impact,sans-serif);font-variant-numeric:tabular-nums;overflow-wrap:anywhere;margin:7px 0}
+.v3-root .v3-story-prices small{font-weight:500;color:#666;letter-spacing:0}
+.v3-root .v3-story-prices .v3-profit{color:#157d45}
+.v3-root .v3-story-actions{display:flex;flex-wrap:wrap;gap:9px;margin-top:20px}
+.v3-root .v3-story-actions button{display:inline-flex;justify-content:center;align-items:center;gap:8px;min-height:48px;padding:0 17px;font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.035em;cursor:pointer;border-radius:2px}
+.v3-root .v3-action-primary{background:#ff5a00;border:2px solid #ff5a00;color:#fff}
+.v3-root .v3-action-outline{background:transparent;border:2px solid #111;color:#111}
+.v3-root .v3-action-outline:disabled{opacity:.65;cursor:default}
+.v3-root .v3-lead-art{border:0;border-left:4px solid #ff5a00;background:radial-gradient(circle at 60% 50%,#363636,#111 65%);color:#fff;display:flex;flex-direction:column;justify-content:space-between;align-items:center;gap:18px;padding:20px;min-width:0;cursor:pointer}
+.v3-root .v3-art-caption{align-self:flex-start;font-size:10px;font-weight:800;letter-spacing:.14em;color:#ff5a00}
+.v3-root .v3-lead-art .ft-card-img,.v3-root .v3-lead-art img{max-width:100%;height:auto;object-fit:contain}
+.v3-root .v3-art-footer{display:flex;justify-content:space-between;gap:12px;align-self:stretch;font-size:12px;font-weight:800;border-top:1px solid #555;padding-top:12px}
+.v3-root .v3-art-footer span{color:#bbb}
+.v3-root .v3-lead-empty{padding:26px;display:grid;gap:22px}
+.v3-root .v3-lead-empty h2{font-size:clamp(42px,5vw,72px)}
+.v3-root .v3-lead-empty p{color:#555;max-width:50ch;line-height:1.5}
+.v3-root .v3-editorial-stage .market-overview{min-width:0;border:1px solid #393939;border-top:5px solid #ff5a00;background:#171717;border-radius:0;box-shadow:none}
+.v3-root .v3-editorial-stage .market-overview-head h2{font-family:var(--v3-display,Impact,sans-serif);font-size:clamp(29px,3vw,44px);font-weight:900;line-height:1;text-transform:uppercase;letter-spacing:-.015em}
+.v3-root .v3-editorial-stage .pulse-stats{grid-template-columns:1fr}
+.v3-root .v3-editorial-stage .pulse-stats .metric{border-bottom:1px solid #353535}
+@media(max-width:1200px){.v3-root .v3-editorial-stage{grid-template-columns:1fr}.v3-root .v3-editorial-stage .pulse-stats{grid-template-columns:repeat(3,1fr)}}
+@media(max-width:650px){.v3-root .v3-editorial-stage{margin:12px 0 22px;gap:12px}.v3-root .v3-lead-masthead{padding:12px 15px}.v3-root .v3-issue{display:none}.v3-root .v3-lead-story{display:flex;flex-direction:column-reverse}.v3-root .v3-lead-art{min-height:205px;max-height:275px;border-left:0;border-bottom:4px solid #ff5a00;padding:12px 16px;gap:5px}.v3-root .v3-lead-art .ft-card-img,.v3-root .v3-lead-art img{max-height:180px;width:auto}.v3-root .v3-art-footer{font-size:10px;padding-top:5px}.v3-root .v3-lead-content{padding:20px}.v3-root .v3-lead h1{font-size:clamp(46px,13vw,68px);margin:13px 0}.v3-root .v3-story-reason{margin:14px 0}.v3-root .v3-story-prices{grid-template-columns:repeat(2,1fr)}.v3-root .v3-story-prices>div:last-child{grid-column:span 2;border-left:0;border-top:1px solid #d3d3d3;padding:10px 0}.v3-root .v3-story-actions button{flex:1}.v3-root .v3-editorial-stage .pulse-stats{grid-template-columns:1fr}.v3-root .v3-lead-empty{padding:20px}}
