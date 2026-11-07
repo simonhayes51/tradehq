@@ -5,7 +5,7 @@ import "../v3/design/tokens.css";
 import "../v3/design/billing.css";
 import "../v3/design/member.css";
 import "../v3/design/trading-desk.css";
-import Nav from "./components/Nav";
+import PlatformNav from "../v3/PlatformNav";
 import LimitReachedPrompt from "./components/LimitReachedPrompt";
 import HomeDashboard from "./pages/HomeDashboard/HomeDashboard";
 import PlayerPage from "./pages/PlayerPage/PlayerPage";
@@ -120,8 +120,8 @@ function NotFound() {
 
 function ShellLayout({ children }) {
   return (
-    <div className="v2-root v3-root">
-      <Nav />
+    <div className="v2-root v3-root v3-platform">
+      <PlatformNav />
       <div className="v2-shell-content">{children}</div>
       <LimitReachedPrompt />
     </div>
