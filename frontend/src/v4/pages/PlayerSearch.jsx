@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { useSearchParams } from "react-router-dom";
+import Link from "../components/V4Link";
 import { Search, ArrowRight } from "lucide-react";
 import { useFutggPlayers } from "../../v2/hooks/useFutggMarket";
 import "../components/research.css";
