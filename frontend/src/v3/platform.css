@@ -1,0 +1,86 @@
+/* EAFC.Live 3.0 — NEW application architecture, not the V2 sidebar. */
+.v3-platform{--v3-orange:#ff5a00;--v3-ink:#0b0b0b;--v3-paper:#f5f4f0;--v3-line:#343434;--v3-display:'Barlow Condensed',Impact,'Arial Narrow',sans-serif;--v3-body:Inter,system-ui,sans-serif;background:#0b0b0b;color:#f5f4f0;min-height:100vh;font-family:var(--v3-body)}
+.v3-platform .v2-shell-content{margin-left:252px;min-width:0;width:calc(100% - 252px);padding:0 28px 60px}
+.v3-rail{position:fixed;left:0;top:0;bottom:0;width:252px;z-index:40;background:#111;border-right:1px solid #343434;display:flex;flex-direction:column;overflow-y:auto;padding:26px 16px 18px;scrollbar-width:thin}
+.v3-rail-brand{display:flex;align-items:center;gap:11px;color:white;text-decoration:none;padding:0 7px 25px;font:italic 900 28px/.9 var(--v3-display);letter-spacing:-.025em}
+.v3-rail-brand>span:last-child{display:block}.v3-rail-brand small{display:block;font:800 9px/1.5 var(--v3-body);letter-spacing:.2em;color:#a8a8a8;margin-top:7px}
+.v3-slash{display:grid;place-items:center;background:#ff5a00;color:white;width:37px;height:43px;transform:skew(-12deg);font:900 34px/1 var(--v3-display)}
+.v3-orange{color:#ff5a00}
+.v3-rail-group-label{font:800 10px/1.2 var(--v3-body);color:#797979;letter-spacing:.15em;margin:22px 13px 11px}
+.v3-rail-links{display:flex;flex-direction:column;gap:3px}
+.v3-nav-link{display:flex;align-items:center;gap:12px;padding:12px 13px;min-height:45px;text-decoration:none;color:#b9b9b9;font-size:13px;font-weight:650;border-left:3px solid transparent;position:relative}
+.v3-nav-link:hover{background:#222;color:#fff}
+.v3-nav-link.is-active{background:#28221e;color:#fff;border-left-color:#ff5a00}
+.v3-nav-link.is-active svg{color:#ff5a00}
+.v3-nav-active-marker{margin-left:auto;width:5px;height:5px;background:#ff5a00;border-radius:50%}
+.v3-rail-upgrade{display:flex;align-items:center;gap:10px;padding:15px 11px;background:#ff5a00;color:#fff;text-decoration:none;margin-top:auto}
+.v3-rail-upgrade>span{flex:1;min-width:0}.v3-rail-upgrade strong,.v3-rail-upgrade small{display:block}.v3-rail-upgrade strong{font-size:12px;font-weight:900;letter-spacing:.04em}.v3-rail-upgrade small{font-size:10px;opacity:.88;margin-top:3px}
+.v3-rail-footer{display:flex;justify-content:space-between;gap:6px;font:800 9px var(--v3-body);letter-spacing:.08em;color:#7c7c7c;padding:20px 4px 0}
+.v3-mobile-dock,.v3-mobile-overlay{display:none}
+.v3-platform :is(a,button,input,select,textarea):focus-visible{outline:3px solid #ff5a00;outline-offset:3px}
+.v3-platform .v2-destination{max-width:1440px;margin:0 auto}
+.v3-platform .v3-page-banner{background:#f5f4f0;color:#0b0b0b;border-top:7px solid #ff5a00;padding:30px 34px;margin:24px 0 22px;display:flex;align-items:end;justify-content:space-between;gap:18px}
+.v3-platform .v3-page-banner h1{font:italic 900 clamp(42px,5vw,72px)/.9 var(--v3-display);text-transform:uppercase;letter-spacing:-.02em;margin:12px 0}
+.v3-platform .v3-page-banner p{font-size:14px;line-height:1.5;color:#424242;max-width:64ch;margin:0}
+.v3-platform .v3-page-kicker{color:#d34d00;font:900 11px var(--v3-body);letter-spacing:.14em}
+.v3-platform .v3-page-banner-aside{flex:none;font:italic 900 38px var(--v3-display);color:#ff5a00}
+.v3-platform .trade-finder-page>.v2-page-head,.v3-platform .opportunities-page>.v2-page-head{display:none}
+.v3-platform .finder-controls{background:#191919;border:1px solid #3b3b3b;border-top:4px solid #ff5a00;padding:20px;box-shadow:none;border-radius:0}
+.v3-platform .finder-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(255px,1fr));gap:13px}
+.v3-platform .finder-card{background:#171717;border:1px solid #383838;border-top:3px solid #ff5a00;border-radius:0;box-shadow:none}
+.v3-platform .finder-card h2{font:italic 900 29px/.95 var(--v3-display);text-transform:uppercase}
+.v3-platform .v2-watch-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(265px,1fr));gap:14px}
+.v3-platform .v2-watch-card{border-radius:0;border:1px solid #3a3a3a;border-top:3px solid #ff5a00;background:#171717}
+.v3-platform .billing-v2{max-width:1100px}
+.v3-platform .fut-dashboard-shell,.v3-platform .fut-main{background:transparent}
+.v3-platform .fut-main{padding:0}
+.v3-platform .fut-topbar{background:#111;border-bottom:1px solid #333;padding:18px 0}
+.v3-platform .mobile-section-tabs{display:none}
+.v3-platform .v3-editorial-stage{grid-template-columns:minmax(0,1fr) 260px}
+.v3-platform .v3-lead-story{min-height:340px}
+.v3-platform .v3-lead-art{max-height:430px}
+.v3-platform .market-overview{padding:18px}
+.v3-platform .market-overview-head h2{font-size:30px}
+.v3-platform .pulse-stats{display:grid;grid-template-columns:1fr}
+.v3-platform .v3-lead h1{font-size:clamp(44px,4.5vw,70px)}
+@media(max-width:1180px){.v3-platform .v2-shell-content{padding:0 18px 45px}.v3-platform .v3-editorial-stage{grid-template-columns:1fr}.v3-platform .v3-lead-story{min-height:0}}
+@media(max-width:800px){
+ .v3-platform .v2-shell-content{margin-left:0;width:100%;padding:0 12px calc(86px + env(safe-area-inset-bottom,0px))}
+ .v3-rail{display:none}
+ .v3-mobile-dock{position:fixed;bottom:0;left:0;right:0;z-index:70;display:grid;grid-template-columns:repeat(5,1fr);align-items:stretch;background:#111;border-top:1px solid #3b3b3b;padding:5px 5px calc(7px + env(safe-area-inset-bottom,0px));box-shadow:0 -12px 32px rgba(0,0,0,.45)}
+ .v3-dock-item{display:flex;align-items:center;justify-content:center;flex-direction:column;gap:5px;min-height:54px;background:none;border:0;border-top:3px solid transparent;color:#a8a8a8;text-decoration:none;font:750 10px var(--v3-body);padding:6px 2px}
+ .v3-dock-item.is-active{color:#ff5a00;border-top-color:#ff5a00}
+ .v3-mobile-overlay{display:block;position:fixed;inset:0;z-index:69}
+ .v3-mobile-scrim{position:absolute;inset:0;background:rgba(0,0,0,.75);border:0;width:100%}
+ .v3-mobile-sheet{position:absolute;bottom:calc(69px + env(safe-area-inset-bottom,0px));left:8px;right:8px;max-height:70vh;overflow:auto;background:#191919;border:1px solid #4a4a4a;padding:12px}
+ .v3-mobile-sheet-head{display:flex;justify-content:space-between;align-items:center;padding:10px;color:#ff5a00;font-size:12px;letter-spacing:.1em}
+ .v3-mobile-sheet-head button{background:none;border:0;color:white}
+ .v3-mobile-sheet .v3-nav-link{min-height:48px}
+ .v3-platform .fut-topbar{padding:12px 0}
+ .v3-platform .v3-page-banner{padding:22px 20px;margin:10px 0 18px}
+ .v3-platform .v3-page-banner-aside{display:none}
+ .v3-platform .v3-page-banner h1{font-size:clamp(40px,10vw,62px)}
+ .v3-platform .v3-editorial-stage{margin-top:12px}
+ .v3-platform .v3-lead-story{display:grid;grid-template-columns:1fr 125px;min-height:0}
+ .v3-platform .v3-lead-art{border-left:3px solid #ff5a00;border-bottom:0;min-height:0;max-height:none}
+ .v3-platform .v3-lead-content{padding:15px}
+ .v3-platform .v3-lead h1{font-size:clamp(35px,8vw,54px);margin:12px 0}
+ .v3-platform .v3-story-reason{font-size:12px;margin:10px 0}
+ .v3-platform .v3-story-prices{grid-template-columns:repeat(2,minmax(0,1fr))}
+ .v3-platform .v3-story-prices>div:last-child{display:none}
+ .v3-platform .v3-story-prices strong{font-size:23px}
+ .v3-platform .v3-story-actions{flex-direction:column}
+ .v3-platform .v3-story-actions button{min-height:42px}
+ .v3-platform .v3-art-caption,.v3-platform .v3-art-footer{font-size:8px}
+ .v3-platform .v3-lead-art img{max-height:150px}
+ .v3-platform .pulse-stats{grid-template-columns:repeat(3,minmax(0,1fr));gap:4px}
+ .v3-platform .market-overview{padding:12px}
+ .v3-platform .market-overview-head h2{font-size:25px}
+ .v3-platform .market-overview-head p{font-size:12px}
+ .v3-platform .market-overview .metric{padding:9px 4px}
+ .v3-platform .market-overview .metric strong{font-size:19px}
+ .v3-platform .mobile-top-alerts{margin-top:12px}
+ .v3-platform .finder-grid,.v3-platform .v2-watch-grid{grid-template-columns:1fr}
+}
+@media(max-width:390px){.v3-platform .v3-lead-story{grid-template-columns:1fr 102px}.v3-platform .v3-lead-art{padding:8px}.v3-platform .v3-story-meta{gap:5px}.v3-platform .v3-lead h1{font-size:35px}.v3-platform .v3-story-prices strong{font-size:19px}}
+@media(prefers-reduced-motion:reduce){.v3-platform *{animation-duration:.01ms!important;transition-duration:.01ms!important}}
