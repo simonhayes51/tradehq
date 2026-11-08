@@ -803,8 +803,9 @@ async def _pc_market_rows(provider, rows):
             WITH latest AS (
               SELECT DISTINCT ON (source_card_id) source_card_id,
                      lowest_bin, captured_at, source_age_text
-              FROM futgg_bin_history
+              FROM futbot_pc_bin_history
               WHERE game_year=$2 AND platform='pc' AND source_card_id=ANY($1::bigint[])
+                AND captured_at >= NOW() - INTERVAL '30 minutes'
               ORDER BY source_card_id, captured_at DESC
             ), recent AS (
               SELECT source_card_id, sold_price, approximate_sold_at
