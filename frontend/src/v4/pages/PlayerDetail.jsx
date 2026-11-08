@@ -18,7 +18,7 @@ export default function PlayerDetail(){
  const p=q.data,requiresAccount=p?.requires_account===true||q.error?.response?.status===401;
  async function save(){if(watch==="saving"||watch==="saved"||!p)return;setWatch("saving");try{await addWatch({player_name:p.name,card_id:String(cardId),version:p.rarity||null,platform,source:"futgg"});setWatch("saved")}catch(e){if(e?.response?.status===409)setWatch("saved");else if(e?.response?.status===401)navigate(`/signup?from=${encodeURIComponent(`/players/${cardId}`)}`);else setWatch("error")}}
  if(q.isLoading)return <div className="v4-research-state" role="status">Loading card analysis…</div>;
- if(q.isError&&!requiresAccount)return <div className="v4-research-state" role="alert">{market==="pc"&&q.error?.response?.status===404?"No fresh independent PC prices and sales for this card.":"Could not load this card."} <button type="button" onClick={()=>q.refetch()}>Retry</button></div>;
+ if(q.isError&&!requiresAccount)return <div className="v4-research-state" role="alert">{market==="pc"&&q.error?.response?.status===404?"No fresh independent PC prices and sales for this card.":"Could not load this card."} {market==="pc"?<button type="button" onClick={()=>setSearchParams({platform:"console"})}>View console instead</button>:null} <button type="button" onClick={()=>q.refetch()}>Retry</button></div>;
  if(!p&&requiresAccount)return <div className="v4-research-state">Sign in to access this card. <Link to={`/signup?from=${encodeURIComponent(`/players/${cardId}`)}`}>Create an account</Link></div>;
  if(!p)return <div className="v4-research-state">Card data unavailable. <Link to="/players">Back to search</Link></div>;
  const profit=p.minimum_profit_at_max_buy??p.expected_profit_after_tax;
