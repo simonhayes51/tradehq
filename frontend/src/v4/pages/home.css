@@ -29,3 +29,21 @@
 .v4-home-state button{background:none;border:0;text-decoration:underline;color:var(--v4-orange)}
 @media(max-width:680px){.v4-home-heading{align-items:start;flex-direction:column;gap:12px}.v4-home-heading h1{font-size:clamp(37px,10vw,52px)}.v4-home-heading p{max-width:36ch}.v4-home-heading>.v4-button{min-height:39px}.v4-home-shortcuts{grid-template-columns:1fr 1fr;gap:7px;margin:12px 0}.v4-home-shortcuts a{min-height:46px;padding:10px;font-size:11px}.v4-home-feed-head{padding:13px}.v4-home-feed-head h2{font-size:28px}.v4-opportunity{grid-template-columns:90px minmax(0,1fr);gap:12px;padding:13px}.v4-opportunity-art{min-height:120px}.v4-opportunity-art img{max-height:110px}.v4-opportunity-copy h3{font-size:27px;margin:4px 0 10px}.v4-opportunity-numbers{gap:7px;margin-bottom:9px}.v4-opportunity-numbers strong{font-size:24px}}
 @media(max-width:350px){.v4-opportunity{grid-template-columns:78px minmax(0,1fr);gap:9px}.v4-opportunity-numbers strong{font-size:21px}}
+
+/* Match the compact light card system used on Finder and Watchlist. */
+.v4-home-shortcuts{grid-template-columns:repeat(auto-fit,minmax(145px,1fr))}
+.v4-opportunity{grid-template-columns:86px minmax(0,1fr);gap:12px;padding:12px}
+.v4-opportunity-art{background:#f6f5f2;min-height:108px;border:1px solid #e9e8e4}
+.v4-opportunity-art img{max-height:105px}
+.v4-opportunity-art>span{color:#666;font:800 14px var(--v4-body)}
+.v4-opportunity-copy h3{font:800 19px/1.15 var(--v4-body);letter-spacing:-.03em;text-transform:none;margin:4px 0 9px;overflow-wrap:anywhere}
+.v4-opportunity-numbers strong{font:800 19px/1.25 var(--v4-body);letter-spacing:-.035em}
+.v4-home-feed-head h2{font-size:clamp(25px,4vw,32px)}
+@media(max-width:680px){
+.v4-opportunity{grid-template-columns:76px minmax(0,1fr);gap:10px;padding:10px}
+.v4-opportunity-art{min-height:96px}
+.v4-opportunity-art img{max-height:95px}
+.v4-opportunity-copy h3{font-size:17px}
+.v4-opportunity-numbers strong{font-size:17px}
+.v4-opportunity-numbers span{font-size:9px}
+}
