@@ -962,6 +962,7 @@ async def get_player_detail(
     card_id: int,
     provider: FutggMarketDataProvider = ProviderDep,
     viewer: Viewer = Depends(get_viewer),
+    platform: str = Query("console", pattern="^(console|pc)$"),
 ) -> Dict[str, Any]:
     row = await provider.get_player(card_id)
     if row is None:
@@ -973,7 +974,7 @@ async def get_player_detail(
     # otherwise. One indexed per-card rebuild is cheap here and keeps every
     # number on the page on the same current 7-day valuation window.
     try:
-        live_state = await provider.get_live_card_market_state(card_id)
+        live_state = await provider.get_live_card_market_state(card_id) if platform == "console" else None
         if live_state:
             row = {**row, **live_state}
     except Exception:
@@ -983,8 +984,13 @@ async def get_player_detail(
     # query for raw sales, so the trend layer runs with real data here
     # rather than degrading to "trend unknown". List endpoints fetch
     # sales in batch (see _score_and_filter's caller).
+    if platform == "pc":
+        pc_rows = await _pc_market_rows(provider, [row])
+        if not pc_rows:
+            raise HTTPException(404, "No fresh independent PC market prices and sales for this card")
+        row = pc_rows[0]
     try:
-        sales = await provider.get_recent_sales(card_id)
+        sales = await provider.get_recent_sales(card_id) if platform == "console" else (await _pc_sales_for_rows(provider, [row])).get(card_id, [])
     except Exception:
         log.warning("get_recent_sales failed for card_id=%s", card_id, exc_info=True)
         sales = []
@@ -993,7 +999,7 @@ async def get_player_detail(
     # only actually used by evaluate_card when sales evidence is missing or
     # stale (app/services/futgg_bin_valuation.py).
     try:
-        bin_observations = await provider.get_bin_observations_by_ids([card_id])
+        bin_observations = await provider.get_bin_observations_by_ids([card_id]) if platform == "console" else {}
     except Exception:
         log.warning("get_bin_observations_by_ids failed for card_id=%s", card_id, exc_info=True)
         bin_observations = {}
@@ -1019,6 +1025,7 @@ async def get_player_detail(
     # that prefer the grouped shape.
     payload = {
         "source": "futgg",
+        "platform": platform,
         **_item_with_intelligence(row, ci),
         "player": _serialize_player(row),
         "intelligence": _serialize_intelligence(ci),
