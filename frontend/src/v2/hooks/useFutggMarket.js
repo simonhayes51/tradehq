@@ -55,11 +55,11 @@ export function useFutggPlayers(params = {}, { enabled = true } = {}) {
 }
 
 // GET /api/v2/players/{card_id} - full FUT.GG detail for one card.
-export function useFutggPlayer(cardId) {
+export function useFutggPlayer(cardId, platform = "console") {
   return useQuery({
-    queryKey: ["v2", "futgg", "player", cardId],
+    queryKey: ["v2", "futgg", "player", cardId, platform],
     queryFn: async ({ signal }) =>
-      (await api.get(`/api/v2/players/${cardId}`, { signal, ...DETAIL_REQUEST_OPTS })).data,
+      (await api.get(`/api/v2/players/${cardId}`, { signal, params: { platform }, ...DETAIL_REQUEST_OPTS })).data,
     enabled: !!cardId,
     retry: false,
     staleTime: 30_000,
