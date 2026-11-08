@@ -27,6 +27,7 @@ function OpportunitiesScreen(){
  return <ResearchScreen type="opportunities" platform={platform} setPlatform={setPlatform} query={query} risk={risk} setRisk={setRisk} confidence={confidence} setConfidence={setConfidence} maxPrice="" setMaxPrice={()=>{}}/>;
 }
 function FinderScreen(){
+ const [platform,setPlatform]=useState("console");
  const [risk,setRisk]=useState("");
  const [confidence,setConfidence]=useState("");
  const [maxPrice,setMaxPrice]=useState("");
