@@ -33,6 +33,16 @@ class TestPageCaptureClassification:
             price_section_count=0,
         ) == "no_price_section"
 
+    def test_page_navigation_403_is_classified_as_sitewide_block(self):
+        assert classify_page_capture_error(
+            nav_status=403,
+            nav_cf_mitigated=None,
+            data_status=None,
+            data_cf_mitigated=None,
+            parse_error=False,
+            price_section_count=0,
+        ) == "page_capture_nav_403"
+
     def test_tradeable_page_without_api_response_remains_timeout(self):
         assert classify_page_capture_error(
             nav_status=200,
@@ -292,6 +302,14 @@ class TestAdaptiveThrottle:
         switch, reason = should_fall_back_to_page_capture(stats, t)
         assert switch
         assert "fully-throttled batches" in reason
+
+    def test_page_navigation_403_trips_after_small_sitewide_sample(self):
+        assert not circuit_breaker_tripped({
+            "ok": 0, "failed": 1, "errors": {"page_capture_nav_403": 1},
+        })
+        assert circuit_breaker_tripped({
+            "ok": 0, "failed": 2, "errors": {"page_capture_nav_403": 2},
+        })
 
     def test_fully_throttled_batch_streak_resets_when_clean(self):
         t = AdaptiveThrottle(8, 0.5)
