@@ -180,6 +180,42 @@ function DiscordServerPlansSection() {
   );
 }
 
+function Fc27SeasonPassOffer() {
+  const [offer, setOffer] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let alive = true;
+    api.get("/api/billing/fc27-pass/offer").then(({ data }) => {
+      if (alive) setOffer(data);
+    }).catch(() => {});
+    return () => { alive = false; };
+  }, []);
+  if (!offer?.available) return null;
+  async function buyPass() {
+    setBusy(true);
+    setError("");
+    try {
+      const { data } = await api.post("/api/billing/fc27-pass/checkout");
+      if (!data?.checkoutUrl) throw new Error("Checkout link unavailable");
+      window.location.assign(data.checkoutUrl);
+    } catch (err) {
+      setError(err?.response?.data?.detail || "Unable to start checkout. No payment was taken.");
+      setBusy(false);
+    }
+  }
+  return (
+    <SectionCard title="FC27 Season Pass — £5 one-off" className="billing-v2-plan">
+      <p>Unlock Elite until 31 August 2027. Pay once — no recurring subscription.</p>
+      <p>Limited-time offer. Ends {new Date(offer.sales_end_utc).toLocaleString("en-GB", { timeZone: "Europe/London" })} UK time.</p>
+      <button type="button" className="billing-v2-btn primary" onClick={buyPass} disabled={busy}>
+        {busy ? "Opening secure checkout…" : "Get FC27 Season Pass — £5"}
+      </button>
+      {error ? <p role="alert" className="billing-v2-msg err">{error}</p> : null}
+    </SectionCard>
+  );
+}
+
 // What a customer is told when a billing call fails.
 //
 // The three handlers below used to render `data.detail` straight onto the
@@ -505,6 +541,8 @@ export default function Billing() {
 
             {success ? <div className="billing-v2-msg ok">{success}</div> : null}
             {error ? <div className="billing-v2-msg err"><AlertTriangle size={15} /> {error}</div> : null}
+
+            <Fc27SeasonPassOffer />
 
             <section className="v3-billing-offer-grid" aria-label="Choose your Elite plan">
               <div className="v3-billing-checkout">
