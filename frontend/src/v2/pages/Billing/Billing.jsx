@@ -529,14 +529,10 @@ export default function Billing() {
           </>
         ) : (
           <>
-            <header className="v3-billing-editorial">
-              <div className="v3-billing-copy">
-                <span className="v3-billing-kicker">EAFC.LIVE / ELITE MEMBERSHIP</span>
-                <h1>YOUR EDGE.<br/><em>YOUR MARKET.</em></h1>
-                <p>{unlockContext ? contextSentence : "The full trading desk. Every eligible opportunity, deeper research, more alerts and your complete portfolio history."}</p>
-                <div className="v3-billing-tags"><span>LIVE OPPORTUNITIES</span><span>TRADE FINDER</span><span>PORTFOLIO</span></div>
-              </div>
-              <div className="v3-billing-stamp" aria-hidden="true"><Crown size={42}/><strong>ELITE</strong><span>FULL ACCESS</span></div>
+            <header className="billing-v2-head">
+              {unlockContext ? <span className="billing-v2-context">{contextSentence}</span> : null}
+              <h1>Upgrade to EAFC.Live Elite</h1>
+              <p>{unlockContext ? contextSentence : "Get the full EAFC.Live trading toolkit."}</p>
             </header>
 
             {success ? <div className="billing-v2-msg ok">{success}</div> : null}
@@ -544,9 +540,6 @@ export default function Billing() {
 
             <Fc27SeasonPassOffer />
 
-            <section className="v3-billing-offer-grid" aria-label="Choose your Elite plan">
-              <div className="v3-billing-checkout">
-                <div className="v3-billing-offer-label">01 / CHOOSE YOUR MEMBERSHIP</div>
             <div className="billing-v2-toggle" role="tablist" aria-label="Billing cycle">
               <button role="tab" aria-selected={billingCycle === "monthly"} className={billingCycle === "monthly" ? "active" : ""} onClick={() => setBillingCycle("monthly")}>Monthly</button>
               <button role="tab" aria-selected={billingCycle === "yearly"} className={billingCycle === "yearly" ? "active" : ""} onClick={() => setBillingCycle("yearly")}>
@@ -579,17 +572,6 @@ export default function Billing() {
               </button>
               <div className="billing-v2-secure"><Shield size={13} /> Secure payment via Stripe · Cancel any time</div>
             </SectionCard>
-
-
-              </div>
-              <aside className="v3-billing-value">
-                <div className="v3-billing-offer-label">02 / WHAT YOU UNLOCK</div>
-                <h2>ALL THE DATA.<br/>NONE OF THE GUESSWORK.</h2>
-                <ul>{ELITE_FEATURES.slice(0,5).map(feature=><li key={feature.title}><Check size={17}/><span>{feature.title}</span></li>)}</ul>
-                <p>Free accounts remain available. Upgrade when you want the full set of tools and opportunities.</p>
-                <div className="v3-billing-value-foot"><Shield size={16}/> Secure checkout through Stripe</div>
-              </aside>
-            </section>
 
             <SectionCard title="What's included">
               <div className="billing-v2-feature-grid">
