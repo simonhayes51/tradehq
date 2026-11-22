@@ -4381,6 +4381,24 @@ async def create_checkout_session(
 
 # FC27 promotional pass: one-off checkout, never a Stripe subscription.
 # Set FC27_PASS_SALES_END_UTC to the actual launch deadline before publishing.
+@app.get("/api/billing/fc27-pass/offer")
+async def fc27_pass_offer():
+    deadline = os.getenv("FC27_PASS_SALES_END_UTC")
+    available = False
+    if deadline:
+        try:
+            cutoff = datetime.fromisoformat(deadline.replace("Z", "+00:00"))
+            available = cutoff.tzinfo is not None and datetime.now(timezone.utc) < cutoff
+        except ValueError:
+            pass
+    return {
+        "available": available,
+        "price_display": "£5",
+        "expires_at": "2027-08-31",
+        "sales_end_utc": deadline if available else None,
+    }
+
+
 @app.post("/api/billing/fc27-pass/checkout")
 async def create_fc27_pass_checkout(
     user_id: str = Depends(get_current_user),
