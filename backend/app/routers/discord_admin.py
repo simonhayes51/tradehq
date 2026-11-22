@@ -490,6 +490,19 @@ async def send_opted_in_user_message(
     content = body.content.strip()
     if not content:
         raise HTTPException(status_code=422, detail="Message is empty")
+    import hashlib
+    fingerprint = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    if not body.test_discord_id:
+        duplicate = await conn.fetchval(
+            """SELECT EXISTS(SELECT 1 FROM discord_server_audit_log
+               WHERE action='opt_in_user_message'
+                 AND created_at > NOW() - INTERVAL '24 hours'
+                 AND details->>'fingerprint'=$1
+                 AND details->>'test'='false')""",
+            fingerprint,
+        )
+        if duplicate:
+            raise HTTPException(status_code=409, detail="This message was already sent in the last 24 hours")
     client = DiscordClient()
     if body.test_discord_id:
         # Test must target the admin's own linked Discord identity.
@@ -528,7 +541,7 @@ async def send_opted_in_user_message(
         failed += int(status not in (200, 201))
         await asyncio.sleep(1)
     await _audit(conn, str(admin["user_id"]), None, "opt_in_user_message", {
-        "test": bool(body.test_discord_id), "attempted": len(recipients),
+        "test": bool(body.test_discord_id), "fingerprint": fingerprint, "attempted": len(recipients),
         "sent": sent, "failed": failed, "chars": len(content),
     })
     return {"attempted": len(recipients), "sent": sent, "failed": failed, "limit": 50}
