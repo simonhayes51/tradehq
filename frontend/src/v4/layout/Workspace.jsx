@@ -3,6 +3,7 @@ import { Link, useLocation } from "react-router-dom";
 import { BarChart2, Home, Menu, Search, Sliders, Star, X, Zap } from "lucide-react";
 import "../design/foundation.css";
 import "./workspace.css";
+import "./classic-brand.css";
 
 const MAIN = [
  {path:"/",label:"Home",icon:Home},
@@ -23,7 +24,7 @@ const EXTRA = [
  {path:"/chat",label:"Ask The Edge"},
 ];
 function isCurrent(path,target){return target==="/"?path==="/":path===target||path.startsWith(target+"/");}
-function Brand({prefix=""}){return <Link to={prefix||"/"} className="v4-brand" aria-label="The Edge home"><span className="v4-brand-mark">/</span><span>edge<small>ULTIMATE TEAM TOOLS</small></span></Link>;}
+function Brand({prefix=""}){return <Link to={prefix||"/"} className="v4-brand" aria-label="EAFC.Live home"><span className="v4-brand-mark">FC</span><span>EAFC.Live<small>ULTIMATE TEAM TRADING</small></span></Link>;}
 function NavLink({item,path,onClick,prefix=""}){
  const Icon=item.icon;
  return <Link to={prefix && ["/","/opportunities","/trade-finder","/watchlist","/players","/portfolio","/account","/insights"].includes(item.path)?prefix+item.path:item.path} onClick={onClick} className={"v4-nav-link"+(isCurrent(path,item.path)?" v4-nav-link--current":"")} aria-current={isCurrent(path,item.path)?"page":undefined}>{Icon?<Icon size={18} aria-hidden="true"/>:null}<span>{item.label}</span></Link>;
