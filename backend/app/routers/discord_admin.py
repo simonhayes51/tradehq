@@ -483,43 +483,50 @@ async def user_messaging_audience(admin=Depends(require_admin), conn=Depends(get
 async def send_opted_in_user_message(
     body: UserMessage, admin=Depends(require_admin), conn=Depends(get_db)
 ):
-    """Admin-initiated, capped send to explicitly opted-in users only.
-    Each recipient is checked again before sending. No retry loop for blocked DMs.
+    """Deliver one bounded batch; track each recipient durably by campaign fingerprint.
+
+    The caller repeats until remaining == 0. Failed deliveries are recorded and
+    not automatically retried (to avoid duplicate DMs on uncertain failures).
     """
     import asyncio
+    import hashlib
     content = body.content.strip()
     if not content:
         raise HTTPException(status_code=422, detail="Message is empty")
-    import hashlib
     fingerprint = hashlib.sha256(content.encode("utf-8")).hexdigest()
-    if not body.test_discord_id:
-        duplicate = await conn.fetchval(
-            """SELECT EXISTS(SELECT 1 FROM discord_server_audit_log
-               WHERE action='opt_in_user_message'
-                 AND created_at > NOW() - INTERVAL '24 hours'
-                 AND details->>'fingerprint'=$1
-                 AND details->>'test'='false')""",
-            fingerprint,
-        )
-        if duplicate:
-            raise HTTPException(status_code=409, detail="This message was already sent in the last 24 hours")
     client = DiscordClient()
     if body.test_discord_id:
-        # Test must target the admin's own linked Discord identity.
         own_id = await conn.fetchval("SELECT discord_id FROM users WHERE id=$1", str(admin["user_id"]))
         if not own_id or str(own_id) != body.test_discord_id:
             raise HTTPException(status_code=403, detail="Test messages can only be sent to your own Discord account")
         recipients = [str(own_id)]
     else:
-        rows = await conn.fetch(
-            """SELECT DISTINCT discord_id FROM users
-               WHERE discord_id IS NOT NULL
-                 AND privacy_settings->>'discord_marketing_opt_in'='true'
-               ORDER BY discord_id LIMIT 50"""
-        )
-        recipients = [str(row["discord_id"]) for row in rows]
+        # Never reselect a recipient for this campaign, including failed sends.
+        # A transaction-scoped advisory lock prevents two admins from overlapping.
+        async with conn.transaction():
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", fingerprint)
+            rows = await conn.fetch(
+                """SELECT DISTINCT u.discord_id
+                   FROM users u
+                   WHERE u.discord_id IS NOT NULL
+                     AND u.privacy_settings->>'discord_marketing_opt_in'='true'
+                     AND NOT EXISTS (
+                       SELECT 1 FROM discord_message_campaign_recipients r
+                       WHERE r.fingerprint=$1 AND r.discord_id=u.discord_id::text
+                     )
+                   ORDER BY u.discord_id LIMIT 50""", fingerprint
+            )
+            recipients = [str(row["discord_id"]) for row in rows]
+            for discord_id in recipients:
+                await conn.execute(
+                    """INSERT INTO discord_message_campaign_recipients
+                       (fingerprint, discord_id, status)
+                       VALUES ($1,$2,'pending') ON CONFLICT DO NOTHING""",
+                    fingerprint, discord_id
+                )
     sent = 0
     failed = 0
+    skipped = 0
     for discord_id in recipients:
         if not body.test_discord_id:
             still_opted_in = await conn.fetchval(
@@ -528,23 +535,52 @@ async def send_opted_in_user_message(
                 discord_id,
             )
             if not still_opted_in:
+                skipped += 1
+                await conn.execute(
+                    """UPDATE discord_message_campaign_recipients SET status='skipped', updated_at=NOW()
+                       WHERE fingerprint=$1 AND discord_id=$2""", fingerprint, discord_id
+                )
                 continue
-        status, dm = await client._request("POST", "/users/@me/channels", payload={"recipient_id": discord_id})
-        if status not in (200, 201) or not isinstance(dm, dict) or not dm.get("id"):
-            failed += 1
-            continue
-        status, _ = await client._request(
-            "POST", f"/channels/{dm['id']}/messages",
-            payload={"content": content, "allowed_mentions": {"parse": []}},
-        )
-        sent += int(status in (200, 201))
-        failed += int(status not in (200, 201))
+        try:
+            status, dm = await client._request("POST", "/users/@me/channels", payload={"recipient_id": discord_id})
+            if status not in (200, 201) or not isinstance(dm, dict) or not dm.get("id"):
+                success = False
+            else:
+                status, _ = await client._request(
+                    "POST", f"/channels/{dm['id']}/messages",
+                    payload={"content": content, "allowed_mentions": {"parse": []}},
+                )
+                success = status in (200, 201)
+        except Exception:
+            success = False
+        sent += int(success)
+        failed += int(not success)
+        if not body.test_discord_id:
+            await conn.execute(
+                """UPDATE discord_message_campaign_recipients SET status=$3, updated_at=NOW()
+                   WHERE fingerprint=$1 AND discord_id=$2""",
+                fingerprint, discord_id, "sent" if success else "failed"
+            )
         await asyncio.sleep(1)
+    remaining = 0
+    if not body.test_discord_id:
+        remaining = await conn.fetchval(
+            """SELECT COUNT(DISTINCT u.discord_id) FROM users u
+               WHERE u.discord_id IS NOT NULL
+                 AND u.privacy_settings->>'discord_marketing_opt_in'='true'
+                 AND NOT EXISTS (
+                   SELECT 1 FROM discord_message_campaign_recipients r
+                   WHERE r.fingerprint=$1 AND r.discord_id=u.discord_id::text
+                 )""", fingerprint
+        )
     await _audit(conn, str(admin["user_id"]), None, "opt_in_user_message", {
-        "test": bool(body.test_discord_id), "fingerprint": fingerprint, "attempted": len(recipients),
-        "sent": sent, "failed": failed, "chars": len(content),
+        "test": bool(body.test_discord_id), "fingerprint": fingerprint,
+        "attempted": len(recipients), "sent": sent, "failed": failed,
+        "skipped": skipped, "remaining": remaining, "chars": len(content),
     })
-    return {"attempted": len(recipients), "sent": sent, "failed": failed, "limit": 50}
+    return {"attempted": len(recipients), "sent": sent, "failed": failed,
+            "skipped": skipped, "remaining": remaining, "limit": 50}
+
 
 @router.get("/user-messaging/test-recipient")
 async def user_messaging_test_recipient(admin=Depends(require_admin), conn=Depends(get_db)):
