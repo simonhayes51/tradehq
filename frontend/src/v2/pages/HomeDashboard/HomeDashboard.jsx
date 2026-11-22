@@ -1,4 +1,3 @@
-import PageBanner from "../../../v3/PageBanner";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { ArrowRight, Bell, ChevronRight, Lock, Search, Star, Target, X, Zap } from "lucide-react";
@@ -264,10 +263,10 @@ export default function HomeDashboard(){
   // not merely hidden with CSS - so a phone never pays to render the
   // Track Record ledger, Market Map and Strategy Finder simultaneously
   // just to show the Top Card decision.
-  const showOverview=true;
-  const showOpportunities=false;
-  const showTrackRecord=false;
-  const showMarket=false;
+  const showOverview=!isMobile||mobileSection==="overview";
+  const showOpportunities=!isMobile||mobileSection==="opportunities";
+  const showTrackRecord=!isMobile||mobileSection==="overview";
+  const showMarket=!isMobile||mobileSection==="market";
   const topAlerts=(dashboard.watchlistAlerts||[]).slice(0,2);
   const unreadAlerts=panelUnread==null?Number(dashboard.unreadAlertCount||0):panelUnread;
   // One shape for the feed, built from two sources, each row carrying its
@@ -321,27 +320,12 @@ export default function HomeDashboard(){
           <NotificationsPanel open={alertsOpen} onClose={()=>setAlertsOpen(false)} onUnreadCount={setPanelUnread} rules={dashboard.alertRules||[]}/>
         </div>
       </header>
-      <PageBanner kicker="THE TRADING DESK / LIVE MARKET" title="GOOD MOVES START HERE." description="One place to check the market, act on a trade and get back to trading. Your full tools are a tap away." action="ALL TRADES" actionTo="/opportunities"/>
-      <nav className="v3-home-quicklinks" aria-label="Trading shortcuts">
-        <Link to="/opportunities"><Zap size={17}/> <span>LIVE OPPORTUNITIES</span><ArrowRight size={16}/></Link>
-        <Link to="/trade-finder"><Search size={17}/> <span>TRADE FINDER</span><ArrowRight size={16}/></Link>
-        <Link to="/watchlist"><Star size={17}/> <span>WATCHLIST</span><ArrowRight size={16}/></Link>
-        <Link to="/portfolio"><Target size={17}/> <span>PORTFOLIO</span><ArrowRight size={16}/></Link>
-      </nav>
+      <Ticker items={futggItems} events={dashboard.latestMarketEvents}/>
+      {isMobile?<nav className="mobile-section-tabs" aria-label="Dashboard sections">{MOBILE_SECTIONS.map(([key,label])=><button key={key} type="button" role="tab" aria-selected={mobileSection===key} className={mobileSection===key?"active":""} onClick={()=>setMobileSection(key)}>{label}</button>)}</nav>:null}
 
       {showOverview?<>
-        <section className="v3-editorial-stage">
-          <EditorialLead
-            lead={lead}
-            loading={feedLoading}
-            lockedOnly={lockedOnly}
-            preview={firstLocked}
-            freePicks={dashboard.freePicks}
-            navigate={navigate}
-            onOpen={setSelected}
-            onWatch={watchItem}
-            watchState={watchStates[String(lead?.cardId)]}
-          />
+        <section className="decision-stage">
+          <div className={`lead-trade${lead?"":" is-pending"}`}><div className="lead-label"><Zap size={15}/> TOP CARD</div>{lead?<div className="lead-layout"><button className="lead-card player-open-button" onClick={()=>setSelected(lead)} aria-label={`Open ${nameOf(lead.player)} analysis`}><CardImage player={lead.player} featured/></button><div className="lead-copy"><div className="lead-head"><div><PlayerMeta player={lead.player} source={lead.source}/><h1>{nameOf(lead.player)}</h1></div><div className="lead-status"><b className={`call ${String(lead.recommendation).toLowerCase()}`}>{lead.recommendation}</b><StatusLegend/><ConfidenceRing value={lead.confidence}/></div></div>{lead.source==="futgg"?<MarketFreshness priceAgeSeconds={lead.priceAgeSeconds} checkedAt={lead.updatedAt}/>:null}<p>{reason(lead)}</p><div className="lead-numbers"><Metric label="Buy below" value={<CoinValue value={lead.entryPrice??lead.currentBin}/>} sub="Maximum entry" tone="entry"/><Metric label="Expected profit" value={<CoinValue value={expectedProfit(lead)} signed/>} sub="After EA tax" tone="positive"/><Metric label="Risk level" value={lead.risk||"Unknown"} sub={`${sellingSpeedLabel(lead.liquidityScore)} selling speed`}/></div><div className="lead-actions"><button onClick={()=>setSelected(lead)}>View move <ArrowRight size={17}/></button><button className="secondary" onClick={()=>watchItem(lead)} aria-label="Add top card to watchlist"><Star size={16} fill={watchStates[String(lead.cardId)]==="saved"?"currentColor":"none"}/>{watchStates[String(lead.cardId)]==="saved"?"Watching":"Watch"}</button></div></div></div>:<TopCardPending loading={feedLoading} lockedOnly={lockedOnly} preview={firstLocked} freePicks={dashboard.freePicks} navigate={navigate}/>}</div>
           {/* Two states, never blended. When the backend declines to
               characterise the market (too few cards valued - see
               _compute_live_market_regime), it returns label "Unknown" and
@@ -382,7 +366,7 @@ export default function HomeDashboard(){
             <PulseFooter nextPromo={dashboard.nextPromo} sbcImpact={dashboard.latestSbcImpact}/>
           </aside>
         </section>
-        {topAlerts.length?<div className="mobile-top-alerts"><div className="section-head compact"><div><span>ALERTS</span><h2>Affecting your watchlist</h2></div><Link to="/watchlist">Open</Link></div>{topAlerts.map((x,index)=><Link className="feed-row compact" key={x.id||index} to={x.href||`/players/${x.cardId}`}><i/><div><strong>{x.title}</strong><span>{[x.movement,x.age].filter(Boolean).join(" · ")}</span></div></Link>)}</div>:null}
+        {isMobile&&topAlerts.length?<div className="mobile-top-alerts"><div className="section-head compact"><div><span>ALERTS</span><h2>Affecting your watchlist</h2></div><Link to="/watchlist">Open</Link></div>{topAlerts.map((x,index)=><Link className="feed-row compact" key={x.id||index} to={x.href||`/players/${x.cardId}`}><i/><div><strong>{x.title}</strong><span>{[x.movement,x.age].filter(Boolean).join(" · ")}</span></div></Link>)}</div>:null}
       </>:null}
 
       {showTrackRecord?<TrackRecordSummary/>:null}
@@ -414,43 +398,6 @@ export default function HomeDashboard(){
     </main>
     {selected&&<AnalysisModal item={selected} onClose={()=>setSelected(null)} navigate={navigate} onWatch={watchItem} watchState={watchStates[String(selected.cardId)]}/>}
   </div>;
-}
-
-// V3 is a genuinely new editorial lead, not a recolour of the old Top Card.
-// It consumes the same vetted opportunity and preserves the existing analysis,
-// watchlist and entitlement behaviour.
-function EditorialLead({lead,loading,lockedOnly,preview,freePicks,navigate,onOpen,onWatch,watchState}) {
-  return <article className="v3-lead" aria-label="Featured trading opportunity">
-    <div className="v3-lead-masthead">
-      <span className="v3-edition"><Zap size={14}/> THE TRADING DESK</span>
-      <span className="v3-issue">EAFC.LIVE / MARKET INTELLIGENCE</span>
-    </div>
-    {lead ? <>
-      <div className="v3-lead-story">
-        <div className="v3-lead-content">
-          <div className="v3-story-kicker"><span className="v3-live-dot"/> TODAY'S FEATURED MOVE <span className="v3-story-separator">/</span> {String(lead.recommendation)}</div>
-          <h1>{nameOf(lead.player)}</h1>
-          <div className="v3-story-meta"><PlayerMeta player={lead.player}/><span className="v3-confidence">Confidence {lead.confidence==null?"—":`${Math.round(Number(lead.confidence))}%`}</span></div>
-          <p className="v3-story-reason">{reason(lead)}</p>
-          {lead.source==="futgg"?<MarketFreshness priceAgeSeconds={lead.priceAgeSeconds} checkedAt={lead.updatedAt}/>:null}
-          <div className="v3-story-prices">
-            <div><span>BUY BELOW</span><strong><CoinValue value={lead.entryPrice??lead.currentBin}/></strong><small>Maximum entry</small></div>
-            <div><span>EXPECTED PROFIT</span><strong className="v3-profit"><CoinValue value={expectedProfit(lead)} signed/></strong><small>After EA tax</small></div>
-            <div><span>RISK</span><strong>{lead.risk||"Unknown"}</strong><small>{sellingSpeedLabel(lead.liquidityScore)} selling speed</small></div>
-          </div>
-          <div className="v3-story-actions">
-            <button type="button" className="v3-action-primary" onClick={()=>onOpen(lead)}>Explore this trade <ArrowRight size={18}/></button>
-            <button type="button" className="v3-action-outline" onClick={()=>onWatch(lead)} disabled={watchState==="saving"||watchState==="saved"}><Star size={16} fill={watchState==="saved"?"currentColor":"none"}/>{watchState==="saved"?"Watching":watchState==="saving"?"Saving…":"Add to watchlist"}</button>
-          </div>
-        </div>
-        <button type="button" className="v3-lead-art" onClick={()=>onOpen(lead)} aria-label={`Open ${nameOf(lead.player)} analysis`}>
-          <span className="v3-art-caption">FEATURE / 01</span>
-          <CardImage player={lead.player} featured/>
-          <span className="v3-art-footer">{lead.player?.rating||"—"} OVR <span>{versionLabel(lead.player?.version)}</span></span>
-        </button>
-      </div>
-    </> : <div className="v3-lead-empty"><div><span className="v3-story-kicker">THE TRADING DESK</span><h2>NO TRADE WITHOUT THE EVIDENCE.</h2><p>We're monitoring the market. A featured trade appears when a card clears the checks and is available to your membership.</p></div><TopCardPending loading={loading} lockedOnly={lockedOnly} preview={preview} freePicks={freePicks} navigate={navigate}/></div>}
-  </article>;
 }
 
 // `page` variant: PlayerPage.jsx renders this directly as a standalone
