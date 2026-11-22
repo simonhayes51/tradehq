@@ -25,17 +25,17 @@ import "./trade-finder.css";
 
 const DEFAULTS = {
   budget: "", min_profit: "", min_roi: "", risk: "", min_confidence: "",
-  position: "", rarity: "", rating: "", min_liquidity: "", max_price_age: "3", sort: "best",
+  position: "", rarity: "", rating: "", min_liquidity: "", max_price_age: "10", sort: "best",
 };
-const LIVE_PRICE_MAX_AGE_SECONDS = 3 * 60;
+const LIVE_PRICE_MAX_AGE_SECONDS = 10 * 60;
 
 // A raw age field made people do unit math in their head to use the
 // filter. These map directly to minutes server-side but are offered as
 // plain, understandable choices instead - what "fresh" means to a
 // trader, not a raw threshold.
 const FRESHNESS_OPTIONS = [
-  { value: "3", label: "Launch-safe — under 3 minutes old" },
-  { value: "10", label: "Recent — under 10 minutes old" },
+  { value: "3", label: "Strict — under 3 minutes old" },
+  { value: "10", label: "Default — under 10 minutes old" },
   { value: "30", label: "Fairly fresh — under 30 minutes old" },
   { value: "60", label: "Within the last hour" },
   { value: "", label: "Any freshness" },
