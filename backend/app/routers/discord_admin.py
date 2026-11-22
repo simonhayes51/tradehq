@@ -532,7 +532,7 @@ async def send_opted_in_user_message(
             still_opted_in = await conn.fetchval(
                 """SELECT EXISTS(SELECT 1 FROM users WHERE discord_id=$1::bigint
                    AND privacy_settings->>'discord_marketing_opt_in'='true')""",
-                discord_id,
+                int(discord_id),
             )
             if not still_opted_in:
                 skipped += 1
