@@ -1010,3 +1010,11 @@
 .watch-card-title .queue-watch{flex:0 0 auto}
 .watch-card-copy p{font-size:12px;line-height:1.55;overflow-wrap:anywhere}
 @media(max-width:480px){.watch-card{grid-template-columns:64px minmax(0,1fr);padding:10px;gap:10px;min-height:124px}.watch-card-art{width:64px;height:96px}.watch-card-art .player-card-art,.watch-card-art .ft-card-img,.watch-card-image{width:64px!important;max-width:64px;height:96px!important;max-height:96px}.watch-card-art-placeholder{width:60px;height:88px}}
+
+/* Special-card cutouts must stay INSIDE the FUT card silhouette.
+   PlayerCardArt's default full-bleed special cutout can otherwise paint
+   an oversized portrait outside the frame, unlike the finished gold art. */
+.watch-card-art .player-card-art{position:relative;isolation:isolate;overflow:hidden;aspect-ratio:3/4!important;border-radius:7px}
+.watch-card-art .player-card-art > img:first-of-type{object-fit:contain!important}
+.watch-card-art .player-card-art > img:nth-of-type(2){left:19%!important;top:16%!important;width:62%!important;height:60%!important;transform:none!important;object-fit:contain!important;object-position:center center!important}
+.watch-card-art .player-card-art > div{pointer-events:none}
