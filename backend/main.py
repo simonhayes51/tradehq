@@ -4380,7 +4380,7 @@ async def create_checkout_session(
         raise HTTPException(status_code=500, detail="Failed to create checkout session")
 
 # One-off promotional pass; intentionally disabled until configured and tested.
-FC27_PASS_PRICE_ID = "price_1UeYqcDBhlcudXxIBLGw8f20"
+FC27_PASS_PRICE_ID = "price_1UeYqcDBhlcudXxIBLGw8f2O"
 FC27_PASS_END = datetime(2027, 9, 1, tzinfo=timezone.utc)  # exclusive
 
 def _fc27_offer_deadline():
