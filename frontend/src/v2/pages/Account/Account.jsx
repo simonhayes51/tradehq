@@ -11,6 +11,7 @@ import { PageHead } from "../Players/Players";
 import { FREE_LIMITS, PAID_PLAN_NAME } from "../../lib/limits";
 import CompanionConnect from "../../components/CompanionConnect";
 import "./account.css";
+import DiscordMessagePreference from "./DiscordMessagePreference";
 
 // The v1 tools that still work on live data and aren't duplicated by a
 // v2 screen. Deliberately explicit rather than "and more": every entry
@@ -275,6 +276,7 @@ export default function Account() {
         ) : null}
       </section>
     ) : null}
+    {isAuthenticated ? <DiscordMessagePreference /> : null}
     {isAuthenticated ? <button className="v2-sign-out" onClick={signOut}><LogOut size={17}/> Sign out</button> : null}
     {isAuthenticated ? (
       <section className="v2-account-danger">
