@@ -11,7 +11,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from app.db import get_db
@@ -426,3 +426,109 @@ async def audit_log(server_id: int, limit: int = 50, admin=Depends(require_admin
         limit,
     )
     return [_row_to_dict(r) for r in rows]
+
+# Discord promotional DMs are opt-in only. Discord OAuth login is not consent.
+class MessagingPreference(BaseModel):
+    enabled: bool
+
+
+class UserMessage(BaseModel):
+    content: str = Field(min_length=1, max_length=1800)
+    test_discord_id: Optional[str] = None
+
+
+@router.get("/user-messaging/preference")
+async def get_user_messaging_preference(request: Request, conn=Depends(get_db)):
+    user_id = request.session.get("user_id")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    value = await conn.fetchval(
+        "SELECT COALESCE(privacy_settings->>'discord_marketing_opt_in', 'false') FROM users WHERE id=$1",
+        str(user_id),
+    )
+    return {"enabled": value == "true"}
+
+
+@router.put("/user-messaging/preference")
+async def set_user_messaging_preference(body: MessagingPreference, request: Request, conn=Depends(get_db)):
+    user_id = request.session.get("user_id")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    updated = await conn.execute(
+        """UPDATE users
+           SET privacy_settings=jsonb_set(
+             COALESCE(privacy_settings, '{}'::jsonb),
+             '{discord_marketing_opt_in}', to_jsonb($2::boolean), true)
+           WHERE id=$1""",
+        str(user_id), body.enabled,
+    )
+    if updated == "UPDATE 0":
+        raise HTTPException(status_code=404, detail="Account not found")
+    return {"enabled": body.enabled}
+
+
+@router.get("/user-messaging/audience")
+async def user_messaging_audience(admin=Depends(require_admin), conn=Depends(get_db)):
+    row = await conn.fetchrow(
+        """SELECT COUNT(*) AS total,
+                  COUNT(*) FILTER (WHERE discord_id IS NOT NULL) AS discord_linked,
+                  COUNT(*) FILTER (WHERE discord_id IS NOT NULL
+                    AND privacy_settings->>'discord_marketing_opt_in'='true') AS opted_in
+           FROM users"""
+    )
+    return dict(row)
+
+
+@router.post("/user-messaging/send")
+async def send_opted_in_user_message(
+    body: UserMessage, admin=Depends(require_admin), conn=Depends(get_db)
+):
+    """Admin-initiated, capped send to explicitly opted-in users only.
+    Each recipient is checked again before sending. No retry loop for blocked DMs.
+    """
+    import asyncio
+    content = body.content.strip()
+    if not content:
+        raise HTTPException(status_code=422, detail="Message is empty")
+    client = DiscordClient()
+    if body.test_discord_id:
+        # Test must target the admin's own linked Discord identity.
+        own_id = await conn.fetchval("SELECT discord_id FROM users WHERE id=$1", str(admin["user_id"]))
+        if not own_id or str(own_id) != body.test_discord_id:
+            raise HTTPException(status_code=403, detail="Test messages can only be sent to your own Discord account")
+        recipients = [str(own_id)]
+    else:
+        rows = await conn.fetch(
+            """SELECT DISTINCT discord_id FROM users
+               WHERE discord_id IS NOT NULL
+                 AND privacy_settings->>'discord_marketing_opt_in'='true'
+               ORDER BY discord_id LIMIT 50"""
+        )
+        recipients = [str(row["discord_id"]) for row in rows]
+    sent = 0
+    failed = 0
+    for discord_id in recipients:
+        if not body.test_discord_id:
+            still_opted_in = await conn.fetchval(
+                """SELECT EXISTS(SELECT 1 FROM users WHERE discord_id=$1::bigint
+                   AND privacy_settings->>'discord_marketing_opt_in'='true')""",
+                discord_id,
+            )
+            if not still_opted_in:
+                continue
+        status, dm = await client._request("POST", "/users/@me/channels", payload={"recipient_id": discord_id})
+        if status not in (200, 201) or not isinstance(dm, dict) or not dm.get("id"):
+            failed += 1
+            continue
+        status, _ = await client._request(
+            "POST", f"/channels/{dm['id']}/messages",
+            payload={"content": content, "allowed_mentions": {"parse": []}},
+        )
+        sent += int(status in (200, 201))
+        failed += int(status not in (200, 201))
+        await asyncio.sleep(1)
+    await _audit(conn, str(admin["user_id"]), None, "opt_in_user_message", {
+        "test": bool(body.test_discord_id), "attempted": len(recipients),
+        "sent": sent, "failed": failed, "chars": len(content),
+    })
+    return {"attempted": len(recipients), "sent": sent, "failed": failed, "limit": 50}
