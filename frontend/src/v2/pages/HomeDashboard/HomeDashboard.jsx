@@ -728,12 +728,24 @@ function StrategyCard({item,onOpen,onWatch,watchState}){
 function WatchCard({item,onOpen,onWatch,watchState}){
   const open=()=>onOpen(item);
   return <div className="watch-card" role="button" tabIndex={0} onClick={open} onKeyDown={event=>(event.key==="Enter"||event.key===" ")&&open()}>
-    <div className="watch-card-art"><CardImage player={item.player} compact/></div>
+    <div className="watch-card-art"><WatchCardArtwork player={item.player}/></div>
     <div className="watch-card-copy">
       <div className="watch-card-title"><strong>{nameOf(item.player)}</strong><EntryStateBadge state="watch"/><button className={`queue-watch ${watchState==="saved"?"saved":""}`} onClick={event=>{event.stopPropagation();onWatch(item)}} aria-label={`Add ${nameOf(item.player)} to watchlist`}><Star size={14} fill={watchState==="saved"?"currentColor":"none"}/></button></div>
       <p>{item.aboveEntryPct!=null?`${item.aboveEntryPct.toFixed(1)}% above entry`:"Near entry"} · would still net <CoinValue value={item.realTimeExpectedProfitAfterTax} signed/> after tax at today's price</p>
     </div>
   </div>;
+}
+// Only use a genuinely composited FUT card or a complete background/cutout
+// pair here. A bare player portrait must never masquerade as card artwork.
+function WatchCardArtwork({player={}}) {
+  const [imageFailed,setImageFailed]=useState(false);
+  if(player.generatedCardUrl && !imageFailed) {
+    return <img className="watch-card-image" src={player.generatedCardUrl} alt={nameOf(player)} loading="lazy" onError={()=>setImageFailed(true)}/>;
+  }
+  if(player.cardBgImage && player.cardCutoutImage) {
+    return <PlayerCardArt compact bgImage={player.cardBgImage} cutoutImage={player.cardCutoutImage} cutoutType={player.cardCutoutType||"special"} rating={player.rating} position={player.position} name={nameOf(player)} altText={nameOf(player)} stats={player.stats} nationImage={player.nationImage} leagueImage={player.leagueImage} clubImage={player.clubImage} showStats={false} widthClass="w-16"/>;
+  }
+  return <div className="watch-card-art-placeholder" role="img" aria-label={`Card artwork unavailable for ${nameOf(player)}`}><b>{player.rating||"FC"}</b><small>{player.position||"UT"}</small></div>;
 }
 function TradeSignal({label,value,tone,signed=false,sub}){return <div className={`trade-signal ${tone}`}><span>{label}</span><strong><CoinValue value={value} signed={signed}/></strong>{sub?<small>{sub}</small>:null}</div>}
 function PlayerMeta({player={}}){return <div className="player-meta-pills"><span>{player.rating||"—"} OVR</span><span>{player.position||"—"}</span><span>{versionLabel(player.version)}</span></div>}
@@ -841,7 +853,7 @@ function normaliseFutgg(raw){if(!raw)return null;const cardId=raw.card_id??raw.s
   // show the "BIN history estimate" badge - never inferred from anything
   // else, since a BIN observation must never be presented as a sale.
   valuationSource:raw.valuation_source,evidenceQuality:raw.evidence_quality,
-  reasoning:reasons[0]||raw.headline_reason||"Market signal",player:{name:raw.name,displayName:raw.name,cardName:raw.name,nickname:null,rating:raw.rating,version:raw.rarity||"Card",position:raw.position||raw.primary_position,imageUrl:raw.image_url,cardBgImage:raw.card_design_image_url||null,cardCutoutImage:raw.image_url||raw.player_image_url||null,cardCutoutType:raw.price_tier&&raw.price_tier!=="special"?"base":"special",/* composited_image_url (background+cutout+rating+stats baked in by FUT.GG, mirrored to R2) always wins when present - it's shown as a plain <img> via CardImage()'s player.generatedCardUrl check, never composited/overlaid by PlayerCardArt, which would double the baked-in rating/stats text. Falls back to the pre-existing bgImage-gated logic only when a card hasn't been mirrored yet. */generatedCardUrl:raw.composited_image_url||(raw.card_design_image_url?null:(raw.image_url||raw.player_image_url||null)),nationImage:raw.nation_image_url||null,leagueImage:raw.league_image_url||null,clubImage:raw.club_image_url||null,stats:{pace:raw.pace,shooting:raw.shooting,passing:raw.passing,dribbling:raw.dribbling,defending:raw.defending,physicality:raw.physicality}}}}
+  reasoning:reasons[0]||raw.headline_reason||"Market signal",player:{name:raw.name,displayName:raw.name,cardName:raw.name,nickname:null,rating:raw.rating,version:raw.rarity||"Card",position:raw.position||raw.primary_position,imageUrl:raw.image_url,cardBgImage:raw.card_design_image_url||null,cardCutoutImage:raw.image_url||raw.player_image_url||null,cardCutoutType:raw.price_tier&&raw.price_tier!=="special"?"base":"special",/* composited_image_url (background+cutout+rating+stats baked in by FUT.GG, mirrored to R2) always wins when present - it's shown as a plain <img> via CardImage()'s player.generatedCardUrl check, never composited/overlaid by PlayerCardArt, which would double the baked-in rating/stats text. Falls back to the pre-existing bgImage-gated logic only when a card hasn't been mirrored yet. */generatedCardUrl:raw.composited_image_url||null,nationImage:raw.nation_image_url||null,leagueImage:raw.league_image_url||null,clubImage:raw.club_image_url||null,stats:{pace:raw.pace,shooting:raw.shooting,passing:raw.passing,dribbling:raw.dribbling,defending:raw.defending,physicality:raw.physicality}}}}
 function normalise(item){if(!item)return null;if(item.player)return{...item,
   locked:item.locked===true,currentBin:item.currentBin??item.currentBinApprox??null,
   reasoning:item.reasoning||item.headlineReason||null,
