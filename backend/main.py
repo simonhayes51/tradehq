@@ -4379,6 +4379,46 @@ async def create_checkout_session(
         logger.error(f"Create checkout error: {e}")
         raise HTTPException(status_code=500, detail="Failed to create checkout session")
 
+# FC27 promotional pass: one-off checkout, never a Stripe subscription.
+# Set FC27_PASS_SALES_END_UTC to the actual launch deadline before publishing.
+@app.post("/api/billing/fc27-pass/checkout")
+async def create_fc27_pass_checkout(
+    user_id: str = Depends(get_current_user),
+    conn=Depends(get_db),
+):
+    from datetime import datetime, timezone
+    deadline = os.getenv("FC27_PASS_SALES_END_UTC")
+    if not deadline:
+        raise HTTPException(status_code=503, detail="Season Pass offer is not live yet")
+    try:
+        sales_end = datetime.fromisoformat(deadline.replace("Z", "+00:00"))
+        if sales_end.tzinfo is None:
+            raise ValueError("Timezone required")
+    except ValueError:
+        raise HTTPException(status_code=503, detail="Season Pass configuration error")
+    if datetime.now(timezone.utc) >= sales_end:
+        raise HTTPException(status_code=410, detail="Season Pass offer has ended")
+    # Prevent duplicate purchases and do not disturb existing subscriptions.
+    paid_until = await conn.fetchval("SELECT premium_until FROM users WHERE id=$1", user_id)
+    if paid_until and paid_until >= datetime(2027, 9, 1, tzinfo=timezone.utc):
+        raise HTTPException(status_code=409, detail="You already have access through the FC27 season")
+    price_id = os.getenv("FC27_PASS_STRIPE_PRICE_ID", "price_1UeY9kDBhlcudXxIJVuX7H0S")
+    try:
+        session = stripe.checkout.Session.create(
+            mode="payment",
+            payment_method_types=["card"],
+            line_items=[{"price": price_id, "quantity": 1}],
+            success_url=f"{FRONTEND_URL}/#/billing?payment=success&session_id={{CHECKOUT_SESSION_ID}}",
+            cancel_url=f"{FRONTEND_URL}/#/billing?payment=cancelled",
+            client_reference_id=user_id,
+            metadata={"user_id": user_id, "kind": "fc27_season_pass"},
+        )
+    except Exception:
+        logger.exception("Failed to create FC27 pass checkout")
+        raise HTTPException(status_code=502, detail="Unable to start checkout")
+    return {"sessionId": session.id, "checkoutUrl": session.url}
+
+
 @app.post("/api/billing/cancel-subscription")
 async def cancel_subscription(user_id: str = Depends(get_current_user), conn=Depends(get_db)):
     """Cancel user's subscription"""
@@ -4487,7 +4527,10 @@ async def stripe_webhook(request: Request, conn=Depends(get_db)):
             elif event['type'] == 'customer.subscription.deleted':
                 await discord_feed_billing.handle_discord_feed_subscription_deleted(event_object, conn)
         elif event['type'] == 'checkout.session.completed':
-            await handle_checkout_completed(event_object, conn)
+            if (event_object.get("metadata") or {}).get("kind") == "fc27_season_pass":
+                await handle_fc27_pass_checkout_completed(event_object, conn)
+            else:
+                await handle_checkout_completed(event_object, conn)
         elif event['type'] == 'customer.subscription.created':
             await handle_subscription_created(event_object, conn)
         elif event['type'] == 'customer.subscription.updated':
@@ -4523,6 +4566,34 @@ async def stripe_webhook(request: Request, conn=Depends(get_db)):
         raise HTTPException(status_code=500, detail="Webhook processing failed")
 
 # Webhook handler functions
+async def handle_fc27_pass_checkout_completed(session, conn):
+    """Grant the one-off pass only after a signed, paid Stripe webhook."""
+    meta = session.get("metadata") or {}
+    user_id = meta.get("user_id")
+    if (
+        not user_id
+        or meta.get("kind") != "fc27_season_pass"
+        or session.get("mode") != "payment"
+        or session.get("payment_status") != "paid"
+        or session.get("currency") != "gbp"
+        or session.get("amount_total") != 500
+    ):
+        raise ValueError("FC27 pass checkout not verified as a paid GBP 5 purchase")
+    # Exclusive expiry: 2027-09-01 00:00 UTC, so Aug 31 is fully included.
+    expires_at = datetime(2027, 9, 1, tzinfo=timezone.utc)
+    updated = await conn.execute(
+        """
+        UPDATE users SET premium_until=GREATEST(
+            COALESCE(premium_until, $2::timestamptz), $2::timestamptz
+        ) WHERE id=$1
+        """,
+        user_id, expires_at,
+    )
+    if updated != "UPDATE 1":
+        raise ValueError("FC27 pass customer account not found")
+    invalidate_entitlements_cache(user_id)
+
+
 async def handle_checkout_completed(session, conn):
     """Handle successful checkout"""
     user_id = session.get('metadata', {}).get('user_id')
