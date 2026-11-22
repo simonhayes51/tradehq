@@ -1,4 +1,3 @@
-import PageBanner from "../../../v3/PageBanner";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { ArrowRight, Lock, Search, Sparkles } from "lucide-react";
@@ -53,7 +52,6 @@ export default function Players() {
 
   return (
     <main className="v2-destination">
-      <PageBanner kicker="RESEARCH / PLAYER DATABASE" title="KNOW YOUR PLAYERS." description="Search cards, compare live prices and inspect the evidence before buying." issue="04 / RESEARCH"/>
       <PageHead eyebrow="PLAYER DATABASE" title="Find any card" copy="Search any player by name, then open the card for live prices and what it's actually worth." />
       <label className="v2-search-box">
         <Search size={20} />
