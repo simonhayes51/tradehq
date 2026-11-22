@@ -1,0 +1,52 @@
+/* Classic EAFC.Live visual treatment, scoped to the current V4 interface.
+   Keep all V4 features and routing: only palette/brand presentation changes. */
+.v4-app {
+ --v4-ink:#f3f3f2;
+ --v4-charcoal:#17181b;
+ --v4-black:#08090a;
+ --v4-paper:#111214;
+ --v4-canvas:#08090a;
+ --v4-muted:#a1a3a8;
+ --v4-line:#303137;
+ --v4-orange:#39ff8a;
+ --v4-orange-dark:#22d974;
+ --v4-positive:#39ff8a;
+ --v4-negative:#ff6666;
+ --v4-warning:#f2c94c;
+ color:#f3f3f2;
+ background:#08090a;
+}
+.v4-app .v4-sidebar,
+.v4-app .v4-mobile-nav {background:#0d0e10;color:#f3f3f2;border-color:#303137;box-shadow:none}
+.v4-app .v4-sidebar .v4-brand,
+.v4-app .v4-sidebar .v4-brand small,
+.v4-app .v4-topbar .v4-brand,
+.v4-app .v4-mobile-brand .v4-brand {color:#f3f3f2!important}
+.v4-app .v4-brand>span:last-child,
+.v4-app .v4-sidebar .v4-brand>span:last-child,
+.v4-app .v4-topbar .v4-brand>span:last-child {color:#39ff8a}
+.v4-app .v4-brand-mark {background:#39ff8a;color:#08090a;transform:none;font:900 13px Inter,system-ui,sans-serif}
+.v4-app .v4-sidebar-caption {color:#92949b}
+.v4-app .v4-sidebar .v4-nav-link,
+.v4-app .v4-mobile-nav a,
+.v4-app .v4-mobile-nav button {color:#b8bac0}
+.v4-app .v4-sidebar .v4-nav-link:hover {background:#1c1e20;color:#fff}
+.v4-app .v4-sidebar .v4-nav-link--current,
+.v4-app .v4-mobile-nav .v4-nav-link--current,
+.v4-app .v4-menu-sheet .v4-nav-link--current {background:#173324;color:#39ff8a;box-shadow:inset 3px 0 #39ff8a}
+.v4-app .v4-sidebar-elite,
+.v4-app .v4-button--primary {background:#39ff8a;color:#08090a}
+.v4-app .v4-button--primary:hover {background:#22d974}
+.v4-app .v4-topbar {background:#111214;color:#f3f3f2;border-color:#303137}
+.v4-app .v4-search-link,
+.v4-app .v4-search-shortcut {background:#1b1c20;color:#c6c8cc;border-color:#383a40}
+.v4-app .v4-menu-sheet {background:#111214;color:#f3f3f2;border-color:#383a40}
+.v4-app .v4-menu-sheet .v4-nav-link {color:#c6c8cc}
+.v4-app .v4-menu-title button {color:#f3f3f2}
+.v4-app .v4-panel,
+.v4-app .v4-account-panel,
+.v4-app .v4-account-identity,
+.v4-app .v4-account-link {background:#111214;color:#f3f3f2;border-color:#303137}
+.v4-app .v4-button--secondary {background:#1b1c20;color:#f3f3f2;border-color:#383a40}
+.v4-app .v4-status {background:#173324;color:#39ff8a}
+.v4-app input,.v4-app select,.v4-app textarea {color-scheme:dark}
