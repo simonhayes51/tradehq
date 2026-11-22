@@ -25,7 +25,7 @@ import "../TradeFinder/trade-finder.css";
 import "./opportunities.css";
 
 const DEFAULTS = { risk: "", min_confidence: "", min_roi: "" };
-const LIVE_PRICE_MAX_AGE_SECONDS = 3 * 60;
+const LIVE_PRICE_MAX_AGE_SECONDS = 10 * 60;
 
 // Opportunities and Trade Finder both read the FUT.GG-backed market feed,
 // which is why they used to look like the same tool twice: same card
@@ -43,7 +43,7 @@ export default function Opportunities() {
     risk: filters.risk || undefined,
     min_confidence: filters.min_confidence === "" ? undefined : Number(filters.min_confidence) / 100,
     min_roi: filters.min_roi ? Number(filters.min_roi) / 100 : undefined,
-    max_price_age_minutes: 3,
+    max_price_age_minutes: 10,
     page_size: 40,
   });
 
@@ -65,7 +65,7 @@ export default function Opportunities() {
       <PageHead
         eyebrow="OPPORTUNITIES"
         title="Today's shortlist, no setup needed"
-        copy="Launch-safe trades only: every price shown here was checked within the last three minutes. Never chase above Buy max, and always verify the price in-game before buying. Want full control over budget, position, rarity and sort order instead? That's Trade Finder."
+        copy="Recent-price trades only: every price shown here was checked within the last ten minutes. Never chase above Buy max, and always verify the price in-game before buying. Want full control over budget, position, rarity and sort order instead? That's Trade Finder."
       />
 
       <div className="opp-crosslinks">
