@@ -24,6 +24,45 @@ import "../../styles/billing.css";
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
 
+function Fc27SeasonPassOffer() {
+  const [offer, setOffer] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let mounted = true;
+    api.get("/api/billing/fc27-pass/offer").then(({ data }) => {
+      if (mounted) setOffer(data);
+    }).catch(() => {});
+    return () => { mounted = false; };
+  }, []);
+  if (!offer?.available) return null;
+  const purchase = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      const { data } = await api.post("/api/billing/fc27-pass/checkout");
+      if (!data?.checkoutUrl) throw new Error("Checkout unavailable");
+      window.location.assign(data.checkoutUrl);
+    } catch (err) {
+      setError(err?.response?.data?.detail || "Unable to open checkout. No payment was taken.");
+      setBusy(false);
+    }
+  };
+  return (
+    <SectionCard title="FC27 Season Pass — £5" className="billing-v2-price-card">
+      <p><strong>One payment. Elite until 31 August 2027.</strong></p>
+      <p>No free trial, no monthly payments and no automatic renewal.</p>
+      <p>Offer ends {new Date(offer.sales_end_utc).toLocaleString("en-GB", { timeZone: "Europe/London" })} UK time.</p>
+      <button type="button" className="billing-v2-btn primary full" disabled={busy} onClick={purchase}>
+        {busy ? "Opening secure checkout…" : "Get FC27 Season Pass — £5"}
+      </button>
+      {error ? <p className="billing-v2-msg err" role="alert">{error}</p> : null}
+    </SectionCard>
+  );
+}
+
+
+
 // Only the identity of each plan lives here. The PRICE comes from
 // GET /api/billing/plans, which reads Stripe.
 //
@@ -501,6 +540,8 @@ export default function Billing() {
 
             {success ? <div className="billing-v2-msg ok">{success}</div> : null}
             {error ? <div className="billing-v2-msg err"><AlertTriangle size={15} /> {error}</div> : null}
+
+            <Fc27SeasonPassOffer />
 
             <div className="billing-v2-toggle" role="tablist" aria-label="Billing cycle">
               <button role="tab" aria-selected={billingCycle === "monthly"} className={billingCycle === "monthly" ? "active" : ""} onClick={() => setBillingCycle("monthly")}>Monthly</button>

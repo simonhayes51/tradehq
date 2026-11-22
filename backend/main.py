@@ -137,7 +137,7 @@ FRONTEND_URL = os.getenv("FRONTEND_URL", "https://app.eafc.live").rstrip("/")
 # Trial length, in days. A pricing decision, so it belongs in
 # configuration and not in a request body - see create_checkout_session().
 # 0 disables the trial entirely.
-STRIPE_TRIAL_DAYS = int(os.getenv("STRIPE_TRIAL_DAYS", "7"))
+STRIPE_TRIAL_DAYS = 0  # FC27 promotion: disable new subscription trials; existing subscriptions unaffected
 PORT = int(os.getenv("PORT", 8000))
 
 ENV = os.getenv("ENV", "production").lower()
@@ -4379,6 +4379,54 @@ async def create_checkout_session(
         logger.error(f"Create checkout error: {e}")
         raise HTTPException(status_code=500, detail="Failed to create checkout session")
 
+# One-off promotional pass; intentionally disabled until configured and tested.
+FC27_PASS_PRICE_ID = "price_1UeY9kDBhlcudXxIJVuX7H0S"
+FC27_PASS_END = datetime(2027, 9, 1, tzinfo=timezone.utc)  # exclusive
+
+def _fc27_offer_deadline():
+    raw = os.getenv("FC27_PASS_SALES_END_UTC", "").strip()
+    if not raw:
+        return None
+    try:
+        value = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        return value if value.tzinfo else None
+    except ValueError:
+        return None
+
+@app.get("/api/billing/fc27-pass/offer")
+async def fc27_pass_offer():
+    deadline = _fc27_offer_deadline()
+    enabled = bool(deadline and datetime.now(timezone.utc) < deadline)
+    return {"available": enabled, "price_minor": 500, "currency": "gbp",
+            "expires_at": "2027-08-31", "sales_end_utc": deadline.isoformat() if enabled else None}
+
+@app.post("/api/billing/fc27-pass/checkout")
+async def fc27_pass_checkout(user_id: str = Depends(get_current_user), conn=Depends(get_db)):
+    deadline = _fc27_offer_deadline()
+    if not deadline:
+        raise HTTPException(status_code=503, detail="FC27 Season Pass is not on sale yet")
+    if datetime.now(timezone.utc) >= deadline:
+        raise HTTPException(status_code=410, detail="FC27 Season Pass offer has ended")
+    existing = await conn.fetchval("SELECT premium_until FROM users WHERE id=$1", user_id)
+    if existing and existing >= FC27_PASS_END:
+        raise HTTPException(status_code=409, detail="Your FC27 Season Pass is already active")
+    try:
+        session = stripe.checkout.Session.create(
+            mode="payment",
+            payment_method_types=["card"],
+            line_items=[{"price": FC27_PASS_PRICE_ID, "quantity": 1}],
+            client_reference_id=user_id,
+            metadata={"kind": "fc27_season_pass", "user_id": user_id},
+            payment_intent_data={"metadata": {"kind": "fc27_season_pass", "user_id": user_id}},
+            success_url=f"{FRONTEND_URL}/#/billing?payment=success&session_id={{CHECKOUT_SESSION_ID}}",
+            cancel_url=f"{FRONTEND_URL}/#/billing?payment=cancelled",
+        )
+    except Exception:
+        logger.exception("FC27 pass checkout failed")
+        raise HTTPException(status_code=502, detail="Unable to open checkout")
+    return {"checkoutUrl": session.url, "sessionId": session.id}
+
+
 @app.post("/api/billing/cancel-subscription")
 async def cancel_subscription(user_id: str = Depends(get_current_user), conn=Depends(get_db)):
     """Cancel user's subscription"""
@@ -4487,7 +4535,10 @@ async def stripe_webhook(request: Request, conn=Depends(get_db)):
             elif event['type'] == 'customer.subscription.deleted':
                 await discord_feed_billing.handle_discord_feed_subscription_deleted(event_object, conn)
         elif event['type'] == 'checkout.session.completed':
-            await handle_checkout_completed(event_object, conn)
+            if (event_object.get("metadata") or {}).get("kind") == "fc27_season_pass":
+                await handle_fc27_pass_checkout_completed(event_object, conn)
+            else:
+                await handle_checkout_completed(event_object, conn)
         elif event['type'] == 'customer.subscription.created':
             await handle_subscription_created(event_object, conn)
         elif event['type'] == 'customer.subscription.updated':
@@ -4523,6 +4574,25 @@ async def stripe_webhook(request: Request, conn=Depends(get_db)):
         raise HTTPException(status_code=500, detail="Webhook processing failed")
 
 # Webhook handler functions
+async def handle_fc27_pass_checkout_completed(session, conn):
+    """Grant access only from a verified Stripe webhook for a fully paid one-off checkout."""
+    metadata = session.get("metadata") or {}
+    user_id = metadata.get("user_id")
+    if not (user_id and metadata.get("kind") == "fc27_season_pass"
+            and session.get("mode") == "payment"
+            and session.get("payment_status") == "paid"
+            and session.get("currency") == "gbp"
+            and session.get("amount_total") == 500):
+        raise ValueError("FC27 pass checkout failed payment verification")
+    updated = await conn.execute(
+        "UPDATE users SET premium_until=GREATEST(COALESCE(premium_until, $2::timestamptz), $2::timestamptz) WHERE id=$1",
+        user_id, FC27_PASS_END,
+    )
+    if updated != "UPDATE 1":
+        raise ValueError("FC27 pass account not found")
+    invalidate_entitlements_cache(user_id)
+
+
 async def handle_checkout_completed(session, conn):
     """Handle successful checkout"""
     user_id = session.get('metadata', {}).get('user_id')
