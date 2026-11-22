@@ -532,3 +532,10 @@ async def send_opted_in_user_message(
         "sent": sent, "failed": failed, "chars": len(content),
     })
     return {"attempted": len(recipients), "sent": sent, "failed": failed, "limit": 50}
+
+@router.get("/user-messaging/test-recipient")
+async def user_messaging_test_recipient(admin=Depends(require_admin), conn=Depends(get_db)):
+    discord_id = await conn.fetchval("SELECT discord_id FROM users WHERE id=$1", str(admin["user_id"]))
+    if not discord_id:
+        raise HTTPException(status_code=409, detail="Your admin account has no linked Discord ID")
+    return {"discord_id": str(discord_id)}
