@@ -23,6 +23,7 @@ import ConversionTab from "./tabs/ConversionTab";
 import ReferralsTab from "./tabs/ReferralsTab";
 import BotTab from "./tabs/BotTab";
 import PlayerCardsTab from "./tabs/PlayerCardsTab";
+import UserMessagingTab from "./tabs/UserMessagingTab";
 import AdminSbcImports from "../AdminSbcImports/AdminSbcImports";
 
 const TABS = [
@@ -30,6 +31,7 @@ const TABS = [
   { key: "conversion", label: "Conversion", Component: ConversionTab },
   { key: "referrals", label: "Referrals", Component: ReferralsTab },
   { key: "bot", label: "Bot", Component: BotTab },
+  { key: "user-messaging", label: "User Messaging", Component: UserMessagingTab },
   { key: "readiness", label: "Readiness", Component: RoadmapReadinessTab },
   { key: "pipeline", label: "Pipeline Health", Component: PipelineHealthTab },
   { key: "data-quality", label: "Data Quality", Component: DataQualityTab },
