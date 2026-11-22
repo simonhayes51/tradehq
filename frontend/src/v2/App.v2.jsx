@@ -1,22 +1,9 @@
 import { Navigate, Routes, Route, Link } from "react-router-dom";
 import "./styles/tokens.css";
 import "./styles/mobile-polish.css";
-import "../v3/design/tokens.css";
-import "../v3/design/billing.css";
-import "../v3/design/member.css";
-import "../v3/design/trading-desk.css";
-import PlatformNav from "../v3/PlatformNav";
-import LimitReachedPrompt from "./components/LimitReachedPrompt";
+import Nav from "./components/Nav";
 import V4Preview from "../v4/Preview";
-import V4Workspace from "../v4/layout/Workspace";
-import V4Home from "../v4/pages/TradingHome";
-import V4Research from "../v4/pages/MarketResearch";
-import V4Players from "../v4/pages/PlayerSearch";
-import V4PlayerDetail from "../v4/pages/PlayerDetail";
-import V4Watchlist from "../v4/pages/Watchlist";
-import V4Portfolio from "../v4/pages/Portfolio";
-import V4Account from "../v4/pages/Account";
-import V4Insights from "../v4/pages/MarketInsights";
+import LimitReachedPrompt from "./components/LimitReachedPrompt";
 import HomeDashboard from "./pages/HomeDashboard/HomeDashboard";
 import PlayerPage from "./pages/PlayerPage/PlayerPage";
 import AdminSbcImports from "./pages/AdminSbcImports/AdminSbcImports";
@@ -43,17 +30,15 @@ import "./styles/mobile-screenshot-fixes.css";
 import "./styles/mobile-player-redesign.css";
 import "./styles/mobile-menu-final.css";
 
-
 export default function V2App() {
   return (
     <Routes>
       <Route path="preview-v4/*" element={<V4Preview />} />
-      <Route index element={<V4Workspace><V4Home /></V4Workspace>} />
+      <Route index element={<ShellLayout><HomeDashboard /></ShellLayout>} />
       {/* FUT.GG migration: was a redirect to /trade-finder (no
           dedicated opportunities page existed); now a real page wired to
           GET /api/v2/opportunities. */}
-      <Route path="insights" element={<V4Workspace><V4Insights /></V4Workspace>} />
-      <Route path="opportunities" element={<V4Workspace><V4Research type="opportunities" /></V4Workspace>} />
+      <Route path="opportunities" element={<ShellLayout><Opportunities /></ShellLayout>} />
       {/* Investments is retired from the product surface.
           The Investment Engine calculates in SHADOW MODE in every
           deployment: INVESTMENT_ENGINE_PUBLISH_SIGNALS defaults false and
@@ -77,9 +62,9 @@ export default function V2App() {
       {/* The full performance record. Was the largest section of the
           homepage; it is reference material, so it is a page. */}
       <Route path="track-record" element={<ShellLayout><TrackRecord /></ShellLayout>} />
-      <Route path="trade-finder" element={<V4Workspace><V4Research type="finder" /></V4Workspace>} />
-      <Route path="players" element={<V4Workspace><V4Players /></V4Workspace>} />
-      <Route path="players/:cardId" element={<V4Workspace><V4PlayerDetail /></V4Workspace>} />
+      <Route path="trade-finder" element={<ShellLayout><TradeFinder /></ShellLayout>} />
+      <Route path="players" element={<ShellLayout><Players /></ShellLayout>} />
+      <Route path="players/:cardId" element={<ShellLayout><PlayerPage /></ShellLayout>} />
       <Route path="sbc" element={<ShellLayout><SbcHub /></ShellLayout>} />
       <Route path="sbc/:eventId" element={<ShellLayout><SbcEventDetail /></ShellLayout>} />
       <Route path="gallery" element={<ShellLayout><GalleryHub /></ShellLayout>} />
@@ -90,9 +75,9 @@ export default function V2App() {
       <Route path="release-price-rises" element={<ShellLayout><ReleasePriceRises /></ShellLayout>} />
       <Route path="market" element={<Navigate to="/trade-finder" replace />} />
       <Route path="chat" element={<ShellLayout><Chat /></ShellLayout>} />
-      <Route path="watchlist" element={<V4Workspace><V4Watchlist /></V4Workspace>} />
-      <Route path="portfolio" element={<V4Workspace><V4Portfolio /></V4Workspace>} />
-      <Route path="account" element={<V4Workspace><V4Account /></V4Workspace>} />
+      <Route path="watchlist" element={<ShellLayout><Watchlist /></ShellLayout>} />
+      <Route path="portfolio" element={<ShellLayout><ClubRoute /></ShellLayout>} />
+      <Route path="account" element={<ShellLayout><Account /></ShellLayout>} />
       {/* Personal checkout is intentionally replaced with the giveaway
           explanation for preseason-granted members. Paid/admin users still
           receive the existing Billing page, and Discord Server Feed has its
@@ -102,7 +87,7 @@ export default function V2App() {
           Server Feed - a convenience alongside the /feed Discord command
           group, not a replacement for it (see discord_feed_web.py). */}
       <Route path="discord-feed" element={<ShellLayout><DiscordFeed /></ShellLayout>} />
-      <Route path="club" element={<V4Workspace><V4Portfolio /></V4Workspace>} />
+      <Route path="club" element={<ShellLayout><ClubRoute /></ShellLayout>} />
       <Route path="admin" element={<ShellLayout><Admin /></ShellLayout>} />
       <Route path="admin/sbc-imports" element={<ShellLayout><AdminSbcImports /></ShellLayout>} />
       {/* No catch-all previously existed - an unmatched in-app path (a
@@ -133,8 +118,8 @@ function NotFound() {
 
 function ShellLayout({ children }) {
   return (
-    <div className="v2-root v3-root v3-platform">
-      <PlatformNav />
+    <div className="v2-root">
+      <Nav />
       <div className="v2-shell-content">{children}</div>
       <LimitReachedPrompt />
     </div>
